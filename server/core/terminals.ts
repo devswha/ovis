@@ -8,7 +8,7 @@ import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { ConversationMonitor } from "../conversation-monitor.ts";
 import { type SightingFacts, sightingFacts } from "../input-guard.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, OutputWindow, wireBytes } from "../output-window.ts";
-import { backlog, type Client, connectionOf, send } from "./connections.ts";
+import { backlog, type Client, connectionOf, machineEventsAhead, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment } from "./terminal-process.ts";
 
 /** joins this close together share one repaint: a reconnect brings every tab back at once */
@@ -107,8 +107,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       if (window) {
         // an ACK client: measured by its ACK progress, and a joiner draining its replay never pauses the pty
         const verdict = window.check(buffered);
-        if (verdict === "stop") end(client, "stalled");
-        else if (verdict === "pause") paused = true;
+        if (verdict === "stop" && (buffered >= OUTPUT_HARD_BYTES || !machineEventsAhead(client))) end(client, "stalled");
+        else if (verdict !== "flow") paused = true;
         continue;
       }
       // a client without ACKs has only its transport queue to go by
@@ -119,7 +119,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       }
       const since = attachment.stalled.get(client) ?? Date.now();
       attachment.stalled.set(client, since);
-      if (Date.now() - since >= OUTPUT_STALL_MS || buffered >= OUTPUT_HARD_BYTES) {
+      if ((Date.now() - since >= OUTPUT_STALL_MS && !machineEventsAhead(client)) || buffered >= OUTPUT_HARD_BYTES) {
         end(client, "stalled");
       } else {
         paused = true;

@@ -42,6 +42,14 @@ export function useRosterState() {
   return { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
 }
 
+/**
+ * Signing out closes every socket, as unmounting the sessions provider did: one kept open would
+ * carry its old authority behind the sign-in gate and be reused by the next sign-in.
+ */
+export function useCloseSessionsWhenLocked(machineSessions: Pick<MachineSessionRegistry, "closeAll">, locked: boolean | null): void {
+  useEffect(() => { if (locked) machineSessions.closeAll(); }, [machineSessions, locked]);
+}
+
 export function useRecentFolderMemory({ machines }: { machines: Machine[] }) {
   // New workspace's recent folders also know where a PC's panes are: kept behind the folders started in
   useEffect(() => {
@@ -191,6 +199,7 @@ export function useRosterEvents({ machineSessions, locked, receivePreferencesRef
   setPairedNotices: Dispatch<SetStateAction<readonly DevicePairedEvent[]>>;
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
+  useCloseSessionsWhenLocked(machineSessions, locked);
   // The local socket watches every PC, even when no terminal is selected; older servers use SSE.
   useEffect(() => {
     if (locked !== false) return;

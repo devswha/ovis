@@ -9,7 +9,7 @@ import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import type { DeviceStore } from "../devices.ts";
 import { HerdrError, herdrSocketPath } from "../herdr/client.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES, type OutputWindow } from "../output-window.ts";
+import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS, type OutputWindow } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import { PaneWatch } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
@@ -41,6 +41,8 @@ export interface SocketData {
 interface ConnectionState {
   closing: boolean;
   stopMachineEvents?: () => void;
+  /** until when machine events queued on this socket may still be crossing the link ahead of terminal output */
+  sideTrafficUntil?: number;
   revoked: boolean;
   /** the connection's authority: observe connections cannot type or resize */
   mode: ClientRole;
@@ -104,6 +106,16 @@ export function setMachineEvents(client: Client, enabled: boolean): void {
   if (state.closing) stop();
   else if (overflowed) end();
   else state.stopMachineEvents = stop;
+}
+
+/**
+ * Whether a stalled-looking client may still be waiting on machine events queued in front of its
+ * terminal output: it is paused rather than stopped until they could have crossed the slowest
+ * link a budget allows for, as a joiner's replay is (OutputWindow.join).
+ */
+export function machineEventsAhead(client: Client, now = Date.now()): boolean {
+  const until = stateOf(client).sideTrafficUntil;
+  return until !== undefined && now < until;
 }
 
 /** A `presence` frame's answer, or null for any other frame. A relayed frame is only parsed when it can be one. */
@@ -179,6 +191,8 @@ export function send(client: Client, message: ServerMessage, overflow?: () => vo
       // a frame sent after the excused one queues behind it: only its own bytes are new
       if (oversized) state.excused = after > 0 ? { ahead: after, frame: Math.min(bytes, after), last: after } : undefined;
       else if (state.excused) state.excused.last = after;
+      // terminal output queued behind a machine event cannot be acknowledged before the event has crossed
+      if (overflow) state.sideTrafficUntil = Math.max(state.sideTrafficUntil ?? 0, Date.now() + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(after)));
     }
     return result;
   } catch {

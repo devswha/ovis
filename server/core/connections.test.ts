@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { DeviceStore } from "../devices.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES } from "../output-window.ts";
+import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import type { MachineEventDocument } from "../machine-events.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import type { SharedPreferences } from "../../shared/preferences.ts";
-import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
+import { backlog, type Client, connectionData, connectionOf, createConnections, machineEventsAhead, send, setMachineEvents } from "./connections.ts";
 
 function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; machineEvents?: MachineEventDocument } = {}) {
   const log: string[] = [];
@@ -129,6 +129,23 @@ it("ends the machine-event subscription, never the terminal connection, rather t
   expect(empty.log).toEqual([]);
   expect(empty.sent).toEqual(["machine-event", "machine-events-ended"]);
   expect(listeners.size).toBe(0);
+});
+
+it("holds off a stall stop while a machine event queued ahead of terminal output may still be crossing the link", () => {
+  const { client } = harness();
+  let buffered = 0;
+  Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { buffered += Buffer.byteLength(raw); return -1; } });
+  // terminal frames grant nothing
+  send(client, { type: "error", code: "x", message: "x".repeat(100) });
+  expect(machineEventsAhead(client)).toBe(false);
+  const before = Date.now();
+  // a roster carrying every PC's snapshot, sent onto an empty queue
+  buffered = 0;
+  send(client, { type: "error", code: "x", message: "x".repeat(200 * 1024) }, () => { throw new Error("not an overflow"); });
+  const grace = OUTPUT_STALL_MS + crossingMs(buffered);
+  expect(grace).toBeLessThan(OUTPUT_JOIN_MAX_MS);
+  expect(machineEventsAhead(client, before + grace - 50)).toBe(true);
+  expect(machineEventsAhead(client, Date.now() + grace + 1)).toBe(false);
 });
 
 it("a revoke ends the connection with 1008 and leaves its pending input to the socket's close", () => {

@@ -90,7 +90,10 @@ has not said whether it does within five seconds, a socket stopped for output (4
 reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
 never close the terminal or queue in front of its output: one that would put more than
 `OUTPUT_LOW_BYTES` on a socket that already has a backlog ends the subscription with that frame
-instead. The next connection that offers the capability takes over
+instead. A machine event that does go out (a roster carries every PC's snapshot, so it can be
+large) gives that connection the time it needs to cross the slowest link an output budget allows
+for, as a joiner's replay gets: terminal output queued behind it may pause, but is not stopped for
+a stall until then. The next connection that offers the capability takes over
 from SSE again.
 
 This avoids consuming one long-lived HTTP/1.1 request per browser tab. It does not make every tab
