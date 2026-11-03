@@ -11,18 +11,21 @@ import { join } from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import terminalFixture from "../site/demo/fixtures/terminal.json";
 
+interface Probe { inFlight: number; queued: number; written: string }
 interface Fixture {
   sent: Array<{ type: string; pane_id?: string; text?: string; keys?: string[] }>;
   /** while set, the transport's `input-ready` frames wait here instead of reaching the client */
   holdReady: boolean;
   heldReady: Array<() => void>;
+  sockets: Array<{ push(frame: Record<string, unknown>): void }>;
 }
 declare global { interface Window { earlyKeys: Fixture } }
 
 /** Installed after the demo's transport: records what the client sends, and holds input-ready back. */
 function installEarlyKeysFixture(): void {
-  const state: Fixture = { sent: [], holdReady: true, heldReady: [] };
+  const state: Fixture = { sent: [], holdReady: true, heldReady: [], sockets: [] };
   window.earlyKeys = state;
   const Demo = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
@@ -32,6 +35,7 @@ function installEarlyKeysFixture(): void {
       state.sent.push(JSON.parse(String(raw)));
       send(raw);
     };
+    state.sockets.push(socket);
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (state.holdReady && frame.type === "input-ready") state.heldReady.push(() => push(frame));
@@ -100,8 +104,31 @@ try {
       .catch(async () => assert.fail(`the keys typed before input-ready were not sent: ${JSON.stringify(await typedOf(pane))}`));
     assert.deepEqual(await typedOf(pane), ["x", "y", "\x1b"], "the keys typed before input-ready go once, in order");
     assert.equal(await frame.locator(".terminal-banner-draft").count(), 0, "nothing is held as a draft");
-    assert.deepEqual(errors, [], "no browser errors");
     console.log("PASS keys typed before the terminal took input are sent in order once it does");
+
+    // A fresh attach whose output, arriving with the readiness, ends at a password prompt: the keys that
+    // waited are never typed into it, whatever xterm had parsed when input-ready came
+    await page.reload();
+    await page.waitForFunction((pane) => window.earlyKeys.sent.some((sent) => sent.type === "attach" && sent.pane_id === pane)
+      && window.earlyKeys.heldReady.length > 0, pane, { timeout: 10_000 });
+    // the shell's recorded replay is all written, so nothing drawn after the prompt replaces it
+    const lastFrame = terminalFixture.frames.at(-1)!.data.slice(-512);
+    await page.waitForFunction((tail) => {
+      const probe = (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe } | null)?.outputProbe?.();
+      return probe !== undefined && probe.written.endsWith(tail) && probe.inFlight === 0 && probe.queued === 0;
+    }, lastFrame, { timeout: 10_000 });
+    await frame.locator(".xterm-helper-textarea").focus();
+    await page.keyboard.press("s");
+    await page.keyboard.press("e");
+    await page.evaluate((pane) => {
+      for (const socket of window.earlyKeys.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\r\nPassword: " });
+      window.earlyKeys.holdReady = false;
+      for (const release of window.earlyKeys.heldReady.splice(0)) release();
+    }, pane);
+    await frame.getByText("Not sent: the terminal is not ready, and a password is never held for later.").waitFor({ state: "attached", timeout: 10_000 });
+    assert.deepEqual(await typedOf(pane), [], "keys that waited are never typed into a password prompt that came before the readiness");
+    assert.deepEqual(errors, [], "no browser errors");
+    console.log("PASS keys that waited are kept out of a password prompt drawn just before the terminal took input");
   } finally { await context.close(); }
 } finally {
   await browser?.close();

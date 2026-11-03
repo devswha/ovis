@@ -995,12 +995,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       });
       // Every query xterm answers while parsing (device attributes and status, DECRQM, window reports,
       // DECRQSS, color reports) is taken here while a view is parsed, so its answer is never typed into the pane.
+      // Nor while the pane's attach is still opening: the pane cannot take the answer then, and the keys typed
+      // meanwhile wait for it (resumeInput), where an answer to a moment gone would be typed after them.
+      const unanswered = (): boolean => parsingView || (paneRef.current !== null && socket.awaitsInput(paneRef.current));
       const queryReplies = [
         ...([{ final: "c" }, { prefix: ">", final: "c" }, { prefix: "=", final: "c" }, { final: "n" }, { prefix: "?", final: "n" },
           { intermediates: "$", final: "p" }, { prefix: "?", intermediates: "$", final: "p" }, { final: "t" }] as const)
-          .map((id) => term.parser.registerCsiHandler(id, () => parsingView)),
-        term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, () => parsingView),
-        ...[4, 10, 11, 12, 13, 14, 15, 16, 17, 19].map((id) => term.parser.registerOscHandler(id, (payload) => parsingView && payload.includes("?"))),
+          .map((id) => term.parser.registerCsiHandler(id, unanswered)),
+        term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, unanswered),
+        ...[4, 10, 11, 12, 13, 14, 15, 16, 17, 19].map((id) => term.parser.registerOscHandler(id, (payload) => unanswered() && payload.includes("?"))),
       ];
       // OSC 8: a hyperlink this app cannot open (OmO's `omo-panel:` rows) is not drawn as one (#739)
       const osc8 = term.parser.registerOscHandler(8, (payload) => hyperlinksRef.current.handler(payload));
@@ -1070,8 +1073,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (resumeTimer !== null) window.clearTimeout(resumeTimer);
         resumeTimer = null;
         if (resumed === null || resumed.pane === paneRef.current) return resumed;
-        // another pane is shown now: its draft is not where these keys belong, so they are told as not sent, never lost in silence
-        if (resumed.items.length > 0) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        // another pane is shown now: its draft is not where these keys belong, so they are told as not sent, never lost in
+        // silence. Told after the switch commits: the new pane's attach clears the notice it finds.
+        if (resumed.items.length > 0) queueMicrotask(() => { if (!disposed) setInputError(tRef.current("Not sent: the terminal is not ready for keys.")); });
         return null;
       };
       // what waited and will not go by itself: text to the draft, and a key the draft cannot hold (Escape, Enter, an arrow) told, never lost in silence
@@ -1087,12 +1091,23 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (resumed === null) return;
         retainResumed(resumed.pane, resumed.items);
       };
+      // The keys go once the output that came before the readiness is on screen: an empty frame queued behind it runs
+      // its callback after theirs, so a masked prompt in that output has been read by then. Until then later keys join
+      // the wait (in order); a frame dropped by a switch or reconnect leaves it to the wait's own end.
+      let flushing: object | null = null;
       const flushResume = (): void => {
-        const resumed = takeResume();
-        if (resumed === null) return;
-        // a masked prompt that appeared while the keys waited is never typed into by them
-        if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS || secretRef.current !== null) retainResumed(resumed.pane, resumed.items);
-        else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
+        const waiting = resumeInput;
+        if (waiting === null || flushing === waiting) return;
+        flushing = waiting;
+        writeOutput("", false, () => {
+          if (flushing === waiting) flushing = null;
+          if (resumeInput !== waiting || !socket.canInput(waiting.pane)) return;
+          const resumed = takeResume();
+          if (resumed === null) return;
+          // a masked prompt that appeared while the keys waited is never typed into by them
+          if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS || secretRef.current !== null) retainResumed(resumed.pane, resumed.items);
+          else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
+        });
       };
       const startResume = (pane: string): void => {
         failResume();
@@ -1597,8 +1612,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
         // typed while the pane's attach is still opening on a live connection (a key pressed right as the terminal
         // opens): it waits for that attach to take input as the keys taking an idle pane back do, never dropped
-        // xterm's own replies (focus, cursor position, device attributes) answer a moment that is gone by then: never kept
-        const reply = !typed.chord && /^\x1b\[([?>]?[\d;]*[cnRIO])$/.test(input);
+        // a focus report tells of a moment gone by the time the keys go (xterm's answers to queries are not made then: unanswered)
+        const reply = /^\x1b\[[IO]$/.test(input);
         if (resumeInput === null && !secret && !reply && socket.awaitsInput(current)) startResume(current);
         // a mouse report is for the grid it was pressed on: the attach redraws the pane at another, so it is not kept
         if (resumeInput !== null && (reply || /^\x1b\[(<|M)/.test(input))) return;
