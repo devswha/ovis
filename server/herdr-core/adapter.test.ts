@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate, agentManifests, agentStart, ping } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
-import { startHerdrCoreAdapter } from "./adapter.ts";
+import { paintedScreen, startHerdrCoreAdapter } from "./adapter.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
 import type { HcTerminal } from "./snapshot.ts";
 
@@ -206,6 +206,29 @@ describe("herdr-core adapter", () => {
     // the chat's box check: herdr-core reports no scroll, so the colors count once their text is the live screen's
     expect(viewportShowsLive(null, null, colors, live, live)).toBe(true);
     expect(claudeInputDraft(live, colors)).toBe(false);
+  });
+
+  it("answers a colored read with hc's plain text when the watch-only attach brings no screen", async () => {
+    for (const ends of [true, false]) {
+      const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
+        "terminal.read": () => ({ text: "\u276f do it", complete: true, how: "screen" }),
+        "terminal.attach": () => {
+          const core = cores.at(-1)!;
+          const channel = core.channel();
+          // the terminal ended before painting, or hc sends nothing at all
+          if (ends) core.replyTail = encodeFrame(channel, FRAME_CLOSE, JSON.stringify({ reason: "exited" }));
+          return { channel, terminal: terminal("t1", { rows: 4 }) };
+        },
+      });
+      expect((await paneRead({ paneId: "t1", source: "visible", format: "ansi" }, socket)).text).toBe("\u276f do it");
+      // a stream hc ended is gone already; one still open is closed
+      expect(cores[0]!.closed).toEqual(ends ? [] : [1]);
+    }
+  });
+
+  it("keeps a trailing space drawn in a color, as OpenCode draws the space Tab typed after a skill", () => {
+    const paint = "\u001b[H\u001b[2J@effect\u001b[38;5;4m \u001b[48;5;0m  \u001b[0m\r\ntyped \u001b[0m\u001b[7m \u001b[0m\r\n\u001b[?9001l";
+    expect(paintedScreen(paint, 3)).toBe("@effect\u001b[38;5;4m \u001b[48;5;0m  \u001b[0m\ntyped\u001b[0m\u001b[7m\u001b[0m");
   });
 
   it("presses keys in order: typed runs together, runs of mode-dependent keys through hc's encoder", async () => {

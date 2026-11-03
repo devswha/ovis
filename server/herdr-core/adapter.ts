@@ -178,8 +178,8 @@ const AGENT_START_MS = 10_000;
 
 /** What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs `first_paint`). */
 const PAINT_END = "\u001b[?9001";
-/** How long a watch-only attach may take to bring its first paint. */
-const PAINT_MS = 5_000;
+/** How long a watch-only attach may take to bring its first paint: within the 1.5s a prompt poll gives its colored read. */
+const PAINT_MS = 1_000;
 /** Any escape sequence: CSI, OSC, a DCS/SOS/PM/APC string, or a short escape (HTS, a charset designation). */
 const ESCAPE_RE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[PX^_][^\u001b]*\u001b\\|[ -/]*[0-~])/g;
 const SGR_RE = /^\u001b\[[0-9;:]*m$/;
@@ -188,8 +188,9 @@ const SGR_RE = /^\u001b\[[0-9;:]*m$/;
  * What hc's text read of the screen (`terminal.read`, no history) shows, with its colors, from the
  * first paint of an attach that asked for `rows` lines of history: one line per row with its SGR
  * attributes and no other escape (cursor moves, modes, tab stops, title). hc's read trims the
- * spaces, colored or not, at the end of each row (a U+00A0 stays), drops the screen's blank rows at
- * the bottom and takes as many history lines in at the top, so this does too. hc paints after a
+ * spaces at the end of each row (a U+00A0 stays), drops the screen's blank rows at the bottom and
+ * takes as many history lines in at the top, so this does too, but for a space drawn in a color:
+ * that one tells input from padding (OpenCode's Tab space), and a text compare trims it anyway. hc paints after a
  * clear (`CSI H CSI 2J`): the history, pushed up by an SGR reset, a line break and one more per
  * screen row, then a second clear and the screen, which ends where the win32-input-mode state
  * follows (herdr-core ghostty-vt `paint`, viewers.rs `first_paint`). null for a paint not shaped
@@ -206,9 +207,38 @@ export function paintedScreen(paint: string, rows: number): string | null {
   const history = parts.length === 3 ? text(parts[1]!) : "";
   if (history !== "" && !history.endsWith(pushed)) return null;
   const lines = [...(history === "" ? [] : history.slice(0, -pushed.length).split("\n")), ...text(parts.at(-1)!).split("\n")]
-    .map((line) => line.replace(/(?:\u001b\[[0-9;:]*m| )+$/, (tail) => tail.replace(/ /g, "")));
+    .map(withoutPlainTrailingSpaces);
   while (lines.length > 0 && lines.at(-1)!.replace(/\u001b\[[0-9;:]*m/g, "") === "") lines.pop();
   return lines.slice(-rows).join("\n");
+}
+
+/** A line with the spaces at its end taken out, but for those drawn in a foreground or background color; its SGR codes stay. */
+function withoutPlainTrailingSpaces(line: string): string {
+  const pieces = line.split(/(\u001b\[[0-9;:]*m)/);
+  let fg = false;
+  let bg = false;
+  const colored = pieces.map((piece) => {
+    if (!piece.startsWith("\u001b")) return fg || bg;
+    const codes = piece.slice(2, -1).split(/[;:]/).map((code) => Number(code || 0));
+    for (let index = 0; index < codes.length; index++) {
+      const code = codes[index]!;
+      if (code === 0) { fg = false; bg = false; }
+      else if (code === 39) fg = false;
+      else if (code === 49) bg = false;
+      else if (code === 38 || code === 48) { if (code === 38) fg = true; else bg = true; index += codes[index + 1] === 5 ? 2 : codes[index + 1] === 2 ? 4 : 0; }
+      else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) fg = true;
+      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) bg = true;
+    }
+    return false;
+  });
+  for (let index = pieces.length - 1; index >= 0; index--) {
+    if (pieces[index]!.startsWith("\u001b")) continue;
+    if (colored[index]) break;
+    const kept = pieces[index]!.replace(/ +$/, "");
+    pieces[index] = kept;
+    if (kept !== "") break;
+  }
+  return pieces.join("");
 }
 
 function paneIdOf(params: Record<string, unknown>, field = "pane_id"): string {
@@ -276,30 +306,30 @@ function createAnswers(hc: HcConnection): (request: Request) => Promise<Reply> {
   /**
    * hc's text read of the screen with its colors (paintedScreen): hc reads text only, so this is the
    * first paint of an attach that only watches, which never types or resizes, closed once the screen
-   * is in. A paint of another shape answers the plain text, as a read without colors.
+   * is in. No paint within PAINT_MS, a stream that ends first, or a paint of another shape answers
+   * the plain text, as a read without colors.
    */
   const coloredScreen = async (paneId: string): Promise<string> => {
     const record = await terminal(paneId);
     const decoder = new TextDecoder();
     let paint = "";
-    const { promise, resolve, reject } = Promise.withResolvers<string>();
-    const timer = setTimeout(() => reject(new AdapterError("timeout", `herdr-core sent no screen of ${paneId} within ${PAINT_MS}ms`)), PAINT_MS);
+    const { promise, resolve } = Promise.withResolvers<string | null>();
+    const timer = setTimeout(() => resolve(null), PAINT_MS);
     const { result, channel } = await hc.open<{ channel: number; terminal?: HcTerminal }>("terminal.attach", { terminal: paneId, cols: record.cols, rows: record.rows, history: record.rows, observe: true }, {
       onData: (payload) => {
         paint += decoder.decode(payload, { stream: true });
         if (paint.includes(PAINT_END)) resolve(paint);
       },
-      onClose: (reason) => reject(reason?.["reason"] === "connection_lost"
-        ? new AdapterError("connect_failed", "the line to herdr-core ended before the screen was read")
-        : new AdapterError("pane_not_found", `terminal ${paneId} ended before its screen was read`)),
+      onClose: () => resolve(null),
     }).catch((error: unknown) => {
       clearTimeout(timer);
       throw error;
     });
     let screen: string | null;
     try {
+      const painted = await promise;
       // resized since it was looked up: the paint has the rows it has now
-      screen = paintedScreen(await promise, result.terminal?.rows ?? record.rows);
+      screen = painted === null ? null : paintedScreen(painted, result.terminal?.rows ?? record.rows);
     } finally {
       clearTimeout(timer);
       await channel.close();
