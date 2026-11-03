@@ -6,7 +6,10 @@ import { MAX_PINS } from "../../shared/preferences.ts";
 import { PreferenceStore } from "../preferences.ts";
 import { bridgePins } from "./pin-label.ts";
 
-type Held = { address: string; state: string; labels: Record<string, string> };
+type Held = { address: string; state: string; labels: Record<string, string>; status?: { app: string; state: string } | null };
+
+/** an agent's status, as the Agents list needs to draw a terminal */
+const AGENT = { app: "claude-code", state: "idle" };
 
 /**
  * hc's label and event calls over terminals held here: a label write comes back as hc tells it, a
@@ -14,7 +17,9 @@ type Held = { address: string; state: string; labels: Record<string, string> };
  */
 function fakeCore(terminals: Held[]) {
   const written: { terminal: string; labels: Record<string, string> }[] = [];
-  const state = { failing: false, early: [] as Record<string, unknown>[] };
+  const state = { failing: false, early: [] as Record<string, unknown>[], held: null as Record<string, unknown>[] | null };
+  /** resolves when the next label write reaches hc, before hc answers it */
+  let writing = Promise.withResolvers<void>();
   let onData: ((chunk: Uint8Array) => void) | null = null;
   let onClose: (() => void) | null = null;
   let opened = Promise.withResolvers<void>();
@@ -25,26 +30,32 @@ function fakeCore(terminals: Held[]) {
       if (method !== "terminal.label") throw new Error(`unexpected ${method}`);
       if (state.failing) throw new Error("hc is not answering");
       written.push(params);
+      writing.resolve();
+      writing = Promise.withResolvers<void>();
       const found = terminals.find((terminal) => terminal.address === params.terminal)!;
       for (const [key, value] of Object.entries(params.labels)) {
         if (value === "") delete found.labels[key];
         else found.labels[key] = value;
       }
-      tell({ type: "labels", terminal: found.address, data: { labels: { ...found.labels } } });
+      const event = { type: "labels", terminal: found.address, data: { labels: { ...found.labels } } };
+      if (state.held) state.held.push(event);
+      else tell(event);
       return found;
     },
     open: async (_method: string, _params: unknown, handlers: { onData: (chunk: Uint8Array) => void; onClose: () => void }) => {
       onData = handlers.onData;
       onClose = handlers.onClose;
       for (const event of state.early.splice(0)) tell(event);
-      const snapshot = terminals.map((terminal) => ({ ...terminal, labels: { ...terminal.labels } }));
+      const snapshot = terminals.map((terminal) => ({ ...terminal, status: terminal.status === undefined ? AGENT : terminal.status, labels: { ...terminal.labels } }));
       queueMicrotask(() => opened.resolve());
       return { result: { channel: 1, seq: 1, terminals: snapshot }, channel: { close: async () => {} } };
     },
   };
   /** the stream ends, as when hc restarts; resolves once the bridge has read the next snapshot */
   const drop = () => { opened = Promise.withResolvers<void>(); onClose?.(); return opened.promise; };
-  return { hc: hc as never, written, state, tell, drop, opened: () => opened.promise };
+  /** label events held back since `state.held` was set, told now */
+  const release = () => { const held = state.held ?? []; state.held = null; for (const event of held) tell(event); };
+  return { hc: hc as never, written, state, tell, drop, release, opened: () => opened.promise, writing: () => writing.promise };
 }
 
 let cleanups: (() => void)[] = [];
@@ -104,7 +115,7 @@ describe("bridgePins", () => {
     ]);
     // the Herdr app unpins t2, then a new terminal starts pinned there
     core.tell({ type: "labels", terminal: "t2", data: { labels: {} } });
-    core.tell({ type: "created", terminal: "t4", data: { address: "t4", state: "live", labels: { "herdr.pinned": "1" } } });
+    core.tell({ type: "created", terminal: "t4", data: { address: "t4", state: "live", status: AGENT, labels: { "herdr.pinned": "1" } } });
     expect(preferences.get().pins).toEqual(["local:t4"]);
     // a settings change from a browser writes nothing
     preferences.set({ settings: { theme: "dark" } });
@@ -176,6 +187,41 @@ describe("bridgePins", () => {
     preferences.set({ settings: { theme: "dark" } });
     await pins.idle();
     expect(core.written).toEqual([]);
+  });
+
+  it("leaves a shell's pin to the Herdr app, so the Agents list pruning it unpins nothing, and syncs it once an agent runs there", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const core = fakeCore([{ address: "t1", state: "live", status: null, labels: { "herdr.pinned": "1" } }, { address: "t2", state: "live", labels: {} }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([]);
+    // a browser pins t2; its roster prunes nothing that it never had
+    preferences.set({ settings: {}, pins: ["local:t2"] });
+    await pins.idle();
+    expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
+    core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+    expect(preferences.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const core = fakeCore([{ address: "t1", state: "live", labels: {} }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    // the pin's write reaches hc; the unpin comes before the write's own labels event does
+    core.state.held = [];
+    const reached = core.writing();
+    preferences.set({ settings: {}, pins: ["local:t1"] });
+    await reached;
+    preferences.set({ settings: {}, pins: [] });
+    core.release();
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([]);
+    expect(core.written).toEqual([{ terminal: "t1", labels: { "herdr.pinned": "1" } }, { terminal: "t1", labels: { "herdr.pinned": "" } }]);
   });
 
   it("unpins nothing while no browser has shared its pins", async () => {
