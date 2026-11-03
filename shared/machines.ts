@@ -90,6 +90,24 @@ export interface HerdrIdentity {
    */
   runtime?: "herdr-core";
 }
+/** where this server's runtime came from: OVIS_RUNTIME, the choice saved from Settings, or what the PC has */
+export type RuntimeSource = "env" | "saved" | "detected";
+/** why Settings cannot switch the runtime: OVIS_RUNTIME decides, the server was not started by Ovis's launcher, or herdr-core is not served on this OS */
+export type RuntimeLock = "env" | "unmanaged" | "platform";
+/**
+ * Which runtime this server serves and what Settings may switch it to (GET /api/health, a driving
+ * owner only). `switch_to`: the other runtime when this PC has it and nothing locks the choice.
+ * `fallback`: the saved choice was herdr-core, but no herdr-core answered, so herdr is served.
+ */
+export interface HerdrRuntimeFacts {
+  serving: "herdr" | "herdr-core";
+  source: RuntimeSource;
+  tui: { installed: boolean; running: boolean };
+  app_installed: boolean;
+  switch_to: "herdr" | "herdr-core" | null;
+  locked: RuntimeLock | null;
+  fallback?: "no_herdr_core";
+}
 /**
  * What this PC has of herdr-core, the Herdr app's runtime, whichever runtime the server serves
  * (GET /api/health, authenticated only). `version`: the hc the server found and would run

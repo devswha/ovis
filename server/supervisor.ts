@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
+import { restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
@@ -120,6 +121,8 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       env: { ...process.env, ...(legacyStateDir === null ? settings : withLegacyNames(settings)), HERDR_SOCKET: socketPath },
       ipc(message) {
         if (message?.type === "update-status-request") publish();
+        // Settings saved another runtime (server/herdr-core/runtime-choice.ts): the bridge starts again on it
+        if (message?.type === "runtime-restart" && child === candidate) void started.promise.then(() => restartForRuntime());
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
         const request = readUpdateIpcRequest(message);
         if (request) {
@@ -147,6 +150,28 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     }
     await stopChild();
     throw new Error("The new bridge failed its startup health check.");
+  }
+  /**
+   * One server, one runtime: the bridge stops, and the next one reads the saved choice as it starts,
+   * on the same port and state. One that fails its health check puts the previous runtime back and
+   * starts again on it, so a switch never leaves the PC without a bridge.
+   */
+  async function restartForRuntime() {
+    if (switching || stopping) return;
+    switching = true;
+    try {
+      await stopChild();
+      try { await launch(active); }
+      catch (error) {
+        console.error(`The bridge failed to start on the chosen runtime (${error instanceof Error ? error.message : error}); going back to the previous one.`);
+        restoreRuntime(appStateDir);
+        await stopChild();
+        await launch(active);
+      }
+    } catch (error) {
+      console.error(error);
+      await shutdown(1);
+    } finally { switching = false; }
   }
   const pluginRoot = process.env["HERDR_PLUGIN_ROOT"];
   // only a launcher-started supervisor can hand over: run directly, it keeps serving the update itself
