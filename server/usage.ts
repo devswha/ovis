@@ -1200,20 +1200,22 @@ function credentialFile(path: string, parse: (source: string | null) => SignIn |
 }
 
 /**
- * A keychain service's sign-in, read under each account name the CLI may use: none when no item holds one;
- * "unknown" when any item is locked or is not JSON, even if another one reads.
+ * A keychain service's sign-ins, read under each account name the CLI may use: `inUse` the first that holds
+ * one (as fromKeychain takes it), `all` every one found, whichever is in use; "unknown" when any item is
+ * locked or is not JSON, even if another one reads.
  */
-async function keychainState(ctx: UsageContext, service: string, accounts: Array<string | undefined>, parse: (value: string) => SignIn | null): Promise<SignIn | "unknown" | null> {
-  if (ctx.platform !== "darwin") return null;
-  let first: SignIn | null = null;
+async function keychainState(ctx: UsageContext, service: string, accounts: Array<string | undefined>, parse: (value: string) => SignIn | null): Promise<{ inUse: SignIn | null; all: SignIn[] } | "unknown"> {
+  const all: SignIn[] = [];
+  if (ctx.platform !== "darwin") return { inUse: null, all };
   for (const account of accounts) {
     const found = await ctx.keychain(service, account);
     if (found.status === "locked") return "unknown";
     if (found.status !== "found") continue;
     if (!isJson(found.value)) return "unknown";
-    first ??= parse(found.value);
+    const signIn = parse(found.value);
+    if (signIn !== null) all.push(signIn);
   }
-  return first;
+  return { inUse: all[0] ?? null, all };
 }
 
 const tokenDigest = (token: string): string => createHash("sha256").update(token).digest("hex");
@@ -1250,17 +1252,17 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
     const keychain = await keychainState(ctx, claudeAt.service, user ? [user, undefined] : [undefined], claudeSignIn);
     const file = credentialFile(join(claudeAt.dir, ".credentials.json"), claudeSignIn);
     if (keychain === "unknown" || file === "unknown") return "unknown";
-    held.push(...[keychain, file].filter((entry): entry is SignIn => entry !== null));
-    signIn = keychainOrFile(keychain, file, claudeAt.source, claudeAccount(claudeAt.config)).find((entry): entry is Found & SignIn => !("locked" in entry));
+    held.push(...keychain.all, ...(file === null ? [] : [file]));
+    signIn = keychainOrFile(keychain.inUse, file, claudeAt.source, claudeAccount(claudeAt.config)).find((entry): entry is Found & SignIn => !("locked" in entry));
   } else {
     const dir = home.kind === "dir" ? home.dir : join(ctx.home, ".codex");
     const file = credentialFile(join(dir, "auth.json"), codexSignIn);
     // the default home's keychain item is read too, file or not: a file in use does not make it readable
-    const keychain = home.kind === "default" ? await keychainState(ctx, "Codex Auth", [undefined], codexSignIn) : null;
+    const keychain = home.kind === "default" ? await keychainState(ctx, "Codex Auth", [undefined], codexSignIn) : { inUse: null, all: [] };
     if (file === "unknown" || keychain === "unknown") return "unknown";
-    held.push(...[file, keychain].filter((entry): entry is SignIn => entry !== null));
+    held.push(...(file === null ? [] : [file]), ...keychain.all);
     if (file !== null) signIn = { ...file, source: dir };
-    else if (keychain !== null) signIn = { ...keychain, source: "keychain" };
+    else if (keychain.inUse !== null) signIn = { ...keychain.inUse, source: "keychain" };
   }
   if (signIn === undefined) return null;
   return {

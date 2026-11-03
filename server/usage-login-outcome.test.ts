@@ -1,4 +1,5 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ interface FixtureOptions {
   readonly platform?: NodeJS.Platform;
   readonly keychain?: UsageContext["keychain"];
   readonly timing?: { readonly leaseMs: number; readonly maxMs: number };
+  readonly env?: Record<string, string>;
 }
 
 function fixture(options: FixtureOptions = {}) {
@@ -74,7 +76,7 @@ process.exit(plan.exit);
     } }));
   }
   const ctx: UsageContext = {
-    home: root, env: {}, platform: options.platform ?? "linux", now: () => 1_000,
+    home: root, env: options.env ?? {}, platform: options.platform ?? "linux", now: () => 1_000,
     fetch: async () => Response.json({ five_hour: { utilization: 20 } }),
     keychain: options.keychain ?? (async () => ({ status: "missing" })), run: async () => null, has: () => false,
   };
@@ -276,6 +278,21 @@ it("does not count a home whose keychain was locked before, though its credentia
   const held = keychainThen({ status: "locked" });
   const host = fixture({ platform: "darwin", keychain: held.keychain }).start();
   const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", held.ran);
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a token another of the home's keychain queries already held", async () => {
+  let ran = false;
+  const item = (token: string) => JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: 9_999_999_999_999, subscriptionType: "max" } });
+  let work = "";
+  // the work home's item under $USER holds A and its unnamed one B; the CLI's run leaves only B, unchanged
+  const keychain: UsageContext["keychain"] = async (service, account) => service !== work ? { status: "missing" }
+    : account === "fixture-user" ? (ran ? { status: "missing" } : { status: "found", value: item("fixture-keychain-a") })
+    : { status: "found", value: item("fixture-keychain-b") };
+  const made = fixture({ platform: "darwin", keychain, env: { USER: "fixture-user" } });
+  work = `Claude Code-credentials-${createHash("sha256").update(join(made.root, ".claude-work")).digest("hex").slice(0, 8)}`;
+  const host = made.start();
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", () => { ran = true; });
   expect(result.succeeded).toBe(false);
 });
 
