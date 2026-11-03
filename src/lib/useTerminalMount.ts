@@ -1071,19 +1071,23 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         resumeTimer = null;
         return resumed !== null && resumed.pane === paneRef.current ? resumed : null;
       };
+      // what waited and will not go by itself: text to the draft, and a key the draft cannot hold (Escape, an arrow) told, never lost in silence
+      const retainResumed = (pane: string, items: Typed[]): void => {
+        const secretNow = secretRef.current !== null;
+        for (const typed of items) retainTyped(pane, typed, secretNow);
+        if (!secretNow && items.some((typed) => !typed.chord && !typed.secret && !/^(\x1b\[[IO]|[\x7f\b\r\n]+)$/.test(typed.input)
+          && applyToDraft(EMPTY_DRAFT, typed.input) === EMPTY_DRAFT)) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+      };
       const failResume = (): void => {
         const resumed = takeResume();
         if (resumed === null) return;
-        for (const typed of resumed.items) retainTyped(resumed.pane, typed, secretRef.current !== null);
+        retainResumed(resumed.pane, resumed.items);
       };
       const flushResume = (): void => {
         const resumed = takeResume();
         if (resumed === null) return;
-        const late = performance.now() - resumed.since > RESUME_INPUT_WAIT_MS;
-        for (const typed of resumed.items) {
-          if (late) retainTyped(resumed.pane, typed, secretRef.current !== null);
-          else sendTyped(resumed.pane, typed);
-        }
+        if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS) retainResumed(resumed.pane, resumed.items);
+        else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
       };
       const startResume = (pane: string): void => {
         failResume();
@@ -1584,6 +1588,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret };
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
+        // typed while the pane's attach is still opening on a live connection (a key pressed right as the terminal
+        // opens): it waits for that attach to take input as the keys taking an idle pane back do, never dropped
+        if (resumeInput === null && !secret && socket.awaitsInput(current)) startResume(current);
         // a mouse report is for the grid it was pressed on: the attach redraws the pane at another, so it is not kept
         if (resumeInput !== null && /^\x1b\[(<|M)/.test(input)) return;
         if (resumeInput !== null && !secret) {

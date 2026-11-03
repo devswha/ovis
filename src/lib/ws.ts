@@ -923,6 +923,11 @@ export class HerdrSocket {
     return this.connected && !this.probing && this.mode === "interact" && this.inputReady.has(paneId);
   }
 
+  /** Whether the pane's attach is still opening on a live, answered connection: attached, its input not ready yet. */
+  awaitsInput(paneId: string): boolean {
+    return this.connected && !this.probing && this.mode === "interact" && this.attached.has(paneId) && !this.inputReady.has(paneId);
+  }
+
   /** Whether this connection can accept and manage pending messages on the bridge. */
   canQueueMessages(): boolean {
     return this.connected && this.mode === "interact" && this.features.has("submit") && this.features.has("pending-input");
