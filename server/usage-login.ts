@@ -76,9 +76,9 @@ type Holder = LoginHolder | Launch | PrivateHolder;
 /** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
-  /** the home its CLI writes, and the digest of the sign-in there before it started (homeBefore) */
+  /** the home its CLI writes, and the digests of the tokens there before it started (homeBefore) */
   readonly target: LoginTarget;
-  readonly before: string | null | undefined;
+  readonly before: readonly string[] | undefined;
   exitCode: number | null;
   /** set once it has ended: the account its CLI signed in, in its own home; null when it did not */
   signedIn: LoginAccount | null;

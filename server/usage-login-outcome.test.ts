@@ -1,5 +1,5 @@
 import { afterEach, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageLoginFollowed, UsageLoginPrompt } from "../shared/usage-login.ts";
@@ -59,6 +59,10 @@ for (const { dir, email } of plan.write) {
   const token = [part({ alg: "none" }), part({ exp: 9999999999, nonce: crypto.randomUUID(), "https://api.openai.com/profile": { email }, "https://api.openai.com/auth": { chatgpt_account_user_id: email } }), "sig"].join(".");
   await Bun.write(join(dir === "own" ? process.env.CODEX_HOME ?? join(process.env.HOME, ".codex") : dir, "auth.json"), JSON.stringify({ tokens: { access_token: token } }));
 }
+const { rmSync } = await import("node:fs");
+for (const dir of plan.remove ?? []) rmSync(join(dir === "own" ? process.env.CODEX_HOME ?? join(process.env.HOME, ".codex") : dir, "auth.json"), { force: true });
+// what the test's keychain reads to tell the CLI ran
+if (plan.ran) await Bun.write(join(process.env.HOME, "codex-ran"), "");
 process.exit(plan.exit);
 `, { mode: 0o755 });
   for (const name of ["work", "home", "expired"]) {
@@ -290,6 +294,38 @@ it("signs a Codex home that held only an API key in to its first account", async
   const result = await completeCodexLogin(start(), { default: true, replace: true });
   expect(result.succeeded).toBe(true);
   expect(result.account).toBe("first@example.test");
+});
+
+/**
+ * A default Codex home whose auth.json holds token A, with a `Codex Auth` keychain item answering `before`
+ * until the CLI ran, then its own old token B; the CLI only removes the file, so no token is new.
+ */
+function codexKeychainHome(before: Awaited<ReturnType<UsageContext["keychain"]>>) {
+  let root = "";
+  const old = codexAuth("keychain@example.test");
+  const keychain: UsageContext["keychain"] = async (service) => service !== "Codex Auth" ? { status: "missing" }
+    : existsSync(join(root, "codex-ran")) ? { status: "found", value: old } : before;
+  const made = fixture({ platform: "darwin", keychain });
+  root = made.root;
+  mkdirSync(join(root, ".codex"));
+  writeFileSync(join(root, ".codex", "auth.json"), codexAuth("file@example.test"));
+  writeFileSync(join(root, "codex-plan.json"), JSON.stringify({ write: [], remove: ["own"], ran: true, exit: 0 }));
+  return made;
+}
+
+it("does not count a default Codex home whose keychain was locked before, though its auth.json read", async () => {
+  const result = await completeCodexLogin(codexKeychainHome({ status: "locked" }).start(), { default: true, replace: true });
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a default Codex home whose keychain item was not JSON before, though its auth.json read", async () => {
+  const result = await completeCodexLogin(codexKeychainHome({ status: "found", value: "{not json" }).start(), { default: true, replace: true });
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a token the default Codex home's keychain already held once the file is gone", async () => {
+  const result = await completeCodexLogin(codexKeychainHome({ status: "found", value: codexAuth("keychain@example.test") }).start(), { default: true, replace: true });
+  expect(result.succeeded).toBe(false);
 });
 
 it("names the account this login signed in, not one another home gained meanwhile", async () => {
