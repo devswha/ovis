@@ -356,8 +356,10 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // hand the newcomer the current screen it would otherwise have missed
       // (a mirror keeps its latest screen whole; a pty keeps a bounded tail of its stream)
       const tail = attachment.kind === "mirror" ? attachment.process.current ?? "" : attachment.replay.text();
-      // a herdr-core joiner keeps the history it already holds: a tail without the attach's clear would double it
-      const replay = tail && attachment.kind === "pty" && "replayPrefix" in attachment.process ? attachment.process.replayPrefix + tail : tail;
+      // a herdr-core joiner keeps the history it already holds: a tail that lost the attach's clear would double
+      // it. A tail on the alternate screen replays no history, and leaving that screen would blank what it restores
+      const prefix = attachment.kind === "pty" && attachment.replay.truncated && !attachment.replay.alternateScreen && "replayPrefix" in attachment.process ? attachment.process.replayPrefix : "";
+      const replay = tail && prefix + tail;
       // the members heard `input-ready: false` when the stream ended; a newcomer is told the replay
       // is the screen from before in a frame of its own, as an early negative receipt would pass for
       // the attach-complete barrier queued input waits on

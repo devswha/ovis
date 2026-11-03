@@ -19,7 +19,7 @@ const { createTerminalRegistry } = await import("./terminals.ts");
 
 afterEach(() => mock.restore());
 
-async function join({ readOnly = false, ready, recovering, times = 1, receiptResumeId, verifyResume, replayPrefix }: { readOnly?: boolean; ready: boolean; recovering?: boolean; times?: number; receiptResumeId?: string; verifyResume?: (id: string | undefined) => void; replayPrefix?: string }): Promise<ServerMessage[]> {
+async function join({ readOnly = false, ready, recovering, times = 1, receiptResumeId, verifyResume, replayPrefix, retained = "retained screen" }: { readOnly?: boolean; ready: boolean; recovering?: boolean; times?: number; receiptResumeId?: string; verifyResume?: (id: string | undefined) => void; replayPrefix?: string; retained?: string }): Promise<ServerMessage[]> {
   const frames: ServerMessage[] = [];
   const client = {
     data: connectionData({ deviceId: undefined, readOnly }), readyState: WebSocket.OPEN,
@@ -27,7 +27,7 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
     close() {},
   };
   const replay = new ReplayBuffer(1024);
-  replay.append("retained screen");
+  replay.append(retained);
   attachment = {
     kind: "pty", ready, ...(recovering === undefined ? {} : { recovering }), cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay,
     process: { exited: Promise.resolve(), pause() {}, resume() {}, resize() {}, winch() {}, kill() {}, write() {}, ...(replayPrefix === undefined ? {} : { replayPrefix }) } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
@@ -71,13 +71,22 @@ for (const readOnly of [false, true]) for (const ready of [false, true]) {
   });
 }
 
-// #2664 review: a herdr-core joiner's bounded tail may have lost the attach's clear, and the history it kept doubled
-it("clears a herdr-core joiner's kept history ahead of its replay", async () => {
-  const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_HISTORY });
-  expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
-    { type: "pty-data", pane_id: "p", data: `${coreAttach.CLEAR_HISTORY}retained screen`, replay: true },
-  ]);
-});
+// #2664 review: a herdr-core joiner's bounded tail may have lost the attach's clear, and the history it kept doubled;
+// a tail on the alternate screen keeps no history, and leaving that screen blanked what the tail restores
+for (const [stream, cleared] of [
+  [`${coreAttach.CLEAR_HISTORY}whole stream`, false],
+  [`${coreAttach.CLEAR_HISTORY}${"h".repeat(2048)}main tail`, true],
+  [`\x1b[?1049h${"a".repeat(2048)}alternate tail`, false],
+] as const) {
+  it(`clears a herdr-core joiner's kept history ahead of its replay only for a cut main-screen tail: ${stream.slice(-14)}`, async () => {
+    const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_HISTORY, retained: stream });
+    const tail = new ReplayBuffer(1024);
+    tail.append(stream);
+    expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
+      { type: "pty-data", pane_id: "p", data: (cleared ? coreAttach.CLEAR_HISTORY : "") + tail.text(), replay: true },
+    ]);
+  });
+}
 
 for (const readOnly of [false, true]) {
   it(`tells an ${readOnly ? "observer" : "owner"} joining a recovering attach that its replay is the screen from before, once`, async () => {

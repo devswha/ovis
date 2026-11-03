@@ -26,7 +26,8 @@ function installHistoryFixture(): void {
   const core = new URL(location.href).searchParams.get("server") === "core";
   // what CoreAttachSession sends: an erased scrollback, then hc's history and screen
   const lines = Array.from({ length: 300 }, (_, index) => `HIST-${String(index + 1).padStart(3, "0")}`);
-  const stream = `\x1b[3J\x1b[H\x1b[2J${lines.join("\r\n")}`;
+  // CLEAR_HISTORY byte for byte (this function runs in the page, so it cannot import it)
+  const stream = `\x1b[?1049l\x1b[3J\x1b[H\x1b[2J${lines.join("\r\n")}`;
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
   // a server lists its features before any pane's bytes; the demo lists them in its snapshot, after
