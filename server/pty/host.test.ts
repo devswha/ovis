@@ -565,6 +565,14 @@ function parity(host: "node" | "rust") {
       } finally { burst.session.kill(); }
     }, 15_000);
 
+    // a signal's end is never the 0 of a success: told as a shell tells it
+    it.skipIf(process.platform === "win32")("reports a command a signal ended as 128 plus the signal's number", async () => {
+      const ended = run("sh", ["-c", "kill -TERM $$"]);
+      try {
+        expect(await ended.exited).toBe(143);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
     it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
       const winch = run("node", ["-e", `
         process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));

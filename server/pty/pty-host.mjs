@@ -18,7 +18,8 @@
  *             {"t":"w"}                       signal SIGWINCH to the child at its current size
  *   stdout: raw pty bytes, unmodified
  *   stderr: diagnostics only
- *   exit:   mirrors the child's exit code
+ *   exit:   mirrors the child's exit code; 128 + the signal's number when a signal this host did not
+ *           send ended it (POSIX)
  */
 
 // node-pty must never load inside Bun (AGENTS.md): a `node` that is Bun stops here, before the import
@@ -118,11 +119,13 @@ function killGroup(signal) {
     if (error.code !== "ESRCH") throw error;
   }
 }
-term.onExit(({ exitCode }) => {
+term.onExit(({ exitCode, signal }) => {
   if (process.platform !== "win32") killGroup("SIGKILL");
   exited = true;
-  // Let the native exit callback unwind and stdout drain before Node exits.
-  process.exitCode = exitCode ?? 0;
+  // Let the native exit callback unwind and stdout drain before Node exits. node-pty reports a signal's
+  // end as exit code 0: one this host did not send (stopping) is told as a shell tells it, never as the
+  // success a 0 says.
+  process.exitCode = signal && !stopping ? 128 + signal : exitCode ?? 0;
   process.stdin.destroy();
   process.stdout.end();
 });

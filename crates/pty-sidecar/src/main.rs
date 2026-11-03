@@ -4,7 +4,7 @@
 //!   stdin:  newline-delimited JSON control frames (see frames.rs)
 //!   stdout: the pty's bytes
 //!   stderr: diagnostics only
-//!   exit:   the child's exit code, 0 when a signal ended it
+//!   exit:   the child's exit code; 128 + the signal's number when a signal the host did not send ended it
 //!
 //! However the host ends, the command's whole process group goes with it.
 
@@ -48,6 +48,8 @@ const FINAL_READ_BYTES: usize = 16 * 1024 * 1024;
 struct State {
     paused: bool,
     stopping: bool,
+    /// the host hung up a command still running: the signal that ends it is the host's, not the command's end
+    host_ended: bool,
     /// when the child exited (it is reaped only by `finish`)
     exit: Option<Instant>,
 }
@@ -80,6 +82,7 @@ fn stop(shared: &Arc<Shared>) {
         }
         state.stopping = true;
         state.paused = false;
+        state.host_ended = !pty::has_exited(shared.pid);
         pty::signal_group(shared.pid, libc::SIGHUP);
     }
     shared.notify();
@@ -110,10 +113,14 @@ fn finish(shared: &Shared, unexited: i32) -> ! {
             thread::park();
         }
     }
+    // a command the host ended itself (hung up by a stop, or killed just below) ends with 0 as before
+    let (exited, host_ended) = {
+        let state = shared.lock();
+        (state.exit.is_some(), state.host_ended || state.exit.is_none())
+    };
     pty::signal_group(shared.pid, libc::SIGKILL);
-    let exited = shared.lock().exit.is_some();
     // an exit the waiter has not recorded yet is still the command's own code
-    let code = pty::reap(shared.pid, !exited).unwrap_or(unexited);
+    let code = pty::reap(shared.pid, !exited).map_or(unexited, |status| pty::exit_code(status, host_ended));
     std::process::exit(code);
 }
 
@@ -155,7 +162,7 @@ fn main() {
         }
     };
     let shared = Arc::new(Shared {
-        state: Mutex::new(State { paused: false, stopping: false, exit: None }),
+        state: Mutex::new(State { paused: false, stopping: false, host_ended: false, exit: None }),
         changed: Condvar::new(),
         pid,
         wake: wake_write,
@@ -382,6 +389,19 @@ fn pump(shared: &Arc<Shared>, master: RawFd, wake: RawFd) {
             Err(error) if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => continue,
             // EIO: every slave descriptor is closed
             Err(_) => break,
+        }
+    }
+    // a command dying closes its terminal before it can be waited for: its end is its own unless it is
+    // still running after EXIT_QUIET, when it has closed its terminal without exiting
+    {
+        let mut state = shared.lock();
+        let deadline = Instant::now() + EXIT_QUIET;
+        while state.exit.is_none() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            state = shared.changed.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
         }
     }
     // a command that closed its terminal without exiting ends as a stopped one does
