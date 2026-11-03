@@ -2660,7 +2660,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   request, read back as typed, its request trimmed as Pi trims it. Known gaps: an extension's command
   is in no catalog, a template sent while the catalog is not cached (after a bridge restart, before
   the menu is read) is taken as a message, and chained skills are not read back; their bubbles wait
-  for good, and so do the ones behind them. Only a matching durable user record appended beyond the
+  for good, and so do the ones behind them.
+  Templates from Pi's settings or packages are not in the catalog either, so theirs wait the same way.
+  A Pi started with `--no-prompt-templates`, or a template added after Pi loaded, makes a `/template`
+  message lose its bubble; the message is still sent.
+  A SKILL.md whose body holds `\n</skill>\n\n` is not read back (Pi's own parser has the same limit).
+  Only a matching durable user record appended beyond the
   byte boundary captured on that exact Pi file/session and extending its captured leaf removes it, and
   only a record Pi stamped no earlier than that capture: Pi stamps a message when it is submitted,
   so an earlier stamp is the same text typed into Pi before Ovis's Enter, or a wall clock set back
