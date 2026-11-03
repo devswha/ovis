@@ -80,8 +80,8 @@ export class CoreAttachSession {
   private paused = false;
   /** stream bytes taken but not credited yet: while paused, or before the channel's id is known */
   private owed = 0;
-  /** keystrokes sent before hc answered the attach */
-  private typed: string[] = [];
+  /** keystrokes (and whether the viewer's terminal made them itself) sent before hc answered the attach */
+  private typed: { data: string; automatic: boolean }[] = [];
   private display: Display = {};
   /** the display facts hc has, as JSON: sent again only when they change */
   private sentDisplay = "{}";
@@ -124,7 +124,7 @@ export class CoreAttachSession {
       }
       this.channel = channel;
       if (this.cols !== options.cols || this.rows !== options.rows) channel.resize(this.cols, this.rows);
-      for (const data of this.typed) channel.write(data);
+      for (const { data, automatic } of this.typed) this.send(data, automatic);
       this.typed = [];
       this.settle();
       this.report();
@@ -137,7 +137,8 @@ export class CoreAttachSession {
     });
   }
 
-  write(data: string): boolean {
+  /** `automatic`: the viewer's terminal made these bytes itself (a query's answer), nobody typed them */
+  write(data: string, automatic = false): boolean {
     if (this.closed) return false;
     const { rest, focus } = takeReplies(data, this.display);
     this.report();
@@ -147,9 +148,14 @@ export class CoreAttachSession {
       if (focused) this.ask();
     }
     if (!rest) return true;
-    if (this.channel) this.channel.write(rest);
-    else this.typed.push(rest);
+    if (this.channel) this.send(rest, automatic);
+    else this.typed.push({ data: rest, automatic });
     return true;
+  }
+
+  private send(data: string, automatic: boolean): void {
+    if (automatic) this.channel!.writeAutomatic(data);
+    else this.channel!.write(data);
   }
 
   resize(cols: number, rows: number): void {
