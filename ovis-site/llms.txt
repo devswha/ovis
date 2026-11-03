@@ -1,6 +1,6 @@
 # Ovis
 
-> Ovis is herdr on your phone and in your browser: a free, open-source client for herdr, the terminal multiplexer, and for the Herdr desktop app's terminals. Chat with Claude Code, Codex and the other coding agents running on your computer, answer their prompts and approvals as cards, get push alerts when one needs you, and open the live terminal, from your phone, your desktop or any browser.
+> Ovis is herdr on your phone and in your browser: a free, open-source client for herdr, the terminal multiplexer, and for the Herdr desktop app's terminals. Chat with Claude Code, Codex and the other supported coding agents running on your computer, answer their supported prompts and approvals as cards, turn on push alerts for when one needs you, and open the live terminal, from your phone, your desktop or any browser.
 
 Ovis was called herdr web UI until it took the name Ovis; older links and installs use the old name.
 
@@ -8,7 +8,7 @@ Ovis runs on the computer where your agents run, as a herdr plugin, and serves t
 
 Ovis needs [herdr](https://github.com/herdrdev/herdr) 0.9.0 or newer. herdr owns the panes and the agents; Ovis connects to them. On Linux and macOS it can show the Herdr desktop app's terminals (herdr-core) instead, with `OVIS_RUNTIME=herdr-core`.
 
-Install it on the computer where your agents run. On Linux with glibc (x64, arm64) or macOS (Intel, Apple Silicon): `curl -fsSL https://ovis.sh/install.sh | sh`. On Windows x64, in PowerShell, with Git for Windows installed: `irm https://ovis.sh/install.ps1 | iex`. The installer adds what is missing for your user (herdr and Bun; Node is not needed), installs Ovis as a herdr plugin and gives the address to open, normally http://127.0.0.1:7317. An agent helping someone install Ovis should follow INSTALL.md, linked below.
+Install it on the computer where your agents run. On Linux with glibc (x64, arm64) or macOS (Intel, Apple Silicon): `curl -fsSL https://ovis.sh/install.sh | sh`. On Windows x64, in PowerShell, with Git for Windows installed: `irm https://ovis.sh/install.ps1 | iex`. The installer adds what is missing for your user (herdr and Bun; Node is not needed, and is added only where the Rust terminal host cannot run), installs Ovis as a herdr plugin and gives the address to open, normally http://127.0.0.1:7317. An agent helping someone install Ovis should follow INSTALL.md, linked below.
 
 Ovis is free and open source under the MIT license, made by devswha (https://github.com/devswha). The source is at https://github.com/devswha/ovis.
 

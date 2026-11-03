@@ -26,7 +26,7 @@
   <a href="#docs">docs</a>
 </p>
 
-Ovis brings the coding agents on your computer to your phone, any browser and the Mac app: each one a chat you answer with a tap or a click, its prompts and approvals as cards, and a push alert when one needs you. A client for [herdr](https://github.com/herdrdev/herdr) and the [Herdr desktop app's terminals](docs/guide.md#herdr-app-terminals), formerly herdr web UI.
+Ovis brings the coding agents on your computer to your phone, any browser and the Mac app: most of them as a chat you answer with a tap or a click, their supported prompts and approvals as cards, and push alerts, once you turn them on, when one needs you. A client for [herdr](https://github.com/herdrdev/herdr) and the [Herdr desktop app's terminals](docs/guide.md#herdr-app-terminals), formerly herdr web UI.
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="Screen recording of Ovis on the demo: in a desktop browser, a follow-up is sent to Claude Code and its turn streams in step by step; then the desktop and a phone side by side, where Codex asks Allow command? for git push origin feat/export-guard, Yes is tapped on the phone and the card closes on both screens; then a click on the release tab opens a shell pane as a live terminal running git log and bun test."></a>
@@ -53,12 +53,12 @@ Each one adds herdr and Bun if they are missing; Node is not needed. Other ways 
 - **Android:** the Google Play beta, from [ovis.sh/beta](https://ovis.sh/beta/).
 - **Browser:** no app needed; add the page to the home screen.
 
-To connect, turn on the end-to-end encrypted **Ovis relay** under **Settings → Phone & devices** and scan its QR code with the phone's camera: it works from anywhere, with nothing to set up on the phone. [How it works →](docs/guide.md#through-the-ovis-relay) Using Tailscale? With it on in both, scan the QR code your computer shows instead.
+To connect, turn on the end-to-end encrypted **Ovis relay** under **Settings → Phone & devices** and scan its QR code with the Ovis app, or with the phone's camera to open Ovis in the phone's browser: it works from anywhere, with nothing to set up on the phone. [How it works →](docs/guide.md#through-the-ovis-relay) Using Tailscale? With it on in both, scan the QR code your computer shows instead.
 
 ## what you get
 
-- **Every agent as a chat.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, on your desk or on your phone. [Supported agents →](docs/guide.md#supported-agents)
-- **Prompts and approvals as cards.** Tap or click an answer; it is checked as still current before it is sent.
+- **Agents as a chat.** Claude Code, Codex, OpenCode, pi, omp, Gajae Code, Hermes, Grok and more, most as a chat, on your desk or on your phone. [Supported agents →](docs/guide.md#supported-agents)
+- **Prompts and approvals as cards.** For supported prompts, tap or click an answer; it is checked as still current before it is sent.
 - **Push alerts.** When an agent asks something or finishes, even with the app closed.
 - **The live terminal, one click away.** The same pane herdr shows, with a key bar on phones.
 - **Every workspace in one list.** Tabs, splits and other PCs over SSH, with the ones waiting on you marked.

@@ -26,7 +26,7 @@
   <a href="#docs">ドキュメント</a>
 </p>
 
-Ovis は、自分のコンピューターで動くコーディングエージェントをスマートフォン、ブラウザー、Mac アプリに届けます。エージェントごとにタップやクリックで答えるチャットになり、確認や質問はカードで届き、あなたを待っているときはプッシュ通知で知らせます。[herdr](https://github.com/herdrdev/herdr) と [Herdr デスクトップアプリのターミナル](docs/guide.md#herdr-app-terminals) のクライアントで、旧称は herdr web UI です。
+Ovis は、自分のコンピューターで動くコーディングエージェントをスマートフォン、ブラウザー、Mac アプリに届けます。ほとんどのエージェントはタップやクリックで答えるチャットになり、対応する確認や質問はカードで届き、通知をオンにしておけば、あなたを待っているときにプッシュ通知で知らせます。[herdr](https://github.com/herdrdev/herdr) と [Herdr デスクトップアプリのターミナル](docs/guide.md#herdr-app-terminals) のクライアントで、旧称は herdr web UI です。
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/hero.webp" alt="デモで収録した Ovis の画面：デスクトップのブラウザーで Claude Code に続きのメッセージを送るとターンが一歩ずつ進み、次にデスクトップとスマートフォンが並び、git push origin feat/export-guard を確認する Codex の Allow command? カードでスマートフォンから Yes をタップすると両方の画面でカードが閉じ、最後に release タブをクリックするとシェルのペインが git log と bun test を実行する本物のターミナルとして開きます。"></a>
@@ -55,12 +55,12 @@ Ovis は、自分のコンピューターで動くコーディングエージェ
 - **Android:** Google Play のベータ版、[ovis.sh/ja/beta](https://ovis.sh/ja/beta/) から。
 - **ブラウザー:** アプリなしで、ページをホーム画面に追加します。
 
-接続するには、**Settings → Phone & devices** でエンドツーエンド暗号化の **Ovis リレー**をオンにし、その QR コードをスマートフォンのカメラで読み取ります。どこからでも使え、スマートフォン側の設定は不要です。[仕組み →](docs/guide.md#through-the-ovis-relay) Tailscale を使っている場合は、両方で Tailscale をオンにして、コンピューターに表示された QR コードを読み取ることもできます。
+接続するには、**Settings → Phone & devices** でエンドツーエンド暗号化の **Ovis リレー**をオンにし、その QR コードを Ovis アプリで読み取るか、スマートフォンのカメラで読み取ってブラウザーで Ovis を開きます。どこからでも使え、スマートフォン側の設定は不要です。[仕組み →](docs/guide.md#through-the-ovis-relay) Tailscale を使っている場合は、両方で Tailscale をオンにして、コンピューターに表示された QR コードを読み取ることもできます。
 
 ## できること
 
-- **どのエージェントもチャットで。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok などを、デスクでもスマートフォンでも。[対応エージェント →](docs/guide.md#supported-agents)
-- **確認や質問はカードで。** タップやクリックで答え、送る前にその確認がまだ有効かを確かめます。
+- **エージェントをチャットで。** Claude Code、Codex、OpenCode、pi、omp、Gajae Code、Hermes、Grok など、ほとんどはチャットで、デスクでもスマートフォンでも。[対応エージェント →](docs/guide.md#supported-agents)
+- **確認や質問はカードで。** 対応する確認にはタップやクリックで答え、送る前にその確認がまだ有効かを確かめます。
 - **プッシュ通知。** エージェントが質問したり作業を終えたりすると、アプリを閉じていても届きます。
 - **本物のターミナルをワンクリックで。** herdr が表示しているのと同じペインが開き、スマートフォンではキーバーが付きます。
 - **すべてのワークスペースをひとつのリストに。** タブ、分割ペイン、SSH でつないだ別の PC まで。あなたを待っているものには印が付きます。
