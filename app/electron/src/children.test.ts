@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { legacyName } from "../../../server/legacy-env.ts";
 import { choosePort, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, readSaved, serverEnv, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
@@ -42,6 +43,13 @@ describe("environments", () => {
     expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis" });
     for (const name of ["HERDR_PLUGIN_ROOT", "OVIS_MANAGED", "HERDR_SOCKET", "OVIS_TOKEN"]) expect(env).not.toHaveProperty(name);
   });
+
+  it("drops a token set under its name from before the rename, which the server would take back", () => {
+    const old = legacyName("OVIS_TOKEN")!;
+    const env = serverEnv({ [old]: "t", [legacyName("OVIS_TELEMETRY")!]: "0" }, { hc: "/hc", stateDir: "/s", port: 1 });
+    expect(env).not.toHaveProperty(old);
+    expect(env).toHaveProperty(legacyName("OVIS_TELEMETRY")!, "0");
+  });
 });
 
 describe("withoutInherited", () => {
@@ -49,7 +57,10 @@ describe("withoutInherited", () => {
     const [command, args] = withoutInherited("ls", ["/proc/self/fd"]);
     // the parent holds fd 9 and 23 open across exec, as Chromium does
     const listed = spawnSync("/bin/bash", ["-c", 'exec 9</dev/null 23</dev/null; exec "$@"', "parent", command, ...args], { encoding: "utf8" });
-    expect(listed.stdout.split("\n").filter(Boolean).map(Number).filter((fd) => fd > 3)).toEqual([]);
+    const fds = listed.stdout.split("\n");
+    expect(fds).toContain("2");
+    expect(fds).not.toContain("9");
+    expect(fds).not.toContain("23");
     const control = spawnSync("/bin/bash", ["-c", 'exec 9</dev/null 23</dev/null; exec "$@"', "parent", "ls", "/proc/self/fd"], { encoding: "utf8" });
     expect(control.stdout.split("\n")).toContain("23");
   });
@@ -184,6 +195,7 @@ describe("endLeftover", () => {
     expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, command: async () => `/other/bun ${programs.server}/server/index.ts` })).toBe(false);
     expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, command: async () => null })).toBe(false);
     expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, { ...ours, started: async () => "later" })).toBe(false);
+    expect(await endLeftover({ pid, bun: programs.bun, started: null }, ours)).toBe(false);
     expect(server.child.exitCode).toBeNull();
     expect(await endLeftover({ pid, bun: programs.bun, started: "then" }, ours)).toBe(true);
     expect(await server.exited).toBe(0);

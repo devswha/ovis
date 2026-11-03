@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
+import { ovisName } from "../../../server/legacy-env.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -17,7 +18,7 @@ type Env = Record<string, string | undefined>;
  * closes every descriptor above stderr, then becomes the program (same pid). Without /bin/bash
  * (NixOS) the program starts directly.
  */
-const CLOSE_INHERITED = `for fd in $(ls /proc/$/fd 2>/dev/null || ls /dev/fd); do if [ "$fd" -gt 2 ] 2>/dev/null; then eval "exec $fd>&-" 2>/dev/null; fi; done; exec "$@"`;
+const CLOSE_INHERITED = `for fd in $(ls /proc/$$/fd 2>/dev/null || ls /dev/fd); do if [ "$fd" -gt 2 ] 2>/dev/null; then eval "exec $fd>&-" 2>/dev/null; fi; done; exec "$@"`;
 
 export function withoutInherited(command: string, args: string[], bash = "/bin/bash"): [string, string[]] {
   return isFile(bash) ? [bash, ["-c", CLOSE_INHERITED, "ovis", command, ...args]] : [command, args];
@@ -64,7 +65,9 @@ export function serverEnv(base: Env, options: { hc: string; stateDir: string; po
     HOST: "127.0.0.1",
     PORT: String(options.port),
   };
-  for (const name of ["HERDR_PLUGIN_ROOT", "HERDR_SOCKET", "OVIS_MANAGED", "OVIS_BOOT_ID", "OVIS_TOKEN"]) delete env[name];
+  const dropped = new Set(["HERDR_PLUGIN_ROOT", "HERDR_SOCKET", "OVIS_MANAGED", "OVIS_BOOT_ID", "OVIS_TOKEN"]);
+  // the server would take a dropped setting back from its name before the rename (server/legacy-env.ts)
+  for (const name of Object.keys(env)) if (dropped.has(name) || dropped.has(ovisName(name) ?? "")) delete env[name];
   return env;
 }
 
@@ -244,14 +247,15 @@ export interface ProcessProbe {
 /**
  * Ends the server an earlier run left behind (the app was killed before it could stop it), so two
  * never share one state folder. Only the same process is ended: it still runs this app's Bun on its
- * server and, when its start time was recorded, started at that time. A pid the system has since
+ * server and started at the recorded time. A pid the system has since
  * given to another program, or to another server, is left alone.
  */
 export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = { command: processCommand, started: processStart }): Promise<boolean> {
   if (saved === null) return false;
   const line = await probe.command(saved.pid);
   if (line === null || !line.startsWith(saved.bun) || !line.includes(join("server", "index.ts"))) return false;
-  if (saved.started !== null && await probe.started(saved.pid) !== saved.started) return false;
+  // without a start time it cannot be told from another process that got the pid since: left alone
+  if (saved.started === null || await probe.started(saved.pid) !== saved.started) return false;
   try { process.kill(saved.pid, "SIGTERM"); } catch { return false; }
   return true;
 }

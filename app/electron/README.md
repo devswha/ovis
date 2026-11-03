@@ -40,7 +40,7 @@ Until the server answers, or when it stops, the window shows the connection scre
 - **After a crash**: the app records the server as soon as it starts it (`<user data>/desktop.json`,
   with its start time). When the app was killed before it could stop it, the next start ends that
   server first, only when the process still runs this app's Bun on its server and started at the
-  recorded time, so two never share one state folder.
+  recorded time (a record without a start time is left alone), so two never share one state folder.
 
 `<user data>` is Electron's: `~/.config/Ovis` on Linux, `~/Library/Application Support/Ovis` on macOS.
 
@@ -95,7 +95,8 @@ On macOS, `open -n dist/mac-arm64/Ovis.app --args --user-data-dir="$d/app"` with
 
 ## Licenses
 
-The app ships herdr-core's and Bun's license files in `resources/ovis/licenses/`, Electron's and
+The app ships Ovis's own `LICENSE` and `THIRD_PARTY_NOTICES.md` in `resources/ovis/`,
+herdr-core's and Bun's license files in `resources/ovis/licenses/`, Electron's and
 Chromium's as electron-builder adds them, and the bundled npm packages' in
 `out/THIRD_PARTY_LICENSES.txt`. [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md#ovis-for-the-desktop)
 lists them.

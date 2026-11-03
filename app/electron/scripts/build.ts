@@ -89,6 +89,8 @@ async function stageAll(): Promise<void> {
   } else {
     console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
   }
+  // the project's own license and notices, for the client, server and assets the app carries
+  for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) cpSync(join(repo, file), join(stage, file));
   writeFileSync(join(stage, "versions.json"), JSON.stringify({ hc: HC_VERSION, bun: BUN_VERSION }));
   cpSync(join(repo, "app", "web", "ovis-logo.png"), join(here, "renderer", "ovis-logo.png"));
   console.log(`staged herdr-core ${HC_VERSION}, Bun ${BUN_VERSION} and the Ovis server for ${target} in ${stage}`);

@@ -117,6 +117,8 @@ async function launch(): Promise<void> {
     const saved = readSaved(savedPath);
     if (await endLeftover(saved.server)) await waitUntilEnded(saved.server!.pid, 10_000);
     const port = await choosePort(saved.port);
+    // a quit during the steps above: no server is started for it
+    if (quitting) return;
     try {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
       const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
@@ -133,7 +135,9 @@ async function launch(): Promise<void> {
         return;
       }
       server = running;
+      const runLog = log;
       void running.exited.then((code) => {
+        runLog.end();
         if (server !== running) return;
         server = null;
         writeSaved(savedPath, { port, server: null });
@@ -143,7 +147,6 @@ async function launch(): Promise<void> {
         showConnect();
       });
       setStatus({ server: "ok" });
-      await window?.loadURL(running.url);
     } catch (error) {
       spawning = null;
       writeSaved(savedPath, { port, server: null });
@@ -152,6 +155,8 @@ async function launch(): Promise<void> {
   } finally {
     if (log && !server) log.end();
   }
+  // a load that fails (or another one cut it short) leaves the server running and recorded
+  if (server) await window?.loadURL(server.url).catch((error: unknown) => console.error(`Opening ${server?.url} failed: ${message(error)}`));
 }
 
 async function waitUntilEnded(pid: number, timeoutMs: number): Promise<void> {
