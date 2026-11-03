@@ -9,7 +9,7 @@
  * That menu also carries the open pane's actions, so a lone pane shows no ellipsis of its own.
  * A strip whose tabs do not fit scrolls sideways by touch, a trackpad or a mouse wheel.
  */
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Ellipsis, Folder, FolderInput, Pencil, Plus, Terminal, X } from "lucide-react";
 
 import "./TabStrip.css";
@@ -21,13 +21,15 @@ import { useFacesArrived } from "../lib/fontFaces.ts";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
 import { useT } from "../lib/i18n.ts";
 import type { RenameRequest } from "../lib/useRenameRequest.ts";
-import { customTabLabel, tabLabel } from "../lib/tabName.ts";
+import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
+import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { loneTabHidden, SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
 import { useCramped } from "../lib/useCramped.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
 import { useAppLayout, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
+import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
@@ -78,6 +80,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const branch = usePaneBranch(machineId, workspace.workspace_id);
   const place = branch === null ? workspace.label : `${workspace.label} · ${branch === DETACHED ? t("Detached HEAD") : branch}`;
   const sheet = useMediaQuery(SHEET_QUERY);
+  const pressPane = useContext(PanePressContext);
   const { closeTab, renameTab, moveTab } = useMachineApi();
   // the Herdr app's window owns this PC's tabs (lib/machineContext.tsx): no rename, no move, no other workspace
   const appLayout = useAppLayout();
@@ -134,12 +137,19 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     } : undefined,
   });
   const friends = useFriends();
+  const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
+  const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
+  // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
+  const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames
+    ? autoTabLabel(tab, panes.filter((pane) => pane.tab_id === tab.tab_id), machineId, firstLines, placeOf(tab)) : null;
+  // the name herdr holds (or was just sent), which a rename compares against
+  const givenName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, placeOf(tab));
   // a tab herdr still names by its place says its one agent's title instead
+  // (else a few words of its first message, #2019)
   const nameOf = (tab: HerdrTab): string => {
     if (sent?.tabId === tab.tab_id) return sent.label;
-    const place = tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
     const agents = panesOf(tab).filter((pane) => pane.agent);
-    return customTabLabel(tab, place) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : tabLabel(tab, t, place));
+    return customTabLabel(tab, placeOf(tab)) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : autoOf(tab) ?? givenName(tab));
   };
 
   useEffect(() => {
@@ -298,7 +308,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (label === "") { setError(t("A tab needs a name.")); return; }
     refocus.current = tab.tab_id;
     setEditing(null);
-    if (label === nameOf(tab)) return;
+    if (label === givenName(tab)) return;
     setSent({ tabId: tab.tab_id, label });
     void renameTab(tab.tab_id, label).catch((reason: unknown) => {
       if (latest.current.machineId !== machineId || latest.current.workspaceId !== workspace.workspace_id) return;
@@ -492,7 +502,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     aria-controls={panePanel}
                     tabIndex={active ? 0 : -1}
                     title={own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length })}
-                    onPointerDown={(event) => reorder.onPointerDown(event, tab.tab_id)}
+                    onPointerDown={(event) => {
+                      reorder.onPointerDown(event, tab.tab_id);
+                      // the chat of the tab pressed starts reading before the click picks it
+                      const pane = event.button === 0 && !event.ctrlKey && !active ? paneFor(tab) : undefined;
+                      if (pane?.agent != null) pressPane?.(machineId, pane.pane_id);
+                    }}
                     onPointerMove={reorder.onPointerMove}
                     onPointerUp={reorder.onPointerUp}
                     onPointerCancel={reorder.cancelDrag}

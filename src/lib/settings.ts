@@ -43,14 +43,6 @@ export type Palette = ThemeId;
  *  narrow: 820px; default: follows the pane, up to 60rem (chatLaneWidth); wide: 72rem; full: the pane, less the gutters */
 export type ChatWidth = "narrow" | "default" | "wide" | "full";
 export const CHAT_WIDTHS: readonly ChatWidth[] = ["narrow", "default", "wide", "full"];
-/** what Enter does in the composer; auto: sends with a keyboard, breaks the line on a touch screen, where Send sends */
-export type EnterKey = "auto" | "send" | "newline";
-export const ENTER_KEYS: readonly EnterKey[] = ["auto", "send", "newline"];
-
-/** true when Enter sends (Shift+Enter breaks the line), false when Ctrl/Cmd+Enter sends */
-export function enterSends(key: EnterKey, touch: boolean): boolean {
-  return key === "auto" ? !touch : key === "send";
-}
 /** the microphone button. auto: in the chat composer off a phone, and only where dictation can work;
  *  on: there, on a phone and in the terminal input line, disabled with its reason where it cannot work; off: nowhere */
 export type VoiceButton = "auto" | "on" | "off";
@@ -142,10 +134,14 @@ export interface Settings {
   /** how wide the chat lane may run on a large screen, keyed as data-chat-width in src/styles.css; default follows the pane
    *  (chatLaneWidth, written by lib/chatLane.ts); a narrower pane is never affected */
   chatWidth: ChatWidth;
-  /** what Enter does in the composer (enterSends) */
-  enterKey: EnterKey;
+  /** true: Enter sends in the composer, Shift+Enter breaks the line; false: Ctrl/Cmd+Enter sends. Chosen in
+   *  Settings for this device; null until then: Return breaks the line on a touch screen, as in the ChatGPT and
+   *  Claude apps, and Enter sends elsewhere (enterSendsOn). Kept in a key of its own (ENTER_SENDS_STORAGE_KEY) */
+  enterSends: boolean | null;
   /** true: a message sent while the agent works goes by itself when the turn ends; false: it waits for Send now */
   autoSendQueued: boolean;
+  /** true: a tab herdr still names by its number shows a few words of its first message (lib/tabLabels.ts); false keeps tabs as they are */
+  autoTabNames: boolean;
   /** a New tab with an agent… button in the chat's composer, in a mouse-driven window; off until chosen, so the
    *  composer's row stays minimal: the tab menu opens the same dialog either way */
   composerNewTabButton: boolean;
@@ -228,14 +224,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * fileOpen, webLinks, the launch modes, followHerdrFocus, followOmarchy, composerNewTabButton, contextCircle, composerArtifacts, terminalMirrorWrap, sidebarFilter, the
+ * fileOpen, webLinks, the launch modes, followHerdrFocus, followOmarchy, autoTabNames, composerNewTabButton, contextCircle, composerArtifacts, terminalMirrorWrap, sidebarFilter, the
  * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "followOmarchy" | "contextCircle" | "speechVoice" | "liveVoice" | "enterKey" | "openLiveWork">;
+  | "expandThinking" | "foldWork" | "followOmarchy" | "contextCircle" | "speechVoice" | "liveVoice" | "openLiveWork" | "autoTabNames">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -262,7 +258,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
     chatFontSize: settings.chatFontSize,
     uiFontSize: settings.uiFontSize,
     chatWidth: settings.chatWidth,
-    enterSends: settings.enterKey !== "newline",
+    enterSends: enterSendsOn(settings, coarsePointer()),
     autoSendQueued: settings.autoSendQueued,
     suggestionChip: settings.suggestionChip,
     showThinking: settings.showThinking,
@@ -306,7 +302,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  */
 export const SETTING_SCOPE = {
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", autoSendQueued: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   openLiveWork: "device", terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", shortcutOverrides: "device", density: "device",
@@ -316,7 +312,7 @@ export const SETTING_SCOPE = {
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
-  chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterKey: "device",
+  chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
   // the theme of the machine this browser runs on: a phone never has one
@@ -372,8 +368,9 @@ export const DEFAULT_SETTINGS: Settings = {
   uiFontSize: null,
   uiFontFamily: "",
   chatWidth: "default",
-  enterKey: "auto",
+  enterSends: null,
   autoSendQueued: true,
+  autoTabNames: true,
   composerNewTabButton: false,
   contextCircle: true,
   composerArtifacts: false,
@@ -564,9 +561,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),
     chatWidth: CHAT_WIDTHS.includes(record["chatWidth"] as ChatWidth) ? record["chatWidth"] as ChatWidth : DEFAULT_SETTINGS.chatWidth,
-    // enterSends was saved with every record, so a stored true is the old default, not a choice
-    enterKey: ENTER_KEYS.find((key) => key === record["enterKey"]) ?? (record["enterSends"] === false ? "newline" : DEFAULT_SETTINGS.enterKey),
+    enterSends: typeof record["enterSends"] === "boolean" ? record["enterSends"] : null,
     autoSendQueued: typeof record["autoSendQueued"] === "boolean" ? record["autoSendQueued"] : DEFAULT_SETTINGS.autoSendQueued,
+    autoTabNames: typeof record["autoTabNames"] === "boolean" ? record["autoTabNames"] : DEFAULT_SETTINGS.autoTabNames,
     composerNewTabButton: typeof record["composerNewTabButton"] === "boolean" ? record["composerNewTabButton"] : DEFAULT_SETTINGS.composerNewTabButton,
     contextCircle: typeof record["contextCircle"] === "boolean" ? record["contextCircle"] : DEFAULT_SETTINGS.contextCircle,
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
@@ -691,12 +688,53 @@ function readChatFold(key: string, fallback: boolean): boolean {
   }
 }
 
+/**
+ * Settings > Chat > Enter sends (Return inserts a new line on a touch screen): whether it was chosen is kept in a
+ * key of its own. Settings are saved whole, so `enterSends: true` in ovis:settings was written by any change at all,
+ * not chosen; only its `false` was a choice (the old default was true), and it counts while this key holds none.
+ * The record keeps the boolean an older tab reads and writes (true until chosen), but once this key holds a choice
+ * the record never overrides it: a tab still on an older version rewrites the record whole with whatever it loaded,
+ * so a value there may be stale, and a choice must not flip back after an unrelated save.
+ */
+export const ENTER_SENDS_STORAGE_KEY = "ovis:enter-sends";
+
+function readEnterSends(record: boolean | null, legacy: boolean | null | undefined): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(ENTER_SENDS_STORAGE_KEY);
+    const value: unknown = raw === null ? null : JSON.parse(raw);
+    if (typeof value === "boolean") return value;
+  } catch {
+    /* unreadable: the record's choice, if any */
+  }
+  return legacy !== undefined ? legacy : record === false ? false : null;
+}
+
+/**
+ * This fork's earlier setting kept the choice in the record as `enterKey` (auto, send or newline). Where the record
+ * still holds one and the key above holds none, it is that choice: send is true, newline false, auto none. Undefined
+ * where the record has no valid enterKey.
+ */
+function legacyEnterSends(raw: unknown): boolean | null | undefined {
+  const key = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>)["enterKey"] : undefined;
+  return key === "send" ? true : key === "newline" ? false : key === "auto" ? null : undefined;
+}
+
+/** Whether this device's primary pointer is a finger: a phone or a tablet, with or without a hardware keyboard. */
+function coarsePointer(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
+}
+
+/** Whether Enter (Return) sends from the composer: the device's choice, else not on a touch screen. */
+export function enterSendsOn(settings: Pick<Settings, "enterSends">, touch: boolean): boolean {
+  return settings.enterSends ?? !touch;
+}
+
 export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends, legacyEnterSends(stored.main?.value)), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork) };
 }
 
@@ -716,7 +754,8 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
+    window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
   } catch {
     /* private mode: preferences last for the session */
@@ -786,10 +825,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== null)) return;
-      const { shortcutOverrides } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides };
-      setSettings((current) => ({ ...current, shortcutOverrides }));
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== null)) return;
+      const { shortcutOverrides, enterSends } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends };
+      setSettings((current) => ({ ...current, shortcutOverrides, enterSends }));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

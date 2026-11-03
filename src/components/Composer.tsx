@@ -20,7 +20,8 @@ import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashC
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { piVoiceLabel, startPiVoice, usePiVoiceAvailable } from "../lib/piVoiceSession.ts";
-import { composerDrafts } from "../lib/composerDraft.ts";
+import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
+import { onQuoted } from "../lib/chatQuote.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -59,7 +60,7 @@ import { modelLabel } from "../lib/modelName.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
 import { resolveComposerMenuActiveItemId } from "../lib/composerMenuHighlight.ts";
-import { enterSends, quickReplyButtons, useSettings } from "../lib/settings.ts";
+import { enterSendsOn, quickReplyButtons, useSettings } from "../lib/settings.ts";
 import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, meterPercent, meterText, providerForAgent, statusWindows, usageName, useUsage, windowLabel } from "../lib/usage.ts";
 import { Artifacts } from "./Artifacts.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
@@ -288,7 +289,8 @@ export function Composer({
   const { fetchPaneFiles } = useMachineApi();
   const { settings, resolvedLanguage } = useSettings();
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
-  const sends = enterSends(settings.enterKey, useMediaQuery("(pointer: coarse)"));
+  // a touch screen's Return breaks the line until this device chooses otherwise; Send (or Mod+Enter) sends
+  const enterSends = enterSendsOn(settings, useMediaQuery("(pointer: coarse)"));
   const usageEnabled = settings.showUsage && !mobile && machineId === "local" && providerForAgent(agent) !== null;
   const { report: usageReport } = useUsage(usageEnabled);
   const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, agent, settings.usageOrder, settings.usageHidden) : undefined;
@@ -314,7 +316,7 @@ export function Composer({
   const attachmentsRef = useRef<Attachment[]>([]);
   const removedAttachments = useRef(new Set<number>());
   const fileRequest = useRef(0);
-  const draftKey = `ovis:composer-draft:${paneStorageId(machineId, paneId)}`;
+  const draftKey = composerDraftKey(paneStorageId(machineId, paneId));
   const { text, sending } = useSyncExternalStore(composerDrafts.subscribe, () => composerDrafts.read(draftKey));
   const setText = useCallback((value: string | ((previous: string) => string)) => composerDrafts.set(draftKey, value), [draftKey]);
   // comments on the agent's replies (#511) go first in the next message, unless it is a slash command or an answer
@@ -650,6 +652,16 @@ export function Composer({
     element.selectionStart = element.selectionEnd = clampedCaret;
     if (activeRef.current) element.focus();
   }, []);
+
+  // a quote taken from the chat (lib/chatQuote.ts) is in the draft already: the caret goes after it, the keyboard here
+  useEffect(() => onQuoted(paneStorageId(machineId, paneId), () => {
+    const element = textareaRef.current;
+    // focused first without scrolling the page: setTextAndCaret's own focus then finds it focused
+    element?.focus({ preventScroll: true });
+    const quoted = composerDrafts.read(draftKey).text;
+    setTextAndCaret(quoted, quoted.length);
+    if (element) element.scrollTop = element.scrollHeight;
+  }), [draftKey, machineId, paneId, setTextAndCaret]);
 
   // an upload finishes while the user may be typing: its mention goes to the start (insertLeadingMention),
   // and the caret and selection only move along with the text they sit in, without taking focus
@@ -1024,7 +1036,7 @@ export function Composer({
         setTextAndCaret(offered, offered.length);
         return;
       }
-      const shouldSend = event.key === "Enter" && (sends
+      const shouldSend = event.key === "Enter" && (enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
         : (event.metaKey || event.ctrlKey) && !event.shiftKey);
       // a typed pick waits in the card above: the empty box's Enter is its Confirm and Escape its
@@ -1046,7 +1058,7 @@ export function Composer({
       event.preventDefault();
       send();
     },
-    [agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, sends, trigger, waitingAnswer],
+    [agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(
@@ -1394,7 +1406,7 @@ export function Composer({
           // and a disabled box would lose its focus and the dictated text with it
           onPaste={onPaste}
           onKeyDown={onKeyDown}
-          enterKeyHint={sends ? "send" : "enter"}
+          enterKeyHint={enterSends ? "send" : "enter"}
           onClick={(event) => {
             setCaret(event.currentTarget.selectionStart);
             setMenuDismissed(false);
@@ -1551,6 +1563,9 @@ export function Composer({
               aria-label={t("Stop agent")}
               title={t("Stop agent")}
               disabled={!connected}
+              // focus stays in the text box, as for Send: this button turns into a disabled Send in
+              // the same node when the turn stops, and a focused node that is disabled drops focus
+              onPointerDown={(event) => event.preventDefault()}
               onClick={onAbort}
             >
               <Square aria-hidden="true" />
