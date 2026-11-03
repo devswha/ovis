@@ -142,12 +142,12 @@ export class PaneLifetimes {
    * held goes to recovery as the next snapshot names the other, as for any herdr that replaced one.
    */
   runtimeSwitched(machineId: string): void {
-    this.runtimeChanged(machineId);
+    this.outlived.delete(machineId);
     try { this.storage().removeItem(RETIRED_PREFIX + machineId); } catch { /* storage refused: a herdr it lists stays in this page */ }
   }
 
   /** The PC serves another runtime than this page last read (a switch made on another device too): the herdr it left may come back. */
-  runtimeChanged(machineId: string): void { this.outlived.delete(machineId); }
+  runtimeChanged(machineId: string): void { this.runtimeSwitched(machineId); }
 
   /** Called with a PC once its generation changed: the stores drop what they read for it. */
   onRetire(forget: (machineId: string) => void): () => void { this.retired.add(forget); return () => { this.retired.delete(forget); }; }

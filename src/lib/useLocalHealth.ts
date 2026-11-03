@@ -27,7 +27,13 @@ export function useLocalHealth() {
   }, []);
 
   // a runtime switch, from this page or any other device: snapshots of a runtime this page left may come back
-  const localRuntime = health?.herdr?.runtime ?? null;
-  useEffect(() => { if (localRuntime !== null) paneLifetimes.runtimeChanged(LOCAL_MACHINE); }, [localRuntime]);
+  // (herdr's TUI names no runtime in its health: it is herdr's)
+  const localRuntime = health?.herdr ? health.herdr.runtime ?? "herdr" : null;
+  const seenRuntime = useRef<string | null>(null);
+  useEffect(() => {
+    if (localRuntime === null) return;
+    if (seenRuntime.current !== null && seenRuntime.current !== localRuntime) paneLifetimes.runtimeChanged(LOCAL_MACHINE);
+    seenRuntime.current = localRuntime;
+  }, [localRuntime]);
   return { localHealth, health, localFreshness, shownHealth, readLocalHealth };
 }

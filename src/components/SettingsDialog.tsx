@@ -1067,10 +1067,13 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   useEffect(() => {
     if (restarting !== null) return;
     let live = true;
-    // unanswered: the whole health answer's facts stand, as they did before this read
-    fetchBridgeHealth().then((health) => { if (live) setBridgeFacts(health.herdr_runtime ?? null); }, () => {});
-    return () => { live = false; };
-  }, [restarting, bootId, core?.version]);
+    // unanswered: the whole health answer's facts stand, as they did before this read. Read again while
+    // About is open: the server's first look for hc may end later, and with herdr stopped nothing else tells
+    const read = () => fetchBridgeHealth().then((health) => { if (live) setBridgeFacts(health.herdr_runtime ?? null); }, () => {});
+    void read();
+    const timer = setInterval(() => void read(), 10_000);
+    return () => { live = false; clearInterval(timer); };
+  }, [restarting, bootId]);
   if (restarting !== null) {
     return (
       <SettingsGroup title={t("Terminals")} section="runtime">

@@ -393,6 +393,22 @@ describe("pane state per herdr lifetime", () => {
     expect(other.unsent().map(({ text }) => text)).toEqual(["core draft"]);
   });
 
+  it("lets a page on another device follow a switch back once its health names the runtime, in storage too", () => {
+    const storage = new MemoryStorage();
+    const device = page(storage);
+    device.observe([pc("local", "herdr-tui")], title);
+    device.observe([pc("local", "herdr-core")], title);
+    device.paneStorage.setItem(DRAFT, "for core");
+    // another device switched back: this one's health names herdr's TUI again before its roster does
+    device.runtimeChanged("local");
+    device.observe([pc("local", "herdr-tui")], title);
+    expect([device.generation("local"), device.stored("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", true, null]);
+    device.paneStorage.setItem(DRAFT, "for tui");
+    // kept in storage, so a reload still has it
+    expect(page(storage).paneStorage.getItem(DRAFT) ?? storage.getItem(DRAFT)).toBe("for tui");
+    expect(device.unsent().map(({ text }) => text)).toEqual(["for core"]);
+  });
+
   it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);

@@ -765,7 +765,7 @@ runtime apart from herdr's TUI server. Ovis can show those terminals instead of 
 PC's panes are then the app's. One server serves one runtime, chosen as it starts:
 
 1. `OVIS_RUNTIME` (`herdr` or `herdr-core`) in the server's environment, when it is set;
-2. else the choice made in **Settings → About → Terminals** (saved as `runtime.json` in the state folder);
+2. else the choice made in **Settings → About → Terminals** (saved as `runtime-<port>.json` in the state folder);
 3. else what the PC has. Any trace of herdr's TUI (a `herdr` on the `PATH` or in `~/.local/bin`,
    `~/.config/herdr/config.toml`, or its socket) keeps herdr, and nothing is run to decide it.
    Only a PC with none looks for herdr-core, and picks it when an `hc` answers `--version` and the
