@@ -22,9 +22,10 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { hcBin, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, hcBin, servingCore, startRuntime } from "./herdr-core/runtime.ts";
+import { markSeen } from "./herdr-core/seen-label.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
-import type { HerdrCoreFacts } from "../shared/machines.ts";
+import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
@@ -283,6 +284,11 @@ export function createServer(
   const { machines, collector, queueFirstMessage, push } = core;
   // read finishes are kept until this server knows their herdr run ended
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
+  // on herdr-core a finish read here is read in the Herdr app and its other clients too
+  if (servingCore()) seen.subscribe((finish) => {
+    if (finish.pc !== LOCAL_MACHINE) return;
+    markSeen(coreConnection(), finish.pane).catch((error: unknown) => console.warn(`herdr-core: could not mark ${finish.pane} seen:`, error));
+  });
   // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);

@@ -799,6 +799,12 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
   agent that reports none shows no status. A turn is done only when the program itself reports
   its turn finished (`done`, or `working` then `idle`); `error` shows no status.
+- **Read finishes:** Ovis and the Herdr app agree on which finishes someone has looked at,
+  through herdr-core's `herdr.seen` terminal label. A finish you read in Ovis is no longer
+  **done** in the Herdr app, and one you looked at in the app is no longer **done** in Ovis; one
+  marked unread elsewhere is **done** again. A terminal that has no such label yet (one neither
+  has looked at) shows the status its program reports, as before, until you read one of its
+  finishes in Ovis. A remote PC's finishes are not shared this way.
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
   it or resized it: the app's window, or your phone once you type or open it there.

@@ -25,6 +25,12 @@ export const TAB_LABEL = "herdr.tab";
 /** The names a person gave a workspace or tab Ovis made: names live in the app's document, which Ovis never writes. */
 export const WORKSPACE_NAME_LABEL = "ovis.workspace";
 export const TAB_NAME_LABEL = "ovis.tab";
+/**
+ * The last turn a person looked at, shared by every Herdr client (herdr-app docs/labels.md): an
+ * agent at rest whose turn is past it is done, one at or below it idle. Missing, the program's own
+ * word stands, as it did before.
+ */
+export const SEEN_LABEL = "herdr.seen";
 
 /** One OSC 7501 report (hc's `Status`): the program's own words. */
 export type HcStatus = Pick<Status, "state"> & Partial<Pick<Status, "app" | "title" | "msg">>;
@@ -61,6 +67,26 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
 const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy" };
 
 /** The agent a status names, by herdr's name; a program that never reported one runs none herdr would see. */
+/** The turn a terminal's `herdr.seen` names; null when it has none, or none a client wrote as a turn. */
+export function seenTurnOf(labels: Readonly<Record<string, string>> | undefined): number | null {
+  const value = labels?.[SEEN_LABEL];
+  if (value === undefined || !/^\d{1,15}$/.test(value)) return null;
+  return Number(value);
+}
+
+/**
+ * The status a terminal shows: its program's word, except that an agent at rest (`idle`, `done`)
+ * whose terminal carries `herdr.seen` is done while a turn ended after the one last looked at, and
+ * idle once someone looked, on whichever client.
+ */
+export function shownStatusOf(status: HcStatus | null | undefined, turn: number | undefined, labels: Readonly<Record<string, string>> | undefined): AgentStatus {
+  const word = agentStatusOf(status);
+  if (word !== "idle" && word !== "done") return word;
+  const seen = seenTurnOf(labels);
+  if (seen === null) return word;
+  return (turn ?? 0) > seen ? "done" : "idle";
+}
+
 export function agentOfStatus(status: HcStatus | null | undefined): string | null {
   const app = status?.app;
   if (!app) return null;
@@ -217,7 +243,7 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string): PaneI
     workspace_id: workspaceId,
     tab_id: tabId,
     agent: agentOf(terminal),
-    agent_status: agentStatusOf(terminal.status),
+    agent_status: shownStatusOf(terminal.status, terminal.turn, terminal.labels),
     cwd,
     foreground_cwd: cwd,
     title: terminal.title ?? null,
