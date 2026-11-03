@@ -348,34 +348,50 @@ interface IndexedPicture { start: number; end: number; digest: bigint }
 
 /**
  * The uuids of records the branch does not follow (a sidechain's, most of all), by a 32-bit digest
- * each, in a table open addressing keeps at most half full; 0 is no uuid. Two uuids with one digest
- * read as seen, which only sends a lookup to the search.
+ * each. A scan appends each to `log`, which costs about what hashing it does; a picture's record looks
+ * them up in `table` (open addressing, kept at most half full, 0 is no uuid) and then through what is
+ * logged. The log is folded into the table once lookups have read it MARKS_FOLD_AFTER times over, so
+ * a file of few pictures never builds the table, and one of many lookups does not read a long log
+ * each time. Two uuids with one digest read as seen, which only sends a lookup to the search.
  */
-interface UuidMarks { table: Uint32Array; count: number }
+interface UuidMarks { table: Uint32Array; count: number; log: Uint32Array; logged: number; read: number }
+const MARKS_FOLD_AFTER = 64;
 const uuidMark = (uuid: string): number => Bun.hash.xxHash32(uuid) || 1;
-function marked(marks: UuidMarks, uuid: string): boolean {
-  const mark = uuidMark(uuid);
+function marked(marks: UuidMarks, mark: number): boolean {
   const last = marks.table.length - 1;
   for (let slot = mark & last; marks.table.length > 0 && marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return true;
-  return false;
+  if (marks.logged === 0) return false;
+  const seen = marks.log.subarray(0, marks.logged).includes(mark);
+  marks.read += marks.logged;
+  if (marks.read >= MARKS_FOLD_AFTER * marks.logged) {
+    for (const logged of marks.log.subarray(0, marks.logged)) putMark(marks, logged);
+    marks.logged = 0;
+    marks.read = 0;
+  }
+  return seen;
 }
-function markUuid(marks: UuidMarks, uuid: string): void {
+function markUuid(marks: UuidMarks, mark: number): void {
+  if (marks.logged === marks.log.length) {
+    const log = new Uint32Array(Math.max(1024, marks.log.length * 2));
+    log.set(marks.log);
+    marks.log = log;
+  }
+  marks.log[marks.logged++] = mark;
+}
+function putMark(marks: UuidMarks, mark: number): void {
   if ((marks.count + 1) * 2 > marks.table.length) {
     const old = marks.table;
     marks.table = new Uint32Array(Math.max(1024, old.length * 2));
     marks.count = 0;
-    for (const mark of old) if (mark !== 0) putMark(marks, mark);
+    for (const kept of old) if (kept !== 0) putMark(marks, kept);
   }
-  putMark(marks, uuidMark(uuid));
-}
-function putMark(marks: UuidMarks, mark: number): void {
   const last = marks.table.length - 1;
   let slot = mark & last;
   for (; marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return;
   marks.table[slot] = mark;
   marks.count += 1;
 }
-const noPictures = (): PictureIndex => ({ at: new Map(), loose: { table: new Uint32Array(0), count: 0 }, blind: null, unread: [] });
+const noPictures = (): PictureIndex => ({ at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0 }, blind: null, unread: [] });
 
 /**
  * Whether the endpoint may not judge this record (recordShapeSteps' UNREAD, or a call id callIdSteps
@@ -418,10 +434,14 @@ function notePicture(index: PictureIndex, ends: Map<string, number>, known: numb
   const entry = parsed as TranscriptEntry | null | undefined;
   if (entry === null || typeof entry !== "object" || typeof entry.uuid !== "string") return;
   const followed = ends.get(entry.uuid) === newline + 1;
-  const before = (followed ? ends.size === known : ends.has(entry.uuid)) || marked(index.loose, entry.uuid);
-  if (!followed) markUuid(index.loose, entry.uuid);
-  if (before || index.blind !== null || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) return;
-  if (!entry.message.content.some(holdsPicture)) return;
+  // the uuid is hashed only when it is kept or a picture's record asks: most records are neither
+  const picture = index.blind === null && entry.type === "user" && !entry.isMeta && !entry.isCompactSummary
+    && Array.isArray(entry.message?.content) && entry.message.content.some(holdsPicture);
+  if (followed && !picture) return;
+  const mark = uuidMark(entry.uuid);
+  const before = picture && ((followed ? ends.size === known : ends.has(entry.uuid)) || marked(index.loose, mark));
+  if (!followed) markUuid(index.loose, mark);
+  if (!picture || before) return;
   let digest = 0n;
   for (let at = 0; at < line.length; at += IMAGE_SEARCH_WINDOW) digest = Bun.hash.xxHash3(line.subarray(at, at + IMAGE_SEARCH_WINDOW), digest);
   index.at.set(entry.uuid, { start, end: newline, digest });

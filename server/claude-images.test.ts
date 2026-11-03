@@ -458,6 +458,23 @@ describe("finding a picture's record", () => {
     exact(await both(transcript(answer + padding + drawn(1)), `${id(1)}:0`));
   });
 
+  it("still knows a sidechain's uuid after the scan has looked it up for a hundred pictures", async () => {
+    // the scan logs the uuids of records the branch does not follow, and folds them into a table once
+    // pictures have read the log 64 times over: both hold them
+    const sidechain = (uuid: number) => line({ type: "user", uuid: id(uuid), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
+    const drawn = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [picture] } });
+    let text = "";
+    for (let at = 0; at < 20; at += 1) text += sidechain(1000 + at);
+    for (let at = 0; at < 100; at += 1) text += drawn(2000 + at);
+    for (let at = 0; at < 20; at += 1) text += sidechain(3000 + at);
+    const path = transcript(text + drawn(1005) + drawn(3005) + drawn(4000));
+    // folded into the table, still in the log, and neither
+    expect(await both(path, `${id(1005)}:0`)).toBeNull();
+    expect(await both(path, `${id(3005)}:0`)).toBeNull();
+    exact(await both(path, `${id(4000)}:0`));
+    exact(await both(path, `${id(2050)}:0`));
+  });
+
   // 12 MiB: too long for the branch to follow, read whole by the scan; 20 MiB: across the scan's first
   // window and past what it carries (a picture of the largest size, and a MiB more), its uuid never read
   for (const mib of [12, 20]) it(`searches for a picture after a record too long for the boundary scan to follow (${mib} MiB)`, async () => {
