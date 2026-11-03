@@ -1,5 +1,6 @@
 import { afterEach, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -894,3 +895,33 @@ it("drops a window read across a start over that a request made while the window
   expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, ends: [{ id: "b" }, { id: "c" }] });
 }, 5000);
 
+it("reads another transcript while one on a network filesystem is stuck in its native read", async () => {
+  // every transcript on NFS: read through the thread pool, where a read can wait on the network for good
+  const statfs = fsp.statfs;
+  const network = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => ({ ...(await statfs(directory)), type: 0x6969 })) as typeof statfs);
+  release.push(() => network.mockRestore());
+  const a = fixture("a"), b = fixture("b");
+  writeFileSync(a.path, notice("a"));
+  writeFileSync(b.path, notice("b"));
+  // A's reads, the native ones below the reader, answer only once released
+  const entered = gate(), held = gate();
+  release.push(held.open);
+  const open = fsp.open;
+  const opens = spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args);
+    if (args[0] === a.path) {
+      const read = handle.read.bind(handle) as (...rest: unknown[]) => Promise<unknown>;
+      handle.read = (async (...rest: unknown[]) => { entered.open(); await held.opened; return read(...rest); }) as typeof handle.read;
+    }
+    return handle;
+  }) as typeof open);
+  release.push(() => opens.mockRestore());
+  controlledClock();
+  const first = waitCommandHistory(a.path, a.limit(), 60_000);
+  await entered.opened;
+  const other = waitCommandHistory(b.path, b.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  expect(await other).toMatchObject({ complete: true, through: b.limit(), ends: [{ id: "b" }] });
+  held.open();
+  expect(await first).toMatchObject({ complete: true, ends: [{ id: "a" }] });
+}, 5000);

@@ -1,5 +1,7 @@
 import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { transcriptVersion, TranscriptBusyError, TranscriptReader, type TranscriptHandle, type TranscriptIO } from "./transcript-reader.ts";
@@ -338,3 +340,74 @@ it("ends a cancelled lease's read ahead without an unhandled rejection", async (
   } finally { process.off("unhandledRejection", hear); }
 });
 
+/** A synthetic transcript of `bytes` whose directory's filesystem is of `type` (statfs f_type). */
+function onFilesystem(type: number, bytes = "abcdefgh\n") {
+  const root = mkdtempSync(join(tmpdir(), "ovis-transcript-reader-")); roots.push(root);
+  const path = join(root, "session.jsonl");
+  writeFileSync(path, bytes);
+  const real = fsp.statfs;
+  const statfs = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => ({ ...(await real(directory)), type })) as typeof real);
+  restores.push(() => statfs.mockRestore());
+  return path;
+}
+/** Counts the reads made on the event loop. */
+function readsNow(during: (count: number) => void = () => {}) {
+  const real = fs.readSync;
+  let count = 0;
+  const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof real>) => { count++; during(count); return real(...args); }) as typeof real);
+  restores.push(() => spy.mockRestore());
+  return () => count;
+}
+
+it.skipIf(process.platform !== "linux")("reads a transcript on a local filesystem on the event loop, and one on any other through the thread pool", async () => {
+  // btrfs, ext4 and tmpfs; NFS, FUSE (sshfs) and 9p (WSL's Windows drives)
+  for (const [type, local] of [[0x9123683e, true], [0xef53, true], [0x01021994, true], [0x6969, false], [0x65735546, false], [0x01021997, false]] as const) {
+    const path = onFilesystem(type);
+    const now = readsNow();
+    const reader = new TranscriptReader();
+    expect((await reader.read(path, async (file) => { await file.stat(); return file.window(2, 4); })).toString()).toBe("cdef");
+    expect(now() > 0).toBe(local);
+    for (const restore of restores.splice(0).reverse()) restore();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("reads through the thread pool for a second once a read on the event loop was slow, then tries the event loop again", async () => {
+  const path = onFilesystem(0x9123683e);
+  // the first read on the event loop takes 3 ms of the clock: the disk answered it, not the page cache
+  const clock = performance.now.bind(performance);
+  let waited = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
+  restores.push(() => now.mockRestore());
+  const reads = readsNow((count) => { if (count === 1) waited += 3; });
+  const reader = new TranscriptReader();
+  const read = (from: number) => reader.read(path, async (file) => (await file.window(from, 2)).toString() + (await file.window(from + 2, 2)).toString());
+  // the rest of that lease, and the next lease within the second, through the thread pool
+  expect(await read(0)).toBe("abcd");
+  expect(await read(2)).toBe("cdef");
+  expect(reads()).toBe(1);
+  // a second later, the first lease tries the event loop again
+  const later = Date.now() + 1000;
+  restores.push(() => setSystemTime());
+  setSystemTime(new Date(later));
+  expect(await read(4)).toBe("efgh");
+  expect(reads()).toBe(3);
+});
+
+it.skipIf(process.platform !== "linux")("gives up a read on the event loop between windows once cancelled", async () => {
+  const path = onFilesystem(0x9123683e);
+  const now = readsNow();
+  const reader = new TranscriptReader();
+  const abort = new AbortController();
+  let windows = 0;
+  const read = reader.read(path, async (file) => {
+    // a parser that reads on and on, never waiting for anything but its reads
+    while (windows < 100) { await file.window(0, 4); if (++windows === 3) abort.abort(); }
+    return "read on past the cancel";
+  }, { signal: abort.signal }).catch((error) => error);
+  expect(await read).toBeInstanceOf(TranscriptBusyError);
+  await reader.settled();
+  // the lease ended at the next window, before its read: no window was read after the cancel
+  expect(windows).toBe(3);
+  expect(now()).toBe(3);
+  expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+});

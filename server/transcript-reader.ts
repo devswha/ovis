@@ -1,5 +1,6 @@
-import { constants, type Stats } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { closeSync, constants, fstat, fstatSync, lstatSync, openSync, read, readSync, type Stats } from "node:fs";
+import { lstat, open, statfs } from "node:fs/promises";
+import { dirname } from "node:path";
 
 /**
  * A transcript's identity, length and clock, in the form `lstatSync` gives (historyVersion), so the
@@ -19,18 +20,59 @@ export interface TranscriptHandle {
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   close(): Promise<void>;
 }
+/** A handle whose calls also run on the event loop, for a transcript on a local filesystem. */
+export interface TranscriptHandleNow extends TranscriptHandle {
+  readNow(buffer: Buffer, offset: number, length: number, position: number): number;
+  statNow(): Stats;
+}
 export interface TranscriptIO {
   open(path: string): Promise<TranscriptHandle>;
   stat(path: string): Promise<Stats>;
+  /**
+   * Whether `directory` is on a local filesystem, where a read the page cache answers costs less
+   * on the event loop than a round trip through the thread pool. Left out: every read is async.
+   */
+  local?(directory: string): Promise<boolean>;
+  openNow?(path: string): TranscriptHandleNow;
+  statNow?(path: string): Stats;
 }
+const FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+/**
+ * Linux filesystems on a local block device or in memory (statfs f_type): ext2/3/4, btrfs, xfs,
+ * tmpfs, zfs, f2fs, bcachefs. Not FUSE (sshfs, virtiofs), NFS, SMB, 9p (WSL's Windows drives) or
+ * any other: a read there may wait on the network, so it is never made on the event loop. Other
+ * platforms' statfs types mean other things: there every read is async.
+ */
+const LOCAL = new Set([0xef53, 0x9123683e, 0x58465342, 0x01021994, 0x2fc12fc1, 0xf2f52010, 0xca451a4e]);
 const nativeIO: TranscriptIO = {
   open: async (path) => {
-    const handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const handle = await open(path, FLAGS);
     return { stat: () => handle.stat(), read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position), close: () => handle.close() };
   },
   stat: (path) => lstat(path),
+  ...(process.platform === "linux" ? {
+    local: async (directory: string) => LOCAL.has((await statfs(directory)).type),
+    openNow: (path: string): TranscriptHandleNow => {
+      const fd = openSync(path, FLAGS);
+      return {
+        readNow: (buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
+        statNow: () => fstatSync(fd),
+        // the same descriptor through the thread pool, once a read on the event loop was slow
+        read: (buffer, offset, length, position) => new Promise((resolve, reject) => read(fd, buffer, offset, length, position, (error, bytesRead) => error ? reject(error) : resolve({ bytesRead }))),
+        stat: () => new Promise((resolve, reject) => fstat(fd, (error, stats) => error ? reject(error) : resolve(stats))),
+        close: async () => closeSync(fd),
+      };
+    },
+    statNow: (path: string) => lstatSync(path),
+  } : {}),
 };
 const WINDOW_BYTES = 1024 * 1024;
+/** A call on the event loop slower than this was answered by the disk, not the page cache. */
+const SLOW_MS = 2;
+/** After one, a transcript's reads go through the thread pool this long; the first lease after tries again. */
+const SLOW_FOR_MS = 1000;
+/** How long a directory's filesystem is taken as known. */
+const FILESYSTEM_MS = 60_000;
 
 export interface TranscriptFile {
   /** Identity already checked when this handle was opened, without another metadata round trip. */
@@ -64,10 +106,18 @@ interface Request {
  * A lease has at most two native operations in flight, the one it awaits and a read ahead, so the
  * reader has at most twice its capacity of them.
  *
- * Known limits: a native operation that never settles (a read ahead or any other) keeps its lease,
- * so two of them on two paths keep every lease, and every later read waits out its deadline. A
- * cancelled lease keeps its path too, until its operations settle: a new read of that transcript
- * waits behind it.
+ * On a local Linux filesystem (LOCAL) a lease opens, stats, reads and closes on the event loop
+ * instead, with no read ahead, while each call is fast. The first slower than SLOW_MS sends the
+ * rest of the lease through the thread pool, and the transcript's leases for SLOW_FOR_MS. Every
+ * other filesystem and platform reads through the thread pool only.
+ *
+ * Known limits:
+ * - A local disk that stops answering inside a call on the event loop blocks the loop, as a
+ *   synchronous read would. The fallback notices a slow call only once it returns.
+ * - A native operation that never settles (a read ahead or any other) keeps its lease, so two of
+ *   them on two paths keep every lease, and every later read waits out its deadline.
+ * - A cancelled lease keeps its path too, until its operations settle: a new read of that
+ *   transcript waits behind it.
  */
 export class TranscriptReader {
   private readonly queue: Request[] = [];
@@ -77,6 +127,10 @@ export class TranscriptReader {
   private readonly idle = new Set<() => void>();
   /** `window` buffers of leases that ended, every native operation on them settled */
   private readonly spare: Buffer[] = [];
+  /** Directories known to be on a local filesystem or not, until a time */
+  private readonly filesystems = new Map<string, { local: boolean; until: number }>();
+  /** Transcripts whose reads go through the thread pool until a time: one on the event loop was slow */
+  private readonly slow = new Map<string, number>();
   constructor(private readonly io: TranscriptIO = nativeIO, readonly capacity = 2, private readonly waiting = 32) {}
 
   read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number } = {}): Promise<T> {
@@ -115,10 +169,29 @@ export class TranscriptReader {
           let back: Buffer | undefined;
           let readAhead: { position: number; length: number; bytes: Promise<Buffer> } | null = null;
           try {
-            handle = await this.io.open(path);
+            // on a local filesystem the transcript is read on the event loop while the page cache
+            // answers: a call through the thread pool costs a wake of its thread, a copy on another
+            // core and a wake of the event loop, more than the read itself
+            let near = this.near(path);
+            if (typeof near !== "boolean") { near = await near; current(); }
+            const direct = near ? this.io.openNow!(path) : null;
+            handle = direct ?? await this.io.open(path);
             current();
             const pinned = handle;
             let busy = false;
+            // reads on the event loop until one is slow: then through the thread pool, for the rest of the lease
+            let now = direct !== null;
+            const timed = <V>(call: (direct: TranscriptHandleNow) => V): Promise<V> => {
+              try {
+                current();
+                if (!accepting) throw new Error("the transcript lease is closed");
+                const started = performance.now();
+                const value = call(direct!);
+                if (performance.now() - started > SLOW_MS) { now = false; this.slowed(path); }
+                current();
+                return Promise.resolve(value);
+              } catch (caught) { return Promise.reject(caught); }
+            };
             // a read ahead (`beside`) runs next to the one operation the work awaits at a time
             const operation = <V>(call: () => Promise<V>, beside = false): Promise<V> => {
               const pending = (async () => {
@@ -150,25 +223,41 @@ export class TranscriptReader {
               }
               return bytes.subarray(0, offset);
             };
+            // the same on the event loop
+            const fillNow = (direct: TranscriptHandleNow, position: number, length: number, bytes: Buffer) => {
+              valid(position, length);
+              let offset = 0;
+              while (offset < length) {
+                const bytesRead = direct.readNow(bytes, offset, length - offset, position + offset);
+                if (bytesRead === 0) break;
+                offset += bytesRead;
+              }
+              return bytes.subarray(0, offset);
+            };
             const spareWindow = () => this.spare.pop() ?? Buffer.allocUnsafe(WINDOW_BYTES);
+            const plain = (version: TranscriptVersion | null) => {
+              if (version === null) throw new Error("the transcript is not a plain file");
+              return version;
+            };
             let initial: TranscriptVersion | undefined;
             const file: TranscriptFile = {
               get initial() { return initial!; },
-              stat: () => operation(async () => {
+              stat: () => now ? timed((direct) => plain(transcriptVersion(direct.statNow()))) : operation(async () => {
                 current();
                 const version = transcriptVersion(await pinned.stat());
                 current();
-                if (version === null) throw new Error("the transcript is not a plain file");
-                return version;
+                return plain(version);
               }),
-              pathVersion: () => operation(async () => {
+              pathVersion: () => now ? timed(() => transcriptVersion(this.io.statNow!(path))) : operation(async () => {
                 current();
                 const version = transcriptVersion(await this.io.stat(path));
                 current();
                 return version;
               }),
-              read: (position, length) => operation(() => fill(position, length, Buffer.allocUnsafe(length))),
-              window: (position, length) => operation(async () => {
+              read: (position, length) => now ? timed((direct) => fillNow(direct, position, length, Buffer.allocUnsafe(length)))
+                : operation(() => fill(position, length, Buffer.allocUnsafe(length))),
+              // no read ahead is started while reads are on the event loop
+              window: (position, length) => now ? timed((direct) => fillNow(direct, position, length, front ??= spareWindow())) : operation(async () => {
                 const read = readAhead;
                 readAhead = null;
                 if (read !== null) {
@@ -183,7 +272,7 @@ export class TranscriptReader {
                 return fill(position, length, front ??= spareWindow());
               }),
               ahead: (position, length) => {
-                if (readAhead !== null || !accepting) return;
+                if (now || readAhead !== null || !accepting) return;
                 valid(position, length);
                 const bytes = operation(() => fill(position, length, back ??= spareWindow()), true);
                 // a read ahead nobody asks for is let go of: its failure is no failure of the lease
@@ -239,9 +328,30 @@ export class TranscriptReader {
     }
   }
 
+  /** Whether `path` is read on the event loop: a local filesystem (known, or found out), and no read of it slow lately. */
+  private near(path: string): boolean | Promise<boolean> {
+    if (this.io.local === undefined || this.io.openNow === undefined || this.io.statNow === undefined) return false;
+    const until = this.slow.get(path);
+    if (until !== undefined) { if (Date.now() < until) return false; this.slow.delete(path); }
+    const directory = dirname(path);
+    const known = this.filesystems.get(directory);
+    if (known !== undefined && Date.now() < known.until) return known.local;
+    return this.io.local(directory).catch(() => false).then((local) => {
+      if (this.filesystems.size >= 256) this.filesystems.clear();
+      this.filesystems.set(directory, { local, until: Date.now() + FILESYSTEM_MS });
+      return local;
+    });
+  }
+  private slowed(path: string): void {
+    if (this.slow.size >= 256) this.slow.clear();
+    this.slow.set(path, Date.now() + SLOW_FOR_MS);
+  }
+
   reset(): void {
     // a lease still open puts its buffer back once it ends
     this.spare.length = 0;
+    this.filesystems.clear();
+    this.slow.clear();
     this.resetting = true;
     try { for (const request of [...this.queue, ...this.active]) request.cancel(); }
     finally { this.resetting = false; this.pump(); }
