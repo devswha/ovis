@@ -573,6 +573,22 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
+    // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
+    // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
+    it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {
+      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 0.05; exit 3"]);
+      try {
+        expect(await ended.exited).toBe(3);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("hangs up a command that closed its terminal and kept running as an end of its own, not a signal", async () => {
+      const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 5"]);
+      try {
+        expect(await ended.exited).toBe(0);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
     it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
       const winch = run("node", ["-e", `
         process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));

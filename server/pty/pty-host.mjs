@@ -76,11 +76,31 @@ const EXIT_DRAIN_LIMIT_MS = 2000;
 const EXIT_HELD_LIMIT_MS = 15_000;
 /** node-pty's destroy once it asked for it: the command has exited */
 let finalRead = null;
+/**
+ * A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. As the
+ * Rust host does, the close waits EXIT_QUIET_MS for its exit; only one still running then is hung up, and
+ * that SIGHUP is this host's (hungUp), not a signal that ended the command.
+ */
+let closing = null;
+let hungUp = false;
 const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
   socket.destroy = (...args) => {
+    if (args[0] && !finalRead) {
+      if (closing === null) {
+        // an EIO'd pty is readable forever: reading stops, or it spins until the close
+        socket._handle?.readStop?.();
+        closing = setTimeout(() => {
+          try { process.kill(term.pid, 0); hungUp = true; } catch { /* exited (and reaped) by itself */ }
+          destroy(...args);
+        }, EXIT_QUIET_MS);
+      }
+      return socket;
+    }
     if (finalRead || args[0]) return destroy(...args);
+    // the command exited while its close waited: the pty closes as for any exit
+    clearTimeout(closing ?? undefined);
     killGroup("SIGKILL");
     finalRead = { destroy: () => destroy(...args), heldUntil: Date.now() + EXIT_HELD_LIMIT_MS, since: null, timer: undefined };
     socket.once("close", () => clearTimeout(finalRead.timer));
@@ -123,9 +143,9 @@ term.onExit(({ exitCode, signal }) => {
   if (process.platform !== "win32") killGroup("SIGKILL");
   exited = true;
   // Let the native exit callback unwind and stdout drain before Node exits. node-pty reports a signal's
-  // end as exit code 0: one this host did not send (stopping) is told as a shell tells it, never as the
-  // success a 0 says.
-  process.exitCode = signal && !stopping ? 128 + signal : exitCode ?? 0;
+  // end as exit code 0: one this host did not send (stopping, hungUp) is told as a shell tells it, never as
+  // the success a 0 says.
+  process.exitCode = signal && !stopping && !hungUp ? 128 + signal : exitCode ?? 0;
   process.stdin.destroy();
   process.stdout.end();
 });
