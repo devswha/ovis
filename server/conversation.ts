@@ -2647,14 +2647,17 @@ function* answersDrawnCallSteps(stream: TranscriptStream, id: string, before: nu
   // a call id the parser took from a number can be written in any of a number's spellings
   const numeric = id !== "" && String(Number(id)) === id;
   let judged = 0;
-  // a call is most often just before its result: the first stretch is short, and each one after twice as long
+  // a call is most often just before its result: the first stretch is short, and each one after twice as
+  // long as the one before covered (a stretch reaches back to the start of the line it cuts)
   let span = CALL_SEARCH_START;
-  for (let to = before, from = before; to > stream.floor; to = from, span = Math.min(IMAGE_SEARCH_WINDOW, span * 2), yield) {
-    // the lines that end in the last `span` bytes before `to`, whole: back from `to - span`, a short piece
-    // at a time, to the start of the line it falls in, so the walk costs about what that line has before it
+  for (let to = before, from = before; to > stream.floor; span = Math.min(IMAGE_SEARCH_WINDOW, Math.max(span, to - from) * 2), to = from, yield) {
+    // the lines that end in the last `span` bytes before `to`, whole: back from `to - span`, a piece at a
+    // time, to the start of the line it falls in, so the walk costs about what that line has before it
     from = Math.max(stream.floor, to - span);
-    while (from > stream.floor) {
-      const low = Math.max(stream.floor, from - CALL_SEARCH_START);
+    // each piece back twice the one before, up to a window: a line of a MiB costs a few reads, not
+    // sixteen, where every read is a round trip (a network home)
+    for (let piece = CALL_SEARCH_START; from > stream.floor; piece = Math.min(IMAGE_SEARCH_WINDOW, piece * 2)) {
+      const low = Math.max(stream.floor, from - piece);
       const newline = (yield* streamBytes(stream, low, from)).lastIndexOf(0x0a);
       // each read is a step of its own: what reads the lines it found starts on the next one
       yield;

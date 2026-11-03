@@ -589,6 +589,28 @@ describe("finding a picture's record", () => {
     expect(bytes).toBeLessThan(result * 1.2);
   });
 
+  it("goes back over lines of a MiB to a call far back in a few reads per line", async () => {
+    // every read is a round trip on a network home: a window that cuts a long line finds the line's start
+    // in pieces that grow, not 64 KiB at a time, and the next window is as long as that one turned out
+    let text = line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } });
+    text += line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
+    const lines = 20;
+    for (let at = 0; at < lines; at += 1) text += line({ type: "progress", uuid: id(100 + at), data: "x".repeat(1024 * 1024) });
+    const path = transcript(text + line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } }));
+    quiet();
+    exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
+    let reads = 0;
+    const read = fs.readSync;
+    const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+      reads += 1;
+      return read(...args);
+    }) as typeof fs.readSync);
+    try { exact(await transcriptImageAsync(path, `${id(3)}:0:0`)); } finally { watch.mockRestore(); }
+    // a window of a MiB, what is left of its line, and the piece before it that finds the line's start:
+    // three reads a line, and a few more for the first windows (64 KiB pieces took 6 a line)
+    expect(reads).toBeLessThan(4 * lines);
+  });
+
   it("finds a tool's call however far back it was made, and only the last block naming it decides", async () => {
     const padding = line({ type: "progress", data: "x".repeat(1024 * 1024) }).repeat(3);
     const call = (uuid: number) => line({ type: "assistant", uuid: id(uuid), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
