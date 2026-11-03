@@ -29,7 +29,7 @@ export type SocketHandler = Omit<WebSocketHandler<SocketData>, "open" | "message
 /** The frames of the connection itself: its liveness, its watches and its role. */
 type ConnectionFrame = "ping" | "watch" | "unwatch" | "role";
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchable, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames }: {
+export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames }: {
   clients: Set<Client>;
   present: Set<Client>;
   stopped: () => boolean;
@@ -40,6 +40,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
    * --observe` streams a terminal at its own size, which a release hands to the Herdr app's window)
    */
   watchable: () => boolean;
+  /** whether attaches replay the pane's scrollback for the client to keep (`terminal-history`) */
+  terminalHistory: () => boolean;
   watchPane: (client: Client, paneId: string, geometry: { cols: number; rows: number }) => void;
   unwatchPane: (client: Client, paneId: string) => void;
   end: (client: Client, reason: "closed") => void;
@@ -127,7 +129,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       // The herdr it names lets a page that already knows that herdr send before the snapshot proves it
       const lifetime = herdrLifetime();
       // without "watch" a tab out of use stays attached or pauses, and a reconnect attaches at once
-      const features = watchable() ? SERVER_FEATURES : SERVER_FEATURES.filter((feature) => feature !== "watch");
+      const offered = watchable() ? SERVER_FEATURES : SERVER_FEATURES.filter((feature) => feature !== "watch");
+      const features: ServerFeature[] = terminalHistory() ? [...offered, "terminal-history"] : offered;
       send(client, { type: "features", features, connection: client.data.connectionId, ...(lifetime === undefined ? {} : { herdr_lifetime: lifetime }) });
       const snapshot = clientSnapshot();
       countVisit(snapshot, { surface: client.data.surface, ingress: client.data.ingress });

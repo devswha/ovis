@@ -834,6 +834,11 @@ export class HerdrSocket {
     return !this.featuresKnown || this.features.has("watch");
   }
 
+  /** Whether the browser keeps a pane's scrollback (`terminal-history`); false until the features come. */
+  hasTerminalHistory(): boolean {
+    return this.featuresKnown && this.features.has("terminal-history");
+  }
+
   unwatch(paneId: string): void {
     if (this.watched.delete(paneId) && this.connected && this.features.has("watch")) {
       this.rawSend({ type: "unwatch", pane_id: paneId });
