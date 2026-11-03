@@ -6,6 +6,47 @@ import { dropPendingListScroll, listEndPadded } from "../lib/followScroll.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 // ChatTimeline.css is imported by ChatView: the frame and the loading state need it before this chunk
 
+/** a selection reaching the transcript's footer, which is no row */
+const FOOTER_KEY = "\u0000footer";
+
+/**
+ * A point in the held words: a live range, which moves with them as the transcript changes, and
+ * the node and offset it was made at. Text rewritten around it (an answer streaming into the same
+ * paragraph) or the node taken away moves a live range elsewhere, and the point is then lost.
+ */
+interface Mark { readonly range: Range; readonly node: Node; readonly offset: number }
+
+function markAt(node: Node, offset: number): Mark {
+  const range = document.createRange();
+  range.setStart(node, offset);
+  range.collapse(true);
+  return { range, node, offset };
+}
+
+/** Where `range` starts. */
+function startMark(range: Range): Mark {
+  return markAt(range.startContainer, range.startOffset);
+}
+
+/** The words under a press, or, where the browser cannot say, the start of what was pressed. */
+function pointMark(x: number, y: number, target: Node | null, within: Node): Mark | null {
+  const caret = document.caretRangeFromPoint?.(x, y) ?? null;
+  if (caret !== null && within.contains(caret.startContainer)) return startMark(caret);
+  // Firefox's own name for it
+  const position = document.caretPositionFromPoint?.(x, y) ?? null;
+  if (position !== null && within.contains(position.offsetNode)) return markAt(position.offsetNode, position.offset);
+  return target === null || !within.contains(target) ? null : markAt(target, 0);
+}
+
+/** Where a point stands in the scroller's view; null once it is lost (see Mark). */
+function markY(mark: Mark, scroller: HTMLElement): number | null {
+  const { range, node, offset } = mark;
+  if (!node.isConnected || range.startContainer !== node || range.startOffset !== offset) return null;
+  const rect = [...range.getClientRects()].find((box) => box.height > 0)
+    ?? (node instanceof Element ? node : node.parentElement)?.getBoundingClientRect();
+  return rect === undefined ? null : rect.top - scroller.getBoundingClientRect().top;
+}
+
 export interface ChatTimelineRow {
   readonly key: string;
   readonly beforeUser: boolean;
@@ -90,7 +131,11 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
         }
       }
       const keys = last >= first ? rowKeys.slice(first, last + 1) : [];
-      selectedKeys.current = keys;
+      // the footer (a sent message waiting, the Working line) is no row, and its words are held too
+      const footer = node.querySelector(".chat-virtual-footer");
+      const inFooter = selection !== null && !selection.isCollapsed && selection.rangeCount > 0 && footer !== null && selection.getRangeAt(0).intersectsNode(footer);
+      selectedKeys.current = inFooter ? [...keys, FOOTER_KEY] : keys;
+      selectionMark.current = selectedKeys.current.length > 0 && selection !== null ? startMark(selection.getRangeAt(0)) : null;
       held.current();
       setSelectionKeys((previous) => previous.length === keys.length && previous.every((key, index) => key === keys[index]) ? previous : keys);
     };
@@ -119,6 +164,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     const pressed = (event: PointerEvent) => {
       if (event.pointerType !== "mouse" || event.button !== 0) return;
       pressing.current = rowFor(event.target as Node | null) ?? "";
+      pressMark.current = pointMark(event.clientX, event.clientY, event.target as Node | null, node);
       held.current();
     };
     const released = () => {
@@ -201,40 +247,60 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     });
   }, [scroller, listRef, following, manualLayout, selecting, heard, onFollowed]);
 
-  // A selection in progress holds the row it started in where it is on screen (#1922, #2650): the
-  // row a mouse pressed (a drag selection starts with the press), or the first row a selection
-  // stands in (a phone's long press). Nothing follows the end, and what the layout moves, a row
-  // above growing or the end shrinking, is scrolled back before it is painted; room is kept past
-  // the end for that, so the browser cannot pull the view up with a shorter transcript. A scroll
-  // (the reader's wheel, keys, finger or scrollbar, a drag carried past the chat's edge, Jump to
-  // latest) moves the view as it always does, and the row is held where it then is. Let go, the
-  // room goes and a reader still following is put at the end.
+  // A selection in progress holds the words it started on where they are on screen (#1922, #2650):
+  // the words a mouse pressed (a drag selection starts with the press), or where a selection starts
+  // (a phone's long press), in a row or in the footer. Nothing follows the end, and what the layout
+  // moves, a row above growing, a block folding above the words in their own row, the end
+  // shrinking, is scrolled back before it is painted; room is kept past the end for that, so the
+  // browser cannot pull the view up with a shorter transcript. A scroll of the view itself (the
+  // reader's wheel, keys, finger or scrollbar, Jump to latest, a drag carried past the chat's edge)
+  // moves nothing in the transcript: it stands, and the words are held where it leaves them. Let
+  // go, the room goes and a reader still following is put at the end.
   const pressing = useRef<string | null>(null);
   const selectedKeys = useRef<readonly string[]>([]);
-  // the held row, where it is on screen, and where the view was when the hold last heard it
-  const anchor = useRef<{ key: string; y: number; top: number } | null>(null);
+  // where the press was, and where the selection starts: the words held, not their whole row,
+  // whose top stays put while a block inside it folds (a turn's work, at its end)
+  const pressMark = useRef<Mark | null>(null);
+  const selectionMark = useRef<Mark | null>(null);
+  // the held words (their row's key, a point in them), where they are on screen, and where the
+  // view was when the hold last looked
+  const anchor = useRef<{ key: string; mark: Mark; y: number; top: number } | null>(null);
   const room = useRef<string | null>(null);
-  const rowTop = useCallback((key: string): number | null => {
+  const markTop = useCallback((mark: Mark): number | null => {
     const node = scroller.current;
-    const row = node?.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
-    return node && row ? row.getBoundingClientRect().top - node.getBoundingClientRect().top : null;
+    return node === null ? null : markY(mark, node);
   }, [scroller]);
   const keep = useCallback(() => {
     const node = scroller.current, held = anchor.current;
     // A reader away from the end has nothing followed under them: the list holds the rows they
     // read in place itself (maintainVisibleContentPosition), and a second move would undo it.
     if (node === null || held === null || !following.current) return;
-    const y = rowTop(held.key);
-    if (y === null) return;
-    // The view moved since the hold last heard it, and not because the transcript got too short
-    // for where it was: that is a scroll whose event has not come yet (a wheel, Jump to latest),
-    // and it stands. The row is held where it is now.
+    let y = markTop(held.mark);
+    if (y === null) {
+      // the held point was lost (see Mark): the selection's start now holds, from where it is
+      const selection = getSelection();
+      const mark = selection !== null && !selection.isCollapsed && selection.rangeCount > 0 ? startMark(selection.getRangeAt(0)) : null;
+      y = mark === null ? null : markTop(mark);
+      anchor.current = mark === null || y === null ? null : { key: held.key, mark, y, top: node.scrollTop };
+      return;
+    }
+    // Since the hold last looked, the words moved on screen by `moved` and the view by `scrolled`;
+    // `moved + scrolled` is how far the words moved in the transcript, the layout's part. A scroll of
+    // the view itself (the reader's, Jump to latest) stands: only the layout's part is put back. Two
+    // scrolls are the layout's own: the browser keeping the view inside a transcript that got shorter
+    // below the words (the view was past its new end and is at it now), and the list's, in the frame
+    // it pads its end to hold rows in place (listEndPadded). Then the words' whole move is put back.
     const max = node.scrollHeight - node.clientHeight;
-    const clamped = held.top > max && Math.abs(node.scrollTop - max) <= 1;
-    if (Math.abs(node.scrollTop - held.top) > 1 && !clamped) { held.y = y; held.top = node.scrollTop; return; }
-    const moved = y - held.y;
-    if (Math.abs(moved) < 1) return;
-    const target = node.scrollTop + moved;
+    const moved = y - held.y, scrolled = node.scrollTop - held.top;
+    // less than a pixel either way: kept until it adds up, the view scrolls in whole pixels
+    if (Math.abs(moved) < 1 && Math.abs(scrolled) < 1) return;
+    // the words are where they were on screen: the list moved the view with what it holds in place
+    if (Math.abs(moved) < 1) { held.top = node.scrollTop; return; }
+    const clamped = held.top > max + 1 && Math.abs(node.scrollTop - max) <= 1;
+    const back = clamped || listEndPadded(node) ? moved : moved + scrolled;
+    // the view's scroll is taken in; the layout's part under a pixel is kept, to add up
+    if (Math.abs(back) < 1) { held.y = y - back; held.top = node.scrollTop; return; }
+    const target = node.scrollTop + back;
     const short = target - max;
     const content = node.querySelector<HTMLElement>(".chat-transcript-virtual");
     if (short > 0 && content !== null) {
@@ -243,12 +309,12 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       content.style.minHeight = `${content.offsetHeight + Math.ceil(short)}px`;
     }
     node.scrollTop = target;
-    held.y = rowTop(held.key) ?? y;
+    held.y = markTop(held.mark) ?? y;
     held.top = node.scrollTop;
     // the chat reads this move as the timeline's own, not the reader's (a drag's pointer moves
     // would otherwise make one up a reader leaving the end)
     onFollowed(node.scrollTop);
-  }, [scroller, rowTop, following, onFollowed]);
+  }, [scroller, markTop, following, onFollowed]);
   const keepQueued = useRef(false);
   const keepMeasured = useCallback(() => {
     if (keepQueued.current) return;
@@ -262,14 +328,15 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     if (next) {
       if (!selecting.current) dropPendingListScroll(listRef.current);
       selecting.current = true;
-      // The row pressed holds; a press between rows holds the first row its selection reaches.
-      // A held row the selection still takes in stays held (a drag carried up into the rows
-      // above it), and one it has left gives way to the first row selected.
-      const current = anchor.current?.key;
-      const key = pressing.current || (current !== undefined && keys.includes(current) ? current : keys[0]);
-      if (key && current !== key) {
-        const y = rowTop(key), node = scroller.current;
-        anchor.current = y === null || node === null ? null : { key, y, top: node.scrollTop };
+      // The words pressed hold. Words the selection still takes in stay held (a drag carried up
+      // into the rows above them), and once it has left them its own start holds.
+      const current = anchor.current;
+      const stays = current !== null && keys.includes(current.key);
+      const key = pressing.current ?? (stays ? current.key : keys[0] ?? "");
+      const mark = pressing.current !== null ? pressMark.current : stays ? current.mark : selectionMark.current;
+      if (mark !== (current?.mark ?? null)) {
+        const y = mark === null ? null : markTop(mark), node = scroller.current;
+        anchor.current = mark === null || y === null || node === null ? null : { key, mark, y, top: node.scrollTop };
       }
       return;
     }
@@ -280,7 +347,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
     if (content && room.current !== null) content.style.minHeight = room.current;
     room.current = null;
     followMeasured();
-  }, [selecting, listRef, scroller, rowTop, followMeasured]);
+  }, [selecting, listRef, scroller, markTop, followMeasured]);
   const held = useRef(hold);
   held.current = hold;
   // what a render changes under a held selection (the Working line going, a row's last words) is
@@ -289,15 +356,9 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
   useEffect(() => {
     const node = scroller.current;
     if (node === null) return;
-    // the layout's moves are held back where they are made (the layout effect above, the list's
-    // measurements, the observers): a scroll that comes to be heard is a move of the view itself
-    const scrolled = () => {
-      const held = anchor.current;
-      if (held === null) return;
-      held.y = rowTop(held.key) ?? held.y;
-      held.top = node.scrollTop;
-    };
-    const resized = new ResizeObserver(() => { if (anchor.current !== null) keep(); });
+    // a scroll heard under a hold: one of the view stands, one the layout made is held back (keep)
+    const scrolled = () => { if (anchor.current !== null) keep(); };
+    const resized = new ResizeObserver(scrolled);
     const content = node.querySelector<HTMLElement>(".chat-transcript-virtual");
     if (content !== null) resized.observe(content);
     node.addEventListener("scroll", scrolled, { passive: true });
@@ -308,7 +369,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>({ rows, scope, source,
       selecting.current = false;
       anchor.current = null;
     };
-  }, [scroller, keep, rowTop, selecting]);
+  }, [scroller, keep, markTop, selecting]);
 
   // The footer (a sent message's bubble, the Working line) is no row: no item size change reports
   // its growth, and a scroll to the end asked for before the list measured it stops short of it,
