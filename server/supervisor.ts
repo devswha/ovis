@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
-import { restoreRuntime } from "./herdr-core/runtime-file.ts";
+import { readSavedRuntime, restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
@@ -110,10 +110,16 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     await prior.exited;
     clearTimeout(timer);
   }
-  async function launch(release: Release | null) {
+  /**
+   * `ready`: what the health check waits for. "herdr" is the whole health answer, which needs the
+   * runtime to answer too; "bridge" only this bridge's own answer (`?scope=bridge`, which never asks
+   * herdr), for a start whose runtime may rightly be away, such as a herdr TUI the user starts later.
+   */
+  async function launch(release: Release | null, ready: "herdr" | "bridge" = "herdr") {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
-    const settings = { OVIS_MANAGED: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
+    // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
+    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
     const candidate = Bun.spawn([process.execPath, "server/index.ts"], {
       cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       // a launcher from before the rename runs from a checkout from before it, where a release that
@@ -122,7 +128,11 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       ipc(message) {
         if (message?.type === "update-status-request") publish();
         // Settings saved another runtime (server/herdr-core/runtime-choice.ts): the bridge starts again on it
-        if (message?.type === "runtime-restart" && child === candidate) void started.promise.then(() => restartForRuntime());
+        if (message?.type === "runtime-restart" && typeof message.id === "string") {
+          const id: string = message.id;
+          // a bridge an update replaced meanwhile already started on the saved choice: only the asking one restarts
+          void started.promise.then(() => { if (child === candidate) void restartForRuntime(id); });
+        }
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
         const request = readUpdateIpcRequest(message);
         if (request) {
@@ -142,7 +152,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline && !stopping && candidate.exitCode === null) {
       try {
-        const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(`${origin}/api/health${ready === "bridge" ? "?scope=bridge" : ""}`, { signal: AbortSignal.timeout(1000) });
         const body = await response.json() as { web_ui?: { boot_id?: string } };
         if (response.ok && body.web_ui?.boot_id === bootId) { publish(); return; }
       } catch { /* wait for this exact bridge, never mistake another port owner for it */ }
@@ -151,27 +161,47 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     await stopChild();
     throw new Error("The new bridge failed its startup health check.");
   }
+  /** One bridge change at a time: a runtime switch and an update's activation wait for each other, neither is dropped. */
+  let lane: Promise<unknown> = Promise.resolve();
+  function exclusive<T>(change: () => Promise<T>): Promise<T> {
+    const run = lane.then(change, change);
+    lane = run.catch(() => {});
+    return run;
+  }
+  /** A bridge that exited while a change held `switching` was not seen by onExit: it is now. */
+  function checkBridge() {
+    if (!stopping && child !== null && child.exitCode !== null) {
+      console.error(`Bridge exited unexpectedly (${child.exitCode}).`);
+      void shutdown(1);
+    }
+  }
   /**
    * One server, one runtime: the bridge stops, and the next one reads the saved choice as it starts,
-   * on the same port and state. One that fails its health check puts the previous runtime back and
-   * starts again on it, so a switch never leaves the PC without a bridge.
+   * on the same port and state. A switch to herdr-core waits for the core to answer; a switch to
+   * herdr only for the bridge, as Settings offers it while herdr's TUI is stopped. One that fails
+   * its health check puts back the runtime the switch `id` replaced, never a later choice, and starts
+   * again on it, so a switch never leaves the PC without a bridge.
    */
-  async function restartForRuntime() {
-    if (switching || stopping) return;
-    switching = true;
-    try {
-      await stopChild();
-      try { await launch(active); }
-      catch (error) {
-        console.error(`The bridge failed to start on the chosen runtime (${error instanceof Error ? error.message : error}); going back to the previous one.`);
-        restoreRuntime(appStateDir);
+  function restartForRuntime(id: string) {
+    return exclusive(async () => {
+      if (stopping) { console.error("Not switching the runtime: Ovis is stopping."); return; }
+      switching = true;
+      try {
         await stopChild();
-        await launch(active);
-      }
-    } catch (error) {
-      console.error(error);
-      await shutdown(1);
-    } finally { switching = false; }
+        const target = readSavedRuntime(appStateDir, port)?.runtime ?? "herdr";
+        try { await launch(active, target === "herdr-core" ? "herdr" : "bridge"); }
+        catch (error) {
+          // a stop that cut the wait short is no failed start: the choice stays for the next start
+          if (stopping || !restoreRuntime(appStateDir, port, id)) throw error;
+          console.error(`The bridge failed to start on the chosen runtime (${error instanceof Error ? error.message : error}); going back to the previous one.`);
+          await stopChild();
+          await launch(active, "bridge");
+        }
+      } catch (error) {
+        console.error(error);
+        await shutdown(1);
+      } finally { switching = false; checkBridge(); }
+    });
   }
   const pluginRoot = process.env["HERDR_PLUGIN_ROOT"];
   // only a launcher-started supervisor can hand over: run directly, it keeps serving the update itself
@@ -187,18 +217,20 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       console.log("Update installed; handing over to the new supervisor.");
       await shutdown(HANDOVER_EXIT);
     },
-    async activate(next, commit) {
-      switching = true;
-      try {
-        await stopChild();
-        try { await launch(next); commit(); }
-        catch (error) {
+    activate(next, commit) {
+      return exclusive(async () => {
+        switching = true;
+        try {
           await stopChild();
-          await launch(active);
-          throw new Error(`${error instanceof Error ? error.message : error} Previous version restored.`);
-        }
-        active = next;
-      } finally { switching = false; }
+          try { await launch(next); commit(); }
+          catch (error) {
+            await stopChild();
+            await launch(active);
+            throw new Error(`${error instanceof Error ? error.message : error} Previous version restored.`);
+          }
+          active = next;
+        } finally { switching = false; checkBridge(); }
+      });
     },
   });
   // a Rust PTY host install runs in a process group of its own: it stops with this supervisor

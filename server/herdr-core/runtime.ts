@@ -34,24 +34,45 @@ let found: string | null = null;
 /** the search startRuntime ran, run again to find hc once the one found is gone */
 let search: (() => Promise<FoundHc | null>) | null = null;
 let recovering: Promise<void> | null = null;
+/** the hc found is gone and no search has verified another yet */
+let lost = false;
+/** a search that found nothing is not run again sooner: each one runs the login shell and every candidate */
+const RECOVERY_GAP_MS = 10_000;
+let searchedAt = 0;
+/** what hcBin answers meanwhile: a path that cannot exist (/dev/null is no folder), so nothing unverified runs */
+export const HC_MOVED = "/dev/null/herdr-core-moved";
 
 /**
  * The `hc` to run: the one startRuntime found as the Herdr app finds it; before that, OVIS_HC_BIN,
- * else `hc` on the PATH. When an update moved the one found, the start's own search runs again
- * (the login shell's PATH included, every candidate asked `--version` afresh), and the call after
- * it ends runs what it found. A path it did not just verify is never taken.
+ * else `hc` on the PATH. Once an update moved the one found, nothing but a freshly verified hc is
+ * handed out: the start's own search runs again (the login shell's PATH included, every candidate
+ * asked `--version` afresh), and until it finds one this answers HC_MOVED, which no spawn can run,
+ * so even a file that reappears at the old path is not run unchecked.
  */
 export function hcBin(): string {
-  if (found !== null && search !== null && recovering === null && !existsSync(found)) {
+  if (found !== null && search !== null && !lost && !existsSync(found)) lost = true;
+  if (lost && search !== null && recovering === null && Date.now() - searchedAt >= RECOVERY_GAP_MS) {
     const again = search;
-    recovering = again().then((core) => { if (core !== null && search === again) found = core.bin; }, () => {}).finally(() => { recovering = null; });
+    searchedAt = Date.now();
+    recovering = again().then((core) => {
+      if (core !== null && search === again) { found = core.bin; lost = false; }
+    }, () => {}).finally(() => { recovering = null; });
   }
+  if (lost) return HC_MOVED;
   return found ?? (process.env["OVIS_HC_BIN"] || "hc");
 }
 
 /** the search for a moved hc in progress, for a caller (a test) that waits for it; null when none runs */
 export function hcRecovery(): Promise<void> | null {
   return recovering;
+}
+
+/** No hc answered `--version` as herdr-core's: the one start failure a choice saved in Settings falls back from. */
+export class NoHerdrCoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoHerdrCoreError";
+  }
 }
 
 let connection: HcConnection | null = null;
@@ -82,7 +103,7 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
   const core = await find();
   if (core === null) {
-    throw new Error("no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc on the PATH, the login shell's PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix or cargo, answered `--version` with `hc …`. Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path");
+    throw new NoHerdrCoreError("no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc on the PATH, the login shell's PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix or cargo, answered `--version` with `hc …`. Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path");
   }
   found = core.bin;
   search = find;
@@ -104,6 +125,8 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
       serving = false;
       found = null;
       search = null;
+      lost = false;
+      searchedAt = 0;
     },
   };
 }

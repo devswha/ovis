@@ -192,7 +192,8 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | { type: "seen"; finishes: SeenFinish[] }
   | DevicePairedEvent;
 /** `security`: authenticated requests only, absent from an older server (shared/protocol.ts SecuritySummary) */
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary }
+/** `web_ui.boot_id`: this server lifetime's id, as in the full health answer; absent from older servers */
+export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string } }
 export interface BridgeIdentity {
   pid: number;
   managed_remote: boolean;

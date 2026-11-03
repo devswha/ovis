@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findHc } from "./discovery.ts";
-import { hcBin, hcRecovery, startRuntime } from "./runtime.ts";
+import { HC_MOVED, hcBin, hcRecovery, startRuntime } from "./runtime.ts";
 
 /** an hc stand-in found, so no test looks at the developer's own PATH, shell or hc */
 const standIn = async () => ({ bin: "/nonexistent/hc", version: "0.1.17" });
@@ -94,6 +94,11 @@ it.skipIf(platform === "win32")("never runs a file the search did not just verif
     hcBin();
     await hcRecovery();
     expect(hcBin()).not.toBe(replaced);
+    // nothing verified: not even a file that reappears at the old path is handed out
+    hcIn(dir, "old", "herbstclient 0.9.5");
+    expect(hcBin()).toBe(HC_MOVED);
+    await hcRecovery();
+    expect(hcBin()).toBe(HC_MOVED);
   } finally {
     adapter.stop();
   }

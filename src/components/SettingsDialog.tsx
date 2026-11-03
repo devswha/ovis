@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Mic, Monitor, Palette, Plus, Search, Smartphone, SquareTerminal, Star, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
@@ -18,7 +18,7 @@ import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, HISTORY_PROMPT
 import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
-import { followRestart } from "../lib/runtimeSwitch.ts";
+import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
 import { KeyBarSettings } from "./KeyBarSettings.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Stepper, Toggle } from "./SettingsControls.tsx";
@@ -29,7 +29,7 @@ import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
 import type { HerdrCoreFacts, HerdrRuntimeFacts, Machine, MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchHealth } from "../lib/api.ts";
+import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -1053,24 +1053,18 @@ function PluginsGroup() {
 /**
  * Which runtime this PC's terminals come from, and the switch between herdr's TUI and the Herdr
  * app when this PC has both and nothing else decides it. A switch asks first, saves the choice and
- * restarts Ovis on it; the page reloads once a new server answers. Where the switch cannot run,
+ * restarts Ovis on it; once a new server answers, the app reads it again in place (no reload). Where the switch cannot run,
  * one quiet line says why, or how to switch by hand.
  */
 function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted }: { version: string | null; runtime: "herdr" | "herdr-core" | null; core: HerdrCoreFacts | null; facts: HerdrRuntimeFacts | null; bootId: string | null; onServerRestarted?: () => void }) {
   const t = useT();
   const [confirming, setConfirming] = useState(false);
-  // the switch asked for and the server that answered before it: a new boot id is the restarted one
-  const [restarting, setRestarting] = useState<{ to: "herdr" | "herdr-core"; from: string | null } | null>(null);
-  const [lost, setLost] = useState(false);
-  // the wait itself is lib/runtimeSwitch.ts's: the app may close Settings while the server is away
-  const lostRef = useRef(setLost);
-  lostRef.current = setLost;
-  const backRef = useRef(() => {});
-  backRef.current = () => { setRestarting(null); setLost(false); onServerRestarted?.(); };
+  // the wait for the restarted server outlives this page of Settings (lib/runtimeSwitch.ts)
+  const restarting = useSyncExternalStore(subscribeRestart, restartState);
   if (restarting !== null) {
     return (
       <SettingsGroup title={t("Terminals")} section="runtime">
-        <p className="settings-item settings-hint" role="status">{lost ? t("Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.")
+        <p className="settings-item settings-hint" role="status">{restarting.lost ? t("Ovis has not answered since the restart. Reload this page in a moment; if it stays away, start Ovis again on this PC.")
           : restarting.to === "herdr-core" ? t("Restarting Ovis on the Herdr app…") : t("Restarting Ovis on herdr TUI…")}</p>
       </SettingsGroup>
     );
@@ -1110,12 +1104,11 @@ function RuntimeFacts({ version, runtime, core, facts, bootId, onServerRestarted
             : t("Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running. Pins, muted alerts and unsent drafts belong to each runtime's panes, so the Herdr app's stay for when you switch back.")}
           confirmLabel={t("Switch and restart")}
           onConfirm={async () => {
-            // the server answering now: any other boot id after the switch is the restarted one
-            const from = await fetchHealth().then((health) => health.web_ui?.boot_id ?? bootId, () => bootId);
+            // the bridge answering now (its boot id needs no herdr): any other one after the switch is the restarted server
+            const from = await fetchBridgeHealth().then((health) => health.web_ui?.boot_id ?? bootId, () => bootId);
             await switchRuntime(target);
-            setRestarting({ to: target, from });
             setConfirming(false);
-            followRestart({ from, boot: () => fetchHealth().then((health) => health.web_ui?.boot_id ?? null), onBack: () => { backRef.current(); }, onLost: () => lostRef.current(true) });
+            awaitRestart(target, { from, boot: () => fetchBridgeHealth().then((health) => health.web_ui?.boot_id ?? null), onBack: () => onServerRestarted?.() });
           }}
           onClose={() => setConfirming(false)}
         />

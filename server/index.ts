@@ -22,7 +22,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { hcBin, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { hcBin, NoHerdrCoreError, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
 import type { HerdrCoreFacts } from "../shared/machines.ts";
@@ -410,7 +410,7 @@ if (import.meta.main) {
   let choice: RuntimeChoice;
   let fallback: "no_herdr_core" | undefined;
   try {
-    choice = await chooseRuntime({ stateDir, env: startEnv });
+    choice = await chooseRuntime({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), env: startEnv });
     setRuntime(choice.runtime);
     console.log(`Runtime: ${choice.runtime} (${choice.reason})`);
     try {
@@ -418,7 +418,8 @@ if (import.meta.main) {
     } catch (err) {
       // a choice saved from Settings whose core is gone falls back to herdr, where Settings can switch again;
       // OVIS_RUNTIME says what to serve, and its failure stays an error
-      if (choice.source !== "saved" || choice.runtime !== "herdr-core") throw err;
+      // only a missing hc: any other failure (a state folder, another Ovis) is the launcher's to roll back
+      if (choice.source !== "saved" || choice.runtime !== "herdr-core" || !(err instanceof NoHerdrCoreError)) throw err;
       console.error(`The herdr-core chosen in Settings cannot start (${err instanceof Error ? err.message : String(err)}); serving herdr.`);
       choice = { ...choice, runtime: "herdr" };
       fallback = "no_herdr_core";
@@ -437,7 +438,7 @@ if (import.meta.main) {
   let instance: ReturnType<typeof createServer>;
   try {
     instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), herdrCoreFacts,
-      runtimeService: runtimeService({ stateDir, serving: choice.runtime, source: choice.source, ...(fallback ? { fallback } : {}), env: startEnv, core: herdrCoreFacts, restart: () => process.send?.({ type: "runtime-restart" }) }),
+      runtimeService: runtimeService({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), serving: choice.runtime, source: choice.source, ...(fallback ? { fallback } : {}), env: startEnv, core: herdrCoreFacts, restart: (id) => process.send?.({ type: "runtime-restart", id }) }),
       portal, relay, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, shellAgents: new ShellAgentLocator(), agentDetector: new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) }), stateDir, siblingStateDir: siblingStateDir(stateDir) });
     instance.warmAgentCatalog();
   } catch (err) {
