@@ -507,9 +507,10 @@ describe("finding a picture's record", () => {
       return read(...args);
     }) as typeof fs.readSync);
     try { exact(await transcriptImageAsync(path, `${id(3)}:0:0`)); } finally { watch.mockRestore(); }
-    // a window of a MiB, what is left of its line, and the piece before it that finds the line's start:
-    // three reads a line, and a few more for the first windows (64 KiB pieces took 6 a line)
-    expect(reads).toBeLessThan(4 * lines);
+    // the piece before a window that finds the line's start, and the window of a MiB, which does not read
+    // again what that piece holds: two reads a line, and a few more for the first windows (64 KiB pieces
+    // took 6 a line)
+    expect(reads).toBeLessThan(3 * lines);
   });
 
   it("finds a tool's call whose id a search window's edge cuts in two", async () => {
@@ -522,6 +523,22 @@ describe("finding a picture's record", () => {
     const path = transcript(text + line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read-across-the-edge", content: [picture] }] } }));
     exact(await asMain(path, `${id(3)}:0:0`));
     exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
+  });
+
+  it("finds a tool's call whose id the backward walk's first window cuts where what its probe read ends", async () => {
+    // the result's first window back is 64 KiB: its probe finds the call's line start, and the window
+    // begins with the probe's bytes of that line, up to 64 KiB before the result, which is in the id
+    const id2 = "read-across-the-probe";
+    const call = (pad: number) => line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: id2, name: "Read", input: { pad: "x".repeat(pad) } }] } });
+    const tail = (pad: number) => Buffer.byteLength(call(pad)) - call(pad).indexOf(id2);
+    const pad = 64 * 1024 + 8 - tail(0);
+    expect(tail(pad)).toBe(64 * 1024 + 8);
+    const path = transcript(line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "look" } }) + call(pad)
+      + line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: id2, content: [picture] }] } }));
+    quiet();
+    exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
+    exact(await transcriptImageAsync(path, `${id(3)}:0:0`));
+    exact(await asMain(path, `${id(3)}:0:0`));
   });
 
   it("finds a tool's call however far back it was made, and only the last block naming it decides", async () => {
