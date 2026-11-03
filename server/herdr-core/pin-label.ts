@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
-import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
+import { MAX_PINS, type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
+import { readStateDocument, writeStateDocument } from "../state-document.ts";
 import type { HcConnection } from "./connection.ts";
 import { isRecord } from "./snapshot.ts";
 
@@ -10,8 +12,10 @@ import { isRecord } from "./snapshot.ts";
 export const PINNED_LABEL = "herdr.pinned";
 /** How long a line to hc that ended waits before the bridge looks again. */
 const REOPEN_MS = 1_000;
+/** What both sides last agreed on per terminal, beside preferences.json. */
+const AGREED_FILE = "herdr-core-pins.json";
 
-type Hc = Pick<HcConnection, "call" | "open">;
+type Hc = Pick<HcConnection, "call" | "open" | "hello">;
 interface PinStore {
   get(): SharedPreferences;
   set(change: PreferencesChange): SharedPreferences;
@@ -20,94 +24,180 @@ interface PinStore {
 
 /**
  * Keeps the Agents list's pins (the shared preferences' `pins`, `<pc>:<pane>` for an agent) and
- * herdr-core's `herdr.pinned` labels the same for this PC's terminals: a pin made in a browser is
- * written on its terminal, and one made or removed in the Herdr app joins or leaves the list (at
- * its end, as a pin made here does). The first time a terminal is seen, a pin on either side
- * counts, so neither side's pins are lost when the two first meet. Workspace pins have no label
- * and stay Ovis's own.
+ * herdr-core's `herdr.pinned` labels the same for this PC's terminals. For each terminal it
+ * remembers, on disk, the pin both sides last agreed on: the side that differs from it changed
+ * (the Herdr app's when both did), so a pin or unpin made on one side while the other was away,
+ * or a label write that failed, is settled the next time both are seen. A terminal never agreed
+ * on keeps a pin from either side. A pin made in the app joins the end of the list, as one made
+ * in Ovis does. Workspace pins have no label and stay Ovis's own.
  */
-export function bridgePins(hc: Hc, store: PinStore, machineId: string): () => void {
-  /** each live terminal's pin as its label last said, or as it was last written */
-  const labeled = new Map<string, boolean>();
+export interface PinBridge {
+  stop: () => void;
+  /** settles once every label write asked for so far has been answered */
+  idle: () => Promise<void>;
+}
+
+export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir: string, reopenMs = REOPEN_MS): PinBridge {
+  const agreedPath = join(stateDir, AGREED_FILE);
+  /** `<core id>/<terminal>` → the pin both sides last agreed on */
+  const agreed = readAgreed(agreedPath);
+  /** each live terminal of the current core: whether its label says pinned, as last heard */
+  const live = new Map<string, boolean>();
+  let core = "";
   const keyOf = (address: string) => `${machineId}:${address}`;
-  const pins = () => store.get().pins ?? [];
+  const agreedKey = (address: string) => `${core}/${address}`;
+  const listed = (address: string) => (store.get().pins ?? []).includes(keyOf(address));
   let stopped = false;
   let closeStream: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const change = (next: string[]) => {
-    try { store.set({ settings: {}, pins: next }); }
-    catch (error) { console.warn("herdr-core: could not keep a pin from the Herdr app:", error); }
+  const saveAgreed = () => {
+    try { writeStateDocument(agreedPath, `${JSON.stringify(Object.fromEntries(agreed))}\n`, false); }
+    catch (error) { console.warn(`herdr-core: could not save ${agreedPath}:`, error); }
   };
-  const label = (address: string, pinned: boolean) => {
-    labeled.set(address, pinned);
-    hc.call("terminal.label", { terminal: address, labels: { [PINNED_LABEL]: pinned ? "1" : "" } })
-      .catch((error: unknown) => console.warn(`herdr-core: could not ${pinned ? "pin" : "unpin"} ${address} for the Herdr app:`, error));
+  const setAgreed = (address: string, pinned: boolean) => {
+    if (agreed.get(agreedKey(address)) === pinned) return;
+    agreed.set(agreedKey(address), pinned);
+    saveAgreed();
   };
-  const onLabel = (address: string, pinned: boolean) => {
-    const before = labeled.get(address);
-    labeled.set(address, pinned);
+  /** Ovis's list made to say `pinned`; false when it cannot hold another pin */
+  const list = (address: string, pinned: boolean): boolean => {
+    const pins = store.get().pins ?? [];
     const key = keyOf(address);
-    const list = pins();
-    const listed = list.includes(key);
-    if (pinned && !listed) change([...list, key]);
-    else if (!pinned && listed) {
-      if (before === undefined) label(address, true);
-      else if (before) change(list.filter((pin) => pin !== key));
+    if (pins.includes(key) === pinned) return true;
+    if (pinned && pins.length >= MAX_PINS) return false;
+    try {
+      store.set({ settings: {}, pins: pinned ? [...pins, key] : pins.filter((pin) => pin !== key) });
+      return true;
+    } catch (error) {
+      console.warn("herdr-core: could not keep a pin from the Herdr app:", error);
+      return false;
     }
   };
+
+  /** Each terminal's label writes in order, each one the pin wanted when its turn comes. */
+  const writes = new Map<string, Promise<void>>();
+  const writeLabel = (address: string) => {
+    const run = (writes.get(address) ?? Promise.resolve()).then(async () => {
+      if (stopped || !live.has(address)) return;
+      const pinned = listed(address);
+      if (live.get(address) === pinned) { setAgreed(address, pinned); return; }
+      try {
+        await hc.call("terminal.label", { terminal: address, labels: { [PINNED_LABEL]: pinned ? "1" : "" } });
+        live.set(address, pinned);
+        setAgreed(address, pinned);
+      } catch (error) {
+        // left unagreed: the next snapshot settles it from what each side says then
+        console.warn(`herdr-core: could not ${pinned ? "pin" : "unpin"} ${address} for the Herdr app:`, error);
+      }
+    });
+    writes.set(address, run);
+    void run.then(() => { if (writes.get(address) === run) writes.delete(address); });
+  };
+
+  /** A terminal's label heard: settled against what both sides last agreed on. */
+  const heard = (address: string, labelPinned: boolean) => {
+    live.set(address, labelPinned);
+    const base = agreed.get(agreedKey(address));
+    const ovis = listed(address);
+    const wanted = base === undefined ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
+    if (ovis !== wanted && !list(address, wanted)) return;
+    if (labelPinned !== wanted) writeLabel(address);
+    else setAgreed(address, wanted);
+  };
   const pinnedIn = (labels: unknown) => isRecord(labels) && typeof labels[PINNED_LABEL] === "string" && labels[PINNED_LABEL] !== "";
-  const remember = (record: unknown) => {
-    if (!isRecord(record) || typeof record["address"] !== "string" || record["state"] !== "live") return;
-    onLabel(record["address"], pinnedIn(record["labels"]));
+  const record = (value: unknown) => {
+    if (!isRecord(value) || typeof value["address"] !== "string" || value["state"] !== "live") return;
+    heard(value["address"], pinnedIn(value["labels"]));
+  };
+  const gone = (address: string) => {
+    live.delete(address);
+    if (agreed.delete(agreedKey(address))) saveAgreed();
   };
 
   const unsubscribe = store.subscribe((preferences) => {
     // no browser has shared its pins yet: that is no unpin
     if (preferences.pins === undefined) return;
-    const list = new Set(preferences.pins);
-    for (const [address, pinned] of labeled) if (list.has(keyOf(address)) !== pinned) label(address, !pinned);
+    for (const address of live.keys()) writeLabel(address);
   });
 
   const reopen = () => {
     closeStream = null;
     if (stopped || timer !== undefined) return;
-    timer = setTimeout(() => { timer = undefined; void open(); }, REOPEN_MS);
+    timer = setTimeout(() => { timer = undefined; void open(); }, reopenMs);
   };
-  const lines = makeLineReader(LINE_BYTES, (line) => {
-    let message: unknown;
-    try { message = JSON.parse(line); } catch { return; }
-    if (!isRecord(message)) return;
-    // fell behind: the stream ends, and the next one's snapshot says what was missed
-    if (message["method"] === "missed") { closeStream?.(); return; }
-    const params = message["params"];
-    if (message["method"] !== "event" || !isRecord(params) || typeof params["terminal"] !== "string") return;
-    const data = isRecord(params["data"]) ? params["data"] : {};
-    switch (params["type"]) {
-      case "created": remember(data); return;
-      case "labels": if (labeled.has(params["terminal"])) onLabel(params["terminal"], pinnedIn(data["labels"])); return;
-      case "finished":
-      case "removed": labeled.delete(params["terminal"]); return;
-      default: return;
-    }
-  }, () => closeStream?.());
   const open = async () => {
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      closeStream?.();
+      reopen();
+    };
+    // events before the snapshot wait for it; a new reader per stream, so a cut line never joins the next
+    let early: unknown[] | null = [];
+    const apply = (message: unknown) => {
+      if (!isRecord(message)) return;
+      if (message["method"] === "missed") { end(); return; }
+      const params = message["params"];
+      if (message["method"] !== "event" || !isRecord(params) || typeof params["terminal"] !== "string") return;
+      const data = isRecord(params["data"]) ? params["data"] : {};
+      switch (params["type"]) {
+        case "created": record(data); return;
+        case "labels": if (live.has(params["terminal"])) heard(params["terminal"], pinnedIn(data["labels"])); return;
+        case "finished":
+        case "removed": gone(params["terminal"]); return;
+        default: return;
+      }
+    };
+    const lines = makeLineReader(LINE_BYTES, (line) => {
+      let message: unknown;
+      try { message = JSON.parse(line); } catch { end(); return; }
+      if (early) early.push(message);
+      else apply(message);
+    }, end);
     try {
-      const { result, channel } = await hc.open("events.subscribe", {}, { onData: lines, onClose: reopen });
+      const hello = await hc.hello();
+      const { result, channel } = await hc.open("events.subscribe", {}, { onData: lines, onClose: end });
       if (stopped) { void channel.close(); return; }
-      closeStream = () => { void channel.close(); };
-      for (const record of result.terminals ?? []) remember(record);
+      closeStream = () => { closeStream = null; void channel.close(); };
+      core = hello.core.id;
+      live.clear();
+      const shown = new Set(result.terminals.filter((terminal) => terminal.state === "live").map((terminal) => agreedKey(terminal.address)));
+      let pruned = false;
+      for (const key of agreed.keys()) if (key.startsWith(`${core}/`) && !shown.has(key)) { agreed.delete(key); pruned = true; }
+      if (pruned) saveAgreed();
+      for (const terminal of result.terminals) record(terminal);
+      const waiting = early;
+      early = null;
+      for (const message of waiting) apply(message);
+      if (ended) closeStream?.();
     } catch (error) {
       console.warn("herdr-core: pins are not shared with the Herdr app until its events can be read:", error);
-      reopen();
+      end();
     }
   };
   void open();
 
-  return () => {
-    stopped = true;
-    clearTimeout(timer);
-    unsubscribe();
-    closeStream?.();
+  return {
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+      unsubscribe();
+      closeStream?.();
+    },
+    idle: async () => { while (writes.size > 0) await Promise.all(writes.values()); },
   };
+}
+
+function readAgreed(path: string): Map<string, boolean> {
+  try {
+    const read = readStateDocument(path);
+    if (read.kind === "json" && isRecord(read.value)) {
+      return new Map(Object.entries(read.value).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
+    }
+  } catch (error) {
+    console.warn(`herdr-core: could not read ${path}; pins are settled as if first seen:`, error);
+  }
+  return new Map();
 }

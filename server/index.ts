@@ -225,7 +225,7 @@ export function createServer(
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null);
   const preferences = new PreferenceStore(stateDir);
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
-  const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE) : null;
+  const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
   try {
     rmSync(join(stateDir, "claude-rewinds.json"), { force: true });
@@ -387,7 +387,7 @@ export function createServer(
         releaseOpenCodeNative();
       });
       piReader.close();
-      stopPinBridge?.();
+      stopPinBridge?.stop();
       // the followed sign-ins run in this server's own terminals: no dialog could reach them once it stops
       void usageLogin.stopAll();
       void shellAgents.stop();
