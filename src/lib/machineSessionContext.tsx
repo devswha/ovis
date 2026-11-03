@@ -5,8 +5,9 @@ const MachineSessionsContext = createContext<MachineSessionRegistry | null>(null
 export const useMachineSessions = () => useContext(MachineSessionsContext);
 
 /** Authenticated app lifetime, across PC and pane switches. A terminal owns only its attach. */
-export function MachineSessionsProvider({ machineIds, children }: { machineIds: readonly string[]; children: ReactNode }) {
-  const [sessions] = useState(() => new MachineSessionRegistry());
+export function MachineSessionsProvider({ machineIds, sessions: provided, children }: { machineIds: readonly string[]; sessions?: MachineSessionRegistry; children: ReactNode }) {
+  const [owned] = useState(() => new MachineSessionRegistry());
+  const sessions = provided ?? owned;
   const ids = JSON.stringify(machineIds);
   useEffect(() => {
     // An initial empty roster is not evidence that every PC was removed.

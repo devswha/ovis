@@ -1,3 +1,4 @@
+import { subscribeMachineEvents, type MachineEventDocument } from "../machine-events.ts";
 /**
  * A browser's WebSocket connection: what the upgrade records on it, what it may do, how a frame is
  * sent to it, the presence beat it sends, and how it ends. Only this module changes a connection's
@@ -14,6 +15,8 @@ import { PaneWatch } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 export interface SocketData {
+  /** Only the connection server grants this document; remote terminal relays do not. */
+  machineEvents?: MachineEventDocument;
   deviceId?: string;
   readOnly?: boolean;
   relay?: MachineRelay;
@@ -37,6 +40,7 @@ export interface SocketData {
 
 interface ConnectionState {
   closing: boolean;
+  stopMachineEvents?: () => void;
   revoked: boolean;
   /** the connection's authority: observe connections cannot type or resize */
   mode: ClientRole;
@@ -63,7 +67,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
+export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneWatch>() });
   return data;
@@ -72,6 +76,16 @@ export function connectionData(fields: { relay?: MachineRelay; deviceId: string 
 /** The connection's live authority and closing, read where a check needs them; changed only here. */
 export function connectionOf(client: Client): Readonly<Pick<ConnectionState, "closing" | "mode" | "roles">> {
   return stateOf(client);
+}
+
+/** Idempotent subscription, with the same authorized document as SSE and the socket's output budget. */
+export function setMachineEvents(client: Client, enabled: boolean): void {
+  const state = stateOf(client);
+  if (!enabled) { state.stopMachineEvents?.(); state.stopMachineEvents = undefined; return; }
+  if (state.closing || state.stopMachineEvents || !client.data.machineEvents) return;
+  const stop = subscribeMachineEvents(client.data.machineEvents, (event) => send(client, { type: "machine-event", event }));
+  if (state.closing) stop();
+  else state.stopMachineEvents = stop;
 }
 
 /** A `presence` frame's answer, or null for any other frame. A relayed frame is only parsed when it can be one. */
@@ -232,6 +246,7 @@ export function createConnections({ clients, present, pending, devices, detachCl
    */
   function end(client: Client, reason: "stalled" | "revoked" | "closed"): void {
     const state = stateOf(client);
+    state.stopMachineEvents?.(); state.stopMachineEvents = undefined;
     switch (reason) {
       case "stalled": {
         if (state.closing) return;
