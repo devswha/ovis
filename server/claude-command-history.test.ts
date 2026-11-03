@@ -1,4 +1,4 @@
-import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
+import { afterEach, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { appendFileSync, chmodSync, closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -355,25 +355,30 @@ function holdSlices() {
   return { entered: entered.opened, release: held.open };
 }
 /**
- * Every window read takes 10 ms of the clock (performance.now), more than a slice, though no time
- * passes: storage as slow as an SSHFS home. Counts the reads of each path, and the leases they were
- * read in (`leases`); `read` hears of each read.
+ * Every window read takes 10 ms of the clock (performance.now), more than a slice, and opening a
+ * transcript `openMs`, though no time passes: storage as slow as an SSHFS home. Counts the reads of
+ * each path, and the leases they were read in (`leases`); `read` hears of each read; `elapsed` is
+ * the clock's time so far.
  */
-function slowReads(read: (path: string, reads: number) => void = () => {}) {
+function slowReads(read: (path: string, reads: number) => void = () => {}, openMs = 0) {
   const clock = performance.now.bind(performance);
   let waited = 0;
   const reads = new Map<string, number>(), leases = new Map<string, number>();
   const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
   release.push(() => now.mockRestore());
-  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); return (file) => work({ ...file, window: async (position, length) => {
+  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); waited += openMs; return (file) => work({ ...file, window: async (position, length) => {
     const bytes = await file.window(position, length);
     waited += 10;
     reads.set(path, (reads.get(path) ?? 0) + 1);
     read(path, reads.get(path)!);
     return bytes;
   } }); });
-  return Object.assign((path: string) => reads.get(path) ?? 0, { leases: (path: string) => leases.get(path) ?? 0 });
+  return Object.assign((path: string) => reads.get(path) ?? 0, { leases: (path: string) => leases.get(path) ?? 0, elapsed: () => waited });
 }
+/** An open on remote storage: several round trips (open, stat, the path's stat), each slower than a read. */
+const OPEN_MS = 100;
+/** The clock's time `reads` reads take, and `opens` opens. */
+const took = (reads: number, opens: number) => reads * 10 + opens * OPEN_MS;
 const MIB = 1024 * 1024;
 
 it("backs off a read the reader is too busy for without counting it a failure of the transcript", async () => {
@@ -547,11 +552,11 @@ it("lets a small session have its turn after each slow read of a large one", asy
 it("keeps a transcript open across turns while no other session waits", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));
-  const reads = slowReads();
+  const reads = slowReads(undefined, OPEN_MS);
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
-  // a turn for every slow read, but the transcript opened (and checked) once, not for each turn
+  // a turn for every slow read, but the read takes the time of its reads and an open or two, not an open a turn
   expect(reads(s.path)).toBeGreaterThan(8);
-  expect(reads.leases(s.path) * 4).toBeLessThan(reads(s.path));
+  expect(reads.elapsed()).toBeLessThan(took(reads(s.path), 2));
 }, 5000);
 
 it("lets go of a transcript it keeps open at the end of the turn another session is asked for in", async () => {
@@ -608,12 +613,13 @@ it("lets go of a transcript it keeps open at the end of a turn that told a watch
 it("reads on in the same lease when the session it reads is asked for again", async () => {
   const s = fixture();
   writeFileSync(s.path, notice("large") + filler.repeat(8));
-  // the leases there were as each read was made
-  let leases = 0;
-  const reads = slowReads((_, count) => { leases = reads.leases(s.path); if (count === 3) commandHistory(s.path, s.limit()); });
+  // the clock's time as each read was made
+  let at = 0;
+  const reads = slowReads((_, count) => { at = reads.elapsed(); if (count === 3) commandHistory(s.path, s.limit()); }, OPEN_MS);
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  // the request at the third read cost no open: through its last read, the read took the time of its reads and one open
   expect(reads(s.path)).toBeGreaterThan(8);
-  expect(leases).toBe(1);
+  expect(at).toBe(took(reads(s.path), 1));
 }, 5000);
 
 it("gives each turn of a transcript it keeps open a slice of its own", async () => {
@@ -639,12 +645,12 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
   expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
   probing = false;
   expect(waited).toBeGreaterThan(16);
-  // the reads between one run of the event loop and the next that saw any
-  const turns = runs.slice(1).map((at, index) => at - runs[index]!).filter((reads) => reads > 0);
-  // a turn ends every few reads, not after each one (the read's last may be short), and none runs
-  // on past its slice and the read that ended it
-  expect(turns.slice(0, -1).every((reads) => reads >= 2)).toBe(true);
-  expect(Math.max(...turns)).toBeLessThanOrEqual(5);
+  // how long of the clock the event loop waited between one run and the next, where the read ran
+  const held = runs.slice(1).map((at, index) => at - runs[index]!).filter((ms) => ms > 0);
+  // never longer than a slice and the read that ended it; and each turn but the last works a slice
+  // of its own, not just a read (the read's last may be short)
+  expect(Math.max(...held)).toBeLessThanOrEqual(5);
+  expect(held.slice(0, -1).every((ms) => ms >= 2)).toBe(true);
 }, 5000);
 
 it("reads one slice for a request nobody watches or waits for", async () => {
@@ -711,6 +717,12 @@ it("lets go of a transcript it keeps open at the end of the turn it started over
  * Holds every window read of each of `paths` until its `release` is called, as a read stuck on its
  * disk; its `entered` opens as the first one is held.
  */
+/** setTimeout, Date and performance.now as the test moves them, for as long as it lasts (setImmediate stays real). */
+function controlledClock() {
+  jest.useFakeTimers();
+  release.push(() => jest.useRealTimers());
+}
+
 function holdWindows(...paths: string[]) {
   const holds = new Map(paths.map((path) => {
     const entered = gate(), held = gate();
@@ -733,11 +745,15 @@ it("reads another transcript while one transcript's read is stuck on its disk", 
   writeFileSync(a.path, notice("a"));
   writeFileSync(b.path, notice("b"));
   const held = holdWindows(a.path)(a.path);
+  controlledClock();
   const first = waitCommandHistory(a.path, a.limit(), 60_000);
   await held.entered;
-  const other = await waitCommandHistory(b.path, b.limit(), 150);
-  expect(other).toMatchObject({ complete: true, through: b.limit() });
-  expect(other!.ends.map((end) => end.id)).toEqual(["b"]);
+  const other = waitCommandHistory(b.path, b.limit(), 60_000);
+  // the time a stuck slice is waited for passes: B is read beside it
+  jest.advanceTimersByTime(50);
+  const found = await other;
+  expect(found).toMatchObject({ complete: true, through: b.limit() });
+  expect(found!.ends.map((end) => end.id)).toEqual(["b"]);
   held.release();
   expect(await first).toMatchObject({ complete: true, ends: [{ id: "a" }] });
 }, 5000);
@@ -747,24 +763,21 @@ it("reads no other session beside a transcript it keeps open that takes its turn
   writeFileSync(large.path, notice("large") + filler.repeat(8));
   const small = fixture("small");
   writeFileSync(small.path, notice("small"));
-  // the drain's looks at whether the slice it waits for is stuck come only when the test calls them
-  const looks: (() => void)[] = [];
-  const timeout = globalThis.setTimeout;
-  const timers = spyOn(globalThis, "setTimeout").mockImplementation(((call: () => void, ms?: number) => {
-    if (ms !== 50) return timeout(call, ms);
-    looks.push(call);
-    return timeout(() => {}, 0);
-  }) as typeof setTimeout);
-  release.push(() => timers.mockRestore());
+  // the clock moves only as the test moves it (and by each slow read)
+  controlledClock();
   let answered: Promise<unknown> | undefined;
   // the leases open as each read of the small one is made
   const open: number[] = [];
   const reads = slowReads((path, count) => {
     if (path === small.path) open.push(transcriptReader.size().active);
     else if (count === 3) {
-      answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
-      // the stall time passes while the large read is still in its turn
-      for (const look of looks.splice(0)) look();
+      // between two turns of the large read, after it saw nobody waiting: the small one asks, and
+      // the time a stuck slice is waited for passes. The large read took a turn since the drain
+      // last looked, so the drain waits on, and the large one lets go at the end of its next turn
+      setImmediate(() => {
+        answered = waitCommandHistory(small.path, small.limit(), 60_000).then(() => reads(large.path));
+        jest.advanceTimersByTime(50);
+      });
     }
   });
   expect((await waitCommandHistory(large.path, large.limit(), 60_000))!.complete).toBe(true);
@@ -778,18 +791,28 @@ it("starts no more slices beside stuck ones than the reader has room for", async
   for (const s of [a, b, c]) writeFileSync(s.path, notice("done"));
   const holds = holdWindows(a.path, b.path);
   const heldA = holds(a.path), heldB = holds(b.path);
+  controlledClock();
   const first = waitCommandHistory(a.path, a.limit(), 60_000);
   await heldA.entered;
   const second = waitCommandHistory(b.path, b.limit(), 60_000);
+  jest.advanceTimersByTime(50);
   await heldB.entered;
   // both of the reader's leases are stuck: the third session waits without a slice (none waits in
   // the reader either), and has its slice once one ends
-  expect(await waitCommandHistory(c.path, c.limit(), 150)).toMatchObject({ complete: false, through: 0 });
+  const third = waitCommandHistory(c.path, c.limit(), 150);
+  jest.advanceTimersByTime(50);
+  for (let turn = 0; turn < 3; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+  jest.advanceTimersByTime(100);
+  expect(await third).toMatchObject({ complete: false, through: 0 });
   expect(transcriptReader.size()).toMatchObject({ active: transcriptReader.capacity, waiting: 0 });
   heldA.release();
-  expect(await waitCommandHistory(c.path, c.limit(), 60_000)).toMatchObject({ complete: true });
+  expect(await first).toMatchObject({ complete: true });
+  // A's slice ended; the drain, waiting on B's, looks again once the time passes and starts C's
+  const after = waitCommandHistory(c.path, c.limit(), 60_000);
+  jest.advanceTimersByTime(50);
+  expect(await after).toMatchObject({ complete: true });
   heldB.release();
-  for (const read of [first, second]) expect(await read).toMatchObject({ complete: true });
+  expect(await second).toMatchObject({ complete: true });
 }, 5000);
 
 it("gives up a read stuck in flight once the last server lets go", async () => {
@@ -870,3 +893,4 @@ it("drops a window read across a start over that a request made while the window
   rest.open();
   expect(await waitCommandHistory(s.path, s.limit(), 60_000)).toMatchObject({ complete: true, ends: [{ id: "b" }, { id: "c" }] });
 }, 5000);
+

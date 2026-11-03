@@ -1,11 +1,15 @@
-import { afterEach, expect, it, spyOn } from "bun:test";
+import { afterEach, expect, it, setSystemTime, spyOn } from "bun:test";
 import { mkdtempSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { transcriptVersion, TranscriptBusyError, TranscriptReader, type TranscriptHandle, type TranscriptIO } from "./transcript-reader.ts";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const restores: (() => void)[] = [];
+afterEach(() => {
+  for (const restore of restores.splice(0).reverse()) restore();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 const deferred = <T = void>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (error: unknown) => void;
@@ -180,10 +184,12 @@ it("exposes the metadata checked at admission without another stat", async () =>
 
 it("enforces the absolute deadline before a late callback can publish ahead of its timer", async () => {
   const b = backend(); const reader = new TranscriptReader(b.io);
-  const deadline = Date.now() + 10;
+  const now = Date.now(), deadline = now + 10;
+  restores.push(() => setSystemTime());
+  setSystemTime(new Date(now));
   await expect(reader.read("a", async () => {
-    // Deliberately retain the JS turn so the timer has not run when the callback returns.
-    while (Date.now() <= deadline) { /* synchronous synthetic parser slice */ }
+    // the clock passes the deadline within the callback's turn: the timer has not run when it returns
+    setSystemTime(new Date(deadline + 1));
     return "late";
   }, { deadline })).rejects.toBeInstanceOf(TranscriptBusyError);
   await reader.settled(); expect(b.closed).toEqual(["a"]);
@@ -198,10 +204,13 @@ it("rejects an undefined callback error rather than publishing undefined success
 
 it("checks the absolute deadline after a pending close settles before the timer can run", async () => {
   const b = backend(); const reader = new TranscriptReader(b.io); const gate = deferred(); b.closing.set("a", gate);
-  const deadline = Date.now() + 10;
+  const now = Date.now(), deadline = now + 10;
+  restores.push(() => setSystemTime());
+  setSystemTime(new Date(now));
   const pending = reader.read("a", async () => "late", { deadline });
   await tick(); expect(b.closed).toEqual(["a"]);
-  while (Date.now() <= deadline) { /* retain the JS turn until this close is too late */ }
+  // the clock passes the deadline while the close is pending, before its timer runs
+  setSystemTime(new Date(deadline + 1));
   gate.resolve(); await expect(pending).rejects.toBeInstanceOf(TranscriptBusyError);
   expect(reader.size().active).toBe(0);
 });
@@ -328,3 +337,4 @@ it("ends a cancelled lease's read ahead without an unhandled rejection", async (
     expect(unhandled).toEqual([]);
   } finally { process.off("unhandledRejection", hear); }
 });
+
