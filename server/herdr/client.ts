@@ -230,8 +230,10 @@ export async function herdrRpc(
   try {
     const result = await new Promise<unknown>((resolve, reject) => {
       let settled = false;
-      let socket: { end: () => void } | null = null;
+      let socket: { end: () => void; write: (data: Uint8Array) => number } | null = null;
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let request: Buffer | null = null;
+      let written = 0;
 
       const finish = (fn: () => void) => {
         if (settled) return;
@@ -273,12 +275,41 @@ export async function herdrRpc(
 
       const limit = LARGE_REPLY_METHODS.has(method) ? LARGE_REPLY_BYTES : LINE_BYTES;
       const onData = makeLineReader(limit, handleLine, (bytes) => invalid(`over the ${limit}-byte line limit`, bytes));
+      const connectFailed = (err: Error) => finish(() =>
+        reject(new HerdrError("connect_failed", `cannot reach herdr at ${socketPath}: ${err.message}`)));
+      const writeRequest = () => {
+        if (settled || socket === null || request !== null && written === request.length) return;
+        try {
+          // Before the first byte a revoked sender can still cancel. Once a frame starts, finish
+          // that same frame: changing it or replaying its prefix would corrupt the RPC stream.
+          if (written === 0 && guard && !guard()) {
+            finish(() => reject(new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)));
+            return;
+          }
+          request ??= Buffer.from(`${JSON.stringify({ id, method, params })}\n`);
+          // Bun sockets are unbuffered: a partial write (or zero) leaves the suffix for drain.
+          // Offsets are UTF-8 bytes, never string indices; -1 means this connection is closed.
+          const accepted = socket.write(request.subarray(written));
+          if (accepted === -1) {
+            finish(() => reject(new HerdrError("closed", `herdr closed the connection before answering ${method}`)));
+            return;
+          }
+          written += accepted;
+        } catch (error) {
+          // A connected failure must not be mistaken for proof that no request was sent:
+          // prompt answers treat connect_failed as permission to retry the same asking.
+          finish(() => reject(new HerdrError("socket_error", (error as Error)?.message ?? "herdr socket error")));
+        }
+      };
 
       Bun.connect({
         unix: socketAddress(socketPath),
         socket: {
           data(_sock, chunk) {
             onData(chunk);
+          },
+          drain() {
+            writeRequest();
           },
           error(_sock, err) {
             finish(() => reject(new HerdrError("socket_error", err?.message ?? "herdr socket error")));
@@ -299,17 +330,8 @@ export async function herdrRpc(
             }
             return;
           }
-          if (guard && !guard()) {
-            finish(() => reject(new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)));
-            return;
-          }
-          sock.write(`${JSON.stringify({ id, method, params })}\n`);
-        })
-        .catch((err: Error) => {
-          finish(() =>
-            reject(new HerdrError("connect_failed", `cannot reach herdr at ${socketPath}: ${err.message}`)),
-          );
-        });
+          writeRequest();
+        }, connectFailed);
     });
     diagnostics.recovered(key, fields());
     return result;
