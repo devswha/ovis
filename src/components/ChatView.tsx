@@ -2024,7 +2024,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // the layout allowance from the end, however many small moves took it there. Growth never
     // excuses a move up.
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
-    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX);
+    // Under a selection in progress the view is moved up by the hold itself, putting back what a
+    // fold moved, and by the list and the browser after it as the transcript shrinks: without the
+    // reader's input, that is the layout's too (ChatTimeline).
+    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || selecting.current);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;

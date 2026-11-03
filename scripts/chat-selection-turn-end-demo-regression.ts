@@ -5,7 +5,8 @@
  * Working line gone). The words are in a later reply, or in the ending turn itself below its work
  * block, which folds inside the same row. With a mouse at 1280 the drag is pressed before the turn
  * ends and finished after it, from a bare press and from a drag already partway; at 390 on a touch
- * screen a selection stands (as a long press leaves it) while the turn ends. In every painted frame
+ * screen a selection stands (as a long press leaves it) while the turn ends; the fold is also pressed
+ * at 1280 with reduced motion, where it lands in one frame. In every painted frame
  * between, the words stay where they were, the drag takes exactly them, and once the selection is
  * gone a reader who was following is at the end again. All files and HTTP traffic stay in
  * this disposable, loopback-only app; no herdr session is opened.
@@ -62,7 +63,8 @@ const wordsBox = (page: Page, words: string) => page.evaluate((words) => {
  */
 const watch = (page: Page) => page.evaluate(() => {
   const lab = window as unknown as { watched: number[]; watching: boolean; wordsRange: Range; watcher?: ResizeObserver };
-  const top = () => Math.round((lab.wordsRange.getClientRects()[0]?.top ?? Number.NaN) * 10) / 10;
+  // unrounded: a reading rounded to a tenth makes a 0.96 px step read as a whole pixel
+  const top = () => lab.wordsRange.getClientRects()[0]?.top ?? Number.NaN;
   lab.watched = []; lab.watching = true;
   const step = () => {
     if (!lab.watching) return;
@@ -136,17 +138,20 @@ try {
     try {
       const shapes = [
         // pressed, nothing selected yet, while the turn ends: the press alone holds the chat
-        { name: "desktop-1280-press", width: 1280, height: 800, mobile: false, partway: false, words: LATER, last: false },
-        { name: "desktop-1280-drag", width: 1280, height: 800, mobile: false, partway: true, words: LATER, last: false },
-        { name: "phone-390", width: 390, height: 844, mobile: true, partway: false, words: LATER, last: false },
+        { name: "desktop-1280-press", width: 1280, height: 800, mobile: false, partway: false, words: LATER, last: false, still: false },
+        { name: "desktop-1280-drag", width: 1280, height: 800, mobile: false, partway: true, words: LATER, last: false, still: false },
+        { name: "phone-390", width: 390, height: 844, mobile: true, partway: false, words: LATER, last: false, still: false },
         // in the ending turn itself: its row's top stays put while its work block folds above the
         // words, with the plan after it and as the newest turn
-        { name: "desktop-1280-fold", width: 1280, height: 800, mobile: false, partway: false, words: FOLDED_UNDER, last: true },
-        { name: "phone-390-fold", width: 390, height: 844, mobile: true, partway: false, words: FOLDED_UNDER, last: false },
+        { name: "desktop-1280-fold", width: 1280, height: 800, mobile: false, partway: false, words: FOLDED_UNDER, last: true, still: false },
+        { name: "phone-390-fold", width: 390, height: 844, mobile: true, partway: false, words: FOLDED_UNDER, last: false, still: false },
+        // with reduced motion the block folds in one frame, as one slow frame of the slide does: the
+        // list measures a shrunk row a frame late, and moves the view itself when it does
+        { name: "desktop-1280-fold-reduced-motion", width: 1280, height: 800, mobile: false, partway: false, words: FOLDED_UNDER, last: true, still: true },
       ] as const;
       for (const shape of shapes) {
         const label = shape.name;
-        const context = await browser.newContext({ viewport: { width: shape.width, height: shape.height }, locale: "en-US", hasTouch: shape.mobile, isMobile: shape.mobile });
+        const context = await browser.newContext({ viewport: { width: shape.width, height: shape.height }, locale: "en-US", reducedMotion: shape.still ? "reduce" : "no-preference", hasTouch: shape.mobile, isMobile: shape.mobile });
         try {
           await context.addInitScript(([id, last]) => {
             localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex" }));
@@ -183,9 +188,10 @@ try {
           }
           await frames(page);
           const tops = await stopWatch(page);
-          assert.ok(tops.length > 2 && tops.every(Number.isFinite), `${label}: the words were watched across the selection (${tops.join(", ")})`);
+          const shown = tops.map((top) => top.toFixed(2)).join(", ");
+          assert.ok(tops.length > 2 && tops.every(Number.isFinite), `${label}: the words were watched across the selection (${shown})`);
           // within a pixel: the view scrolls in whole pixels, and a fold's transition moves a fraction of one
-          assert.ok(tops.every((top) => Math.abs(top - tops[0]!) < 1), `${label}: the words stay put while they are selected, every painted frame (tops ${tops.join(", ")})`);
+          assert.ok(tops.every((top) => Math.abs(top - tops[0]!) < 1), `${label}: the words stay put while they are selected, every painted frame (tops ${shown})`);
           assert.equal(await page.evaluate(() => getSelection()?.toString() ?? ""), shape.words, `${label}: the selection holds exactly the words selected`);
 
           // once the selection is gone, the reader still following is at the end, with no room kept past it
