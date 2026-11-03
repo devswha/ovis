@@ -259,6 +259,39 @@ it("does not count a home whose earlier sign-in could not be read as newly signe
   expect(result.succeeded).toBe(false);
 });
 
+/** A Claude keychain that answers `before` until the CLI runs, then the same other old sign-in: nothing changed. */
+function keychainThen(before: Awaited<ReturnType<UsageContext["keychain"]>>) {
+  let ran = false;
+  const other = JSON.stringify({ claudeAiOauth: { accessToken: "fixture-work-keychain", expiresAt: 9_999_999_999_999, subscriptionType: "max" } });
+  const keychain: UsageContext["keychain"] = async (service) => !service.startsWith("Claude Code-credentials-") ? { status: "missing" }
+    : ran ? { status: "found", value: other } : before;
+  return { keychain, ran: () => { ran = true; } };
+}
+
+it("does not count a home whose keychain was locked before, though its credential file read", async () => {
+  const held = keychainThen({ status: "locked" });
+  const host = fixture({ platform: "darwin", keychain: held.keychain }).start();
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", held.ran);
+  expect(result.succeeded).toBe(false);
+});
+
+it("does not count a home whose keychain item was not a sign-in it could read before", async () => {
+  const held = keychainThen({ status: "found", value: "{not json" });
+  const host = fixture({ platform: "darwin", keychain: held.keychain }).start();
+  const result = await completeLogin(host, { provider: "claude", account: "claude:work" }, "noop", held.ran);
+  expect(result.succeeded).toBe(false);
+});
+
+it("signs a Codex home that held only an API key in to its first account", async () => {
+  const { root, start } = fixture();
+  mkdirSync(join(root, ".codex"));
+  writeFileSync(join(root, ".codex", "auth.json"), JSON.stringify({ OPENAI_API_KEY: "fixture-api-key", tokens: null }));
+  writeFileSync(join(root, "codex-plan.json"), JSON.stringify({ write: [{ dir: "own", email: "first@example.test" }], exit: 0 }));
+  const result = await completeCodexLogin(start(), { default: true, replace: true });
+  expect(result.succeeded).toBe(true);
+  expect(result.account).toBe("first@example.test");
+});
+
 it("names the account this login signed in, not one another home gained meanwhile", async () => {
   const host = fixture().start();
   const result = await completeLogin(host, { provider: "claude", name: "added" }, "also-elsewhere");
@@ -300,6 +333,13 @@ it("tells a home whose credential file will not read from one that holds none", 
   const dir = join(root, ".codex-damaged");
   mkdirSync(dir);
   expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBeNull();
+  // read whole, but no sign-in: an API key, or a Claude file with only MCP sign-ins, holds none
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "fixture-api-key", tokens: null }));
+  expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBeNull();
+  const claudeDir = join(root, ".claude-mcp");
+  mkdirSync(claudeDir);
+  writeFileSync(join(claudeDir, ".credentials.json"), JSON.stringify({ mcpOAuth: { server: { accessToken: "fixture-mcp" } } }));
+  expect(await homeSignIn(ctx, "claude", { kind: "dir", dir: claudeDir })).toBeNull();
   writeFileSync(join(dir, "auth.json"), "{not json");
   expect(await homeSignIn(ctx, "codex", { kind: "dir", dir })).toBe("unknown");
   writeFileSync(join(dir, "auth.json"), "x".repeat(2 * 1024 * 1024));

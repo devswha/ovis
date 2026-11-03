@@ -1183,12 +1183,37 @@ export async function localSignInPlace(ctx: UsageContext, key: string): Promise<
   return null;
 }
 
-/** A credential file that is there but yields no sign-in: unreadable, too large, or not one the CLI wrote whole. */
-function unreadableCredential(path: string, parse: (source: string | null) => SignIn | null): boolean {
+/** Whether a credential's text is JSON at all: one that is not cannot be told from a sign-in. */
+function isJson(text: string): boolean {
+  try { JSON.parse(text); return true; } catch { return false; }
+}
+
+/**
+ * A credential file's sign-in; none when there is no file or it holds no sign-in (a Codex API key, a Claude
+ * file with only MCP sign-ins); "unknown" when it will not read, is too large or is not JSON.
+ */
+function credentialFile(path: string, parse: (source: string | null) => SignIn | null): SignIn | "unknown" | null {
   try { statSync(path); }
-  catch (error) { return !(error instanceof Error && "code" in error && error.code === "ENOENT"); }
+  catch (error) { return error instanceof Error && "code" in error && error.code === "ENOENT" ? null : "unknown"; }
   const text = readText(path);
-  return text === null || parse(text) === null;
+  return text === null || !isJson(text) ? "unknown" : parse(text);
+}
+
+/**
+ * A keychain service's sign-in, read under each account name the CLI may use: none when no item holds one;
+ * "unknown" when any item is locked or is not JSON, even if another one reads.
+ */
+async function keychainState(ctx: UsageContext, service: string, accounts: Array<string | undefined>, parse: (value: string) => SignIn | null): Promise<SignIn | "unknown" | null> {
+  if (ctx.platform !== "darwin") return null;
+  let first: SignIn | null = null;
+  for (const account of accounts) {
+    const found = await ctx.keychain(service, account);
+    if (found.status === "locked") return "unknown";
+    if (found.status !== "found") continue;
+    if (!isJson(found.value)) return "unknown";
+    first ??= parse(found.value);
+  }
+  return first;
 }
 
 /** A followed sign-in's home as its CLI left it: the account as the list keys and names it, never a token or a path. */
@@ -1204,26 +1229,34 @@ export interface HomeSignIn {
  * The sign-in a Claude or Codex CLI keeps in `home`, read from there alone as that CLI writes it, never
  * refreshed: Claude's default home or directory, each with its keychain item; Codex's default home
  * (~/.codex, or its keychain item when that has no auth.json) or directory. Null when it holds none;
- * "unknown" when what it holds cannot be read (a locked keychain item, a credential file that will not
- * read, is too large or holds no sign-in), so it can be told from neither none nor another sign-in.
+ * "unknown" when any of its sources cannot be read (a keychain item locked or not JSON, a credential file
+ * that will not read, is too large or is not JSON), even when another source reads: then it can be told
+ * from neither none nor another sign-in. A source that reads but holds no sign-in holds none.
  * Other homes are not looked at: their sign-ins are no login's into this one.
  */
 export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | "unknown" | null> {
-  let found: Found[];
-  let file: string;
+  // every source of the home is read on its own: one that cannot be read leaves the home unknown, whatever
+  // another gives, and only then are they weighed as the list weighs them
+  let signIn: Found | undefined;
   if (provider === "claude") {
     const claudeAt = claudeHome(ctx, home);
-    file = join(claudeAt.dir, ".credentials.json");
-    found = await claudeFound(ctx, claudeAt);
+    const user = ctx.env["USER"];
+    const keychain = await keychainState(ctx, claudeAt.service, user ? [user, undefined] : [undefined], claudeSignIn);
+    const file = credentialFile(join(claudeAt.dir, ".credentials.json"), claudeSignIn);
+    if (keychain === "unknown" || file === "unknown") return "unknown";
+    signIn = keychainOrFile(keychain, file, claudeAt.source, claudeAccount(claudeAt.config))[0];
   } else {
     const dir = home.kind === "dir" ? home.dir : join(ctx.home, ".codex");
-    file = join(dir, "auth.json");
-    found = codexFileFound(dir);
-    if (home.kind === "default" && found.length === 0) found = await codexKeychainFound(ctx);
+    const file = credentialFile(join(dir, "auth.json"), codexSignIn);
+    if (file === "unknown") return "unknown";
+    if (file !== null) signIn = { ...file, source: dir };
+    else if (home.kind === "default") {
+      const keychain = await keychainState(ctx, "Codex Auth", [undefined], codexSignIn);
+      if (keychain === "unknown") return "unknown";
+      if (keychain !== null) signIn = { ...keychain, source: "keychain" };
+    }
   }
-  if (found.some((entry) => "locked" in entry) || unreadableCredential(file, provider === "claude" ? claudeSignIn : codexSignIn)) return "unknown";
-  const signIn = found.find((entry): entry is Found & SignIn => !("locked" in entry));
-  if (signIn === undefined) return null;
+  if (signIn === undefined || "locked" in signIn) return null;
   return {
     key: accountKey(provider, signIn.account, signIn.source),
     label: signIn.account?.label ?? signIn.account?.id ?? null,
