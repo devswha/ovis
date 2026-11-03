@@ -342,14 +342,15 @@ function* streamBytes(stream: TranscriptStream, from: number, to: number): Steps
       const low = Math.max(from, segment.start);
       const high = Math.min(to, segment.start + segment.length);
       if (low >= high) continue;
-      // as readSync fills it: a window at a time, what a short read leaves at the end cut off
-      const buffer = Buffer.alloc(high - low);
+      // as readSync fills it: a window at a time, what a short read leaves at the end cut off. Each is read
+      // straight into its place, not into the lease's window to be copied out (a range of 16 MiB was copied whole)
+      const buffer = Buffer.allocUnsafe(high - low);
       let got = 0;
       while (got < buffer.length) {
         const length = Math.min(LEASE_WINDOW_BYTES, buffer.length - got);
-        const window = await file.window(segment.offset + (low - segment.start) + got, length);
-        got += window.copy(buffer, got);
-        if (window.length < length) break;
+        const read = await file.read(segment.offset + (low - segment.start) + got, length, buffer.subarray(got, got + length));
+        got += read.length;
+        if (read.length < length) break;
       }
       chunks.push(buffer.subarray(0, got));
     }

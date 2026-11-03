@@ -96,8 +96,11 @@ export interface TranscriptFile {
   /** The pinned handle's whole stat, for a reader that keys on more than a TranscriptVersion (its change time). */
   stats(): Promise<Stats>;
   pathVersion(): Promise<TranscriptVersion | null>;
-  /** Owned bytes, at an explicit position, at most one MiB. Short reads are completed up to EOF. */
-  read(position: number, length: number): Promise<Buffer>;
+  /**
+   * Owned bytes, at an explicit position, at most one MiB. Short reads are completed up to EOF.
+   * `into`: the caller's buffer they are read into (at least `length` long), so none is allocated.
+   */
+  read(position: number, length: number, into?: Buffer): Promise<Buffer>;
   /** The same bytes in a buffer the lease keeps for them, so no window is allocated: they hold only until the next `window` or the lease's end. */
   window(position: number, length: number): Promise<Buffer>;
   /**
@@ -321,8 +324,8 @@ export class TranscriptReader {
                 current();
                 return version;
               }),
-              read: (position, length) => now ? timed((direct) => fillNow(direct, position, length, Buffer.allocUnsafe(length)))
-                : operation(() => fill(position, length, Buffer.allocUnsafe(length))),
+              read: (position, length, into) => now ? timed((direct) => fillNow(direct, position, length, into ?? Buffer.allocUnsafe(length)))
+                : operation(() => fill(position, length, into ?? Buffer.allocUnsafe(length))),
               // no read ahead is started while reads are on the event loop
               window: (position, length) => now ? timed((direct) => fillNow(direct, position, length, front ??= spareWindow())) : operation(async () => {
                 const read = readAhead;

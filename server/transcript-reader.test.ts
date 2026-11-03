@@ -410,6 +410,40 @@ it.skipIf(process.platform !== "linux")("reads a transcript on a local filesyste
   }
 });
 
+it.skipIf(process.platform !== "linux")("reads into the caller's buffer on the event loop and through the thread pool, short at the end of the file", async () => {
+  // btrfs: on the event loop; FUSE (sshfs): through the thread pool
+  for (const [type, local] of [[0x9123683e, true], [0x65735546, false]] as const) {
+    const path = onFilesystem(type);
+    stillClock();
+    const now = readsNow();
+    const reader = new TranscriptReader();
+    const into = Buffer.alloc(12, "-");
+    const [middle, short, past] = await reader.read(path, async (file) => [
+      await file.read(2, 4, into.subarray(0, 4)),
+      // the file ends 3 bytes in: what there is, at the start of the buffer it was given
+      await file.read(6, 6, into.subarray(4, 10)),
+      await file.read(20, 2, into.subarray(10, 12)),
+    ]);
+    expect([middle!.toString(), short!.toString(), past!.length]).toEqual(["cdef", "gh\n", 0]);
+    // read in place: what is returned is the caller's buffer, and nothing past a short read is written
+    expect(middle!.buffer).toBe(into.buffer);
+    expect(into.toString()).toBe("cdefgh\n-----");
+    expect(now() > 0).toBe(local);
+    for (const restore of restores.splice(0).reverse()) restore();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("sends the rest of a lease through the thread pool once a read into a buffer on the event loop was slow", async () => {
+  const path = onFilesystem(0x9123683e);
+  const advance = stillClock();
+  const reads = readsNow((count) => { if (count === 1) advance(3); });
+  const reader = new TranscriptReader();
+  const into = Buffer.alloc(4);
+  expect(await reader.read(path, async (file) => (await file.read(0, 2, into)).toString() + (await file.read(2, 2, into.subarray(2))).toString())).toBe("abcd");
+  expect(reads()).toBe(1);
+  expect(into.toString()).toBe("abcd");
+});
+
 it.skipIf(process.platform !== "linux")("reads through the thread pool for a second once a read on the event loop was slow, then tries the event loop again", async () => {
   const path = onFilesystem(0x9123683e);
   // the first read on the event loop takes 3 ms of the clock: the disk answered it, not the page cache
