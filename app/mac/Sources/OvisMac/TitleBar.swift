@@ -62,8 +62,8 @@ enum TitleBar {
     }
 }
 
-/// The page's asks from its header (`title-bar.js`), taken only from the main window's page: a window
-/// the page opened shares its scripts' messages but runs no header script.
+/// The page's asks from its header (`title-bar.js`), taken only from the main window's page and its own
+/// frame: a window the page opened, and a web panel's frame of any site, can post them too.
 final class TitleBarMessages: NSObject, WKScriptMessageHandler {
     private weak var webView: OvisWebView?
 
@@ -73,7 +73,7 @@ final class TitleBarMessages: NSObject, WKScriptMessageHandler {
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         MainActor.assumeIsolated {
-            guard let webView, message.webView === webView, let window = webView.window else { return }
+            guard let webView, message.webView === webView, message.frameInfo.isMainFrame, let window = webView.window else { return }
             switch message.body as? String {
             case "drag": webView.armDrag()
             case "zoom": TitleBar.doubleClick(window)
