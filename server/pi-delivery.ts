@@ -128,10 +128,21 @@ function parseEntry(bytes: Buffer, start: number, end: number): BranchEntry {
     role: typeof message?.role === "string" ? message.role : "", text, ...(expansion ? { skill: expansion } : {}), at, start, end };
 }
 
-/** What Pi's submit handler reads of `text` sent from Chat: tabs as its editor pastes them, trimmed. */
+/**
+ * What Pi's submit handler reads of `text` sent from Chat: line ends and tabs as its editor pastes
+ * them (CRLF and a lone CR as LF, a tab as four spaces, other control characters dropped), trimmed.
+ */
 export function piRecordText(text: string): string {
-  return text.replace(/\t/g, "    ").trim();
+  return text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").replace(/[\u0000-\u0009\u000b-\u001f]/g, "").trim();
 }
+
+/**
+ * A `/name` send other than a skill is a prompt template Pi records only expanded, an extension's
+ * command Pi may record as nothing, or a message Pi records as typed: which one depends on what that
+ * Pi loaded, which Ovis cannot read. Pi records its sends in order, so the first user record after
+ * such a send is its own (its expansion, or its text), or that of a later send.
+ */
+const piMaybeCommand = (text: string): boolean => text.startsWith("/") && !text.startsWith("/skill:");
 
 /**
  * The skill a `/skill:name request` send asks for, as Pi's `_expandSkillCommand` reads it: the name up
@@ -308,7 +319,19 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const same = chain.reverse().filter((entry) => entry.start > afterMatched && entry.role === "user"
         && (entry.text === candidate.text || (skill !== undefined && entry.skill?.name === skill.name && entry.skill.request === skill.request))
         && !consumedEntries.has(key(entry)));
-      const match = same.find((entry) => entry.at === null || entry.at >= anchor.at);
+      const fresh = (entry: BranchEntry): boolean => entry.at === null || entry.at >= anchor.at;
+      if (piMaybeCommand(candidate.text)) {
+        const first = chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)));
+        if (!first) break;
+        if (first.text !== candidate.text) {
+          // Pi ran it: settle it. Its expansion is attributed to it, unless the record is a later
+          // receipt's own text, as when an extension's command recorded nothing.
+          consumed.push(candidate.id);
+          if (!candidates.slice(index + 1).some((later) => later.text === first.text)) { matchedEntries.push(key(first)); afterMatched = first.start; }
+          continue;
+        }
+      }
+      const match = same.find(fresh);
       const earlier = match ? undefined : same[0];
       if (match) consumed.push(candidate.id);
       else if (earlier) ambiguous.push(candidate.id);

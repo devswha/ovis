@@ -100,6 +100,37 @@ describe("Pi delivery transcript matching", () => {
       candidate("two", piRecordText("/skill:commit\nand  push"), anchor)]).consumed).toEqual(["one", "two"]);
   });
 
+  it("matches a send with CRLF or CR line ends as Pi's paste handler records it, with LF", () => {
+    const path = join(dir(), "crlf.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    // Pi's editor turns CRLF and a lone CR into LF and drops other control characters
+    appendFileSync(path, entry("u1", "base", "user", "line one\nline two\nline three") + entry("u2", "u1", "user", "after"));
+    expect(matchPiDeliveries(path, [candidate("one", piRecordText("line one\r\nline two\rline\u0007 three\r\n"), anchor),
+      candidate("two", "after", anchor)]).consumed).toEqual(["one", "two"]);
+  });
+
+  it("settles a /name send Pi ran as a template or command, so the receipts behind it confirm too", () => {
+    const path = join(dir(), "template.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    // `/review the parser` and `/review the lexer` recorded only as their expansions; `/deploy`, an
+    // extension's command, recorded as nothing; `/plain`, a name Pi has not loaded, recorded as typed
+    appendFileSync(path, entry("e1", "base", "user", "Review this code: the parser") + entry("a1", "e1", "assistant", "done")
+      + entry("e2", "a1", "user", "Review this code: the lexer") + entry("a2", "e2", "assistant", "done")
+      + entry("u3", "a2", "user", "after") + entry("u4", "u3", "user", "/plain"));
+    const receipts = [candidate("one", "/review the parser", anchor), candidate("two", "/review the lexer", anchor),
+      candidate("three", "/deploy", anchor), candidate("four", "after", anchor), candidate("five", "/plain", anchor)];
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one", "two", "three", "four", "five"]);
+  });
+
+  it("keeps a /name receipt waiting until Pi records something after it", () => {
+    const path = join(dir(), "template-wait.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    expect(matchPiDeliveries(path, [candidate("one", "/review", anchor), candidate("two", "after", anchor)]).consumed).toEqual([]);
+  });
+
   it("never lets a literal record confirm a different /skill: send", () => {
     const path = join(dir(), "skill-literal.jsonl");
     writeFileSync(path, header() + entry("base", null, "assistant", "working"));
