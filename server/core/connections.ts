@@ -191,8 +191,12 @@ export function send(client: Client, message: ServerMessage, overflow?: () => vo
       // a frame sent after the excused one queues behind it: only its own bytes are new
       if (oversized) state.excused = after > 0 ? { ahead: after, frame: Math.min(bytes, after), last: after } : undefined;
       else if (state.excused) state.excused.last = after;
-      // terminal output queued behind a machine event cannot be acknowledged before the event has crossed
-      if (overflow) state.sideTrafficUntil = Math.max(state.sideTrafficUntil ?? 0, Date.now() + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(after)));
+      // terminal output queued behind a machine event cannot be acknowledged before the event has crossed.
+      // One grant at a time, a stall's length apart: a stream of machine events never holds off a stall stop for good.
+      const now = Date.now(), until = state.sideTrafficUntil;
+      if (overflow && after > 0 && (until === undefined || now >= until + OUTPUT_STALL_MS)) {
+        state.sideTrafficUntil = now + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(after));
+      }
     }
     return result;
   } catch {

@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, setSystemTime } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,6 +146,31 @@ it("holds off a stall stop while a machine event queued ahead of terminal output
   expect(grace).toBeLessThan(OUTPUT_JOIN_MAX_MS);
   expect(machineEventsAhead(client, before + grace - 50)).toBe(true);
   expect(machineEventsAhead(client, Date.now() + grace + 1)).toBe(false);
+});
+
+it("never holds off a stall stop for good with a stream of small machine events", () => {
+  const { client } = harness();
+  let buffered = 0;
+  let drained = true;
+  Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { if (!drained) buffered += Buffer.byteLength(raw); return -1; } });
+  const start = Date.now();
+  try {
+    // an event that leaves nothing queued grants nothing
+    setSystemTime(new Date(start));
+    send(client, { type: "error", code: "x", message: "x" }, () => {});
+    expect(machineEventsAhead(client, start)).toBe(false);
+    drained = false;
+    // a small event every 1.5 s for a minute, each leaving a little queued: the client is open to a stop at least every 10 s
+    buffered = 10;
+    let lastOpen = start;
+    for (let t = 0; t <= 60_000; t += 100) {
+      const now = start + t;
+      setSystemTime(new Date(now));
+      if (t % 1_500 === 0) send(client, { type: "error", code: "x", message: "x" }, () => {});
+      if (!machineEventsAhead(client, now)) lastOpen = now;
+      expect(now - lastOpen).toBeLessThan(10_000);
+    }
+  } finally { setSystemTime(); }
 });
 
 it("a revoke ends the connection with 1008 and leaves its pending input to the socket's close", () => {
