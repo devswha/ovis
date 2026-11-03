@@ -217,7 +217,8 @@ describe("cooperative Claude images", () => {
     } finally { watching.mockRestore(); }
   });
 
-  for (const change of ["replace", "truncate", "rewrite", "rewrite and grow", "clear", "rewind"] as const) it(`rejects an image after an in-flight ${change}`, async () => {
+  // "replace" renames a file over the open transcript, which needs POSIX rename-over-an-open-file semantics
+  for (const change of ["replace", "truncate", "rewrite", "rewrite and grow", "clear", "rewind"] as const) it.skipIf(change === "replace" && process.platform === "win32")(`rejects an image after an in-flight ${change}`, async () => {
     const { path, ref } = fixture();
     const apply = () => {
       if (change === "replace") { writeFileSync(`${path}.new`, line({ type: "user", uuid: id(3), message: { content: [picture] } })); renameSync(`${path}.new`, path); }
@@ -408,7 +409,8 @@ it("a lookup that sees the file rewritten drops the boundary it kept, even when 
   expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
 });
 
-it("a filesystem exception revokes a rejected lookup's boundary", async () => {
+// renames the directory that holds the open transcript, which needs POSIX rename semantics (Windows refuses it)
+it.skipIf(process.platform === "win32")("a filesystem exception revokes a rejected lookup's boundary", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-image-exception-"));
   roots.push(dir, `${dir}.away`);
   const path = join(dir, "session.jsonl");
