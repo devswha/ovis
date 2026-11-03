@@ -13,6 +13,7 @@ export function MachineSessionsProvider({ machineIds, sessions: provided, childr
     // An initial empty roster is not evidence that every PC was removed.
     if (machineIds.length) sessions.retainMachines(new Set(machineIds));
   }, [sessions, ids]);
-  useEffect(() => () => sessions.closeAll(), [sessions]);
+  // a registry handed in is closed by whoever created it, which may still be using it
+  useEffect(() => provided ? undefined : () => owned.closeAll(), [provided, owned]);
   return <MachineSessionsContext.Provider value={sessions}>{children}</MachineSessionsContext.Provider>;
 }

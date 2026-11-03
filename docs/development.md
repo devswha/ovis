@@ -87,9 +87,10 @@ no terminal input is replayed by this subscription.
 
 A page takes machine events over SSE whenever its socket does not carry them: a connection that
 has not said whether it does within five seconds, a socket stopped for output (4008, which only
-reconnects on an attach), or a connection whose server sent `machine-events-ended`. A machine
-event that would overrun the socket's output budget never closes the terminal; the server ends the
-subscription with that frame instead. The next connection that offers the capability takes over
+reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
+never close the terminal or queue in front of its output: one that would put more than
+`OUTPUT_LOW_BYTES` on a socket that already has a backlog ends the subscription with that frame
+instead. The next connection that offers the capability takes over
 from SSE again.
 
 This avoids consuming one long-lived HTTP/1.1 request per browser tab. It does not make every tab

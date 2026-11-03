@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { DeviceStore } from "../devices.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { OUTPUT_HARD_BYTES } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import type { MachineEventDocument } from "../machine-events.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
@@ -95,28 +95,40 @@ it("closes a client whose backlog of ordinary frames would pass the transport bu
   expect(log).toEqual([`closed ${OUTPUT_STALLED_CLOSE_CODE} terminal output transport stalled`]);
 });
 
-it("ends the machine-event subscription, never the terminal connection, when a machine event would overrun the output budget", () => {
+it("ends the machine-event subscription, never the terminal connection, rather than queue machine events in front of terminal output", () => {
   const listeners = new Set<(preferences: SharedPreferences) => void>();
   const preferences = (bytes: number) => ({ revision: 1, settings: { note: "x".repeat(bytes) } }) as unknown as SharedPreferences;
+  let initial = 200;
   const machineEvents: MachineEventDocument = {
     manager: { subscribe: () => () => {} },
-    preferences: { get: () => preferences(200), subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } },
+    preferences: { get: () => preferences(initial), subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } },
   };
-  for (const overrunAt of ["initial document", "live event"] as const) {
+  const subscribe = (queued: number) => {
     const { client, log } = harness({ machineEvents });
-    let buffered = overrunAt === "initial document" ? OUTPUT_HARD_BYTES - 100 : 0;
-    const sent: ServerMessage[] = [];
-    Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { sent.push(JSON.parse(raw) as ServerMessage); buffered += Buffer.byteLength(raw); return -1; } });
+    let buffered = queued;
+    const sent: string[] = [];
+    Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { sent.push((JSON.parse(raw) as ServerMessage).type); buffered += Buffer.byteLength(raw); return -1; } });
     setMachineEvents(client, true);
-    if (overrunAt === "live event") {
-      expect(listeners.size).toBe(1);
-      buffered = OUTPUT_HARD_BYTES - 100;
-      for (const listener of [...listeners]) listener(preferences(200));
-    }
+    return { log, sent, queue: (bytes: number) => { buffered = bytes; } };
+  };
+  // a backlog with no room left even for the ending notice: still told, and the terminal kept
+  for (const queued of [OUTPUT_HARD_BYTES - 10, OUTPUT_LOW_BYTES - 100]) {
+    const { log, sent } = subscribe(queued);
     expect(log).toEqual([]);
+    expect(sent).toEqual(["machine-events-ended"]);
     expect(listeners.size).toBe(0);
-    expect(sent.map((frame) => frame.type)).toEqual(overrunAt === "initial document" ? ["machine-events-ended"] : ["machine-event", "machine-events-ended"]);
   }
+  // an empty queue takes a document larger than the low watermark
+  initial = OUTPUT_LOW_BYTES * 2;
+  const empty = subscribe(0);
+  expect(empty.sent).toEqual(["machine-event"]);
+  expect(listeners.size).toBe(1);
+  // a live event behind a backlog ends the subscription
+  empty.queue(OUTPUT_LOW_BYTES - 100);
+  for (const listener of [...listeners]) listener(preferences(200));
+  expect(empty.log).toEqual([]);
+  expect(empty.sent).toEqual(["machine-event", "machine-events-ended"]);
+  expect(listeners.size).toBe(0);
 });
 
 it("a revoke ends the connection with 1008 and leaves its pending input to the socket's close", () => {

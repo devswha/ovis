@@ -9,7 +9,7 @@ import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import type { DeviceStore } from "../devices.ts";
 import { HerdrError, herdrSocketPath } from "../herdr/client.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { OUTPUT_HARD_BYTES, type OutputWindow } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES, type OutputWindow } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import { PaneWatch } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
@@ -79,9 +79,11 @@ export function connectionOf(client: Client): Readonly<Pick<ConnectionState, "cl
 }
 
 /**
- * Idempotent subscription, with the same authorized document as SSE. A machine event that would
- * overrun the socket's output budget never closes the terminal (4008): the subscription ends
- * instead, and the page takes machine events over SSE until its next connection.
+ * Idempotent subscription, with the same authorized document as SSE. Machine events never close
+ * the terminal (4008) nor sit in front of its output long enough to pause it: one that would put
+ * more than OUTPUT_LOW_BYTES on a socket that already has a backlog ends the subscription instead,
+ * and the page takes machine events over SSE until its next connection. The ending notice is a
+ * few bytes sent past the budget, so the page always learns of it.
  */
 export function setMachineEvents(client: Client, enabled: boolean): void {
   const state = stateOf(client);
@@ -92,7 +94,8 @@ export function setMachineEvents(client: Client, enabled: boolean): void {
   const end = () => {
     stop?.();
     if (state.stopMachineEvents === stop) state.stopMachineEvents = undefined;
-    send(client, { type: "machine-events-ended" });
+    if (state.closing) return;
+    try { client.send(JSON.stringify({ type: "machine-events-ended" } satisfies ServerMessage)); } catch { /* client vanished */ }
   };
   const overflow = () => { overflowed = true; if (stop) end(); };
   stop = subscribeMachineEvents(client.data.machineEvents, (event) => {
@@ -145,7 +148,11 @@ export function backlog(client: Client): number {
   return buffered - Math.min(excused.frame, excused.ahead);
 }
 
-/** `overflow`, when given, is called instead of closing the connection when the frame would overrun the budget. */
+/**
+ * `overflow` marks a side-channel frame (machine events): it is called, and the frame not sent,
+ * instead of closing the connection when the frame would overrun the budget, or would put more
+ * than OUTPUT_LOW_BYTES on a socket that already has a backlog.
+ */
 export function send(client: Client, message: ServerMessage, overflow?: () => void): number {
   const state = stateOf(client);
   if (state.closing) return 0;
@@ -155,6 +162,7 @@ export function send(client: Client, message: ServerMessage, overflow?: () => vo
     // A frame larger than the whole budget is sent while the backlog is within it, and excused
     // while it drains; only one at a time, so a client holds at most one such frame past it.
     const queued = backlog(client);
+    if (overflow && queued > 0 && queued + bytes > OUTPUT_LOW_BYTES) { overflow(); return 0; }
     const oversized = bytes > OUTPUT_HARD_BYTES && queued <= OUTPUT_HARD_BYTES && !state.excused;
     // Include JSON escaping in the transport budget, before Bun could drop a
     // frame at its own cap. An overload close is explicit and never auto-replayed.
