@@ -159,8 +159,11 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
       try {
         const bridge = await fetch(`${origin}/api/health?scope=bridge`, { signal: AbortSignal.timeout(1000) });
         const own = await bridge.json() as { web_ui?: { boot_id?: string }; runtime?: string };
-        if (bridge.ok && ours(own)) {
-          let ready = own.runtime !== "herdr-core" && !existsSync(socketPath);
+        // a bridge from before its own answer carried the boot id (an older checkout a release falls back
+        // to): the whole health answer is the only check it can pass, as it always was
+        const older = bridge.ok && own.web_ui === undefined;
+        if (older || bridge.ok && ours(own)) {
+          let ready = !older && own.runtime !== "herdr-core" && !existsSync(socketPath);
           if (!ready) {
             const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
             ready = response.ok && ours(await response.json() as { web_ui?: { boot_id?: string } });
