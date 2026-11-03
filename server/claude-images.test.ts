@@ -606,9 +606,10 @@ describe("finding a picture's record", () => {
       return read(...args);
     }) as typeof fs.readSync);
     try { exact(await transcriptImageAsync(path, `${id(3)}:0:0`)); } finally { watch.mockRestore(); }
-    // a window of a MiB, what is left of its line, and the piece before it that finds the line's start:
-    // three reads a line, and a few more for the first windows (64 KiB pieces took 6 a line)
-    expect(reads).toBeLessThan(4 * lines);
+    // the piece before a window that finds the line's start, and the window of a MiB, which does not read
+    // again what that piece holds: two reads a line, and a few more for the first windows (64 KiB pieces
+    // took 6 a line)
+    expect(reads).toBeLessThan(3 * lines);
   });
 
   it("finds a tool's call however far back it was made, and only the last block naming it decides", async () => {

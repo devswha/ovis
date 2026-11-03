@@ -2458,9 +2458,9 @@ function* jsonTextPatternSteps(text: string): Steps<{ pattern: RegExp; span: num
 /**
  * Where the lines `text` is in (as JSON writes it, jsonTextPattern) lie in [from, to) of the stream,
  * found a window at a time, so a transcript is searched and never held whole. A line off the branch
- * reads blank (readStream).
+ * reads blank (readStream). `head`: the first bytes from `from` on, read already (as streamBytes reads them).
  */
-function* linesWithSteps(stream: TranscriptStream, text: string, from: number, to: number): Steps<[number, number][]> {
+function* linesWithSteps(stream: TranscriptStream, text: string, from: number, to: number, head?: Buffer): Steps<[number, number][]> {
   const { pattern, span } = yield* jsonTextPatternSteps(text);
   const found: [number, number][] = [];
   let start = from;
@@ -2468,8 +2468,10 @@ function* linesWithSteps(stream: TranscriptStream, text: string, from: number, t
   // the end of the line so far: text a window's edge cuts in two is still found
   let tail = "";
   let judged = 0;
-  for (let position = from; position < to; position = Math.min(to, position + IMAGE_SEARCH_WINDOW)) {
-    const bytes = (yield* streamBytes(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW))).toString("latin1");
+  for (let position = from, step = 0; position < to; position = Math.min(to, position + step)) {
+    const known = position === from && head !== undefined && head.length > 0 ? head.subarray(0, to - from) : undefined;
+    step = known?.length ?? IMAGE_SEARCH_WINDOW;
+    const bytes = (known ?? (yield* streamBytes(stream, position, Math.min(to, position + IMAGE_SEARCH_WINDOW)))).toString("latin1");
     for (let offset = 0; ;) {
       const newline = bytes.indexOf("\n", offset);
       if (!hit) {
@@ -2485,7 +2487,7 @@ function* linesWithSteps(stream: TranscriptStream, text: string, from: number, t
       offset = newline + 1;
       if (++judged % RECORDS_PER_STEP === 0) yield;
     }
-    if (position + IMAGE_SEARCH_WINDOW < to) yield;
+    if (position + step < to) yield;
   }
   if (hit) found.push([start, to]);
   return found;
@@ -2654,21 +2656,26 @@ function* answersDrawnCallSteps(stream: TranscriptStream, id: string, before: nu
     // the lines that end in the last `span` bytes before `to`, whole: back from `to - span`, a piece at a
     // time, to the start of the line it falls in, so the walk costs about what that line has before it
     from = Math.max(stream.floor, to - span);
+    // what the piece that found the line's start holds of it: the window is not read again for those bytes
+    let head: Buffer | undefined;
     // each piece back twice the one before, up to a window: a line of a MiB costs a few reads, not
     // sixteen, where every read is a round trip (a network home)
     for (let piece = CALL_SEARCH_START; from > stream.floor; piece = Math.min(IMAGE_SEARCH_WINDOW, piece * 2)) {
       const low = Math.max(stream.floor, from - piece);
-      const newline = (yield* streamBytes(stream, low, from)).lastIndexOf(0x0a);
+      const bytes = yield* streamBytes(stream, low, from);
+      const newline = bytes.lastIndexOf(0x0a);
+      // copied: the bytes a lease reads hold only until its next read
+      if (newline !== -1) head = Buffer.from(bytes.subarray(newline + 1));
       // each read is a step of its own: what reads the lines it found starts on the next one
       yield;
       if (newline !== -1) { from = low + newline + 1; break; }
       from = low;
     }
-    const ranges = yield* linesWithSteps(stream, id, from, to);
+    const ranges = yield* linesWithSteps(stream, id, from, to, head);
     if (numeric) {
       yield;
       const seen = new Set(ranges.map(([start]) => start));
-      for (const range of yield* linesWithSteps(stream, "tool_use", from, to)) if (!seen.has(range[0])) ranges.push(range);
+      for (const range of yield* linesWithSteps(stream, "tool_use", from, to, head)) if (!seen.has(range[0])) ranges.push(range);
       ranges.sort((left, right) => left[0] - right[0]);
     }
     if (ranges.length > 0) yield;
