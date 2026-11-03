@@ -50,7 +50,9 @@ export function agentPaneName(pane: Partial<TabPane>): string | null {
   // "Claude Code", "Muse Code": an agent's product name, not "Code" alone
   const generic = (named: readonly string[]): boolean => named.every((word) => said.has(word) || (word === "code" && named.some((other) => agent.includes(other))));
   // no title and no folder: nothing, not the pane's id
-  for (const title of [pane.title, CONVERSATION_TITLES.has(pane.agent) ? paneTitle({ ...pane, pane_id: "" }) : null]) {
+  // herdr-core reports the terminal title as the pane's title too: that one is a terminal title
+  const reported = pane.title === pane.terminal_title || pane.title === pane.terminal_title_stripped ? null : pane.title;
+  for (const title of [reported, CONVERSATION_TITLES.has(pane.agent) ? paneTitle({ ...pane, pane_id: "" }) : null]) {
     const bare = stripPaneChrome(title ?? "", pane.agent).trim();
     // a path says where the pane is, whichever folder it names
     if (shortPathTitle(bare) !== bare) continue;

@@ -86,7 +86,10 @@ describe("tab names", () => {
     it("never takes the terminal title of an agent that says its state there, not the conversation", () => {
       for (const [agent, title] of [["gemini", "\u25c7  Ready (app)"], ["gemini", "\u2726  Working\u2026 (app)"], ["droid", "Factory Droid"], ["cursor", "Cursor Agent"], ["omp", "\u03c0 \u280b Review parser"]] as const) {
         expect(autoTabLabel(tab, [pane({ agent, terminal_title_stripped: title })], "local", labels)).toBe("Fix the login redirect\u2026");
+        // herdr-core reports the terminal title as the pane's title too
+        expect(autoTabLabel(tab, [pane({ agent, title, terminal_title: title })], "local", labels)).toBe("Fix the login redirect\u2026");
       }
+      expect(autoTabLabel(tab, [pane({ title: "Fix footer | app", terminal_title: "Fix footer | app" })], "local", labels)).toBe("Fix footer");
     });
 
     it("never shows an attachment's path an earlier version learned", () => {
