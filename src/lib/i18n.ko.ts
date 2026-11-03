@@ -331,7 +331,6 @@ const BASE: Record<string, string> = {
   "Weekly": "주간",
   "Open terminal": "터미널 열기",
   "Sign in to {agent}": "{agent}에 로그인",
-  "This PC's ID": "이 PC의 ID",
   "differs": "다름",
 };
 

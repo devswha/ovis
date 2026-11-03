@@ -333,7 +333,6 @@ const BASE: Record<string, string> = {
   "Weekly": "週次",
   "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
-  "This PC's ID": "このPCのID",
   "differs": "不一致",
 };
 

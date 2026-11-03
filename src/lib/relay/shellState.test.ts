@@ -45,15 +45,17 @@ describe("the shell's entry", () => {
     expect(forgedOffer({ ...genuine, server_public_key: "not-a-key" })).toBe(true);
   });
 
-  it("names the key that is not the PC's by the id it would have, for the phone to compare", () => {
+  it("names the key that is not the one the id names, and where that key came from", () => {
     const own = generateKeyPair().publicKey;
     const other = generateKeyPair().publicKey;
     const serverId = deriveServerId(own);
-    expect(keyMismatch(serverId, [exportPublicKey(own)])).toBeNull();
-    // the saved key and the offer's: whichever is not the PC's is the one received
-    expect(keyMismatch(serverId, [exportPublicKey(own), exportPublicKey(other)])).toEqual({ expected: serverId, received: deriveServerId(other) });
-    expect(keyMismatch(serverId, [exportPublicKey(other), exportPublicKey(own)])).toEqual({ expected: serverId, received: deriveServerId(other) });
-    expect(keyMismatch(serverId, ["not-a-key"])).toEqual({ expected: serverId, received: null });
+    const link = (key: Uint8Array) => ({ key: exportPublicKey(key), from: "link" as const });
+    const saved = (key: Uint8Array) => ({ key: exportPublicKey(key), from: "saved" as const });
+    expect(keyMismatch(serverId, [link(own)])).toBeNull();
+    // the saved key and the link's disagree: whichever is not the id's is named, with where it came from
+    expect(keyMismatch(serverId, [saved(own), link(other)])).toEqual({ expected: serverId, received: deriveServerId(other), from: "link" });
+    expect(keyMismatch(serverId, [saved(other), link(own)])).toEqual({ expected: serverId, received: deriveServerId(other), from: "saved" });
+    expect(keyMismatch(serverId, [{ key: "not-a-key", from: "link" }])).toEqual({ expected: serverId, received: null, from: "link" });
   });
 
   it("rebuilds a saved PC's offer without a code", () => {

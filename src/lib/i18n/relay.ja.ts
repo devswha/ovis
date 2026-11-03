@@ -44,7 +44,10 @@ export const RELAY_JA: Record<string, string> = {
   "Asking the PC to update…": "PCにアップデートを依頼しています…",
   "Waiting for {name} to restart…": "{name}の再起動を待っています…",
   "The update did not finish.": "アップデートが完了しませんでした。",
-  "The key it carries": "このリンクの鍵",
   "Not a valid key": "有効な鍵ではありません",
-  "The PC shows its ID under Settings → Phone & devices. Marked groups differ.": "PCは設定 → スマホとデバイスで自分のIDを表示します。印の付いたグループが異なる部分です。",
+  "ID this link names": "このリンクが示すID",
+  "ID this phone paired with": "このスマホがペアリングしたID",
+  "ID of the key this link carries": "このリンクの鍵のID",
+  "ID of the key this phone saved": "このスマホに保存された鍵のID",
+  "Only the PC itself shows its ID, under Settings → Phone & devices. Marked groups differ.": "PCのIDは、PC自身の設定 → スマートフォンとデバイスでだけ確認できます。印の付いたグループが異なる部分です。",
 };

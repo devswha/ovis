@@ -335,7 +335,6 @@ const BASE: Record<string, string> = {
   "Weekly": "每周",
   "Open terminal": "打开终端",
   "Sign in to {agent}": "登录 {agent}",
-  "This PC's ID": "此电脑的 ID",
   "differs": "不同",
 };
 

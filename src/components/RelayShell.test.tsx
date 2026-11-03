@@ -28,8 +28,8 @@ describe("a key that is not the PC's", () => {
   });
 
   for (const state of [
-    { kind: "forged", name: "Desk", mismatch: { expected: EXPECTED, received: RECEIVED } },
-    { kind: "failed", failure: "identity-changed", name: "Desk", detail: null, mismatch: { expected: EXPECTED, received: RECEIVED } },
+    { kind: "forged", name: "Desk", mismatch: { expected: EXPECTED, received: RECEIVED, from: "link" } },
+    { kind: "failed", failure: "identity-changed", name: "Desk", detail: null, mismatch: { expected: EXPECTED, received: RECEIVED, from: "saved" } },
   ] as const) {
     it(`shows the PC's id and the other key's, marking the groups that differ (${state.kind})`, () => {
       const html = render(props(state));
@@ -42,8 +42,20 @@ describe("a key that is not the PC's", () => {
     });
   }
 
+  it("never calls an id the PC's: each is labelled by where it came from", () => {
+    const forged = render(props({ kind: "forged", name: "Desk", mismatch: { expected: EXPECTED, received: RECEIVED, from: "link" } }));
+    expect(forged).not.toContain("This PC&#x27;s ID");
+    expect(forged).toContain("ID this link names");
+    expect(forged).toContain("ID of the key this link carries");
+    // a bad saved key under a genuine link is the saved key's, not the link's
+    const changed = render(props({ kind: "failed", failure: "identity-changed", name: "Desk", detail: null, mismatch: { expected: EXPECTED, received: RECEIVED, from: "saved" } }));
+    expect(changed).toContain("ID this phone paired with");
+    expect(changed).toContain("ID of the key this phone saved");
+    expect(changed).not.toContain("this link carries");
+  });
+
   it("says a key that does not parse is not a valid key, and still shows the PC's id", () => {
-    const html = render(props({ kind: "forged", name: null, mismatch: { expected: EXPECTED, received: null } }));
+    const html = render(props({ kind: "forged", name: null, mismatch: { expected: EXPECTED, received: null, from: "link" } }));
     expect(html).toContain("Not a valid key");
     expect(groupsOf(html)).toHaveLength(8);
   });
