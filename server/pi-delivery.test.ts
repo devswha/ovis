@@ -4,7 +4,7 @@ import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { capturePiDeliveryAnchor, capturePiDeliveryAnchorAttempt, capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiDeliveryCandidate } from "./pi-delivery.ts";
+import { capturePiDeliveryAnchor, capturePiDeliveryAnchorAttempt, capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, piRecordText, type PiDeliveryAnchor, type PiDeliveryCandidate } from "./pi-delivery.ts";
 
 const roots: string[] = [];
 const dir = () => { const root = mkdtempSync(join(tmpdir(), "ovis-pi-delivery-")); roots.push(root); return root; };
@@ -66,6 +66,47 @@ describe("Pi delivery transcript matching", () => {
       expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: [], changed: [], unavailable: ["one", "two"], retry: false });
       expect(consumed.size).toBe(0);
     }
+  });
+
+  it("reads a skill Pi recorded as its whole SKILL.md back as typed, so the receipts behind it confirm too", () => {
+    const path = join(dir(), "skill.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    // as pi 1.4 records `/skill:commit and push`, then `/skill:commit`
+    const skill = (request: string) => `<skill name="commit" location="/home/me/.agents/skills/committing/SKILL.md">\nReferences are relative to /home/me.\n\nCommit the changes.\n</skill>${request ? `\n\n${request}` : ""}`;
+    appendFileSync(path, entry("s1", "base", "user", skill("and push")) + entry("a1", "s1", "assistant", "done")
+      + entry("s2", "a1", "user", skill("")) + entry("a2", "s2", "assistant", "done") + entry("u3", "a2", "user", "plain"));
+    const receipts = [candidate("one", "/skill:commit and push", anchor), candidate("two", "/skill:commit", anchor), candidate("three", "plain", anchor)];
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one", "two", "three"]);
+  });
+
+  it("matches a skill sent with extra white space as Pi trims its request", () => {
+    const path = join(dir(), "skill-spaces.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("s1", "base", "user", `<skill name="commit" location="/s/SKILL.md">\nReferences are relative to /s.\n\nCommit.\n</skill>\n\nand push`));
+    // Pi pastes the tab as four spaces, then trims the request after the first one
+    appendFileSync(path, entry("s2", "s1", "user", `<skill name="commit" location="/s/SKILL.md">\nReferences are relative to /s.\n\nCommit.\n</skill>\n\nand push`));
+    expect(matchPiDeliveries(path, [candidate("one", piRecordText("/skill:commit  and push "), anchor),
+      candidate("two", piRecordText("/skill:commit\tand push"), anchor)]).consumed).toEqual(["one", "two"]);
+  });
+
+  it("matches a /skill: text Pi sends as typed, where it knows no such skill or the name runs past a line", () => {
+    const path = join(dir(), "skill-verbatim.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u1", "base", "user", "/skill:nope  x") + entry("u2", "u1", "user", "/skill:commit\nand  push"));
+    expect(matchPiDeliveries(path, [candidate("one", piRecordText("/skill:nope  x"), anchor),
+      candidate("two", piRecordText("/skill:commit\nand  push"), anchor)]).consumed).toEqual(["one", "two"]);
+  });
+
+  it("confirms a message that only looks like a skill's record by its own text", () => {
+    const path = join(dir(), "skill-lookalike.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const text = `<skill name="x" location="/x.md">\nwhat does this block do?\n</skill>`;
+    appendFileSync(path, entry("u1", "base", "user", text) + entry("u2", "u1", "user", "next"));
+    expect(matchPiDeliveries(path, [candidate("one", piRecordText(text), anchor), candidate("two", "next", anchor)]).consumed).toEqual(["one", "two"]);
   });
 
   it("retries a transient read failure and later confirms the same receipt", () => {

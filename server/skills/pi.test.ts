@@ -125,7 +125,7 @@ describe("pi's builtins", () => {
     expect(noneForms).toEqual({
       model: [{ match: "other", interaction: "none" }],
       thinking: [{ match: "other", interaction: "none" }],
-      compact: [{ match: "bare", interaction: "none" }],
+      compact: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }],
       name: [{ match: "other", interaction: "none" }],
     });
   });

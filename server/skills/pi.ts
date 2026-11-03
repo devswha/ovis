@@ -44,7 +44,8 @@ const PI_FORMS: NonNullable<AgentCommandSource["forms"]> = {
   settings: [{ match: "bare", interaction: "terminal" }],
   "scoped-models": [{ match: "bare", interaction: "terminal" }],
   login: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
-  compact: [{ match: "bare", interaction: "none" }],
+  // `/compact <instructions>` focuses the summary
+  compact: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }],
   session: [{ match: "bare", interaction: "terminal" }],
   hotkeys: [{ match: "bare", interaction: "terminal" }],
   changelog: [{ match: "bare", interaction: "terminal" }],
