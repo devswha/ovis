@@ -369,11 +369,18 @@ interface PhoneBoxProps {
  * The relay is asked about only while the box is open.
  */
 function PhoneBox({ auth, security, onOpenSettings, onPaired }: PhoneBoxProps) {
+  const t = useT();
   const relay = useRelay();
   // Use Tailscale or Wi-Fi instead: the other ways, until the box is closed
   const [other, setOther] = useState(false);
   const way = other ? "other" : phoneWay(relay, inRelayShell(), auth);
-  if (way === "wait") return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
+  // the relay's first answer may never come (it keeps failing): the other ways stay one tap away meanwhile
+  if (way === "wait") return (
+    <div className="setup-phone-relay">
+      <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>
+      <button type="button" className="setup-link setup-phone-other" onClick={() => setOther(true)}>{t("Use Tailscale or Wi-Fi instead")}</button>
+    </div>
+  );
   if (way === "other") return <PhoneQr auth={auth} onOpenSettings={onOpenSettings} onPaired={onPaired} />;
   // as Settings → Phone works it out: the relay closes a gate still open with no token set (server/relay/service.ts)
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
@@ -436,7 +443,8 @@ function RelayBox({ relay, auth, closesGate, onPaired, onOther }: { relay: Relay
       {pairedSelf && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is paired first: other browsers now need pairing too.")}</span>}
       {/* a failed start's reason shows once, in its own line, when the relay says it did not start */}
       {error !== null && step !== "not-started" && <p className="setup-error" role="alert">{error}</p>}
-      <button type="button" className="setup-link setup-phone-other" onClick={onOther}>{t("Use Tailscale or Wi-Fi instead")}</button>
+      {/* not while the relay starts: its start closes the gate, which would spend the other way's pairing code */}
+      <button type="button" className="setup-link setup-phone-other" disabled={busy} onClick={onOther}>{t("Use Tailscale or Wi-Fi instead")}</button>
     </div>
   );
 }

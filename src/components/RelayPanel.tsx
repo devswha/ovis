@@ -7,7 +7,7 @@ import { ApiError, requestRelayOffer, startPairing, type RelayOffer } from "../l
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { announcePairingCode, PAIRING_CODE_EVENT } from "../lib/useRelay.ts";
-import type { RelayStatus } from "../../shared/protocol.ts";
+import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -43,11 +43,20 @@ export async function openOwnOffer(url: string): Promise<void> {
   window.location.assign(url);
 }
 
+// a code announced by a relay QR (announceFromRelay), not by the Devices group
+let relayAnnouncing = false;
+function announceFromRelay(code: PairingCode): void {
+  relayAnnouncing = true;
+  try { announcePairingCode(code); } finally { relayAnnouncing = false; }
+}
+
 /**
  * The QR code of the pending pairing offer, counted down to its expiry. An offer is asked for when
  * this opens with the relay online, when the Devices group starts a new code (the server keeps one
  * pending code, so both show the same), when the code ran out, and on New code, which starts a
- * new code first; never on a timer or a render.
+ * new code first; never on a timer or a render. A code another relay QR announces (the setup guide's
+ * and Settings' can be up at once) is not answered with an offer of this panel's own, or the two would
+ * keep replacing each other's: this one's code is gone, so it says it expired and waits for New code.
  */
 export function RelayPairing({ phone = false }: { phone?: boolean }) {
   const t = useT();
@@ -73,7 +82,7 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
       const code = decodeOffer(next.url)?.code;
       if (code !== undefined) {
         announcing.current = true;
-        try { announcePairingCode({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
+        try { announceFromRelay({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
       }
     }, (reason: unknown) => {
       if (cancelled) return;
@@ -85,7 +94,11 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
   }, [generation]);
 
   useEffect(() => {
-    const onCode = () => { if (!announcing.current) again(); };
+    const onCode = () => {
+      if (announcing.current) return;
+      if (relayAnnouncing) { setOffer(null); setState("expired"); return; }
+      again();
+    };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
     return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
   }, []);
@@ -115,7 +128,7 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
     try {
       const code = await startPairing();
       announcing.current = true;
-      try { announcePairingCode(code); } finally { announcing.current = false; }
+      try { announceFromRelay(code); } finally { announcing.current = false; }
       again();
     } catch (reason) {
       setOffer(null);
