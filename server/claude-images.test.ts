@@ -439,7 +439,9 @@ it("a filesystem exception revokes a rejected lookup's boundary", async () => {
   expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
 });
 
-describe("a transcript reached through a link", () => {
+// Windows makes a symbolic link only with Developer Mode or the right to make one, which a test
+// run may not have: the reader's `follow` is checked with injected IO there (transcript-reader.test.ts)
+describe.skipIf(process.platform === "win32")("a transcript reached through a link", () => {
   // a Claude store can be reached through a linked directory (one config directory linked into
   // another), or name its transcript by a link: the path is checked by the file it names, as statSync does
   it("serves through a link to the file and through a linked directory", async () => {
