@@ -33,7 +33,11 @@ it.each(["x", "🙂"])("delivers one complete large %s frame across real socket 
   const text = character.repeat(2 * 1024 * 1024);
   const chunks: Buffer[] = [];
   let lines = 0;
+  // the peer reads nothing until the first write was made, so that write can only be partial
+  const started = Promise.withResolvers<void>();
   const fixture = await peer((socket) => {
+    socket.pause();
+    void started.promise.then(() => socket.resume());
     socket.on("data", (chunk: Buffer) => {
       chunks.push(Buffer.from(chunk));
       if (!chunk.includes(10)) return;
@@ -43,10 +47,48 @@ it.each(["x", "🙂"])("delivers one complete large %s frame across real socket 
     });
   });
   try {
-    const result = await herdrRpc<{ method: string; text: string }>("fixture.write", { text }, fixture.path, 2_000);
+    // the guard is asked before every write: more than one ask is more than one write
+    let writes = 0;
+    const guard = () => { writes++; started.resolve(); return true; };
+    const result = await herdrRpc<{ method: string; text: string }>("fixture.write", { text }, fixture.path, 2_000, guard);
     expect(result).toEqual({ method: "fixture.write", text });
-    expect(chunks.length).toBeGreaterThan(1);
+    expect(writes).toBeGreaterThan(1);
     expect(lines).toBe(1);
+    expect(fixture.connections()).toBe(1);
+  } finally { await fixture.close(); }
+});
+
+it("cuts a request short, never completing it, when the sender loses the right to send mid-request", async () => {
+  const frame = 8 * 1024 * 1024;
+  const chunks: Buffer[] = [];
+  const started = Promise.withResolvers<void>();
+  const ended = Promise.withResolvers<void>();
+  const fixture = await peer((socket) => {
+    socket.pause();
+    socket.on("data", (chunk: Buffer) => { chunks.push(Buffer.from(chunk)); });
+    socket.on("end", () => ended.resolve());
+    // revoked after the first (partial) write; only then does the peer read what was sent
+    void started.promise.then(() => socket.resume());
+  });
+  try {
+    let allowed = true;
+    let asks = 0;
+    const guard = () => {
+      asks++;
+      const answer = allowed;
+      if (asks === 1) { allowed = false; started.resolve(); }
+      return answer;
+    };
+    const error = await herdrRpc("fixture.write", { text: "y".repeat(frame) }, fixture.path, 2_000, guard).catch((e: unknown) => e);
+    await ended.promise;
+    const received = Buffer.concat(chunks);
+    expect(error).toBeInstanceOf(HerdrError);
+    expect((error as HerdrError).code).toBe("socket_error");
+    expect(asks).toBeGreaterThan(1);
+    // herdr got part of one request and no newline: nothing it can act on
+    expect(received.length).toBeGreaterThan(0);
+    expect(received.length).toBeLessThan(frame);
+    expect(received.includes(10)).toBe(false);
     expect(fixture.connections()).toBe(1);
   } finally { await fixture.close(); }
 });

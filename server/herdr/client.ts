@@ -182,9 +182,11 @@ function readReply(frame: unknown, id: string): Reply | string {
  * The herdr server closes the connection after a single response, so a pooled
  * or reused socket would never see a second reply.
  *
- * `guard`, when given, is asked once more right before the request is written: the
- * connect is awaited, and a caller's right to send can lapse meanwhile. A guard that
- * answers false sends nothing and rejects with `cancelled`.
+ * `guard`, when given, is asked before every write of the request (a large one goes out over
+ * several drains): the connect is awaited, and a caller's right to send can lapse meanwhile. A
+ * guard that answers false before the first byte sends nothing and rejects with `cancelled`;
+ * one that answers false mid-request ends the connection with the request cut short, which
+ * herdr cannot act on, and rejects with `socket_error`.
  */
 export function herdrRpc<M extends HerdrMethod>(
   method: SingleHerdrMethod<M>,
@@ -280,10 +282,14 @@ export async function herdrRpc(
       const writeRequest = () => {
         if (settled || socket === null || request !== null && written === request.length) return;
         try {
-          // Before the first byte a revoked sender can still cancel. Once a frame starts, finish
-          // that same frame: changing it or replaying its prefix would corrupt the RPC stream.
-          if (written === 0 && guard && !guard()) {
-            finish(() => reject(new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)));
+          // The sender's authority is asked before every write. Before the first byte a revoked
+          // sender cancels. Once a frame has started it is never changed or replayed; if authority
+          // lapses mid-frame the connection ends with the frame cut short, which herdr cannot act
+          // on, and the outcome is reported as uncertain rather than as not sent
+          if (guard && !guard()) {
+            finish(() => reject(written === 0
+              ? new HerdrError("cancelled", `herdr ${method} was not sent: the sender may no longer send`)
+              : new HerdrError("socket_error", `herdr ${method} was cut short: the sender lost the right to send mid-request`)));
             return;
           }
           request ??= Buffer.from(`${JSON.stringify({ id, method, params })}\n`);
