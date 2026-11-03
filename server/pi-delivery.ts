@@ -331,11 +331,16 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const first = piMaybeCommand(candidate.text)
         ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
         : undefined;
-      const claims = first ? candidates.slice(index + 1).filter((later) => piRecordOf(later.text, first)).length : 0;
-      // Pi ran it where the record after it is a later Ovis send's (Pi moved on), or is a listed
-      // template's expansion. Any other record is skipped, as for every receipt: it may be a message
-      // typed in the terminal, and this send's own record may still follow.
-      if (first && first.text !== candidate.text && (claims > 0 || candidate.template)) {
+      const later = candidates.slice(index + 1);
+      const claims = first ? later.filter((next) => piRecordOf(next.text, first)).length : 0;
+      // a later Ovis send's record after it: Pi moved on past this send
+      const passed = first && chain.find((entry) => entry.start >= first.start && fresh(entry) && !consumedEntries.has(key(entry))
+        && later.some((next) => piRecordOf(next.text, entry)));
+      const own = same.find(fresh);
+      // Pi ran it where it moved on without recording it as typed, or where the record after a listed
+      // template is not its text (its expansion). Any other record is skipped, as for every receipt: it
+      // may be a message typed in the terminal, and this send's own record may still follow.
+      if (first && first.text !== candidate.text && !(own && (!passed || own.start < passed.start)) && (passed || candidate.template)) {
         consumed.push(candidate.id);
         // The record is its expansion, unless the later receipts it could be theirs claim every copy of
         // it, as when an extension's command recorded nothing.

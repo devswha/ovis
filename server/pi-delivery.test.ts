@@ -162,6 +162,17 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "/plain", anchor)])).toMatchObject({ consumed: [], ambiguous: ["one"] });
   });
 
+  it("settles a template the pane's catalog did not list once a later send's record follows its expansion", () => {
+    const path = join(dir(), "template-unlisted.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("e1", "base", "user", "Review this code: the parser"));
+    const receipts = [candidate("one", "/review the parser", anchor), candidate("two", "after", anchor)];
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual([]);
+    appendFileSync(path, entry("a1", "e1", "assistant", "done") + entry("u2", "a1", "user", "after"));
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one", "two"]);
+  });
+
   it("skips a record no Ovis send claims for a /name message, which may still be recorded as typed", () => {
     const path = join(dir(), "slash-message.jsonl");
     writeFileSync(path, header() + entry("base", null, "assistant", "working"));
