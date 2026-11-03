@@ -1317,6 +1317,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // The paging away is the reader opening something (readOpened): it holds in a chat still too short to scroll.
   const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
+  // How far the view has been trimmed up without input under the selection in progress (onScroll)
+  const heldTrim = useRef(0);
   // The last row and where it started in the transcript, and the transcript's height, at the
   // previous scroll event (#2042).
   const lastRowOffset = useRef<{ key: string; offset: number } | null>(null);
@@ -2027,8 +2029,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
     // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
     // browser trims it to a whole pixel as the transcript shrinks under it: a move up of a pixel at
-    // most, without the reader's input, is the layout's.
-    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || (selecting.current && up <= READER_ALLOWANCE_PX));
+    // most, without the reader's input, is the layout's, up to the layout allowance in all. Past it
+    // the moves are the reader's, however small, as without a selection.
+    if (!selecting.current) heldTrim.current = 0;
+    const trimmed = selecting.current && scrollingUp && up <= READER_ALLOWANCE_PX && heldTrim.current + up <= LAYOUT_ALLOWANCE_PX;
+    if (trimmed && !byReader) heldTrim.current += up;
+    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
