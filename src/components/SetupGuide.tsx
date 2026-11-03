@@ -441,8 +441,8 @@ function RelayBox({ relay, auth, closesGate, onPaired, onOther }: { relay: Relay
       )}
       {step === "online" && <RelayPairing />}
       {pairedSelf && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is paired first: other browsers now need pairing too.")}</span>}
-      {/* a failed start's reason shows once, in its own line, when the relay says it did not start */}
-      {error !== null && step !== "not-started" && <p className="setup-error" role="alert">{error}</p>}
+      {/* a failed start's reason shows once, in its own line, when the relay says it did not start; any other failure (a retry's own pairing) shows here */}
+      {error !== null && (step !== "not-started" || error !== status.error) && <p className="setup-error" role="alert">{error}</p>}
       {/* not while the relay starts: its start closes the gate, which would spend the other way's pairing code */}
       <button type="button" className="setup-link setup-phone-other" disabled={busy} onClick={onOther}>{t("Use Tailscale or Wi-Fi instead")}</button>
     </div>
