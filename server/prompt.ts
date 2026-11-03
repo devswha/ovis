@@ -769,7 +769,6 @@ class MoveLapsed extends KeyRefused {}
  */
 async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
   if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
-  if (agent === "pi" && !(await piOwnsInput(paneId))) throw new PiNotInFront();
   if (agent === "omp" && !(await ompOwnsInput(paneId, deadline))) throw new OmpNotInFront();
 }
 
@@ -1082,8 +1081,8 @@ async function readKnownPrompt(
     return { prompt: null, screen, suppressFallback: true };
   }
   // and every card pi's own dialogs and questionnaires draw, which answer by keys (pi-ask's form answers
-  // through the extension and returned above)
-  if (agent === "pi" && prompt !== null && !(await piOwnsInput(paneId))) {
+  // through the extension and returned above; omo's cards on a pane herdr names pi keep their own checks)
+  if (agent === "pi" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder?.startsWith("pi-") && !(await piOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
@@ -1361,6 +1360,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       const ompCall = agent === "omp" ? parsedPrompt?.ompCall : undefined;
       const guardKey = async (paneId: string, keyAgent: string, signal: AbortSignal): Promise<void> => {
         await keyGuard(paneId, keyAgent, signal);
+        // a key-driven card of pi's own goes to pi only while pi holds the pane (piOwnsInput)
+        if (parsedPrompt?.responder?.startsWith("pi-") && !(await piOwnsInput(paneId))) throw new PiNotInFront();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
       };
       /**
