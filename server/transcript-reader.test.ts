@@ -478,3 +478,96 @@ it.skipIf(process.platform !== "linux")("tells the work whether the event loop r
   readsNow(() => advance(3));
   expect(await new TranscriptReader().read(slow, async (file) => [(await file.window(0, 4), file.waited()), (await file.stat(), file.waited())])).toEqual([false, true]);
 });
+
+/** Takes `ms` of the clock in each call to `name` (on the event loop), or throws once `fails` is set. */
+function slowCalls(name: "openSync" | "closeSync", advance: (ms: number) => void) {
+  const real = (fs as any)[name] as (...args: unknown[]) => unknown;
+  const state = { ms: 0, fails: false };
+  const fail = () => { state.fails = false; return Object.assign(new Error(`${name} failed`), { code: "EIO" }); };
+  const spy = spyOn(fs, name).mockImplementation(((...args: unknown[]) => {
+    advance(state.ms);
+    // an open that fails opens nothing; a close that fails has closed the descriptor all the same
+    if (state.fails && name === "openSync") throw fail();
+    const value = real(...args);
+    if (state.fails) throw fail();
+    return value;
+  }) as any);
+  restores.push(() => spy.mockRestore());
+  return state;
+}
+
+for (const name of ["openSync", "closeSync"] as const) {
+  it.skipIf(process.platform !== "linux")(`reads through the thread pool for a second once ${name === "openSync" ? "an open" : "a close"} on the event loop was slow or threw`, async () => {
+    const path = onFilesystem(0x9123683e);
+    const advance = stillClock();
+    const calls = slowCalls(name, advance);
+    const opens = opensAsync();
+    const reads = readsNow();
+    const reader = new TranscriptReader();
+    const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
+    // the first lease looks the filesystem up, and opens through the thread pool meanwhile
+    expect(await read()).toBe("abcd");
+    expect([opens(), reads()]).toEqual([1, 1]);
+    // the next opens and closes on the event loop
+    expect(await read()).toBe("abcd");
+    expect([opens(), reads()]).toEqual([1, 2]);
+    // one that takes 3 ms of the clock: the disk answered it, not the page cache
+    calls.ms = 3;
+    expect(await read()).toBe("abcd");
+    calls.ms = 0;
+    // after a slow open, the rest of that lease went through the thread pool
+    if (name === "openSync") expect(reads()).toBe(2);
+    // the next lease, within the second, goes through the thread pool
+    expect(await read()).toBe("abcd");
+    expect(opens()).toBe(2);
+    // a second later the event loop again, and a call there that throws
+    restores.push(() => setSystemTime());
+    setSystemTime(new Date(Date.now() + 1000));
+    calls.fails = true;
+    await read().then(() => {}, () => {});
+    expect(opens()).toBe(2);
+    expect(await read()).toBe("abcd");
+    expect(opens()).toBe(3);
+  });
+}
+
+it.skipIf(process.platform !== "linux")("reads a transcript on another device than its local directory through the thread pool", async () => {
+  // a file mounted into the directory from another filesystem (NFS, say): its device is not the directory's
+  const path = onFilesystem(0x9123683e);
+  const real = fsp.stat;
+  const other = spyOn(fsp, "stat").mockImplementation((async (...args: Parameters<typeof real>) => {
+    const found = await real(...args);
+    return Object.assign(Object.create(Object.getPrototypeOf(found)), found, { dev: Number(found.dev) + 1 });
+  }) as typeof real);
+  restores.push(() => other.mockRestore());
+  stillClock();
+  const opens = opensAsync();
+  const reads = readsNow();
+  const reader = new TranscriptReader();
+  const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
+  // its first stat, before any read, finds the other device: the read goes through the thread pool
+  expect(await read()).toBe("abcd");
+  expect(reads()).toBe(0);
+  // and so does the next lease's, open included
+  expect(await read()).toBe("abcd");
+  expect([opens(), reads()]).toEqual([2, 0]);
+});
+
+it.skipIf(process.platform !== "linux")("reads through the thread pool for a second once a read on the event loop threw", async () => {
+  const path = onFilesystem(0x9123683e);
+  stillClock();
+  const opens = opensAsync();
+  const real = fs.readSync;
+  let fails = true;
+  const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof real>) => {
+    if (fails) { fails = false; throw Object.assign(new Error("readSync failed"), { code: "EIO" }); }
+    return real(...args);
+  }) as typeof real);
+  restores.push(() => reads.mockRestore());
+  const reader = new TranscriptReader();
+  const read = () => reader.read(path, async (file) => (await file.window(0, 4)).toString());
+  await expect(read()).rejects.toThrow("readSync failed");
+  // the next lease, within the second, opens and reads through the thread pool
+  expect(await read()).toBe("abcd");
+  expect([opens(), reads.mock.calls.length]).toEqual([2, 1]);
+});

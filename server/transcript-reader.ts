@@ -1,5 +1,5 @@
 import { closeSync, constants, fstat, fstatSync, lstatSync, openSync, read, readSync, type Stats } from "node:fs";
-import { lstat, open, statfs } from "node:fs/promises";
+import { lstat, open, stat, statfs } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /**
@@ -34,9 +34,11 @@ export interface TranscriptIO {
   stat(path: string): Promise<Stats>;
   /**
    * Whether `directory` is on a local filesystem, where a read the page cache answers costs less
-   * on the event loop than a round trip through the thread pool. Left out: every read is async.
+   * on the event loop than a round trip through the thread pool, and its device: a transcript on
+   * another device (a file mounted into the directory) is not known to be local. Left out: every
+   * read is async.
    */
-  local?(directory: string): Promise<boolean>;
+  filesystem?(directory: string): Promise<{ local: boolean; dev: number }>;
   openNow?(path: string): TranscriptHandleNow;
   statNow?(path: string): Stats;
 }
@@ -59,7 +61,10 @@ const nativeIO: TranscriptIO = {
   },
   stat: (path) => lstat(path),
   ...(process.platform === "linux" ? {
-    local: async (directory: string) => LOCAL.has((await statfs(directory)).type),
+    filesystem: async (directory: string) => {
+      const [found, named] = await Promise.all([statfs(directory), stat(directory)]);
+      return { local: LOCAL.has(found.type), dev: named.dev };
+    },
     openNow: (path: string): TranscriptHandleNow => {
       const fd = openSync(path, FLAGS);
       return {
@@ -77,7 +82,7 @@ const nativeIO: TranscriptIO = {
 const WINDOW_BYTES = 1024 * 1024;
 /** A call on the event loop slower than this was answered by the disk, not the page cache. */
 const SLOW_MS = 2;
-/** After one, a transcript's reads go through the thread pool this long; the first lease after tries again. */
+/** After one (or a call that threw), a transcript's reads go through the thread pool this long; the first lease after tries again. */
 const SLOW_FOR_MS = 1000;
 /** How long a directory's filesystem is taken as known. */
 const FILESYSTEM_MS = 60_000;
@@ -143,8 +148,8 @@ export class TranscriptReader {
   private readonly idle = new Set<() => void>();
   /** `window` buffers of leases that ended, every native operation on them settled */
   private readonly spare: Buffer[] = [];
-  /** Directories known to be on a local filesystem or not, until a time */
-  private readonly filesystems = new Map<string, { local: boolean; until: number }>();
+  /** Directories known to be on a local filesystem (with its device) or not (null), until a time */
+  private readonly filesystems = new Map<string, { dev: number | null; until: number }>();
   /** Transcripts whose reads go through the thread pool until a time: one on the event loop was slow */
   private readonly slow = new Map<string, number>();
   /** The request `read` is admitting: a lease it starts at once waited for nothing. */
@@ -178,6 +183,8 @@ export class TranscriptReader {
         run: async () => {
           const immediate = this.admitting === request;
           let handle: Awaited<ReturnType<TranscriptIO["open"]>> | undefined;
+          // the handle was opened on the event loop, and closes there
+          let closeNow = false;
           const operations = new Set<Promise<unknown>>();
           let accepting = true;
           let value: T | undefined;
@@ -192,29 +199,42 @@ export class TranscriptReader {
             // answers: a call through the thread pool costs a wake of its thread, a copy on another
             // core and a wake of the event loop, more than the read itself
             const near = this.near(path);
-            let direct: TranscriptHandleNow | null;
-            if (typeof near === "boolean") {
-              direct = near ? this.io.openNow!(path) : null;
+            let direct: TranscriptHandleNow | null = null;
+            // the device of the directory's local filesystem: a transcript on another goes through the thread pool
+            let device: number | null;
+            let slowOpen = false;
+            if (!(near instanceof Promise)) {
+              device = near;
+              if (device !== null) {
+                // an open on the event loop is timed like any call there: slow, or one that throws,
+                // and the transcript goes through the thread pool
+                const started = performance.now();
+                try { direct = this.io.openNow!(path); } catch (caught) { this.slowed(path); throw caught; }
+                closeNow = true;
+                if (performance.now() - started > SLOW_MS) { slowOpen = true; this.slowed(path); }
+              }
               handle = direct ?? await this.io.open(path);
             } else {
               // the filesystem is looked up while the transcript opens, not before: on a network
               // filesystem the lookup costs round trips of its own
-              const [local, opened] = await Promise.all([near, this.io.open(path)]);
+              const [found, opened] = await Promise.all([near, this.io.open(path)]);
               handle = opened;
-              direct = local && hasNow(opened) ? opened : null;
+              device = found;
+              direct = device !== null && hasNow(opened) ? opened : null;
             }
             current();
             const pinned = handle;
             let busy = false;
-            // reads on the event loop until one is slow: then through the thread pool, for the rest of the lease
-            let now = direct !== null;
+            // reads on the event loop until one is slow or throws: then through the thread pool, for the rest of the lease
+            let now = direct !== null && !slowOpen;
             let waited = true;
             const timed = <V>(call: (direct: TranscriptHandleNow) => V): Promise<V> => {
               try {
                 current();
                 if (!accepting) throw new Error("the transcript lease is closed");
                 const started = performance.now();
-                const value = call(direct!);
+                let value: V;
+                try { value = call(direct!); } catch (caught) { now = false; this.slowed(path); throw caught; }
                 waited = false;
                 if (performance.now() - started > SLOW_MS) { now = false; this.slowed(path); }
                 current();
@@ -272,7 +292,13 @@ export class TranscriptReader {
             let initial: TranscriptVersion | undefined;
             const file: TranscriptFile = {
               get initial() { return initial!; },
-              stat: () => now ? timed((direct) => plain(transcriptVersion(direct.statNow()))) : operation(async () => {
+              stat: () => now ? timed((direct) => {
+                const stats = direct.statNow();
+                // a transcript on another device than its directory (mounted into it) is not known to be
+                // local: the stat before any read finds it, and the rest goes through the thread pool
+                if (stats.dev !== device) { now = false; this.slowed(path, FILESYSTEM_MS); }
+                return plain(transcriptVersion(stats));
+              }) : operation(async () => {
                 current();
                 const version = transcriptVersion(await pinned.stat());
                 current();
@@ -326,7 +352,17 @@ export class TranscriptReader {
             await Promise.allSettled([...operations]);
             // Even an open that answered after cancellation must close; neither its path nor the
             // physical allowance is available to a replacement until this await has settled.
-            try { await handle?.close(); } catch (caught) { if (!failed) error = caught; failed = true; }
+            try {
+              // a close on the event loop is timed too: slow, or one that throws, and the transcript goes through the thread pool
+              const started = performance.now();
+              const closing = handle?.close();
+              if (closeNow && performance.now() - started > SLOW_MS) this.slowed(path);
+              await closing;
+            } catch (caught) {
+              if (closeNow) this.slowed(path);
+              if (!failed) error = caught;
+              failed = true;
+            }
             if (front !== undefined) this.spare.push(front);
             if (back !== undefined) this.spare.push(back);
             if (request.live && deadline !== undefined && Date.now() >= deadline) request.cancel();
@@ -363,23 +399,28 @@ export class TranscriptReader {
     }
   }
 
-  /** Whether `path` is read on the event loop: a local filesystem (known, or found out), and no read of it slow lately. */
-  private near(path: string): boolean | Promise<boolean> {
-    if (this.io.local === undefined || this.io.openNow === undefined || this.io.statNow === undefined) return false;
+  /**
+   * Whether `path` is read on the event loop: the device of its directory's local filesystem
+   * (known, or found out), which the transcript has to be on too; null for the thread pool (another
+   * filesystem, or a call on it slow lately).
+   */
+  private near(path: string): number | null | Promise<number | null> {
+    if (this.io.filesystem === undefined || this.io.openNow === undefined || this.io.statNow === undefined) return null;
     const until = this.slow.get(path);
-    if (until !== undefined) { if (Date.now() < until) return false; this.slow.delete(path); }
+    if (until !== undefined) { if (Date.now() < until) return null; this.slow.delete(path); }
     const directory = dirname(path);
     const known = this.filesystems.get(directory);
-    if (known !== undefined && Date.now() < known.until) return known.local;
-    return this.io.local(directory).catch(() => false).then((local) => {
+    if (known !== undefined && Date.now() < known.until) return known.dev;
+    return this.io.filesystem(directory).then(({ local, dev }) => local ? dev : null, () => null).then((dev) => {
       if (this.filesystems.size >= 256) this.filesystems.clear();
-      this.filesystems.set(directory, { local, until: Date.now() + FILESYSTEM_MS });
-      return local;
+      this.filesystems.set(directory, { dev, until: Date.now() + FILESYSTEM_MS });
+      return dev;
     });
   }
-  private slowed(path: string): void {
+  /** `path` is read through the thread pool for `ms`: a call on the event loop was slow or threw, or it is on another device than its directory. */
+  private slowed(path: string, ms = SLOW_FOR_MS): void {
     if (this.slow.size >= 256) this.slow.clear();
-    this.slow.set(path, Date.now() + SLOW_FOR_MS);
+    this.slow.set(path, Date.now() + ms);
   }
 
   reset(): void {
