@@ -9,7 +9,7 @@ import { existsSync, readFileSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStart, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { updatePlan } from "./updates.ts";
 
 type StepState = "pending" | "ok" | "failed";
@@ -123,10 +123,7 @@ async function launch(): Promise<void> {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
       const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
         spawning = child;
-        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.bun, started: null } });
-        void processStart(child.pid!).then((started) => {
-          if (spawning === child || server?.child === child) writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.bun, started } });
-        });
+        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.bun, started: processStartSync(child.pid!) } });
       });
       spawning = null;
       if (quitting) {

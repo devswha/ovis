@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { legacyName } from "../../../server/legacy-env.ts";
-import { choosePort, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, readSaved, serverEnv, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
+import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, processStartSync, readSaved, serverEnv, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
 const listeners: Server[] = [];
@@ -88,6 +88,15 @@ describe("startServer", () => {
     log.end();
   });
 
+  it("finds where it listens after more output than it keeps", async () => {
+    const programs = fakeServer(`process.stdout.write("x".repeat(200 * 1024) + "\\n"); console.log("Ovis listening on http://127.0.0.1:" + process.env.PORT); process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);`);
+    const log = openLog(join(tempDir(), "ovis.log"));
+    const server = await startServer(programs, { ...process.env, PORT: "45679" }, log, 20_000);
+    expect(server.url).toBe("http://127.0.0.1:45679");
+    await stopServer(server, 5_000);
+    log.end();
+  });
+
   it("fails when the server says nothing in time, and ends it", async () => {
     const programs = fakeServer(`setInterval(() => {}, 1000);`);
     const log = openLog(join(tempDir(), "ovis.log"));
@@ -110,7 +119,7 @@ describe("installCore", () => {
   function fakeHc(dir: string, tag: string): string {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "herdr-core");
-    writeFileSync(path, `#!/bin/sh\n# ${tag}\necho "$@" >> "$(dirname "$0")/ran"\n`);
+    writeFileSync(path, `#!/bin/sh\nif [ "$1" = --version ]; then echo "hc ${tag}"; exit 0; fi\necho "$@" >> "$(dirname "$0")/ran"\n`);
     chmodSync(path, 0o755);
     return path;
   }
@@ -135,6 +144,31 @@ describe("installCore", () => {
     expect(await installCore(bundled, join(root, "data", "bin"), process.env, log)).toBe(installed);
     expect(readFileSync(join(root, "data", "bin", "ran"), "utf8")).toBe(`update --from ${bundled}\n`);
     log.end();
+  });
+});
+
+describe("installCore after a rollback", () => {
+  it("keeps a newer hc in the data folder instead of asking it to go back", async () => {
+    const root = tempDir();
+    const write = (dir: string, version: string) => {
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "herdr-core");
+      writeFileSync(path, `#!/bin/sh\nif [ "$1" = --version ]; then echo "hc ${version}"; exit 0; fi\necho "$@" >> "$(dirname "$0")/ran"; exit 1\n`);
+      chmodSync(path, 0o755);
+      return path;
+    };
+    const bundled = write(join(root, "bundle"), "0.1.17");
+    const installed = write(join(root, "data", "bin"), "0.1.18");
+    const log = openLog(join(root, "ovis.log"));
+    expect(await installCore(bundled, join(root, "data", "bin"), process.env, log)).toBe(installed);
+    expect(() => readFileSync(join(root, "data", "bin", "ran"))).toThrow();
+    log.end();
+  });
+
+  it("orders versions by number", () => {
+    expect(compareVersions([0, 1, 18], [0, 1, 17])).toBeGreaterThan(0);
+    expect(compareVersions([0, 2, 0], [0, 10, 0])).toBeLessThan(0);
+    expect(compareVersions([0, 1, 17], [0, 1, 17])).toBe(0);
   });
 });
 
@@ -204,6 +238,7 @@ describe("endLeftover", () => {
 
   it("reads a live process's start time and command, and nothing for one that is gone", async () => {
     expect(await processStart(process.pid)).toMatch(/\d{4}$/);
+    expect(processStartSync(process.pid)).toBe(await processStart(process.pid));
     expect(await processCommand(process.pid)).toContain("bun");
     const gone = Bun.spawn(["true"]);
     await gone.exited;

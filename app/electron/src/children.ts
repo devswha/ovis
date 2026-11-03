@@ -3,7 +3,7 @@
  * server on the bundled Bun, which serves the window. Nothing here imports Electron, so the
  * tests run it under Bun.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
@@ -98,9 +98,27 @@ export async function installCore(bundled: string, dir: string, env: Env, log: W
     renameSync(`${installed}.new`, installed);
     return installed;
   }
+  // an hc newer than this app's (left by a newer app, before a rollback) is kept: hc refuses to go back
+  const [have, want] = await Promise.all([hcVersion(installed, env), hcVersion(bundled, env)]);
+  if (have !== null && want !== null && compareVersions(have, want) >= 0) return installed;
   const { code, output } = await run(installed, ["update", "--from", bundled], env, log, timeoutMs);
   if (code !== 0) throw new Error(`herdr-core in ${dir} could not be updated to this app's (${code === null ? "timed out" : `exit code ${code}`})\n${tail(output)}`);
   return installed;
+}
+
+/** `[0, 1, 17]` for an hc that says `hc 0.1.17`, else null */
+export async function hcVersion(hc: string, env: Env): Promise<number[] | null> {
+  const { code, output } = await run(hc, ["--version"], env, null, 10_000);
+  const match = code === 0 ? /^hc (\d+)\.(\d+)\.(\d+)/.exec(output.trim()) : null;
+  return match ? match.slice(1, 4).map(Number) : null;
+}
+
+export function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const difference = (a[i] ?? 0) - (b[i] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 function sameBytes(a: string, b: string): boolean {
@@ -138,10 +156,11 @@ export function startServer(layout: Layout, env: Env, log: WriteStream, timeoutM
     child.once("exit", (code) => resolve(code));
     child.once("error", () => resolve(null));
   });
+  // the end of the output only: the line that says where it listens comes after whatever it printed first
   let output = "";
   const take = (chunk: Buffer) => {
     log.write(chunk);
-    if (output.length < 64 * 1024) output += chunk.toString("utf8");
+    output = (output + chunk.toString("utf8")).slice(-64 * 1024);
   };
   child.stdout!.on("data", take);
   child.stderr!.on("data", take);
@@ -263,6 +282,16 @@ export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = 
 export async function processCommand(pid: number): Promise<string | null> {
   const { code, output } = await run("ps", ["-o", "command=", "-p", String(pid)], process.env, null, 5_000);
   return code === 0 && output.trim() !== "" ? output.trim() : null;
+}
+
+/** processStart, waited for: a record written with it never lacks the start time */
+export function processStartSync(pid: number): string | null {
+  try {
+    const output = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return output === "" ? null : output;
+  } catch {
+    return null;
+  }
 }
 
 export async function processStart(pid: number): Promise<string | null> {

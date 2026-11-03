@@ -15,7 +15,8 @@ The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this ap
    quitting the app leaves the terminals running, and the next start finds them. So the core runs
    from a copy in `<user data>/bin/herdr-core`, not from the app (an AppImage's files go away with
    it, and an update replaces the app); a newer bundled hc replaces that copy with
-   `hc update --from`, as hc's own installer does, and the terminals keep running.
+   `hc update --from`, as hc's own installer does, and the terminals keep running. A copy newer than
+   the bundled one (left by a newer app before a rollback) is kept, since hc does not go back.
 2. Starts the Ovis server on the bundled Bun with `OVIS_RUNTIME=herdr-core`, `OVIS_HC_BIN` set to
    that hc, `HOST=127.0.0.1` and its own state folder (`<user data>/server`, or
    `OVIS_STATE_DIR`). The server is the same code the installer runs; the app only starts it.
