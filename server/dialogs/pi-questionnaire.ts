@@ -20,9 +20,10 @@ const piStats = (line: string): boolean => /\d+(?:\.\d+)?%\/\d/.test(line) && !/
 const piFolder = (line: string): boolean => /^(?:[A-Za-z]:[\\/]|[~\/])/.test(line);
 /**
  * An extension's `ctx.ui.setStatus` line, which pi draws under its folder and stats lines (one line,
- * truncated, never wrapped). Only directly under them, and never a composer's or a shell's prompt.
+ * truncated, never wrapped). Only directly under them, and never a composer's or a shell's prompt. Not on
+ * Windows, where no foreground process tells a live pi from the shell under its last screen.
  */
-const piStatus = (lines: string[], at: number): boolean => at >= 2 && !piStats(lines[at] ?? "")
+const piStatus = (lines: string[], at: number): boolean => process.platform !== "win32" && at >= 2 && !piStats(lines[at] ?? "")
   && !PROMPT_LINE_RE.test(lines[at]!.trim()) && piStats(lines[at - 1] ?? "") && piFolder(lines[at - 2] ?? "");
 
 /** Also reserves malformed/clipped active drawings, never old hints above a newer prompt. */

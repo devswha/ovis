@@ -211,6 +211,8 @@ const PI_FOLDER_LINE_RE = /^(?:~(?:[\\/]|\s|$)|\/|[A-Za-z]:[\\/])/u;
  * only while pi still holds the pane's input (piOwnsInput in prompt.ts).
  */
 function piFooterLines(shown: string[]): number {
+  // Windows names no foreground process to tell a live pi from the shell under its last screen: no status line there
+  if (process.platform === "win32") return PI_FOOTER_LINES;
   const status = shown.at(-1) ?? "";
   const footer = PI_FOLDER_LINE_RE.test(shown.at(-3) ?? "") && PI_STATS_LINE_RE.test(shown.at(-2) ?? "");
   return footer && !PROMPT_LINE_RE.test(status) ? PI_FOOTER_LINES + 1 : PI_FOOTER_LINES;

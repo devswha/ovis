@@ -1081,8 +1081,9 @@ async function readKnownPrompt(
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
-  // and every card pi's own dialogs draw (pi-ask's form answers through the extension, not by keys)
-  if (agent === "pi" && prompt !== null && piNative === null && !(await piOwnsInput(paneId))) {
+  // and every card pi's own dialogs and questionnaires draw, which answer by keys (pi-ask's form answers
+  // through the extension and returned above)
+  if (agent === "pi" && prompt !== null && !(await piOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
@@ -1383,6 +1384,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
         if (!read || read.inputUnverified || Date.now() > readUntil || !same(shown, read.screen ?? "")) throw new KeyRefused();
+        // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
+        // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
+        if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
         return write();
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
