@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFil
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forgetTranscriptState, transcriptImage, transcriptImageAsync, transcriptPage } from "./conversation.ts";
+import { forgetTranscriptState, pictureIndexForTests, transcriptImage, transcriptImageAsync, transcriptPage } from "./conversation.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -25,6 +25,11 @@ function fixture(tiny = false) {
     : line({ type: "progress", data: "x".repeat(1024 * 1024) }).repeat(20);
   writeFileSync(path, line({ type: "user", uuid: id(1), parentUuid: null, message: { content: "read" } }) + call + padding + result);
   return { path, ref: `${id(3)}:0:0` };
+}
+/** The picture as main's lookup finds it: the search from the floor for its record, and forward for its call. */
+async function asMain(path: string, ref: string) {
+  pictureIndexForTests(false);
+  try { return await transcriptImageAsync(path, ref); } finally { pictureIndexForTests(true); }
 }
 function exact(image: Awaited<ReturnType<typeof transcriptImageAsync>>) {
   expect(image?.mediaType).toBe("image/png");
@@ -363,9 +368,13 @@ describe("finding a picture's record", () => {
     writeFileSync(path, text);
     return path;
   }
+  /** the lookup with the index, cooperative and synchronous, and as the search alone makes it, which is main's lookup: all three agree */
   async function both(path: string, ref: string) {
+    const bytes = (image: Awaited<ReturnType<typeof transcriptImageAsync>>) => image === null ? null : Buffer.from(image.bytes);
     const [cooperative, sync] = [await transcriptImageAsync(path, ref), transcriptImage(path, ref)];
-    expect(sync === null ? null : Buffer.from(sync.bytes)).toEqual(cooperative === null ? null : Buffer.from(cooperative.bytes));
+    const searched = await asMain(path, ref);
+    expect(bytes(sync)).toEqual(bytes(cooperative));
+    expect(bytes(cooperative)).toEqual(bytes(searched));
     return cooperative;
   }
 
@@ -469,5 +478,73 @@ describe("finding a picture's record", () => {
     appendFileSync(path, drawn(1, otherPicture));
     const after = await both(path, `${id(1)}:0`);
     expect(Buffer.from(after!.bytes).equals(other)).toBe(true);
+    // a prompt sent again from before an answer (a rewind) leaves the picture between off the branch
+    const record = (uuid: number, parentUuid: number | null, type: string, content: unknown) => line({ type, uuid: id(uuid), parentUuid: parentUuid === null ? null : id(parentUuid), message: { role: type, content } });
+    const rewound = transcript(record(10, null, "user", "look") + record(11, 10, "assistant", [{ type: "text", text: "ok" }])
+      + record(12, 11, "user", [picture]) + record(13, 12, "assistant", [{ type: "text", text: "seen" }])
+      + record(14, 11, "user", "look again") + record(15, 14, "user", [otherPicture]));
+    expect(await both(rewound, `${id(12)}:0`)).toBeNull();
+    const kept = await both(rewound, `${id(15)}:0`);
+    expect(Buffer.from(kept!.bytes).equals(other)).toBe(true);
   });
+
+  // a record whose shape passes what the endpoint holds (4 MiB): a file-history line of a million short names
+  const unreadable = (named: string) => line({ type: "file-history-snapshot", messageId: named, snapshot: { files: Array.from({ length: 1_200_000 }, () => "a") } });
+
+  it("refuses as the search does when a record it cannot judge names the picture's uuid before it", async () => {
+    const drawn = line({ type: "user", uuid: id(1), message: { content: [picture] } });
+    expect(await both(transcript(unreadable(id(1)) + drawn), `${id(1)}:0`)).toBeNull();
+    // one that does not name it is skipped by the search, which finds the picture
+    exact(await both(transcript(unreadable(id(2)) + drawn), `${id(1)}:0`));
+    // and one after the picture is never reached
+    exact(await both(transcript(drawn + unreadable(id(1))), `${id(1)}:0`));
+  });
+
+  it("refuses as the forward search does when a record it cannot judge names the call before the call", async () => {
+    const call = line({ type: "assistant", uuid: id(2), message: { content: [{ type: "tool_use", id: "read", name: "Read" }] } });
+    const result = line({ type: "user", uuid: id(3), message: { content: [{ type: "tool_result", tool_use_id: "read", content: [picture] }] } });
+    expect(await both(transcript(unreadable("read") + call + result), `${id(3)}:0:0`)).toBeNull();
+    expect(await both(transcript(call + unreadable("read") + result), `${id(3)}:0:0`)).toBeNull();
+    exact(await both(transcript(unreadable("other") + call + result), `${id(3)}:0:0`));
+  });
+
+  it("checks the record a kept scan indexed against a file rewritten in place and grown since", async () => {
+    // a kept scan is checked by the bytes just before where it ended: a rewrite that keeps them where
+    // they were and grows the file keeps it, with the offsets it holds
+    const drawn = (image = picture) => line({ type: "user", uuid: id(1), message: { content: [image] } });
+    const pad = (length: number) => line({ type: "progress", data: "p".repeat(length - 30) });
+    const tail = line({ type: "progress", data: "the tail a kept scan is checked by, longer than sixty-four bytes" });
+    const size = Buffer.byteLength(drawn());
+    async function rewritten(before: string, after: string) {
+      expect(Buffer.byteLength(after)).toBe(Buffer.byteLength(before));
+      const path = transcript(before + tail);
+      exact(await both(path, `${id(1)}:0`));
+      writeFileSync(path, after + tail);
+      appendFileSync(path, pad(100));
+      return await both(path, `${id(1)}:0`);
+    }
+    // the record moved on by 100 bytes: what the scan holds is no line now
+    exact(await rewritten(drawn() + pad(1000), pad(100) + drawn() + pad(900)));
+    // moved back by a record's length, so where it was another record of the same uuid and length starts
+    const first = await rewritten(pad(500 + size) + drawn() + drawn(otherPicture) + pad(1000), pad(500) + drawn() + drawn(otherPicture) + pad(1000 + size));
+    expect(Buffer.from(first!.bytes).equals(png)).toBe(true);
+    // in place, another picture of the same length
+    const now = await rewritten(drawn() + pad(1000), drawn(otherPicture) + pad(1000));
+    expect(Buffer.from(now!.bytes).equals(other)).toBe(true);
+    // the same bytes where they were, but in one line with the record before them or after them: no record
+    const joined = (text: string) => text.slice(0, -1) + " ";
+    expect(await rewritten(pad(1000) + drawn(), joined(pad(1000)) + drawn())).toBeNull();
+    expect(await rewritten(drawn() + pad(1000), joined(drawn()) + pad(1000))).toBeNull();
+    // once a rewrite is seen, the index is not used again: a second rewrite can put the record the scan
+    // saw back where it was, with another of its uuid before it
+    const twice = transcript(pad(500 + size) + drawn() + drawn(otherPicture) + pad(1000) + tail);
+    exact(await both(twice, `${id(1)}:0`));
+    writeFileSync(twice, pad(500 + size) + drawn(otherPicture) + drawn() + pad(1000) + tail);
+    appendFileSync(twice, pad(100));
+    expect(Buffer.from((await both(twice, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
+    writeFileSync(twice, pad(500) + drawn(otherPicture) + drawn() + pad(1000 + size) + tail + pad(100));
+    appendFileSync(twice, pad(100));
+    expect(Buffer.from((await both(twice, `${id(1)}:0`))!.bytes).equals(other)).toBe(true);
+  });
+
 });

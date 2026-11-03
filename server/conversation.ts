@@ -338,23 +338,93 @@ const clearScans = new Map<string, { id: string; scanned: number; floor: number;
  * that uuid: then it is the record claudePictureSteps' search would find first. A uuid seen before
  * (on a record the branch follows, in `ends`, or on one it does not, in `loose`) is left out, and so
  * is every record after `blind`, where a record too long to follow starts: those are searched for.
+ * `unread` holds the records since the /clear the endpoint may not judge (mayBeUnread): the search
+ * refuses at one that names what it looks for, so a lookup with one before its record or its call
+ * searches as well.
  */
-interface PictureIndex { at: Map<string, [number, number]>; loose: Set<string>; blind: number | null }
+interface PictureIndex { at: Map<string, IndexedPicture>; loose: UuidMarks; blind: number | null; unread: [number, number][] }
+/** a record the index holds: where it starts and ends (at its newline), and its bytes' digest, a window at a time (recordShapeSteps) */
+interface IndexedPicture { start: number; end: number; digest: bigint }
+
+/**
+ * The uuids of records the branch does not follow (a sidechain's, most of all), by a 32-bit digest
+ * each, in a table open addressing keeps at most half full; 0 is no uuid. Two uuids with one digest
+ * read as seen, which only sends a lookup to the search.
+ */
+interface UuidMarks { table: Uint32Array; count: number }
+const uuidMark = (uuid: string): number => Bun.hash.xxHash32(uuid) || 1;
+function marked(marks: UuidMarks, uuid: string): boolean {
+  const mark = uuidMark(uuid);
+  const last = marks.table.length - 1;
+  for (let slot = mark & last; marks.table.length > 0 && marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return true;
+  return false;
+}
+function markUuid(marks: UuidMarks, uuid: string): void {
+  if ((marks.count + 1) * 2 > marks.table.length) {
+    const old = marks.table;
+    marks.table = new Uint32Array(Math.max(1024, old.length * 2));
+    marks.count = 0;
+    for (const mark of old) if (mark !== 0) putMark(marks, mark);
+  }
+  putMark(marks, uuidMark(uuid));
+}
+function putMark(marks: UuidMarks, mark: number): void {
+  const last = marks.table.length - 1;
+  let slot = mark & last;
+  for (; marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return;
+  marks.table[slot] = mark;
+  marks.count += 1;
+}
+const noPictures = (): PictureIndex => ({ at: new Map(), loose: { table: new Uint32Array(0), count: 0 }, blind: null, unread: [] });
+
+/**
+ * Whether the endpoint may not judge this record (recordShapeSteps' UNREAD, or a call id callIdSteps
+ * does not read): its shape can pass SHAPE_MAX_BYTES, or it is long enough to hold a string past
+ * PICTURE_TEXT_BYTES. The shape keeps each string's first SHAPE_STRING_BYTES and at most an escape
+ * more, then a mark of under 60 bytes in place of the rest, so a string of `length` bytes adds at most
+ * SHAPE_STRING_BYTES + 64 - length to it, and the record's own length is the rest.
+ */
+function mayBeUnread(line: Buffer): boolean {
+  if (line.length > PICTURE_TEXT_BYTES) return true;
+  const longest = SHAPE_STRING_BYTES + 64;
+  if (line.length * (longest / SHAPE_STRING_BYTES) <= SHAPE_MAX_BYTES) return false;
+  let shape = line.length;
+  // the strings as recordShapeSteps reads them: a backslash takes the byte after it, and a \u four more
+  let slash = line.indexOf(0x5c);
+  for (let open = line.indexOf(0x22); open !== -1; open = line.indexOf(0x22, open)) {
+    let at = open + 1;
+    for (;;) {
+      const quote = line.indexOf(0x22, at);
+      // a string the line does not close keeps what is left of it whole
+      if (quote === -1) return shape > SHAPE_MAX_BYTES;
+      if (slash !== -1 && slash < at) slash = line.indexOf(0x5c, at);
+      if (slash === -1 || quote < slash) { at = quote; break; }
+      at = slash + (line[slash + 1] === 0x75 ? 6 : 2);
+    }
+    const length = at - open - 1;
+    if (length >= SHAPE_STRING_BYTES) shape += longest - length;
+    open = at + 1;
+  }
+  return shape > SHAPE_MAX_BYTES;
+}
 
 function holdsPicture(block: unknown): boolean {
   const part = block as { type?: unknown; content?: unknown } | null;
   return part?.type === "image" || (part?.type === "tool_result" && Array.isArray(part.content) && part.content.some((inner) => (inner as { type?: unknown } | null)?.type === "image"));
 }
 
-/** Index the record followClaudeBranch just read ([start, newline)), when it holds a picture; `known` is how many uuids `ends` held before it. */
-function notePicture(index: PictureIndex, ends: Map<string, number>, known: number, parsed: unknown, start: number, newline: number): void {
+/** Index the record followClaudeBranch just read (`line`, [start, newline)), when it holds a picture; `known` is how many uuids `ends` held before it. */
+function notePicture(index: PictureIndex, ends: Map<string, number>, known: number, parsed: unknown, line: Buffer, start: number, newline: number): void {
   const entry = parsed as TranscriptEntry | null | undefined;
   if (entry === null || typeof entry !== "object" || typeof entry.uuid !== "string") return;
   const followed = ends.get(entry.uuid) === newline + 1;
-  const before = (followed ? ends.size === known : ends.has(entry.uuid)) || index.loose.has(entry.uuid);
-  if (!followed) index.loose.add(entry.uuid);
+  const before = (followed ? ends.size === known : ends.has(entry.uuid)) || marked(index.loose, entry.uuid);
+  if (!followed) markUuid(index.loose, entry.uuid);
   if (before || index.blind !== null || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) return;
-  if (entry.message.content.some(holdsPicture)) index.at.set(entry.uuid, [start, newline]);
+  if (!entry.message.content.some(holdsPicture)) return;
+  let digest = 0n;
+  for (let at = 0; at < line.length; at += IMAGE_SEARCH_WINDOW) digest = Bun.hash.xxHash3(line.subarray(at, at + IMAGE_SEARCH_WINDOW), digest);
+  index.at.set(entry.uuid, { start, end: newline, digest });
 }
 
 function keepClaudeSetting(settings: ClaudeSettings, entry: unknown, start: number, end: number): void {
@@ -402,7 +472,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // a file rewritten since a boundary was kept can still end in the tail that boundary is checked by
   let scan = fresh ? undefined : previous;
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || bytesBefore(stream, scan.scanned) !== scan.tail) {
-    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: { at: new Map(), loose: new Set(), blind: null } } : {}) };
+    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures() } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
@@ -426,7 +496,8 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
       if (!skipping && isClear(line)) {
         scan.floor = base + offset;
         if (scan.claude) scan.claude = { model: [], effort: [] };
-        if (scan.pictures) { scan.pictures.at.clear(); scan.pictures.blind = null; }
+        // what lies before the /clear is never judged
+        if (scan.pictures) scan.pictures = noPictures();
       }
       else if (!skipping && source !== "claude-transcript" && (source === "copilot-transcript" ? COPILOT_SETTING_TYPES : SETTING_TYPES).some((type) => line.includes(type))) {
         try {
@@ -454,9 +525,10 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
           const known = branch.ends.size;
           const entry = followClaudeBranch(branch, line, base + offset, base + newline + 1, scan.floor);
           if (entry !== undefined && scan.claude) keepClaudeSetting(scan.claude, entry, base + offset, base + newline);
-          if (entry !== undefined && scan.pictures) notePicture(scan.pictures, branch.ends, known, entry, base + offset, base + newline);
+          if (entry !== undefined && scan.pictures) notePicture(scan.pictures, branch.ends, known, entry, line, base + offset, base + newline);
         }
       }
+      if (!skipping && scan.pictures && mayBeUnread(line)) scan.pictures.unread.push([base + offset, base + newline]);
       skipping = false;
       offset = newline + 1;
       scan.scanned = base + offset;
@@ -2308,7 +2380,7 @@ type ShapeRead = RecordShape | typeof NOT_A_RECORD | typeof UNREAD;
  * no record can hold, a nonce made for this read, and its place in `cut` (`wholeString` reads it
  * back). So a record of any size costs a window and its shape, and a picture only its own text.
  */
-function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, number]): Steps<ShapeRead> {
+function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, number], read?: { digest: bigint }): Steps<ShapeRead> {
   const nonce = randomUUID();
   const kept: Buffer[] = [];
   let size = 0;
@@ -2322,6 +2394,7 @@ function* recordShapeSteps(stream: TranscriptStream, [start, end]: [number, numb
   const keep = (bytes: Buffer) => { kept.push(Buffer.from(bytes)); size += bytes.length; };
   for (let position = start; position < end; position += IMAGE_SEARCH_WINDOW) {
     const bytes = readStream(stream, position, Math.min(end, position + IMAGE_SEARCH_WINDOW));
+    if (read) read.digest = Bun.hash.xxHash3(bytes, read.digest);
     let from = cutting ? -1 : 0;
     for (let index = 0; index < bytes.length; index += 1) {
       const byte = bytes[index]!;
@@ -2437,6 +2510,10 @@ function* callIdSteps(stream: TranscriptStream, shape: RecordShape, id: unknown)
  * what the endpoint reads: then it serves nothing rather than guess.
  */
 function* answersDrawnCallSteps(stream: TranscriptStream, id: string, before: number): Steps<boolean> {
+  // a record before the result the endpoint may not judge refuses the forward search wherever it lies, the
+  // last block naming the call or not: the search does not go back past such a record, it goes forward
+  const index = pictureIndexOn ? stream.pictures : undefined;
+  if (index === undefined || (index.blind !== null && index.blind < before) || unreadBefore(stream, index, before)) return yield* answersDrawnCallForwardSteps(stream, id, before);
   // a call id the parser took from a number can be written in any of a number's spellings
   const numeric = id !== "" && String(Number(id)) === id;
   let judged = 0;
@@ -2482,6 +2559,37 @@ function* answersDrawnCallSteps(stream: TranscriptStream, id: string, before: nu
     }
   }
   return false;
+}
+
+/** answersDrawnCallSteps as a search forward from the floor: every record before `before` that names the call is judged. */
+function* answersDrawnCallForwardSteps(stream: TranscriptStream, id: string, before: number): Steps<boolean> {
+  const ranges = yield* linesWithSteps(stream, id, stream.floor, before);
+  // a call id the parser took from a number can be written in any of a number's spellings
+  if (id !== "" && String(Number(id)) === id) {
+    const seen = new Set(ranges.map(([start]) => start));
+    for (const range of yield* linesWithSteps(stream, "tool_use", stream.floor, before)) if (!seen.has(range[0])) ranges.push(range);
+    ranges.sort((left, right) => left[0] - right[0]);
+  }
+  let open = false;
+  let judged = 0;
+  for (const range of ranges) {
+    if (++judged % RECORDS_PER_STEP === 0) yield;
+    const shape = yield* recordShapeSteps(stream, range);
+    if (shape === UNREAD) return false;
+    if (shape === NOT_A_RECORD) continue;
+    const entry = shape.entry;
+    if (entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
+    for (const block of entry.message.content) {
+      if (++judged % RECORDS_PER_STEP === 0) yield;
+      const part = block as { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown } | null;
+      const call = entry.type === "assistant" && part?.type === "tool_use" && typeof part.name === "string" ? yield* callIdSteps(stream, shape, part.id)
+        : entry.type === "user" && part?.type === "tool_result" && typeof part.tool_use_id === "string" ? yield* callIdSteps(stream, shape, part.tool_use_id) : undefined;
+      if (call === undefined) continue;
+      if (call === null) return false;
+      if (call === id) open = part?.type === "tool_use";
+    }
+  }
+  return open;
 }
 
 /**
@@ -2562,52 +2670,98 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean): Steps
   finally { closeSync(fd); }
 }
 
-/**
- * The record the boundary scan indexed for `uuid` (PictureIndex), when it is still the first one the
- * search from the floor would judge: past the floor, within the stream, and on the session's branch.
- */
-function indexedPicture(stream: TranscriptStream, uuid: string): [number, number] | undefined {
-  const range = stream.pictures?.at.get(uuid);
-  if (range === undefined || range[0] < stream.floor || range[1] >= stream.length) return undefined;
-  return stream.hidden?.some(([start, end]) => start <= range[1] && range[0] < end) ? undefined : range;
+/** Lets a test look a picture up as the search alone does, the reference the index is held to (false), or with the index again. */
+let pictureIndexOn = true;
+export function pictureIndexForTests(on: boolean): void {
+  pictureIndexOn = on;
 }
 
-function* claudePictureSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray): Steps<TranscriptPicture | null> {
+/** Whether a record the endpoint may not judge (PictureIndex.unread) lies on the branch between the floor and `before`. */
+function unreadBefore(stream: TranscriptStream, index: PictureIndex, before: number): boolean {
+  return index.unread.some(([start, end]) => start >= stream.floor && start < before && !stream.hidden?.some(([low, high]) => low <= end && start < high));
+}
+
+/**
+ * The record the boundary scan indexed for `uuid` (PictureIndex), when it is still the first one the
+ * search from the floor would judge: past the floor, within the stream, on the session's branch, and
+ * with no record before it the search could refuse at.
+ */
+function indexedPicture(stream: TranscriptStream, uuid: string): IndexedPicture | undefined {
+  const index = pictureIndexOn ? stream.pictures : undefined;
+  const record = index?.at.get(uuid);
+  if (record === undefined || record.start < stream.floor || record.end >= stream.length) return undefined;
+  if (stream.hidden?.some(([start, end]) => start <= record.end && record.start < end)) return undefined;
+  return unreadBefore(stream, index!, record.start) ? undefined : record;
+}
+
+/**
+ * Stops using an index found out of date, in the scan that keeps it too, until a /clear starts another
+ * (applyHistoryBoundarySteps): no record is taken from it, and a call is looked for forward.
+ */
+function forgetPictures(index: PictureIndex): void {
+  index.at.clear();
+  index.blind = 0;
+}
+
+/** the record judged is not the one the picture is in: the search goes on (pictureInRecordSteps) */
+const NOT_IT = "not it";
+
+function* claudePictureSteps(stream: TranscriptStream, match: RegExpExecArray): Steps<TranscriptPicture | null> {
   // the boundary scan's last read was a step's: the record's read is the next one's
   yield;
+  const uuid = match[1]!;
+  const indexed = indexedPicture(stream, uuid);
+  // A scan kept from before an in-place rewrite that grew the file is checked only by its tail, so its
+  // record may since have moved: it is taken only while it is still a line, and the bytes the scan read
+  // there. Otherwise, or when it is not the picture's after all, the search decides, and the scan's
+  // index, which holds offsets from before that rewrite, is not used again (forgetPictures).
+  if (indexed !== undefined) {
+    const read = { digest: 0n };
+    const found = (indexed.start === 0 || readStream(stream, indexed.start - 1, indexed.start)[0] === 0x0a) && readStream(stream, indexed.end, indexed.end + 1)[0] === 0x0a
+      ? yield* pictureInRecordSteps(stream, match, [indexed.start, indexed.end], read) : NOT_IT;
+    if (found !== NOT_IT && read.digest === indexed.digest) return found;
+    forgetPictures(stream.pictures!);
+    yield;
+  }
   let judged = 0;
-  const indexed = indexedPicture(stream, uuid!);
-  for (const range of indexed !== undefined ? [indexed] : yield* linesWithSteps(stream, uuid!, stream.floor, stream.length)) {
+  for (const range of yield* linesWithSteps(stream, uuid, stream.floor, stream.length)) {
     if (++judged % RECORDS_PER_STEP === 0) yield;
-    const shape = yield* recordShapeSteps(stream, range);
-    // a record the endpoint cannot judge could be the one the page draws: serve nothing then
-    if (shape === UNREAD) return null;
-    if (shape === NOT_A_RECORD) continue;
-    const entry = shape.entry;
-    if (entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) continue;
-    const content: unknown[] = entry.message.content;
-    const block = content[Number(index)] as { type?: unknown; content?: unknown; tool_use_id?: unknown } | undefined;
-    let image: unknown = block;
-    if (nested !== undefined) {
-      if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string" || !Array.isArray(block.content)) return null;
-      const call = yield* callIdSteps(stream, shape, block.tool_use_id);
-      if (call === null) return null;
-      for (let at = 0; at < Number(index); at += 1) {
-        if (++judged % RECORDS_PER_STEP === 0) yield;
-        const result = content[at] as { type?: unknown; tool_use_id?: unknown } | null;
-        if (result?.type === "tool_result" && typeof result.tool_use_id === "string" && (yield* callIdSteps(stream, shape, result.tool_use_id)) === call) return null;
-      }
-      if (!(yield* answersDrawnCallSteps(stream, call, range[0]))) return null;
-      image = block.content[Number(nested)];
-    }
-    const picture = image as { source?: { data?: unknown } } | null | undefined;
-    const data = typeof picture?.source?.data === "string" ? yield* wholeStringSteps(stream, shape, picture.source.data, PICTURE_TEXT_BYTES) : null;
-    if (data === null) return null;
-    const mediaType = claudeImageType({ ...picture, source: { ...picture!.source, data } });
-    if (mediaType === null) return null;
-    return { mediaType, bytes: new Uint8Array(Buffer.from(data, "base64")) };
+    const found = yield* pictureInRecordSteps(stream, match, range);
+    if (found !== NOT_IT) return found;
   }
   return null;
+}
+
+/** The picture `match` names, judged in the record at `range` as the search judges each record it finds. */
+function* pictureInRecordSteps(stream: TranscriptStream, [, uuid, index, nested]: RegExpExecArray, range: [number, number], read?: { digest: bigint }): Steps<TranscriptPicture | null | typeof NOT_IT> {
+  let judged = 0;
+  const shape = yield* recordShapeSteps(stream, range, read);
+  // a record the endpoint cannot judge could be the one the page draws: serve nothing then
+  if (shape === UNREAD) return null;
+  if (shape === NOT_A_RECORD) return NOT_IT;
+  const entry = shape.entry;
+  if (entry.uuid !== uuid || entry.type !== "user" || entry.isMeta || entry.isCompactSummary || !Array.isArray(entry.message?.content)) return NOT_IT;
+  const content: unknown[] = entry.message.content;
+  const block = content[Number(index)] as { type?: unknown; content?: unknown; tool_use_id?: unknown } | undefined;
+  let image: unknown = block;
+  if (nested !== undefined) {
+    if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string" || !Array.isArray(block.content)) return null;
+    const call = yield* callIdSteps(stream, shape, block.tool_use_id);
+    if (call === null) return null;
+    for (let at = 0; at < Number(index); at += 1) {
+      if (++judged % RECORDS_PER_STEP === 0) yield;
+      const result = content[at] as { type?: unknown; tool_use_id?: unknown } | null;
+      if (result?.type === "tool_result" && typeof result.tool_use_id === "string" && (yield* callIdSteps(stream, shape, result.tool_use_id)) === call) return null;
+    }
+    if (!(yield* answersDrawnCallSteps(stream, call, range[0]))) return null;
+    image = block.content[Number(nested)];
+  }
+  const picture = image as { source?: { data?: unknown } } | null | undefined;
+  const data = typeof picture?.source?.data === "string" ? yield* wholeStringSteps(stream, shape, picture.source.data, PICTURE_TEXT_BYTES) : null;
+  if (data === null) return null;
+  const mediaType = claudeImageType({ ...picture, source: { ...picture!.source, data } });
+  if (mediaType === null) return null;
+  return { mediaType, bytes: new Uint8Array(Buffer.from(data, "base64")) };
 }
 
 const TOOL_REF = /^[A-Za-z0-9_:.-]{1,128}$/;
