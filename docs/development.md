@@ -85,6 +85,13 @@ Removing that override and restarting restores the WebSocket transport. The SSE 
 available to older clients and bridge/relay consumers. A reconnect negotiates the transport again;
 no terminal input is replayed by this subscription.
 
+A page takes machine events over SSE whenever its socket does not carry them: a connection that
+has not said whether it does within five seconds, a socket stopped for output (4008, which only
+reconnects on an attach), or a connection whose server sent `machine-events-ended`. A machine
+event that would overrun the socket's output budget never closes the terminal; the server ends the
+subscription with that frame instead. The next connection that offers the capability takes over
+from SSE again.
+
 This avoids consuming one long-lived HTTP/1.1 request per browser tab. It does not make every tab
 share its rendered conversation, terminal or JavaScript heap, and is not a claim of a measured RAM
 reduction. Compare the same pages, conversation sizes and activity before claiming one. In

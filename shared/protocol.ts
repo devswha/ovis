@@ -1036,6 +1036,8 @@ export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secre
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
+  /** the subscription ended because a machine event would overrun this socket's output budget: the page takes them over SSE until its next connection */
+  | { type: "machine-events-ended" }
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only

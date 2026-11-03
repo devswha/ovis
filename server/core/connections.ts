@@ -78,13 +78,28 @@ export function connectionOf(client: Client): Readonly<Pick<ConnectionState, "cl
   return stateOf(client);
 }
 
-/** Idempotent subscription, with the same authorized document as SSE and the socket's output budget. */
+/**
+ * Idempotent subscription, with the same authorized document as SSE. A machine event that would
+ * overrun the socket's output budget never closes the terminal (4008): the subscription ends
+ * instead, and the page takes machine events over SSE until its next connection.
+ */
 export function setMachineEvents(client: Client, enabled: boolean): void {
   const state = stateOf(client);
   if (!enabled) { state.stopMachineEvents?.(); state.stopMachineEvents = undefined; return; }
   if (state.closing || state.stopMachineEvents || !client.data.machineEvents) return;
-  const stop = subscribeMachineEvents(client.data.machineEvents, (event) => send(client, { type: "machine-event", event }));
+  let stop: (() => void) | undefined;
+  let overflowed = false;
+  const end = () => {
+    stop?.();
+    if (state.stopMachineEvents === stop) state.stopMachineEvents = undefined;
+    send(client, { type: "machine-events-ended" });
+  };
+  const overflow = () => { overflowed = true; if (stop) end(); };
+  stop = subscribeMachineEvents(client.data.machineEvents, (event) => {
+    if (!overflowed) send(client, { type: "machine-event", event }, overflow);
+  });
   if (state.closing) stop();
+  else if (overflowed) end();
   else state.stopMachineEvents = stop;
 }
 
@@ -130,7 +145,8 @@ export function backlog(client: Client): number {
   return buffered - Math.min(excused.frame, excused.ahead);
 }
 
-export function send(client: Client, message: ServerMessage): number {
+/** `overflow`, when given, is called instead of closing the connection when the frame would overrun the budget. */
+export function send(client: Client, message: ServerMessage, overflow?: () => void): number {
   const state = stateOf(client);
   if (state.closing) return 0;
   try {
@@ -143,6 +159,7 @@ export function send(client: Client, message: ServerMessage): number {
     // Include JSON escaping in the transport budget, before Bun could drop a
     // frame at its own cap. An overload close is explicit and never auto-replayed.
     if (queued + (oversized ? 0 : bytes) > OUTPUT_HARD_BYTES) {
+      if (overflow) { overflow(); return 0; }
       client.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output transport stalled");
       return 0;
     }

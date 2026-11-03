@@ -7,9 +7,12 @@ import { DeviceStore } from "../devices.ts";
 import type { MachineRelay } from "../machine-relay.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
-import { backlog, type Client, connectionData, connectionOf, createConnections, send } from "./connections.ts";
+import type { MachineEventDocument } from "../machine-events.ts";
+import type { ServerMessage } from "../../shared/protocol.ts";
+import type { SharedPreferences } from "../../shared/preferences.ts";
+import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
 
-function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore } = {}) {
+function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; machineEvents?: MachineEventDocument } = {}) {
   const log: string[] = [];
   const revocations: (() => void)[] = [];
   const devices = store ?? {
@@ -20,7 +23,7 @@ function harness({ deviceId, readOnly = false, relay, revokedAlready = false, st
   } as unknown as DeviceStore;
   const pending = { close: () => log.push("pending closed") } as unknown as PendingInputs<Client, never>;
   const client = {
-    data: connectionData({ deviceId, readOnly, ...(relay ? { relay } : {}) }),
+    data: connectionData({ deviceId, readOnly, ...(relay ? { relay } : {}), ...(machineEvents ? { machineEvents } : {}) }),
     readyState: WebSocket.OPEN,
     close: (code?: number, reason?: string) => log.push(`closed ${code} ${reason}`),
     getBufferedAmount: () => 0,
@@ -90,6 +93,30 @@ it("closes a client whose backlog of ordinary frames would pass the transport bu
   Object.assign(client, { getBufferedAmount: () => OUTPUT_HARD_BYTES - 10 });
   expect(send(client, { type: "error", code: "x", message: "x".repeat(20) })).toBe(0);
   expect(log).toEqual([`closed ${OUTPUT_STALLED_CLOSE_CODE} terminal output transport stalled`]);
+});
+
+it("ends the machine-event subscription, never the terminal connection, when a machine event would overrun the output budget", () => {
+  const listeners = new Set<(preferences: SharedPreferences) => void>();
+  const preferences = (bytes: number) => ({ revision: 1, settings: { note: "x".repeat(bytes) } }) as unknown as SharedPreferences;
+  const machineEvents: MachineEventDocument = {
+    manager: { subscribe: () => () => {} },
+    preferences: { get: () => preferences(200), subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } },
+  };
+  for (const overrunAt of ["initial document", "live event"] as const) {
+    const { client, log } = harness({ machineEvents });
+    let buffered = overrunAt === "initial document" ? OUTPUT_HARD_BYTES - 100 : 0;
+    const sent: ServerMessage[] = [];
+    Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { sent.push(JSON.parse(raw) as ServerMessage); buffered += Buffer.byteLength(raw); return -1; } });
+    setMachineEvents(client, true);
+    if (overrunAt === "live event") {
+      expect(listeners.size).toBe(1);
+      buffered = OUTPUT_HARD_BYTES - 100;
+      for (const listener of [...listeners]) listener(preferences(200));
+    }
+    expect(log).toEqual([]);
+    expect(listeners.size).toBe(0);
+    expect(sent.map((frame) => frame.type)).toEqual(overrunAt === "initial document" ? ["machine-events-ended"] : ["machine-event", "machine-events-ended"]);
+  }
 });
 
 it("a revoke ends the connection with 1008 and leaves its pending input to the socket's close", () => {
