@@ -353,6 +353,17 @@ function onFilesystem(type: number, bytes = "abcdefgh\n", known: Promise<void> =
   restores.push(() => statfs.mockRestore());
   return path;
 }
+/**
+ * A clock (performance.now) that moves only as the test moves it, so a call preempted on a busy
+ * host takes no time on it. Returns the move.
+ */
+function stillClock() {
+  const base = performance.now();
+  let moved = 0;
+  const spy = spyOn(performance, "now").mockImplementation(() => base + moved);
+  restores.push(() => spy.mockRestore());
+  return (ms: number) => { moved += ms; };
+}
 /** Counts the transcripts opened through the thread pool. */
 function opensAsync() {
   const real = fsp.open;
@@ -374,6 +385,7 @@ it.skipIf(process.platform !== "linux")("reads a transcript on a local filesyste
   // btrfs, ext4 and tmpfs; NFS, FUSE (sshfs) and 9p (WSL's Windows drives)
   for (const [type, local] of [[0x9123683e, true], [0xef53, true], [0x01021994, true], [0x6969, false], [0x65735546, false], [0x01021997, false]] as const) {
     const path = onFilesystem(type);
+    stillClock();
     const now = readsNow();
     const reader = new TranscriptReader();
     expect((await reader.read(path, async (file) => { await file.stat(); return file.window(2, 4); })).toString()).toBe("cdef");
@@ -385,11 +397,8 @@ it.skipIf(process.platform !== "linux")("reads a transcript on a local filesyste
 it.skipIf(process.platform !== "linux")("reads through the thread pool for a second once a read on the event loop was slow, then tries the event loop again", async () => {
   const path = onFilesystem(0x9123683e);
   // the first read on the event loop takes 3 ms of the clock: the disk answered it, not the page cache
-  const clock = performance.now.bind(performance);
-  let waited = 0;
-  const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
-  restores.push(() => now.mockRestore());
-  const reads = readsNow((count) => { if (count === 1) waited += 3; });
+  const advance = stillClock();
+  const reads = readsNow((count) => { if (count === 1) advance(3); });
   const reader = new TranscriptReader();
   const read = (from: number) => reader.read(path, async (file) => (await file.window(from, 2)).toString() + (await file.window(from + 2, 2)).toString());
   // the rest of that lease, and the next lease within the second, through the thread pool
@@ -406,6 +415,7 @@ it.skipIf(process.platform !== "linux")("reads through the thread pool for a sec
 
 it.skipIf(process.platform !== "linux")("gives up a read on the event loop between windows once cancelled", async () => {
   const path = onFilesystem(0x9123683e);
+  stillClock();
   const now = readsNow();
   const reader = new TranscriptReader();
   const abort = new AbortController();
@@ -427,6 +437,7 @@ it.skipIf(process.platform !== "linux")("opens a transcript while its filesystem
   // a lookup as slow as one on a network filesystem (several round trips)
   const lookup = deferred();
   const path = onFilesystem(0x9123683e, "abcdefgh\n", lookup.promise);
+  stillClock();
   const opens = opensAsync();
   const now = readsNow();
   const reader = new TranscriptReader();
@@ -444,6 +455,7 @@ it.skipIf(process.platform !== "linux")("opens a transcript while its filesystem
 it.skipIf(process.platform !== "linux")("tells the work whether the event loop ran while the lease waited", async () => {
   // let in at once on a local filesystem: nothing waited, before a call or after one
   const local = onFilesystem(0x9123683e);
+  stillClock();
   readsNow();
   const reader = new TranscriptReader(undefined, 1);
   expect(await reader.read(local, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([false, false]);
@@ -457,14 +469,12 @@ it.skipIf(process.platform !== "linux")("tells the work whether the event loop r
   for (const restore of restores.splice(0).reverse()) restore();
   // on a network filesystem every call goes through the thread pool
   const network = onFilesystem(0x6969);
+  stillClock();
   expect(await new TranscriptReader().read(network, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([true, true]);
   for (const restore of restores.splice(0).reverse()) restore();
   // a read on the event loop the disk answered (3 ms of the clock): the calls after it go through the thread pool
   const slow = onFilesystem(0x9123683e);
-  const clock = performance.now.bind(performance);
-  let late = 0;
-  const now = spyOn(performance, "now").mockImplementation(() => clock() + late);
-  restores.push(() => now.mockRestore());
-  readsNow(() => { late += 3; });
+  const advance = stillClock();
+  readsNow(() => advance(3));
   expect(await new TranscriptReader().read(slow, async (file) => [(await file.window(0, 4), file.waited()), (await file.stat(), file.waited())])).toEqual([false, true]);
 });
