@@ -6,7 +6,7 @@ import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
-import { loginAccount } from "./usage-login-account.ts";
+import { homeBefore, loginAccount, type LoginAccount, type LoginTarget } from "./usage-login-account.ts";
 import { isSecureRequest, parseCookies } from "./auth.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
@@ -15,7 +15,7 @@ import { writePrivateState } from "./private-state.ts";
 import { PtySession } from "./pty/session.ts";
 import { newOwnerRecord, ownerGone, parseBirth, type ProcessBirth } from "./process-owner.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
-import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type CredentialHome, type UsageContext } from "./usage.ts";
+import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
 const LOGIN = {
   claude: { cli: "claude", binaries: ["claude"], args: ["auth", "login"] },
@@ -76,9 +76,12 @@ type Holder = LoginHolder | Launch | PrivateHolder;
 /** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
-  readonly home: CredentialHome;
+  /** the home its CLI writes, and the digest of the sign-in there before it started (homeBefore) */
+  readonly target: LoginTarget;
+  readonly before: string | null | undefined;
   exitCode: number | null;
-  succeeded: boolean;
+  /** set once it has ended: the account its CLI signed in, in its own home; null when it did not */
+  signedIn: LoginAccount | null;
   readonly owner: string;
   /**
    * The secret of the browser that started it, sent back only in its HttpOnly cookie: two browsers can share an
@@ -226,7 +229,7 @@ export class UsageLoginService {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         const login = this.owned(searchParams.get("login") ?? "", request, owner);
         if (login === undefined) return gone();
-        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.succeeded } satisfies UsageLoginPrompt);
+        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.signedIn !== null, account: login.signedIn?.label ?? null } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
       }
@@ -270,14 +273,12 @@ export class UsageLoginService {
       const login = this.privates.get(id);
       if (login === undefined || login.ended) return;
       login.output = "";
-      let account: string | null = null;
       try {
-        if (login.exitCode === 0 && !login.cancelled) account = await loginAccount(this.context, login);
+        if (login.exitCode === 0 && !login.cancelled) login.signedIn = await loginAccount(this.context, login.target, login.before);
       } catch {
         // Credential readers may fail; never put their contents in an error or leave the login held.
         console.warn("Could not identify the account after its sign-in");
       }
-      login.succeeded = account !== null;
       liveLocks.delete(login.lock);
       // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
       if (login.madeHome !== null) {
@@ -290,7 +291,7 @@ export class UsageLoginService {
         }
       }
       for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
-      for (const listener of this.endedListeners) listener(account);
+      for (const listener of this.endedListeners) listener(login.signedIn?.key ?? null);
       login.ended = true;
       login.changed.resolve();
       const ended = [...this.privates].filter(([, entry]) => entry.ended);
@@ -551,6 +552,11 @@ export class UsageLoginService {
         if (againHome !== null) procEnv[homeVariable] = resolve(againHome);
         // the CLI's own home: the variable a parent shell may have set is removed, as the tab's `env -u` does
         if ((place || asDefault) && againHome === null) delete procEnv[homeVariable];
+        // where this CLI writes its sign-in, and what is there now: only a sign-in it wrote there is its own
+        const homeDir = procEnv[homeVariable];
+        const target: LoginTarget = { provider: id === "claude" ? "claude" : "codex", home: homeDir ? { kind: "dir", dir: homeDir } : { kind: "default" } };
+        const before = await homeBefore(this.context, target);
+        if (request.signal.aborted || this.stopped) return conflictResponse("request_cancelled", "The sign-in request was cancelled");
         const loginId = randomUUID();
         const lock = randomUUID();
         const { birth } = newOwnerRecord();
@@ -597,9 +603,8 @@ export class UsageLoginService {
         const done = proc.exited.then(() => this.settle(loginId));
         const secret = randomUUID();
         this.privates.set(loginId, {
-          provider: id === "claude" ? "claude" : "codex",
-          home: env[homeVariable] ? { kind: "dir", dir: env[homeVariable] } : { kind: "default" },
-          exitCode: null, succeeded: false, owner, secret, cancelled: false, lock, done,
+          provider: target.provider, target, before,
+          exitCode: null, signedIn: null, owner, secret, cancelled: false, lock, done,
           changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false,
         });
         unusedCredentialHome = null;

@@ -291,16 +291,26 @@ function claudeAccount(path: string): Account | null {
  * pointed at (CLAUDE_CONFIG_DIR, and ~/.claude-* for the usual second account). For such a
  * directory it names the keychain item after the directory's hash, and keeps .claude.json in it.
  */
-function claudeHomes(ctx: UsageContext): Array<{ source: string; service: string; dir: string; config: string; home: CredentialHome }> {
-  const homes: Array<{ source: string; service: string; dir: string; config: string; home: CredentialHome }> = [
-    { source: "default", service: "Claude Code-credentials", dir: join(ctx.home, ".claude"), config: join(ctx.home, ".claude.json"), home: { kind: "default" } },
-  ];
+function claudeHomes(ctx: UsageContext): ClaudeHome[] {
   const dirs = [ctx.env["CLAUDE_CONFIG_DIR"], ...siblingDirs(ctx.home, ".claude-")].filter((dir): dir is string => Boolean(dir));
-  for (const dir of new Set(dirs)) {
-    const hash = createHash("sha256").update(dir).digest("hex").slice(0, 8);
-    homes.push({ source: dir, service: `Claude Code-credentials-${hash}`, dir, config: join(dir, ".claude.json"), home: { kind: "dir", dir } });
-  }
-  return homes;
+  return [claudeHome(ctx, { kind: "default" }), ...[...new Set(dirs)].map((dir) => claudeHome(ctx, { kind: "dir", dir }))];
+}
+
+interface ClaudeHome { source: string; service: string; dir: string; config: string; home: CredentialHome }
+
+function claudeHome(ctx: UsageContext, home: CredentialHome): ClaudeHome {
+  if (home.kind === "default") return { source: "default", service: "Claude Code-credentials", dir: join(ctx.home, ".claude"), config: join(ctx.home, ".claude.json"), home };
+  const hash = createHash("sha256").update(home.dir).digest("hex").slice(0, 8);
+  return { source: home.dir, service: `Claude Code-credentials-${hash}`, dir: home.dir, config: join(home.dir, ".claude.json"), home };
+}
+
+/** the sign-in one Claude home holds: its keychain item or its credentials file, whichever is later */
+async function claudeFound(ctx: UsageContext, home: ClaudeHome): Promise<Found[]> {
+  const user = ctx.env["USER"];
+  const account = claudeAccount(home.config);
+  const keychain = await fromKeychain(ctx, home.service, user ? [user, undefined] : [undefined], claudeSignIn);
+  const file = claudeSignIn(readText(join(home.dir, ".credentials.json")));
+  return keychainOrFile(keychain, file, home.source, account).map((found) => ({ ...found, home: home.home }));
 }
 
 function claudeSignIn(source: string | null): SignIn | null {
@@ -332,14 +342,7 @@ function claudeStatuslineWindows(payload: StatuslinePayload): UsageWindow[] {
 const claude: UsageProvider = {
   id: "claude",
   async signIns(ctx) {
-    const user = ctx.env["USER"];
-    const found = await Promise.all(claudeHomes(ctx).map(async (home) => {
-      const account = claudeAccount(home.config);
-      const keychain = await fromKeychain(ctx, home.service, user ? [user, undefined] : [undefined], claudeSignIn);
-      const file = claudeSignIn(readText(join(home.dir, ".credentials.json")));
-      return keychainOrFile(keychain, file, home.source, account).map((found) => ({ ...found, home: home.home }));
-    }));
-    return found.flat();
+    return (await Promise.all(claudeHomes(ctx).map((home) => claudeFound(ctx, home)))).flat();
   },
   readLocal(ctx, signIn) {
     const local = readStatusline(ctx.home, ctx.now());
@@ -394,18 +397,25 @@ function codexWindow(value: unknown, now: number): UsageWindow | null {
   return { kind: kindOf(seconds, "session"), scope: null, used_percent: percent(used), resets_at: resetsAt, starts_at: startOf(resetsAt, seconds) };
 }
 
+/** the sign-in a Codex home's auth.json holds, listed as that directory */
+function codexFileFound(home: string): Found[] {
+  const signIn = codexSignIn(readText(join(home, "auth.json")));
+  return signIn ? [{ ...signIn, source: home, home: { kind: "dir", dir: home } }] : [];
+}
+
+/** the `Codex Auth` keychain item, which Codex's default home may keep its sign-in in instead of a file */
+async function codexKeychainFound(ctx: UsageContext): Promise<Found[]> {
+  return keychainFound(await fromKeychain(ctx, "Codex Auth", [undefined], codexSignIn), "keychain")
+    .map((found): Found => ({ ...found, home: { kind: "default" } }));
+}
+
 const codex: UsageProvider = {
   id: "codex",
   async signIns(ctx) {
     // CODEX_HOME points Codex elsewhere; ~/.codex-* is where a second account usually lives
     const homes = [ctx.env["CODEX_HOME"], join(ctx.home, ".config", "codex"), join(ctx.home, ".codex"), ...siblingDirs(ctx.home, ".codex-")];
-    const found: Found[] = [];
-    for (const home of new Set(homes.filter((home): home is string => Boolean(home)))) {
-      const signIn = codexSignIn(readText(join(home, "auth.json")));
-      if (signIn) found.push({ ...signIn, source: home, home: { kind: "dir", dir: home } });
-    }
-    return found.length ? found : keychainFound(await fromKeychain(ctx, "Codex Auth", [undefined], codexSignIn), "keychain")
-      .map((found): Found => ({ ...found, home: { kind: "default" } }));
+    const found = [...new Set(homes.filter((home): home is string => Boolean(home)))].flatMap(codexFileFound);
+    return found.length ? found : codexKeychainFound(ctx);
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://chatgpt.com/backend-api/wham/usage", {
@@ -1146,7 +1156,7 @@ export class UsageService {
 }
 
 /** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
-export function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
+function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
   return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
 }
 
@@ -1171,6 +1181,39 @@ export async function localSignInPlace(ctx: UsageContext, key: string): Promise<
     if (places[0]?.home) return { provider: id, home: places[0].home };
   }
   return null;
+}
+
+/** A followed sign-in's home as its CLI left it: the account as the list keys and names it, never a token or a path. */
+export interface HomeSignIn {
+  readonly key: string;
+  readonly label: string | null;
+  /** a digest of its token: a sign-in the CLI wrote has a token of its own, one it left keeps the one before */
+  readonly digest: string;
+  readonly expiresAt: number | null;
+}
+
+/**
+ * The sign-in a Claude or Codex CLI keeps in `home`, read from there alone as that CLI writes it, never
+ * refreshed: Claude's default home or directory, each with its keychain item; Codex's default home
+ * (~/.codex, or its keychain item when that has no auth.json) or directory. Null when it holds none
+ * this session can read. Other homes are not looked at: their sign-ins are no login's into this one.
+ */
+export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | null> {
+  let found: Found[];
+  if (provider === "claude") found = await claudeFound(ctx, claudeHome(ctx, home));
+  else if (home.kind === "dir") found = codexFileFound(home.dir);
+  else {
+    found = codexFileFound(join(ctx.home, ".codex"));
+    if (found.length === 0) found = await codexKeychainFound(ctx);
+  }
+  const signIn = found.find((entry): entry is Found & SignIn => !("locked" in entry));
+  if (signIn === undefined) return null;
+  return {
+    key: accountKey(provider, signIn.account, signIn.source),
+    label: signIn.account?.label ?? signIn.account?.id ?? null,
+    digest: createHash("sha256").update(signIn.token).digest("hex"),
+    expiresAt: signIn.expiresAt,
+  };
 }
 
 export async function handleUsageRequest(request: Request, url: URL, service: UsageService): Promise<Response> {
