@@ -7,7 +7,7 @@
  * The PC's keepalive is answered by the runtime itself (`setWebSocketAutoResponse`), so an idle
  * PC never wakes it; an alarm closes sockets idle for IDLE_MS.
  */
-import { IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, type Frame, type RateLimiter, type RoomHost, type SocketInfo } from "./core.ts";
+import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, type Frame, type RateLimiter, type RoomHost, type SocketInfo } from "./core.ts";
 
 /** the part of a Cloudflare server-side WebSocket the relay uses */
 export interface HibernatableSocket {
@@ -80,8 +80,14 @@ export class RelayRoom {
         socket.serializeAttachment(info);
       },
       send: (socket, frame) => {
-        // a socket the far end already closed throws here; its webSocketClose ends it in the room
-        try { socket.send(frame); } catch { /* see above */ }
+        try { socket.send(frame); } catch {
+          // Finish the current room operation before propagating failure: a send may happen
+          // while a pair is attaching. Do not rely on a later runtime close event to end it.
+          queueMicrotask(() => {
+            try { socket.close(CLOSE.RESTART, "relay send failed"); } catch { /* already closed */ }
+            this.room.closed(socket);
+          });
+        }
       },
       close: (socket, code, reason) => {
         // closing a socket that is already closed throws; it is gone either way
@@ -123,8 +129,13 @@ export class RelayRoom {
     this.room.message(socket, message);
   }
 
-  webSocketClose(socket: HibernatableSocket): void {
+  webSocketClose(socket: HibernatableSocket, code?: number, reason?: string, _wasClean?: boolean): void {
     this.room.closed(socket);
+    // A hibernatable socket's close is not answered by the runtime: without this the peer waits in
+    // CLOSING until its own timeout (a phone showed itself connected for 17 s) and counts the drop
+    // as 1006. The code is echoed when it is 1000 or 3000-4999; any other is answered 1000.
+    const echo = code !== undefined && (code === 1000 || (code >= 3000 && code <= 4999));
+    try { socket.close(echo ? code : 1000, echo ? reason ?? "" : ""); } catch { /* already closed */ }
   }
 
   webSocketError(socket: HibernatableSocket): void {

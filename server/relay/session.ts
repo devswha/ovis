@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { FrameType, LIMITS_V1, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { FrameType, LIMITS_V1, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
 import { handleRequest } from "../dispatch.ts";
@@ -49,6 +49,8 @@ export interface RelaySessionOptions {
   /** Owns the upgrade and socket lifecycle, including stream disposal. Absent adapters refuse WS_OPEN. */
   readonly onWs?: (stream: WsStream, exchange: RelayWebSocketRequest) => void;
   readonly onClose?: (code: SessionError) => void;
+  /** The client signed in or paired: from here on the carrier counts as a device's session. */
+  readonly onAuthenticated?: (deviceId: string) => void;
 }
 
 export interface RelayWebSocketRequest {
@@ -137,6 +139,9 @@ export class RelaySession {
     options.channel.onClose(() => this.mux.carrierLost());
   }
 
+  /** A sign-in or pairing is being checked, or its AUTH_OK waits to be sent. */
+  get verifying(): boolean { return this.state === "verifying"; }
+
   get bufferedBytes(): number { return this.sourceBytes + this.mux.stats.bufferedBytes; }
 
   receive(data: string | ArrayBuffer): void {
@@ -183,7 +188,7 @@ export class RelaySession {
           payload: {
             protocol: "ovis-mux", version: 1, features: [], limits: LIMITS_V1,
             nonce: this.nonce.toString("base64url"), server_version: this.options.serverVersion,
-            relay_protocol: 1, min_supported_client: this.options.minSupportedClient,
+            relay_protocol: RELAY_PROTOCOL, min_supported_client: this.options.minSupportedClient,
           },
         });
         return;
@@ -213,6 +218,7 @@ export class RelaySession {
           if (!devices.has(device.id)) { this.close("auth_revoked"); return; }
           this.mux.authenticate(device.id);
           this.state = "ready";
+          this.options.onAuthenticated?.(device.id);
         });
         return;
       }

@@ -33,7 +33,6 @@ export const CHAT_JA: Record<string, string> = {
   "thinking": "思考",
   "Working…": "作業中…",
   "Worked": "作業完了",
-  "Rewind in terminal": "ターミナルで巻き戻す",
   "Copy as markdown": "Markdown としてコピー",
   "Copy as plain text": "プレーンテキストとしてコピー",
   "Plain text": "プレーンテキスト",
@@ -212,6 +211,5 @@ export const CHAT_JA: Record<string, string> = {
   "Preparing the voice…": "音声を準備中…",
   "Couldn't read this aloud. Tap to try again.": "読み上げられませんでした。タップしてもう一度お試しください。",
   "Open link": "リンクを開く",
-  "Share link": "リンクを共有",
   "Sent · waiting for the agent's next turn": "送信済み · エージェントの次のターンを待っています",
 };

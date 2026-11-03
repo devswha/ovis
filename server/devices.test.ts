@@ -344,6 +344,27 @@ describe("DeviceStore", () => {
     expect(new DeviceStore(dir).match(paired!.token)?.label).toBe("My phone");
   });
 
+  it("returns the active pairing without changing it", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "active-pairing-")));
+    const pairing = store.startPairing(1000);
+    expect(store.activePairing(1000)).toEqual(pairing);
+    expect(store.activePairing(601000)).toEqual(pairing);
+    expect(store.pair(pairing.code, "Phone", "drive", 1000)).not.toBeNull();
+    expect(store.activePairing(1000)).toBeNull();
+  });
+
+  it("does not return expired or exhausted pairing codes", () => {
+    const expired = new DeviceStore(mkdtempSync(join(dir, "expired-pairing-")));
+    expired.startPairing(1000);
+    expect(expired.activePairing(601001)).toBeNull();
+
+    const exhausted = new DeviceStore(mkdtempSync(join(dir, "exhausted-pairing-")));
+    const { code } = exhausted.startPairing(1000);
+    const wrong = code === "000000" ? "000001" : "000000";
+    for (let attempt = 0; attempt < 5; attempt += 1) expect(exhausted.pair(wrong, "Wrong", "drive", 1000)).toBeNull();
+    expect(exhausted.activePairing(1000)).toBeNull();
+  });
+
   it("expires a code after ten minutes and after five wrong tries", () => {
     const store = new DeviceStore(mkdtempSync(join(dir, "s-")));
     const started = Date.now();
