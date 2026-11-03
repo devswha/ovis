@@ -383,11 +383,28 @@ is_core() {
   [ "$core_status" = 0 ] && [ "$core_answer" = yes ]
 }
 
+# The folders of Ovis on herdr-core, in $settings_dir and $state_dir: under the Ovis name, or the name
+# before the rename while only that one exists (as scripts/plugin.ts picks them).
+core_dirs() {
+  settings_dir="$HOME/.config/ovis"
+  [ -d "$settings_dir" ] || [ ! -d "$HOME/.config/herdr-web-ui" ] || settings_dir="$HOME/.config/herdr-web-ui"
+  state_dir="$HOME/.local/state/ovis"
+  [ -d "$state_dir" ] || [ ! -d "$HOME/.local/state/herdr-web-ui" ] || state_dir="$HOME/.local/state/herdr-web-ui"
+}
+
+# The value the settings files give $1, .env's over env's and unquoted, as scripts/plugin.ts reads them.
+saved_setting() {
+  core_dirs
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$settings_dir/env" "$settings_dir/.env" 2>/dev/null \
+    | tail -n 1 | sed -e 's/[[:space:]]*$//' -e "s/^[\"']//" -e "s/[\"']\$//"
+}
+
 # The herdr-core (hc) on this PC, in $core, looked for as the server looks (server/herdr-core/discovery.ts):
-# OVIS_HC_BIN, the PATH, then the usual install places, herdr-core before hc in each.
+# OVIS_HC_BIN, the one an earlier run saved, the PATH, then the usual install places, herdr-core before
+# hc in each.
 find_core() {
   core=""
-  for core_candidate in "${OVIS_HC_BIN:-}" "$(command -v herdr-core 2>/dev/null || true)" "$(command -v hc 2>/dev/null || true)"; do
+  for core_candidate in "${OVIS_HC_BIN:-}" "$(saved_setting OVIS_HC_BIN)" "$(command -v herdr-core 2>/dev/null || true)" "$(command -v hc 2>/dev/null || true)"; do
     if is_core "$core_candidate"; then core=$core_candidate; return 0; fi
   done
   for core_dir in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin "$HOME/.local/share/mise/shims" "$HOME/.nix-profile/bin" "$HOME/.cargo/bin"; do
@@ -425,34 +442,30 @@ pick_runtime() {
   fi
 }
 
-# The settings file of Ovis on herdr-core (~/.config/ovis/env, or the one from before the rename), which
-# its service hands scripts/plugin.ts as HERDR_PLUGIN_CONFIG_DIR, so a herdr plugin's settings found
-# later are not read in its place; owner-only, as the token in it needs. It holds OVIS_RUNTIME=herdr-core,
-# in place of any runtime it or .env named, the hc found (OVIS_HC_BIN: a release before the server's own
-# search runs only that or `hc` on the PATH), and the hc session the installer ran with (HC_SESSION,
-# HC_SOCKET), which a service would not otherwise have. Also sets $state_dir, the record's dir.
+# The settings file of Ovis on herdr-core (core_dirs), which its service hands scripts/plugin.ts as
+# HERDR_PLUGIN_CONFIG_DIR, so a herdr plugin's settings found later are not read in its place; owner-only,
+# as the token in it needs. The installer owns two lines, written anew each run in place of any either
+# file had (under their names from before the rename too): OVIS_RUNTIME=herdr-core, and OVIS_HC_BIN, the hc find_core checked (a release before the
+# server's own search runs only that or `hc` on the PATH). It adds the hc session the installer ran with
+# (HC_SESSION, HC_SOCKET), which a service would not otherwise have, unless a file names one.
 core_settings() {
-  settings_dir="$HOME/.config/ovis"
-  [ -d "$settings_dir" ] || [ ! -d "$HOME/.config/herdr-web-ui" ] || settings_dir="$HOME/.config/herdr-web-ui"
-  state_dir="$HOME/.local/state/ovis"
-  [ -d "$state_dir" ] || [ ! -d "$HOME/.local/state/herdr-web-ui" ] || state_dir="$HOME/.local/state/herdr-web-ui"
+  core_dirs
   mkdir -p "$settings_dir"
   for settings_file in "$settings_dir/env" "$settings_dir/.env"; do
-    grep -qs '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" || continue
-    if grep -s '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" | grep -qv '=[[:space:]]*["'\'']*herdr-core["'\'']*[[:space:]]*$'; then
+    grep -Eqs '^[[:space:]]*(OVIS_RUNTIME|OVIS_HC_BIN|HERDR_WEB_RUNTIME|HERDR_WEB_HC_BIN)[[:space:]]*=' "$settings_file" || continue
+    if grep -Es '^[[:space:]]*(OVIS_RUNTIME|HERDR_WEB_RUNTIME)[[:space:]]*=' "$settings_file" | grep -qv '=[[:space:]]*["'\'']*herdr-core["'\'']*[[:space:]]*$'; then
       say "$settings_file named another runtime; Ovis runs on herdr-core now"
     fi
-    # written back through the same file, so it keeps its owner-only mode
-    settings_kept=$(mktemp) || fail "could not write $settings_file"
-    grep -v '^[[:space:]]*OVIS_RUNTIME[[:space:]]*=' "$settings_file" >"$settings_kept" || true
-    cat "$settings_kept" >"$settings_file"
-    rm -f "$settings_kept"
+    # a copy with the file's own mode, then moved over it: an interrupted run leaves the file whole
+    cp -p "$settings_file" "$settings_file.new" || fail "could not write $settings_file"
+    grep -Ev '^[[:space:]]*(OVIS_RUNTIME|OVIS_HC_BIN|HERDR_WEB_RUNTIME|HERDR_WEB_HC_BIN)[[:space:]]*=' "$settings_file" >"$settings_file.new" || true
+    mv -f "$settings_file.new" "$settings_file" || fail "could not write $settings_file"
   done
   # a last line without its newline would run into the new one
   if [ -s "$settings_dir/env" ] && [ -n "$(tail -c 1 "$settings_dir/env")" ]; then echo >>"$settings_dir/env"; fi
   (umask 077 && printf '%s\n' "OVIS_RUNTIME=herdr-core" >>"$settings_dir/env")
-  OVIS_HC_BIN=${OVIS_HC_BIN:-${core:-}}
-  for settings_name in OVIS_HC_BIN HC_SESSION HC_SOCKET; do
+  [ -z "${core:-}" ] || printf '%s\n' "OVIS_HC_BIN=$core" >>"$settings_dir/env"
+  for settings_name in HC_SESSION HC_SOCKET; do
     eval "settings_value=\${${settings_name}:-}"
     [ -n "$settings_value" ] || continue
     ! grep -qs "^[[:space:]]*${settings_name}[[:space:]]*=" "$settings_dir/env" "$settings_dir/.env" || continue
@@ -477,6 +490,9 @@ unit_text() {
 # so `plugin.ts stop` and `status` work on it as on the plugin's. Where there is neither, it says how
 # to start the app by hand.
 core_service() {
+  # one line each in the unit: a newline in a value would start a directive of its own
+  case "$PATH$settings_dir$state_dir$APP_DIR" in *'
+'*) fail "a newline in PATH or HOME cannot go into a service file; remove it and run this again" ;; esac
   bun_bin=$(command -v bun)
   start_line="HERDR_PLUGIN_CONFIG_DIR=$settings_dir HERDR_PLUGIN_STATE_DIR=$state_dir bun $APP_DIR/scripts/plugin.ts start"
   if [ "$os" = darwin ]; then
@@ -576,8 +592,12 @@ install_core() {
   root=$APP_DIR
   code=$(running_code "$root")
   core_settings
+  # every scripts/plugin.ts this run starts (the start below, the phone step, open_app) reads what the service does
+  HERDR_PLUGIN_CONFIG_DIR=$settings_dir
+  HERDR_PLUGIN_STATE_DIR=$state_dir
+  export HERDR_PLUGIN_CONFIG_DIR HERDR_PLUGIN_STATE_DIR
   core_service
-  HERDR_PLUGIN_CONFIG_DIR=$settings_dir HERDR_PLUGIN_STATE_DIR=$state_dir bun "$root/scripts/plugin.ts" start </dev/null \
+  bun "$root/scripts/plugin.ts" start </dev/null \
     || say "Ovis did not start; what it said is above. Start it again with: $start_line"
 }
 
