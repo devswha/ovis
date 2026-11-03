@@ -236,6 +236,17 @@ export function piRunsCommand(pane: HerdrPane, text: string): boolean {
   });
 }
 
+/**
+ * Whether the pane's cached catalog lists `text`'s `/name` as a prompt template. A hint only: what that
+ * Pi loaded may differ, so the receipt stays (pi-delivery.ts settles it on the first record after it).
+ */
+export function piListsTemplate(pane: HerdrPane, text: string): boolean {
+  const name = /^\/(\S+)(?:\s|$)/u.exec(piRecordText(text))?.[1];
+  const cached = cachedPaneCommands(pane);
+  return name !== undefined && cached?.agent === "pi" && cached.commands.some((row) =>
+    row.trigger === undefined && row.source !== "builtin" && row.source !== "skill" && row.name === name);
+}
+
 /** The send record for `text` against a given catalog: the remembered one above, or one the delivery already waited for. */
 export function commandSendFrom(pane: HerdrPane, agent: string, commands: SlashCommand[], text: string, screen = ""): PaneCommandSend | undefined {
   const invocations = commandInvocations(agent, text, commands);

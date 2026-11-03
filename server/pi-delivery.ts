@@ -27,6 +27,8 @@ export interface PiDeliveryAnchor {
 export interface PiDeliveryCandidate {
   id: string;
   text: string;
+  /** The pane's catalog listed this `/name` as a prompt template when it was sent. */
+  template?: boolean;
   anchor: PiDeliveryAnchor;
 }
 
@@ -329,11 +331,14 @@ export function matchPiDeliveries(path: string, candidates: readonly PiDeliveryC
       const first = piMaybeCommand(candidate.text)
         ? chain.find((entry) => entry.start > afterMatched && entry.role === "user" && fresh(entry) && !consumedEntries.has(key(entry)))
         : undefined;
-      if (first && first.text !== candidate.text) {
-        // Pi ran it: settle it. The record is its expansion, unless the later receipts it could be
-        // theirs claim every copy of it, as when an extension's command recorded nothing.
+      const claims = first ? candidates.slice(index + 1).filter((later) => piRecordOf(later.text, first)).length : 0;
+      // Pi ran it where the record after it is a later Ovis send's (Pi moved on), or is a listed
+      // template's expansion. Any other record is skipped, as for every receipt: it may be a message
+      // typed in the terminal, and this send's own record may still follow.
+      if (first && first.text !== candidate.text && (claims > 0 || candidate.template)) {
         consumed.push(candidate.id);
-        const claims = candidates.slice(index + 1).filter((later) => piRecordOf(later.text, first)).length;
+        // The record is its expansion, unless the later receipts it could be theirs claim every copy of
+        // it, as when an extension's command recorded nothing.
         const copies = chain.filter((entry) => entry.start >= first.start && entry.role === "user" && entry.text === first.text && !consumedEntries.has(key(entry))).length;
         if (copies > claims) {
           matchedEntries.push(key(first)); afterMatched = first.start;

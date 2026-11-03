@@ -2658,8 +2658,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   user line with its text, so nothing could confirm it. `/new please` or a lone `!` is a message to
   Pi and keeps one. Any other `/name` keeps one too: whether it is a prompt template (recorded only
   expanded), an extension's command (recorded as nothing) or a message depends on what that Pi
-  loaded, which no catalog proves. Pi records its sends in order, so the first user record after it
-  settles it: its own text confirms it, and any other text means Pi ran it. A `/skill:name` send
+  loaded, which no catalog proves. Pi records its sends in order, so its own text confirms it, and
+  it is settled as run when the first user record after it is a later Ovis send's, or is any other
+  text where the pane's catalog listed it as a template (its expansion). Other records, such as a
+  message typed in the terminal, are skipped as for any receipt. A `/skill:name` send
   matches the record Pi writes with the whole SKILL.md before its request, read back as typed, its
   request trimmed as Pi trims it. Known gap: chained skills are not read back; their bubbles wait
   for good, and so do the ones behind them.

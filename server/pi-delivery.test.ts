@@ -16,6 +16,7 @@ const entry = (id: string, parentId: string | null, role: string, text: string, 
 }) + "\n";
 const header = (id = crypto.randomUUID()) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-10-24T00:00:00.000Z", cwd: "/tmp" }) + "\n";
 const candidate = (id: string, text: string, anchor: NonNullable<ReturnType<typeof capturePiDeliveryAnchor>>): PiDeliveryCandidate => ({ id, text, anchor });
+const template = (id: string, text: string, anchor: NonNullable<ReturnType<typeof capturePiDeliveryAnchor>>): PiDeliveryCandidate => ({ id, text, template: true, anchor });
 
 describe("Pi receipt capacity", () => {
   it("reserves synchronously across panes for one owner", () => {
@@ -119,7 +120,7 @@ describe("Pi delivery transcript matching", () => {
     appendFileSync(path, entry("e1", "base", "user", "Review this code: the parser") + entry("a1", "e1", "assistant", "done")
       + entry("e2", "a1", "user", "Review this code: the lexer") + entry("a2", "e2", "assistant", "done")
       + entry("u3", "a2", "user", "after") + entry("u4", "u3", "user", "/plain"));
-    const receipts = [candidate("one", "/review the parser", anchor), candidate("two", "/review the lexer", anchor),
+    const receipts = [template("one", "/review the parser", anchor), template("two", "/review the lexer", anchor),
       candidate("three", "/deploy", anchor), candidate("four", "after", anchor), candidate("five", "/plain", anchor)];
     expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one", "two", "three", "four", "five"]);
   });
@@ -148,7 +149,7 @@ describe("Pi delivery transcript matching", () => {
     const anchor = capturePiDeliveryAnchor(path)!;
     appendFileSync(path, entry("e1", "base", "user", "hello") + entry("u2", "e1", "user", "hello") + entry("u3", "u2", "user", "hello"));
     const consumed = new Set<string>();
-    expect(matchPiDeliveries(path, [candidate("one", "/review", anchor), candidate("two", "hello", anchor)], consumed).consumed).toEqual(["one", "two"]);
+    expect(matchPiDeliveries(path, [template("one", "/review", anchor), candidate("two", "hello", anchor)], consumed).consumed).toEqual(["one", "two"]);
     // the third record is left for a later receipt
     expect(consumed.size).toBe(2);
   });
@@ -159,6 +160,18 @@ describe("Pi delivery transcript matching", () => {
     const anchor = capturePiDeliveryAnchor(path)!;
     appendFileSync(path, entry("u1", "base", "user", "/plain", anchor.at - 60_000));
     expect(matchPiDeliveries(path, [candidate("one", "/plain", anchor)])).toMatchObject({ consumed: [], ambiguous: ["one"] });
+  });
+
+  it("skips a record no Ovis send claims for a /name message, which may still be recorded as typed", () => {
+    const path = join(dir(), "slash-message.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    // typed in the terminal before Pi recorded the Ovis send
+    appendFileSync(path, entry("t1", "base", "user", "from the terminal"));
+    const receipts = [candidate("one", "/home/me/file explain this", anchor)];
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual([]);
+    appendFileSync(path, entry("u2", "t1", "user", "/home/me/file explain this"));
+    expect(matchPiDeliveries(path, receipts).consumed).toEqual(["one"]);
   });
 
   it("keeps a /name receipt waiting until Pi records something after it", () => {
