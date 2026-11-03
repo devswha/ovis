@@ -104,3 +104,33 @@ describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
     expect(html).toContain("Use `local` socket");
   });
 });
+
+describe("a form whose questions the agent's own keys move between", () => {
+  const form: InteractivePrompt = {
+    id: "f", agent: "omo", kind: "question", title: "Question 1 of 3", question: "Which color do you prefer?", body: null,
+    options: [{ label: "Red", description: null }, { label: "Blue", description: null }], multi_select: false, custom_option_index: 2,
+    steps: [{ label: "Color", answered: false, current: true }, { label: "Size", answered: false, current: false, can_navigate: true }, { label: "Shape", answered: false, current: false, can_navigate: true }],
+    can_step_next: true,
+  };
+
+  it("offers Next, and each other question as a step to tap, unanswered as they are", () => {
+    for (const language of ["en", "ko"] as const) {
+      const html = render(form, [language]);
+      expect(html).toContain('class="btn btn-ghost prompt-card-next"');
+      expect(html).toContain(translate(language, "Next"));
+      expect([...html.matchAll(/class="prompt-card-step-button"/g)]).toHaveLength(2);
+      expect(html).not.toContain("prompt-card-back");
+    }
+  });
+
+  it("offers no answered step the form itself does not mark as one to go to (Hermes past an answer)", () => {
+    const hermes: InteractivePrompt = { ...form, agent: "hermes", can_step_back: true, can_step_next: false,
+      steps: [{ label: "Colour", answered: true, current: false }, { label: "Size", answered: false, current: false, can_navigate: true }, { label: "Shape", answered: false, current: true }] };
+    expect([...render(hermes, ["en"]).matchAll(/class="prompt-card-step-button"/g)]).toHaveLength(1);
+  });
+
+  it("has no Next where the card cannot go on", () => {
+    const { can_step_next: _, ...last } = form;
+    expect(render(last, ["en"])).not.toContain("prompt-card-next");
+  });
+});

@@ -200,6 +200,17 @@ export class DeviceStore {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
   }
 
+  /** Relay opt-in closes open LAN access before any outbound connection is made. */
+  closeGate(): void {
+    this.assertWritable();
+    if (this.gated) return;
+    const gate = new Date().toISOString();
+    this.save(this.devices, gate);
+    this.gateClosedAt = gate;
+    this.pending = null;
+    this.unconfirmedFirstPairs = [];
+  }
+
   /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
   onRevoke(id: string, close: () => void): () => void {
     if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
@@ -238,6 +249,13 @@ export class DeviceStore {
 
   list(currentId: string | null): PairedDevice[] {
     return this.devices.map((d) => ({ id: d.id, label: d.label, role: d.role, created_at: d.created_at, last_seen_at: d.last_seen_at, current: d.id === currentId, ...(d.relay_public_key === undefined ? {} : { via_relay: true as const }) }));
+  }
+
+  /** The current code when it can still be used, without changing its attempts or expiry. */
+  activePairing(now = Date.now()): PairingCode | null {
+    const pending = this.pending;
+    if (pending === null || now > pending.expires || pending.attempts >= CODE_ATTEMPTS) return null;
+    return { code: pending.code, expires_at: new Date(pending.expires).toISOString() };
   }
 
   /** A fresh six-digit code, replacing any code still pending. */

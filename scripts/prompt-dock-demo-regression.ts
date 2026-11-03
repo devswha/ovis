@@ -262,10 +262,14 @@ try {
         });
         await context.addInitScript(([owner, messages, settings]) => {
           localStorage.setItem("ovis:settings", settings!);
+          // Enter sends, chosen, also on a phone (whose Return breaks the line by default): these cases answer
+          // with the send key. A choice is kept in a key of its own (ENTER_SENDS_STORAGE_KEY in src/lib/settings.ts)
+          const enterSends: unknown = JSON.parse(settings!).enterSends;
+          if (typeof enterSends === "boolean") localStorage.setItem("ovis:enter-sends", String(enterSends));
           // held under the demo's herdr (site/demo/transport.ts), not an earlier release's (lib/paneLifetime.ts)
           localStorage.setItem("ovis:pane-lifetime:local", "demo-local");
           if (messages !== "") localStorage.setItem(`ovis:queue:${owner}`, messages!);
-        }, [panes.web, held.length === 0 ? "" : JSON.stringify({ version: 1, messages: held.map((text, at) => ({ id: `m${at}`, text })) }), JSON.stringify({ language, theme, ...settings })] as const);
+        }, [panes.web, held.length === 0 ? "" : JSON.stringify({ version: 1, messages: held.map((text, at) => ({ id: `m${at}`, text })) }), JSON.stringify({ language, theme, enterSends: true, ...settings })] as const);
         // a soft keyboard the script can raise: lib/viewport.ts reads navigator.virtualKeyboard
         if (touch) await context.addInitScript(() => {
           const keyboard = Object.assign(new EventTarget(), { height: 0 });
@@ -403,7 +407,7 @@ try {
         for (const enterSends of [true, false]) {
           // the keyboard alone: with a typed pick waiting, the empty box's Escape is the card's Cancel
           // and its Enter the card's Confirm, so the hands never leave the keys
-          const { page, errors, shot, close } = await open({ ...size, prompt: PLAN, settings: { enterKey: enterSends ? "send" : "newline" } });
+          const { page, errors, shot, close } = await open({ ...size, prompt: PLAN, settings: { enterSends } });
           try {
             const box = page.locator(".composer-text");
             const sendKey = enterSends ? "Enter" : "Control+Enter";
@@ -484,8 +488,7 @@ try {
           assert.ok(body.height >= 2 * body.line && body.height <= 6 * body.line + 20, `${label}: the reference text shows two to six lines (${body.height / body.line})`);
           // a typed pick: its Confirm row is in sight at once, whatever the card's scroll
           await page.locator(".composer-text").fill("2");
-          // Return breaks the line on a touch screen, where a keyboard's Ctrl+Enter sends
-          await page.locator(".composer-text").press(size.touch ? "Control+Enter" : "Enter");
+          await page.locator(".composer-text").press("Enter");
           await page.locator(".prompt-card-confirm").waitFor();
           assert.deepEqual(await hitOf(page, ".prompt-card-confirm .btn-primary"), { hit: "self", visible: true }, `${label}: Confirm is in sight and pressable`);
           // the pinned row is as short as it can be: Confirm and Cancel share one line
@@ -639,7 +642,7 @@ try {
         try {
           placed(await layoutOf(page), label);
           await page.locator(".composer-text").fill("2");
-          await page.locator(".composer-text").press(size.touch ? "Control+Enter" : "Enter");
+          await page.locator(".composer-text").press("Enter");
           await page.locator(".prompt-card-confirm").waitFor();
           await page.waitForFunction(() => document.querySelector(".prompt-card-option.is-typed")!.getAnimations().length === 0);
           const row = await confirmRowOf(page);

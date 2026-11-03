@@ -49,10 +49,9 @@ export async function checkComposerReconnect(browser: Browser, origin: string, p
     assert.equal(await page.getByRole("button", { name: "Queue message", exact: true }).count(), 0, "nothing offers to queue while not connected");
     await page.keyboard.insertText("while reconnecting");
     assert.equal(await composer.inputValue(), "dictated while reconnecting");
-    // nothing is sent until the socket is back: on a touch screen Return breaks the line, and a
-    // keyboard's Ctrl+Enter is the send
-    await page.keyboard.press("Control+Enter");
-    assert.equal(await composer.inputValue(), "dictated while reconnecting", "Ctrl+Enter sends nothing while offline");
+    // nothing is sent until the socket is back (a phone's send key: Return breaks the line, Mod+Enter sends)
+    await page.keyboard.press("ControlOrMeta+Enter");
+    assert.equal(await composer.inputValue(), "dictated while reconnecting", "the send key sends nothing while offline");
     admit = true;
     await page.locator(".conn-live").waitFor();
     assert.equal(await composer.inputValue(), "dictated while reconnecting", "the draft survives the reconnect");
