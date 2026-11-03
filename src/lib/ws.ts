@@ -133,6 +133,16 @@ export class HerdrSocket {
    * end has arrived, and any end after it is the current view's own.
    */
   private readonly superseded = new Map<string, { ends: number; fence: number | null }>();
+  /**
+   * Per pane, typing sent on this connection that no pong has confirmed yet, in the order sent (see
+   * awaitReceipt): `fence` is the id of the first ping sent after it, whose pong (or a later one) proves
+   * the server read it.
+   */
+  private readonly unconfirmed = new Map<string, { text: string; fence: number }[]>();
+  /** the ping that fences typing, while its pong is on its way: typing sent meanwhile waits for the next one */
+  private inputFence: number | null = null;
+  /** per pane, the typing the last connection ended with unconfirmed, until the pane's terminal takes it */
+  private lostInput = new Map<string, string[]>();
   /** Panes whose mounted, visible chat asks for transcript invalidations. The server drops interest
    * with the attachment, so each attach of a pane listed here (a reconnect's, or a tab back in use
    * after letting go of it) asks again; only the chat taking its interest back removes it. */
@@ -371,6 +381,7 @@ export class HerdrSocket {
       // goes on to them, so a view that read input as refused during the probe reads it again
       if (message.type === "pong") {
         for (const [paneId, stale] of this.superseded) if (stale.fence !== null && message.id >= stale.fence) this.superseded.delete(paneId);
+        this.confirmInput(message.id);
       }
       if (message.type === "pong" && this.probeIds.has(message.id)) {
         this.trace.record("pong");
@@ -512,6 +523,10 @@ export class HerdrSocket {
     this.socket = null;
     this.clearConnectTimer();
     this.clearLiveness();
+    // typing no pong confirmed may never have reached the server: the panes' terminals hold it for review
+    this.lostInput = new Map([...this.unconfirmed].map(([paneId, typed]) => [paneId, typed.map((entry) => entry.text)]));
+    this.unconfirmed.clear();
+    this.inputFence = null;
     for (const handler of this.disconnectHandlers) handler();
     this.markFeatures();
     this.settleSubmits(DISCONNECTED);
@@ -933,10 +948,56 @@ export class HerdrSocket {
     return this.canQueueMessages() && this.features.has("pending-hold");
   }
 
-  /** `stop`: the composer's Stop, a lone ESC the bridge keeps ahead of the next message. */
-  sendInput(paneId: string, text: string, stop = false): boolean {
+  /** `stop`: the composer's Stop, a lone ESC the bridge keeps ahead of the next message.
+   * `secret`: typed at a masked prompt, so never kept to be held when its connection ends unconfirmed */
+  sendInput(paneId: string, text: string, stop = false, secret = false): boolean {
     if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
-    try { this.rawSend(stop ? { type: "input", pane_id: paneId, text, stop: true } : { type: "input", pane_id: paneId, text }); return true; } catch { return false; }
+    try { this.rawSend(stop ? { type: "input", pane_id: paneId, text, stop: true } : { type: "input", pane_id: paneId, text }); } catch { return false; }
+    if (!secret) this.awaitReceipt(paneId, text);
+    return true;
+  }
+
+  /**
+   * Typing the socket took has not yet reached the server: a relay carrier can stop before its mux
+   * writes the frame, and a socket can go half-open just after a send (#2587). The server reads a
+   * connection's frames in order, so the pong of a ping sent after the typing proves it was read;
+   * until then it is kept, and a connection that ends first leaves it to the pane's terminal, which
+   * holds it for review (takeUnconfirmedInput). An older bridge, which answers no ping, is trusted as before.
+   */
+  private awaitReceipt(paneId: string, text: string): void {
+    if (!this.features.has("ping")) return;
+    const typed = this.unconfirmed.get(paneId) ?? [];
+    typed.push({ text, fence: this.nextPing });
+    this.unconfirmed.set(paneId, typed);
+    this.fenceInput();
+  }
+
+  /** Pings after the typing still unconfirmed, unless a fence is already on its way: one at a time, however fast the typing. */
+  private fenceInput(): void {
+    if (this.inputFence !== null || this.unconfirmed.size === 0) return;
+    this.inputFence = this.nextPing++;
+    // a send that throws ends the connection, and its end holds the typing
+    try { this.rawSend({ type: "ping", id: this.inputFence }); } catch { /* see above */ }
+  }
+
+  /** A pong confirms the typing sent before its ping: any ping's, a probe's included. */
+  private confirmInput(pong: number): void {
+    for (const [paneId, typed] of this.unconfirmed) {
+      const left = typed.filter((entry) => entry.fence > pong);
+      if (left.length === 0) this.unconfirmed.delete(paneId);
+      else this.unconfirmed.set(paneId, left);
+    }
+    if (this.inputFence !== null && pong >= this.inputFence) {
+      this.inputFence = null;
+      this.fenceInput();
+    }
+  }
+
+  /** The typing for this pane that the last connection ended with before the server confirmed it, in the order sent; given once. */
+  takeUnconfirmedInput(paneId: string): string[] {
+    const typed = this.lostInput.get(paneId) ?? [];
+    this.lostInput.delete(paneId);
+    return typed;
   }
 
   /**

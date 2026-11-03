@@ -101,6 +101,7 @@ run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
 run_script scripts/pane-input-focus-demo-regression.ts
 run_script scripts/terminal-keyboard-demo-regression.ts
+run_script scripts/unconfirmed-input-demo-regression.ts
 run_script scripts/shortcut-exact-modifiers-demo-regression.ts
 run_script scripts/portal-regression.ts
 run_script scripts/deep-link-demo-regression.ts

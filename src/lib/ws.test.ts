@@ -1421,6 +1421,8 @@ it("keeps typing out of the socket while a probe waits, and takes it again only 
   const { client, socket } = liveClient(["submit", "ping"]);
   try {
     expect(client.sendInput("w1:p1", "a")).toBe(true);
+    // the typing's fence: the pong of a ping sent after it confirms the server read it (#2587)
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
     client.wake();
     // refused, so PaneTerminal keeps the keys as a held draft
     expect(client.canInput("w1:p1")).toBe(false);
@@ -1429,13 +1431,14 @@ it("keeps typing out of the socket while a probe waits, and takes it again only 
     expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "a" }]);
     // a second wake while one waits sends no second ping
     client.wake();
-    expect(pings(socket)).toHaveLength(1);
-    // a frame the browser had buffered before the sleep, or a pong to no ping in flight, proves nothing
+    expect(pings(socket)).toHaveLength(2);
+    // a frame the browser had buffered before the sleep, or a pong to no ping of the probe, proves nothing
     socket.receive({ type: "pane-status", pane_id: "w1:p1", agent_status: "idle" });
     socket.receive({ type: "pong", id: 99 });
+    socket.receive({ type: "pong", id: 1 });
     expect(client.state).toBe("probing");
     expect(client.canInput("w1:p1")).toBe(false);
-    socket.receive({ type: "pong", id: 1 });
+    socket.receive({ type: "pong", id: 2 });
     expect(client.state).toBe("open");
     expect(client.sendInput("w1:p1", "c")).toBe(true);
     jest.advanceTimersByTime(10_000);
@@ -1444,6 +1447,53 @@ it("keeps typing out of the socket while a probe waits, and takes it again only 
   } finally {
     client.close();
     jest.useRealTimers();
+  }
+});
+
+it("holds typing the socket took when its connection ends before the server confirmed it (#2587)", () => {
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    expect(client.sendInput("w1:p1", "ec")).toBe(true);
+    expect(client.sendInput("w1:p1", "ho")).toBe(true);
+    // one fence at a time, however fast the typing: "ho" waits for the next
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    socket.receive({ type: "pong", id: 1 });
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
+    // typed at a masked prompt: never kept, so never held
+    expect(client.sendInput("w1:p1", "hunter2", false, true)).toBe(true);
+    expect(client.sendInput("w1:p1", "\x7f")).toBe(true);
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+    socket.disconnect();
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual(["ho", "\x7f"]);
+    // given once
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally {
+    client.close();
+  }
+});
+
+it("holds nothing the server confirmed, a probe's pong included, nor anything typed to an older bridge", () => {
+  jest.useFakeTimers();
+  const live = liveClient(["submit", "ping"]);
+  try {
+    expect(live.client.sendInput("w1:p1", "a")).toBe(true);
+    live.client.wake();
+    // the probe's ping went after the typing: its pong confirms it as the fence's would
+    live.socket.receive({ type: "pong", id: 2 });
+    live.socket.disconnect();
+    expect(live.client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally {
+    live.client.close();
+    jest.useRealTimers();
+  }
+  const older = liveClient(["submit"]);
+  try {
+    expect(older.client.sendInput("w1:p1", "a")).toBe(true);
+    expect(pings(older.socket)).toEqual([]);
+    older.socket.disconnect();
+    expect(older.client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally {
+    older.client.close();
   }
 });
 
