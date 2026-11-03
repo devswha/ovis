@@ -359,10 +359,13 @@ function holdSlices() {
  * Every window read takes 10 ms of the clock (performance.now), more than a slice, and opening a
  * transcript `openMs`, though no time passes: storage as slow as an SSHFS home. Counts the reads of
  * each path, and the leases they were read in (`leases`); `read` hears of each read; `elapsed` is
- * the clock's time so far.
+ * the clock's time so far. With `look`, the clock moves by that much at each look at it instead
+ * of with real time.
  */
-function slowReads(read: (path: string, reads: number) => void = () => {}, openMs = 0) {
-  const clock = performance.now.bind(performance);
+function slowReads(read: (path: string, reads: number) => void = () => {}, openMs = 0, look?: number) {
+  const real = performance.now.bind(performance), base = real();
+  let looked = 0;
+  const clock = look === undefined ? real : () => base + (looked += look);
   let waited = 0;
   const reads = new Map<string, number>(), leases = new Map<string, number>();
   const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
@@ -489,12 +492,25 @@ it("reads on by whole chunks when every read outlasts a slice, as on slow storag
   const s = fixture();
   // a notice every 2 KiB, about 3 MiB: each chunk is far less than a slice's work
   writeFileSync(s.path, Array.from({ length: 1500 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(2048) })).join(""));
-  const reads = slowReads();
+  // the clock moves by the reads alone (and 1 µs a look), so taking in a chunk takes less than a slice
+  const reads = slowReads(undefined, 0, 0.001);
+  // the ends known each time the event loop runs
+  const known: number[] = [];
+  let probing = true;
+  const probe = () => { known.push(commandHistory(s.path, s.limit(), false)?.ends.length ?? 0); if (probing) setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
   const history = await waitCommandHistory(s.path, s.limit(), 60_000);
+  probing = false;
   expect(history).toMatchObject({ complete: true, through: s.limit() });
   expect(history!.ends).toHaveLength(1500);
   // a read for each chunk, not one for each record
   expect(reads(s.path)).toBeLessThanOrEqual(Math.ceil(s.limit() / MIB) + 1);
+  // each chunk, though it came after its slice's end, is taken in for a slice of its own before the
+  // event loop runs (several hundred ends), not a record at a time
+  const heard = known.slice(1).map((ends, index) => ends - known[index]!).filter((more) => more > 0);
+  expect(heard.length).toBeGreaterThan(0);
+  expect(Math.min(...heard)).toBeGreaterThan(100);
 }, 5000);
 
 it("takes in the rest of a window a slice ended in without reading it again", async () => {
