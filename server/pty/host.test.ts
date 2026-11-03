@@ -589,6 +589,21 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
+    // past that wait the host ends the command itself: only the signals it sent are its own end
+    it.skipIf(process.platform === "win32")("reports a signal the command sent itself after the host hung it up, as that signal", async () => {
+      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 0.45; kill -TERM $$"]);
+      try {
+        expect(await ended.exited).toBe(143);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("ends a command that closed its terminal and ignores the hangup, as an end of its own", async () => {
+      const ended = run("sh", ["-c", "trap '' HUP; exec 0<&- 1>&- 2>&-; sleep 30"]);
+      try {
+        expect(await ended.exited).toBe(0);
+      } finally { ended.session.kill(); }
+    }, 15_000);
+
     it.skipIf(process.platform === "win32")("signals SIGWINCH to the command without changing its size", async () => {
       const winch = run("node", ["-e", `
         process.on("SIGWINCH", () => process.stdout.write("WINCH " + process.stdout.columns + "x" + process.stdout.rows, () => process.exit(0)));

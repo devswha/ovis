@@ -48,8 +48,10 @@ const FINAL_READ_BYTES: usize = 16 * 1024 * 1024;
 struct State {
     paused: bool,
     stopping: bool,
-    /// the host hung up a command still running: the signal that ends it is the host's, not the command's end
-    host_ended: bool,
+    /// the host hung up (SIGHUP) or killed (SIGKILL) a command still running: that signal ending it is the
+    /// host's own end, not the command's; any other signal is the command's
+    hup_sent: bool,
+    kill_sent: bool,
     /// when the child exited (it is reaped only by `finish`)
     exit: Option<Instant>,
 }
@@ -82,13 +84,14 @@ fn stop(shared: &Arc<Shared>) {
         }
         state.stopping = true;
         state.paused = false;
-        state.host_ended = !pty::has_exited(shared.pid);
+        state.hup_sent = !pty::has_exited(shared.pid);
         pty::signal_group(shared.pid, libc::SIGHUP);
     }
     shared.notify();
     let shared = Arc::clone(shared);
     thread::spawn(move || {
         thread::sleep(KILL_AFTER);
+        shared.lock().kill_sent |= !pty::has_exited(shared.pid);
         pty::signal_group(shared.pid, libc::SIGKILL);
         let mut state = shared.lock();
         let deadline = Instant::now() + REAP_WAIT;
@@ -113,14 +116,22 @@ fn finish(shared: &Shared, unexited: i32) -> ! {
             thread::park();
         }
     }
-    // a command the host ended itself (hung up by a stop, or killed just below) ends with 0 as before
-    let (exited, host_ended) = {
-        let state = shared.lock();
-        (state.exit.is_some(), state.host_ended || state.exit.is_none())
+    // a command the host ended itself (hung up by a stop, or killed then or just below) ends with 0 as before
+    let (exited, sent) = {
+        let mut state = shared.lock();
+        state.kill_sent |= !pty::has_exited(shared.pid);
+        let mut sent = Vec::new();
+        if state.hup_sent {
+            sent.push(libc::SIGHUP);
+        }
+        if state.kill_sent {
+            sent.push(libc::SIGKILL);
+        }
+        (state.exit.is_some(), sent)
     };
     pty::signal_group(shared.pid, libc::SIGKILL);
     // an exit the waiter has not recorded yet is still the command's own code
-    let code = pty::reap(shared.pid, !exited).map_or(unexited, |status| pty::exit_code(status, host_ended));
+    let code = pty::reap(shared.pid, !exited).map_or(unexited, |status| pty::exit_code(status, &sent));
     std::process::exit(code);
 }
 
@@ -162,7 +173,7 @@ fn main() {
         }
     };
     let shared = Arc::new(Shared {
-        state: Mutex::new(State { paused: false, stopping: false, host_ended: false, exit: None }),
+        state: Mutex::new(State { paused: false, stopping: false, hup_sent: false, kill_sent: false, exit: None }),
         changed: Condvar::new(),
         pid,
         wake: wake_write,

@@ -28,6 +28,7 @@ if (process.versions.bun) {
   process.exit(70);
 }
 const pty = await import("@lydell/node-pty");
+const { constants } = await import("node:os");
 
 const [colsRaw, rowsRaw, command, ...args] = process.argv.slice(2);
 if (!command) {
@@ -76,13 +77,28 @@ const EXIT_DRAIN_LIMIT_MS = 2000;
 const EXIT_HELD_LIMIT_MS = 15_000;
 /** node-pty's destroy once it asked for it: the command has exited */
 let finalRead = null;
+/** How long a command the host hung up has before the host kills it (crates/pty-sidecar's KILL_AFTER). */
+const KILL_AFTER_MS = 2000;
+/**
+ * The signals this host sent the command while it still ran: one of them ending it is the host's own end
+ * (exit 0, as before); any other signal is the command's, told as 128 + its number.
+ */
+const sent = new Set();
+/** whether the command is still there: not yet reaped (node-pty reaps it as it exits) */
+function running() {
+  try { process.kill(term.pid, 0); return true; } catch { return false; }
+}
+/** Sends the command's group `signal` as the host's own, noted only while the command still runs. */
+function endGroup(signal) {
+  if (running()) sent.add(signal);
+  killGroup(signal);
+}
 /**
  * A command that closed its terminal (EIO) may be dying: closing the pty here would hang it up first. As the
- * Rust host does, the close waits EXIT_QUIET_MS for its exit; only one still running then is hung up, and
- * that SIGHUP is this host's (hungUp), not a signal that ended the command.
+ * Rust host does, the close waits EXIT_QUIET_MS for its exit; one still running then is hung up by the host,
+ * and killed KILL_AFTER_MS later if it is still there, so no wait is unbounded.
  */
 let closing = null;
-let hungUp = false;
 const socket = process.platform === "win32" ? undefined : term._socket;
 if (socket) {
   const destroy = socket.destroy.bind(socket);
@@ -92,7 +108,10 @@ if (socket) {
         // an EIO'd pty is readable forever: reading stops, or it spins until the close
         socket._handle?.readStop?.();
         closing = setTimeout(() => {
-          try { process.kill(term.pid, 0); hungUp = true; } catch { /* exited (and reaped) by itself */ }
+          if (running()) {
+            endGroup("SIGHUP");
+            setTimeout(() => { if (!exited) endGroup("SIGKILL"); }, KILL_AFTER_MS).unref();
+          }
           destroy(...args);
         }, EXIT_QUIET_MS);
       }
@@ -143,9 +162,9 @@ term.onExit(({ exitCode, signal }) => {
   if (process.platform !== "win32") killGroup("SIGKILL");
   exited = true;
   // Let the native exit callback unwind and stdout drain before Node exits. node-pty reports a signal's
-  // end as exit code 0: one this host did not send (stopping, hungUp) is told as a shell tells it, never as
-  // the success a 0 says.
-  process.exitCode = signal && !stopping && !hungUp ? 128 + signal : exitCode ?? 0;
+  // end as exit code 0: one this host did not send is told as a shell tells it, never as the success a 0 says.
+  const name = signal ? Object.keys(constants.signals).find((key) => constants.signals[key] === signal) : undefined;
+  process.exitCode = signal && !sent.has(name) ? 128 + signal : exitCode ?? 0;
   process.stdin.destroy();
   process.stdout.end();
 });
@@ -196,7 +215,7 @@ const stop = () => {
   if (!exited && !stopping) {
     stopping = true;
     try {
-      killGroup("SIGHUP");
+      endGroup("SIGHUP");
       // A paused reader still needs to observe EOF after the parent leaves.
       term.resume();
     } catch {
@@ -204,9 +223,9 @@ const stop = () => {
     }
     // A child can ignore SIGHUP, and a blocked pipe must not pin the sidecar.
     setTimeout(() => {
-      if (!exited) { try { killGroup("SIGKILL"); } catch { /* already gone */ } }
+      if (!exited) { try { endGroup("SIGKILL"); } catch { /* already gone */ } }
       process.exit(0);
-    }, 2000).unref();
+    }, KILL_AFTER_MS).unref();
   }
 };
 process.on("SIGTERM", () => { stop(); process.stdin.destroy(); });

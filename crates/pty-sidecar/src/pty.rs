@@ -246,11 +246,11 @@ pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<libc::c_int> {
 
 /// A wait status as the host's exit code: the child's own code, or 128 + the signal's number when a
 /// signal ended it (as a shell reports it, and pty-host.mjs), never the 0 a caller reads as success.
-/// A signal the host sent itself (`host_ended`: the parent asked it to stop) ends it as before, with 0.
-pub fn exit_code(status: libc::c_int, host_ended: bool) -> i32 {
+/// One of the signals the host sent the running child itself (`sent`) is the host's own end: 0, as before.
+pub fn exit_code(status: libc::c_int, sent: &[libc::c_int]) -> i32 {
     if libc::WIFEXITED(status) {
         libc::WEXITSTATUS(status)
-    } else if libc::WIFSIGNALED(status) && !host_ended {
+    } else if libc::WIFSIGNALED(status) && !sent.contains(&libc::WTERMSIG(status)) {
         128 + libc::WTERMSIG(status)
     } else {
         0
@@ -311,13 +311,13 @@ mod tests {
 
     #[test]
     fn tells_a_signal_end_as_128_plus_its_number() {
-        assert_eq!(exit_code(status_of("kill -TERM $$"), false), 128 + libc::SIGTERM);
+        assert_eq!(exit_code(status_of("kill -TERM $$"), &[]), 128 + libc::SIGTERM);
     }
 
     #[test]
     fn tells_an_exit_as_its_own_code() {
-        assert_eq!(exit_code(status_of("exit 3"), false), 3);
-        assert_eq!(exit_code(status_of("exit 3"), true), 3);
+        assert_eq!(exit_code(status_of("exit 3"), &[]), 3);
+        assert_eq!(exit_code(status_of("exit 3"), &[libc::SIGHUP, libc::SIGKILL]), 3);
     }
 
     #[test]
@@ -328,11 +328,16 @@ mod tests {
         drop(child.stdin.take());
         wait_exited(pid).unwrap();
         assert!(has_exited(pid));
-        assert_eq!(reap(pid, false).map(|status| exit_code(status, false)), Some(0));
+        assert_eq!(reap(pid, false).map(|status| exit_code(status, &[])), Some(0));
+    }
+
+    #[test]
+    fn tells_a_signal_the_host_did_not_send_as_its_own() {
+        assert_eq!(exit_code(status_of("kill -TERM $$"), &[libc::SIGHUP, libc::SIGKILL]), 128 + libc::SIGTERM);
     }
 
     #[test]
     fn tells_an_end_the_host_asked_for_as_before() {
-        assert_eq!(exit_code(status_of("kill -HUP $$"), true), 0);
+        assert_eq!(exit_code(status_of("kill -HUP $$"), &[libc::SIGHUP]), 0);
     }
 }
