@@ -340,15 +340,26 @@ it("ends a cancelled lease's read ahead without an unhandled rejection", async (
   } finally { process.off("unhandledRejection", hear); }
 });
 
-/** A synthetic transcript of `bytes` whose directory's filesystem is of `type` (statfs f_type). */
-function onFilesystem(type: number, bytes = "abcdefgh\n") {
+/**
+ * A synthetic transcript of `bytes` whose directory's filesystem is of `type` (statfs f_type),
+ * known once `known` settles.
+ */
+function onFilesystem(type: number, bytes = "abcdefgh\n", known: Promise<void> = Promise.resolve()) {
   const root = mkdtempSync(join(tmpdir(), "ovis-transcript-reader-")); roots.push(root);
   const path = join(root, "session.jsonl");
   writeFileSync(path, bytes);
   const real = fsp.statfs;
-  const statfs = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => ({ ...(await real(directory)), type })) as typeof real);
+  const statfs = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => { await known; return { ...(await real(directory)), type }; }) as typeof real);
   restores.push(() => statfs.mockRestore());
   return path;
+}
+/** Counts the transcripts opened through the thread pool. */
+function opensAsync() {
+  const real = fsp.open;
+  let count = 0;
+  const spy = spyOn(fsp, "open").mockImplementation(((...args: Parameters<typeof real>) => { count++; return real(...args); }) as typeof real);
+  restores.push(() => spy.mockRestore());
+  return () => count;
 }
 /** Counts the reads made on the event loop. */
 function readsNow(during: (count: number) => void = () => {}) {
@@ -410,4 +421,22 @@ it.skipIf(process.platform !== "linux")("gives up a read on the event loop betwe
   expect(windows).toBe(3);
   expect(now()).toBe(3);
   expect(reader.size()).toEqual({ active: 0, waiting: 0, paths: 0 });
+});
+
+it.skipIf(process.platform !== "linux")("opens a transcript while its filesystem is looked up, and reads it on the event loop once that says local", async () => {
+  // a lookup as slow as one on a network filesystem (several round trips)
+  const lookup = deferred();
+  const path = onFilesystem(0x9123683e, "abcdefgh\n", lookup.promise);
+  const opens = opensAsync();
+  const now = readsNow();
+  const reader = new TranscriptReader();
+  const read = reader.read(path, async (file) => (await file.window(0, 4)).toString());
+  // the open is not held back for the lookup
+  for (let turn = 0; turn < 100 && opens() === 0; turn++) await tick();
+  expect(opens()).toBe(1);
+  expect(now()).toBe(0);
+  lookup.resolve();
+  expect(await read).toBe("abcd");
+  // the lease that opened through the thread pool reads on the event loop once its filesystem is known to be local
+  expect(now()).toBe(1);
 });

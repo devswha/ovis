@@ -19,12 +19,16 @@ export interface TranscriptHandle {
   stat(): Promise<Stats>;
   read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   close(): Promise<void>;
+  /** The same calls on the event loop, if the handle has them (used on a local filesystem only). */
+  readNow?(buffer: Buffer, offset: number, length: number, position: number): number;
+  statNow?(): Stats;
 }
 /** A handle whose calls also run on the event loop, for a transcript on a local filesystem. */
 export interface TranscriptHandleNow extends TranscriptHandle {
   readNow(buffer: Buffer, offset: number, length: number, position: number): number;
   statNow(): Stats;
 }
+const hasNow = (handle: TranscriptHandle): handle is TranscriptHandleNow => handle.readNow !== undefined && handle.statNow !== undefined;
 export interface TranscriptIO {
   open(path: string): Promise<TranscriptHandle>;
   stat(path: string): Promise<Stats>;
@@ -47,7 +51,11 @@ const LOCAL = new Set([0xef53, 0x9123683e, 0x58465342, 0x01021994, 0x2fc12fc1, 0
 const nativeIO: TranscriptIO = {
   open: async (path) => {
     const handle = await open(path, FLAGS);
-    return { stat: () => handle.stat(), read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position), close: () => handle.close() };
+    return {
+      stat: () => handle.stat(), read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position), close: () => handle.close(),
+      readNow: (buffer, offset, length, position) => readSync(handle.fd, buffer, offset, length, position),
+      statNow: () => fstatSync(handle.fd),
+    };
   },
   stat: (path) => lstat(path),
   ...(process.platform === "linux" ? {
@@ -107,7 +115,8 @@ interface Request {
  * reader has at most twice its capacity of them.
  *
  * On a local Linux filesystem (LOCAL) a lease opens, stats, reads and closes on the event loop
- * instead, with no read ahead, while each call is fast. The first slower than SLOW_MS sends the
+ * instead, with no read ahead, while each call is fast. A lease that has to look up its
+ * directory's filesystem (once a minute) opens through the thread pool meanwhile. The first slower than SLOW_MS sends the
  * rest of the lease through the thread pool, and the transcript's leases for SLOW_FOR_MS. Every
  * other filesystem and platform reads through the thread pool only.
  *
@@ -172,10 +181,18 @@ export class TranscriptReader {
             // on a local filesystem the transcript is read on the event loop while the page cache
             // answers: a call through the thread pool costs a wake of its thread, a copy on another
             // core and a wake of the event loop, more than the read itself
-            let near = this.near(path);
-            if (typeof near !== "boolean") { near = await near; current(); }
-            const direct = near ? this.io.openNow!(path) : null;
-            handle = direct ?? await this.io.open(path);
+            const near = this.near(path);
+            let direct: TranscriptHandleNow | null;
+            if (typeof near === "boolean") {
+              direct = near ? this.io.openNow!(path) : null;
+              handle = direct ?? await this.io.open(path);
+            } else {
+              // the filesystem is looked up while the transcript opens, not before: on a network
+              // filesystem the lookup costs round trips of its own
+              const [local, opened] = await Promise.all([near, this.io.open(path)]);
+              handle = opened;
+              direct = local && hasNow(opened) ? opened : null;
+            }
             current();
             const pinned = handle;
             let busy = false;
