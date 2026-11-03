@@ -371,11 +371,19 @@ interface IndexedPicture { start: number; end: number }
  * logged. The log is folded into the table once lookups have read it MARKS_FOLD_AFTER times over, so
  * a file of few pictures never builds the table, and one of many lookups does not read a long log
  * each time. Two uuids with one digest read as seen, which only sends a lookup to the search.
+ * Past MARKS_LIMIT marks since the /clear none is kept (`full`), and every uuid reads as seen.
  */
-interface UuidMarks { table: Uint32Array; count: number; log: Uint32Array; logged: number; read: number }
+interface UuidMarks { table: Uint32Array; count: number; log: Uint32Array; logged: number; read: number; full: boolean }
 const MARKS_FOLD_AFTER = 64;
+/**
+ * The most marks kept: a log of 512 KiB, or a table of 1 MiB at most half full. 128 Ki records the
+ * branch does not follow since a /clear is about 25 MB of sidechain records at the least (each is
+ * some 200 bytes); past them a picture's record is searched for, as main searches for every one.
+ */
+const MARKS_LIMIT = 128 * 1024;
 const uuidMark = (uuid: string): number => Bun.hash.xxHash32(uuid) || 1;
 function marked(marks: UuidMarks, mark: number): boolean {
+  if (marks.full) return true;
   const last = marks.table.length - 1;
   for (let slot = mark & last; marks.table.length > 0 && marks.table[slot] !== 0; slot = (slot + 1) & last) if (marks.table[slot] === mark) return true;
   if (marks.logged === 0) return false;
@@ -389,8 +397,13 @@ function marked(marks: UuidMarks, mark: number): boolean {
   return seen;
 }
 function markUuid(marks: UuidMarks, mark: number): void {
+  if (marks.full) return;
+  if (marks.logged + marks.count >= MARKS_LIMIT) {
+    Object.assign(marks, { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0, full: true });
+    return;
+  }
   if (marks.logged === marks.log.length) {
-    const log = new Uint32Array(Math.max(1024, marks.log.length * 2));
+    const log = new Uint32Array(Math.min(MARKS_LIMIT, Math.max(1024, marks.log.length * 2)));
     log.set(marks.log);
     marks.log = log;
   }
@@ -411,7 +424,7 @@ function putMark(marks: UuidMarks, mark: number): void {
 }
 /** an index of no pictures, of the bytes from `from` on, which the read `stream` makes now */
 const noPictures = (from: number, stream: TranscriptStream): PictureIndex => ({
-  at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0 }, blind: null, unread: [],
+  at: new Map(), loose: { table: new Uint32Array(0), count: 0, log: new Uint32Array(0), logged: 0, read: 0, full: false }, blind: null, unread: [],
   bytes: { from, hashed: from, digest: 0n, pending: new Uint8Array(0), through: from },
   vouched: stream.version ? { key: stream.version.key, at: performance.now(), wall: Date.now() } : null,
 });

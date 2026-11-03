@@ -502,6 +502,34 @@ describe("finding a picture's record", () => {
     exact(await both(transcript(answer + padding + drawn(1)), `${id(1)}:0`));
   });
 
+  it("searches for every picture after more records the branch does not follow than it keeps the uuids of", async () => {
+    // 128 Ki marks at most since a /clear: past them a uuid reads as seen, and the picture is searched for
+    const sidechain = (uuid: number) => line({ type: "user", uuid: id(uuid), isSidechain: true, message: { content: [{ type: "text", text: "no picture" }] } });
+    const drawn = (uuid: number) => line({ type: "user", uuid: id(uuid), message: { content: [picture] } });
+    let text = drawn(5);
+    for (let at = 0; at < 128 * 1024; at += 1) text += sidechain(100_000 + at);
+    text += sidechain(99) + drawn(99) + drawn(4);
+    const path = transcript(text);
+    quiet();
+    // a sidechain's uuid past the limit still comes first
+    expect(await both(path, `${id(99)}:0`)).toBeNull();
+    exact(await both(path, `${id(4)}:0`));
+    const cost = async (ref: string) => {
+      let bytes = 0;
+      const read = fs.readSync;
+      const watch = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
+        const value = read(...args);
+        bytes += value;
+        return value;
+      }) as typeof fs.readSync);
+      try { exact(await transcriptImageAsync(path, ref)); } finally { watch.mockRestore(); }
+      return bytes;
+    };
+    // the picture before them is indexed; the one after them is searched for
+    expect(await cost(`${id(5)}:0`)).toBeLessThan(1024 * 1024);
+    expect(await cost(`${id(4)}:0`)).toBeGreaterThan(Buffer.byteLength(text) / 2);
+  });
+
   it("still knows a sidechain's uuid after the scan has looked it up for a hundred pictures", async () => {
     // the scan logs the uuids of records the branch does not follow, and folds them into a table once
     // pictures have read the log 64 times over: both hold them
