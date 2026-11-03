@@ -138,6 +138,12 @@ export const ATTACH_HELD_RETRY_MS = 3_000;
 const ATTACH_REFUSING_RE = /terminal attach failed[^\r\n]*\s*$/;
 /** how long a refusal's exit is waited for before its output is taken for the pane's own */
 const ATTACH_REFUSAL_EXIT_MS = 2_000;
+/**
+ * how long herdr's whole takeover diagnostic waits for the exit that confirms it: a busy host's
+ * exit comes after ATTACH_HOLD_MS, and the displaced tab would show herdr's words. Past it they are
+ * taken for the pane's own text.
+ */
+export const ATTACH_TAKEOVER_EXIT_MS = 2_000;
 export const ATTACH_HELD_MESSAGE = "Another web bridge has this pane open. It connects here as soon as that bridge lets go.";
 /**
  * How long a pane whose attach herdr ended is looked up again before its terminal is taken for
@@ -383,7 +389,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         const visible = outputTail.push(data);
         if (visible) forward(visible);
         // A pane may print the same bytes without exiting: never keep its text indefinitely.
-        if (outputTail.pending) tailTimer = setTimeout(flushTail, holdFor);
+        // A line the guard below still holds may be the rest of the diagnostic held here: its own
+        // timer publishes it here again, and the two are judged together.
+        if (outputTail.pending) tailTimer = setTimeout(() => { if (!guarded) flushTail(); }, outputTail.complete ? ATTACH_TAKEOVER_EXIT_MS : holdFor);
       };
       // After an early release, until the hold would have ended, what may be a refusal line waits
       // for the exit: a refusal is dropped then, anything else is passed on when the window ends.

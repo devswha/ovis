@@ -67,6 +67,9 @@ export class AttachOutputTail {
 
   get pending(): boolean { return this.tail.length > 0; }
 
+  /** what is held is the whole diagnostic: only the exit that confirms it is still to come */
+  get complete(): boolean { return this.tail.startsWith(TAKEN); }
+
   push(data: string): string {
     const text = this.tail + data;
     this.tail = "";

@@ -272,6 +272,45 @@ async function resizableAttach() {
   };
 }
 
+const TAKEOVER = "\x1b[?1049l\x1b[?25h\x1b[0 qherdr: server shut down: terminal attach taken over\r\n";
+
+// take-over-regression CI: a displaced attach whose exit came after the hold had its diagnostic painted
+it("never paints herdr's takeover diagnostic when the displaced attach exits after the hold", async () => {
+  using pane = await resizableAttach();
+  pane.attach.onData(herdrScreen(80, 24, "pane text", true));
+  expect(pane.ready()).toBe(true);
+  pane.attach.onData(TAKEOVER);
+  // a busy host: the exit comes well after the hold ran out
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS * 10);
+  pane.attach.onExit(1);
+  expect(pane.painted()).not.toContain("terminal attach taken over");
+  // herdr's teardown of the alternate screen still reaches the terminal
+  expect(pane.painted().endsWith("\x1b[?1049l\x1b[?25h\x1b[0 q")).toBe(true);
+});
+
+it("passes on the start of a takeover diagnostic that never completes once the hold runs out", async () => {
+  using pane = await resizableAttach();
+  pane.attach.onData(herdrScreen(80, 24, "pane text", true));
+  const partial = TAKEOVER.slice(0, TAKEOVER.indexOf("taken"));
+  pane.attach.onData(partial);
+  // right after the screen, the refusal guard holds the line for one hold, then the tail for one more
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+  expect(pane.painted()).not.toContain("herdr: server shut down");
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS);
+  expect(pane.painted().endsWith(partial)).toBe(true);
+});
+
+it("passes on a pane's own takeover words when no exit follows them", async () => {
+  using pane = await resizableAttach();
+  pane.attach.onData(herdrScreen(80, 24, "pane text", true));
+  pane.attach.onData(TAKEOVER);
+  // the refusal guard's hold first, then the wait for the exit that would confirm the diagnostic
+  jest.advanceTimersByTime(terminalProcess.ATTACH_HOLD_MS + terminalProcess.ATTACH_TAKEOVER_EXIT_MS - 1);
+  expect(pane.painted()).not.toContain("terminal attach taken over");
+  jest.advanceTimersByTime(1);
+  expect(pane.painted().endsWith(TAKEOVER)).toBe(true);
+});
+
 for (const onCore of [true, false]) {
   it(`isolates ${onCore ? "a core stream from herdr probes, with no PTY" : "herdr attach startup probes and socket env"}`, async () => {
     const previous = process.env["OVIS_RUNTIME"];
