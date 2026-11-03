@@ -497,7 +497,7 @@ it("reads on by whole chunks when every read outlasts a slice, as on slow storag
   // the ends known each time the event loop runs
   const known: number[] = [];
   let probing = true;
-  const probe = () => { known.push(commandHistory(s.path, s.limit(), false)?.ends.length ?? 0); if (probing) setImmediate(probe); };
+  const probe = () => { if (!probing) return; known.push(commandHistory(s.path, s.limit(), false)?.ends.length ?? 0); setImmediate(probe); };
   release.push(() => { probing = false; });
   probe();
   const history = await waitCommandHistory(s.path, s.limit(), 60_000);
