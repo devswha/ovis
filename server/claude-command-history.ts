@@ -407,9 +407,11 @@ async function step(entry: Entry): Promise<void> {
   // the transcript is let go of well inside the read's deadline, however long the read waited to begin
   const held = deadline - READ_MS / 2;
   const signal = cancel.signal;
+  // a slice on the event loop counts from here, as main's does: its open and checks hold the loop too
+  const began = performance.now();
   try {
     await transcriptReader.read(entry.path, async (file) => {
-      let stop = performance.now() + SLICE_MS;
+      let stop = (file.waited() ? performance.now() : began) + SLICE_MS;
       // the whole lines of the last window that a slice ended before taking in, and the stat taken after they were read
       let rest: { from: number; to: number; bytes: Buffer; version: HistoryVersion } | null = null;
       for (let now = file.initial; ;) {
@@ -446,14 +448,15 @@ async function step(entry: Entry): Promise<void> {
           }
           // taken in only now, all at once: a request in between sees the read as it was, never
           // bytes read but not yet known unchanged; bytes that came within the turn are taken in
-          // until it ends, and bytes that came after it (slow storage) get a turn of their own
+          // until it ends, and bytes that came after it (slow storage) get a turn of their own. Not
+          // bytes read on the event loop: the loop had no turn while they were read
           const arrived = performance.now();
           if (entry.restarts !== restarts) {
             // started over while it read (a request found a line it read rewritten, evidence): the
             // window is from where the read was, not from where it starts again
             rest = null;
           } else {
-            scan(entry, bytes, arrived < stop ? stop : arrived + SLICE_MS);
+            scan(entry, bytes, arrived < stop || !file.waited() ? stop : arrived + SLICE_MS);
             // nothing was written while it read: what it read is as checked as what came before
             if (extends_ && sameVersion(after, now)) entry.checkedThrough = entry.offset;
           }

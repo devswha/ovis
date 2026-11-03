@@ -367,7 +367,7 @@ function slowReads(read: (path: string, reads: number) => void = () => {}, openM
   const reads = new Map<string, number>(), leases = new Map<string, number>();
   const now = spyOn(performance, "now").mockImplementation(() => clock() + waited);
   release.push(() => now.mockRestore());
-  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); waited += openMs; return (file) => work({ ...file, window: async (position, length) => {
+  wrapReads((path, work) => { leases.set(path, (leases.get(path) ?? 0) + 1); waited += openMs; return (file) => work({ ...file, waited: () => true, window: async (position, length) => {
     const bytes = await file.window(position, length);
     waited += 10;
     reads.set(path, (reads.get(path) ?? 0) + 1);
@@ -633,7 +633,7 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
   const base = performance.now();
   const now = spyOn(performance, "now").mockImplementation(() => base + waited);
   release.push(() => now.mockRestore());
-  wrapReads((_, work) => (file) => work({ ...file, stat: async () => file.initial, ahead: () => {}, window: async (position, length) => {
+  wrapReads((_, work) => (file) => work({ ...file, stat: async () => file.initial, ahead: () => {}, waited: () => false, window: async (position, length) => {
     waited += 1;
     return bytes.subarray(position, position + length);
   } }));
@@ -652,6 +652,44 @@ it("gives each turn of a transcript it keeps open a slice of its own", async () 
   // of its own, not just a read (the read's last may be short)
   expect(Math.max(...held)).toBeLessThanOrEqual(5);
   expect(held.slice(0, -1).every((ms) => ms >= 2)).toBe(true);
+}, 5000);
+
+it.skipIf(process.platform !== "linux")("holds the event loop no longer than a slice and the call that ended it when it reads on the event loop", async () => {
+  const s = fixture();
+  // an end in every record, about 7 MiB: taking in a window takes several slices
+  writeFileSync(s.path, Array.from({ length: 6000 }, (_, index) => notice(`c${index}`) + json({ type: "progress", value: "x".repeat(1024) })).join(""));
+  // a clock that moves only as the read does: a read or a stat on the event loop takes 0.5 ms, and
+  // each look at the clock 0.01 ms
+  let clock = performance.now();
+  // on a local filesystem (btrfs), where the reader reads on the event loop. Looking that up takes
+  // 2 ms of the clock: the first slice counts it, as main's counts its open
+  const statfs = fsp.statfs;
+  const local = spyOn(fsp, "statfs").mockImplementation((async (directory: string) => {
+    const found = { ...(await statfs(directory)), type: 0x9123683e };
+    clock += 2;
+    return found;
+  }) as typeof statfs);
+  const now = spyOn(performance, "now").mockImplementation(() => clock += 0.01);
+  const readSync = fs.readSync, fstatSync = fs.fstatSync;
+  const reads = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof readSync>) => { clock += 0.5; return readSync(...args); }) as typeof readSync);
+  const stats = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fstatSync>) => { clock += 0.5; return fstatSync(...args); }) as typeof fstatSync);
+  release.push(() => { local.mockRestore(); now.mockRestore(); reads.mockRestore(); stats.mockRestore(); });
+  // the clock each time the event loop runs
+  const runs: number[] = [];
+  let probing = true;
+  const probe = () => { runs.push(clock); if (probing) setImmediate(probe); };
+  release.push(() => { probing = false; });
+  probe();
+  expect((await waitCommandHistory(s.path, s.limit(), 60_000))!.complete).toBe(true);
+  probing = false;
+  // a read on the event loop for each window
+  expect(reads.mock.calls.length).toBeGreaterThanOrEqual(Math.ceil(s.limit() / MIB));
+  // never longer than a slice (4 ms, the lookup and the lease's first stat included) and the read
+  // and stat that ended it, with the clock's looks: a window read on the event loop after the
+  // slice's end has no slice of its own
+  const held = runs.slice(1).map((at, index) => at - runs[index]!);
+  expect(held.filter((ms) => ms > 4).length).toBeGreaterThan(4);
+  expect(Math.max(...held)).toBeLessThanOrEqual(4 + 0.5 + 0.5 + 0.5);
 }, 5000);
 
 it("reads one slice for a request nobody watches or waits for", async () => {
@@ -732,7 +770,7 @@ function holdWindows(...paths: string[]) {
   }));
   wrapReads((path, work) => {
     const hold = holds.get(path);
-    return hold === undefined ? work : (file) => work({ ...file, window: async (position, length) => {
+    return hold === undefined ? work : (file) => work({ ...file, waited: () => true, window: async (position, length) => {
       hold.open();
       await hold.held;
       return file.window(position, length);

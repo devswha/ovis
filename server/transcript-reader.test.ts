@@ -440,3 +440,31 @@ it.skipIf(process.platform !== "linux")("opens a transcript while its filesystem
   // the lease that opened through the thread pool reads on the event loop once its filesystem is known to be local
   expect(now()).toBe(1);
 });
+
+it.skipIf(process.platform !== "linux")("tells the work whether the event loop ran while the lease waited", async () => {
+  // let in at once on a local filesystem: nothing waited, before a call or after one
+  const local = onFilesystem(0x9123683e);
+  readsNow();
+  const reader = new TranscriptReader(undefined, 1);
+  expect(await reader.read(local, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([false, false]);
+  // let in after another lease ended: it waited for its turn, though its calls do not
+  const held = deferred();
+  const first = reader.read(local, async () => { await held.promise; });
+  const second = reader.read(local, async (file) => [file.waited(), (await file.window(0, 4), file.waited())]);
+  held.resolve();
+  await first;
+  expect(await second).toEqual([true, false]);
+  for (const restore of restores.splice(0).reverse()) restore();
+  // on a network filesystem every call goes through the thread pool
+  const network = onFilesystem(0x6969);
+  expect(await new TranscriptReader().read(network, async (file) => [file.waited(), (await file.window(0, 4), file.waited())])).toEqual([true, true]);
+  for (const restore of restores.splice(0).reverse()) restore();
+  // a read on the event loop the disk answered (3 ms of the clock): the calls after it go through the thread pool
+  const slow = onFilesystem(0x9123683e);
+  const clock = performance.now.bind(performance);
+  let late = 0;
+  const now = spyOn(performance, "now").mockImplementation(() => clock() + late);
+  restores.push(() => now.mockRestore());
+  readsNow(() => { late += 3; });
+  expect(await new TranscriptReader().read(slow, async (file) => [(await file.window(0, 4), file.waited()), (await file.stat(), file.waited())])).toEqual([false, true]);
+});

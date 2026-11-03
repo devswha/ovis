@@ -98,6 +98,13 @@ export interface TranscriptFile {
    * waits for this read to settle first, and one read ahead at a time is kept.
    */
   ahead(position: number, length: number): void;
+  /**
+   * Whether the event loop ran other work while the last call waited (it went through the thread
+   * pool). Before the work's first call: whether the lease waited for its turn in the reader, or
+   * reads through the thread pool. False while calls are answered on the event loop: then nothing
+   * else ran since the work's caller last let the loop go.
+   */
+  waited(): boolean;
 }
 interface Request {
   path: string;
@@ -140,6 +147,8 @@ export class TranscriptReader {
   private readonly filesystems = new Map<string, { local: boolean; until: number }>();
   /** Transcripts whose reads go through the thread pool until a time: one on the event loop was slow */
   private readonly slow = new Map<string, number>();
+  /** The request `read` is admitting: a lease it starts at once waited for nothing. */
+  private admitting: Request | null = null;
   constructor(private readonly io: TranscriptIO = nativeIO, readonly capacity = 2, private readonly waiting = 32) {}
 
   read<T>(path: string, work: (file: TranscriptFile) => Promise<T>, options: { signal?: AbortSignal; deadline?: number } = {}): Promise<T> {
@@ -167,6 +176,7 @@ export class TranscriptReader {
           this.pump();
         },
         run: async () => {
+          const immediate = this.admitting === request;
           let handle: Awaited<ReturnType<TranscriptIO["open"]>> | undefined;
           const operations = new Set<Promise<unknown>>();
           let accepting = true;
@@ -198,12 +208,14 @@ export class TranscriptReader {
             let busy = false;
             // reads on the event loop until one is slow: then through the thread pool, for the rest of the lease
             let now = direct !== null;
+            let waited = true;
             const timed = <V>(call: (direct: TranscriptHandleNow) => V): Promise<V> => {
               try {
                 current();
                 if (!accepting) throw new Error("the transcript lease is closed");
                 const started = performance.now();
                 const value = call(direct!);
+                waited = false;
                 if (performance.now() - started > SLOW_MS) { now = false; this.slowed(path); }
                 current();
                 return Promise.resolve(value);
@@ -217,6 +229,7 @@ export class TranscriptReader {
                 if (beside) { const result = await call(); current(); return result; }
                 if (busy) throw new Error("transcript operations must be awaited in order");
                 busy = true;
+                waited = true;
                 try { const result = await call(); current(); return result; }
                 finally { busy = false; }
               })();
@@ -296,11 +309,15 @@ export class TranscriptReader {
                 bytes.catch(() => {});
                 readAhead = { position, length, bytes };
               },
+              waited: () => waited,
             };
             const before = await file.stat();
             initial = before;
             const named = await file.pathVersion();
             if (named === null || named.id !== before.id) throw new Error("the transcript was replaced");
+            // a lease let in at once that reads on the event loop: the loop has not run anything else
+            // since `read` was called (a lookup or open it waited for is no wait for the storage)
+            waited = !immediate || !now;
             value = await work(file);
             current();
           } catch (caught) { error = caught; failed = true; }
@@ -327,7 +344,8 @@ export class TranscriptReader {
       signal?.addEventListener("abort", request.cancel, { once: true });
       if (deadline !== undefined) { timer = setTimeout(request.cancel, Math.max(0, deadline - Date.now())); timer.unref?.(); }
       this.queue.push(request);
-      this.pump();
+      this.admitting = request;
+      try { this.pump(); } finally { this.admitting = null; }
     });
   }
 
