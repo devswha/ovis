@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { openSync, closeSync, readSync, statSync, fstatSync } from "node:fs";
+import { posix, win32 } from "node:path";
 
 import { MAX_PI_ENTRY_BYTES, MAX_PI_INDEX_ENTRIES } from "./pi-tree.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
@@ -145,7 +146,23 @@ function piSkillSend(text: string): PiSkillSend | undefined {
 }
 
 // Pi 1.4's skill block: `References are relative to` the skill file's own directory, then the body.
-const PI_SKILL = /^<skill name="([^"\r\n]+)" location="([^"\r\n]+)">\nReferences are relative to ([^\r\n]+)\.\n\n[\s\S]*?\n<\/skill>(?:\n\n([\s\S]+))?$/;
+const PI_SKILL = /^<skill name="([^"\r\n]+)" location="([^"\r\n]+)">\nReferences are relative to ([^\r\n]+)\.\n\n([\s\S]*)$/;
+const CLOSE = "\n</skill>";
+
+/**
+ * Where the block ends: a closing tag that ends the record, or one followed by a blank line and the
+ * trimmed request. Pi inserts the SKILL.md body unescaped, so a body may hold such a tag too; with
+ * more than one place it could end, the request is not proven and the record is not read back.
+ */
+function skillRequest(rest: string): string | undefined {
+  const ends: string[] = [];
+  for (let at = rest.indexOf(CLOSE); at !== -1; at = rest.indexOf(CLOSE, at + 1)) {
+    const after = rest.slice(at + CLOSE.length);
+    if (after === "") ends.push("");
+    else if (after.startsWith("\n\n") && after.length > 2) ends.push(after.slice(2));
+  }
+  return ends.length === 1 ? ends[0] : undefined;
+}
 
 /**
  * Pi records `/skill:name request` as a user message holding the whole SKILL.md, never as typed. Only
@@ -156,9 +173,11 @@ const PI_SKILL = /^<skill name="([^"\r\n]+)" location="([^"\r\n]+)">\nReferences
 function piSkillExpansion(text: string): PiSkillSend | undefined {
   const block = PI_SKILL.exec(text);
   if (!block) return undefined;
-  const [, name, location, baseDir, request = ""] = block;
-  const slash = Math.max(location!.lastIndexOf("/"), location!.lastIndexOf("\\"));
-  return slash > 0 && location!.slice(0, slash) === baseDir ? { name: name!, request } : undefined;
+  const [, name, location, baseDir, rest] = block;
+  // Pi's baseDir is its platform's dirname of the file, a root keeping its separator (`/`, `C:\`)
+  if (baseDir !== posix.dirname(location!) && baseDir !== win32.dirname(location!)) return undefined;
+  const request = skillRequest(rest!);
+  return request === undefined ? undefined : { name: name!, request };
 }
 
 /** Read just the final complete record, not the old branch or the shared tree index. */

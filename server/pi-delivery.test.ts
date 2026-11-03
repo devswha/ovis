@@ -121,6 +121,32 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "/skill:commit hello", anchor)]).consumed).toEqual([]);
   });
 
+  it.each([
+    ["no request", "", "/skill:commit hello\n</skill>"],
+    ["a request", "\n\nmore", "/skill:commit hello\n</skill>\n\nmore"],
+  ])("does not confirm another request from a skill whose body closes its tag early, with %s", (_, request, other) => {
+    const path = join(dir(), "skill-body-tag.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    // a SKILL.md body of `Example:\n</skill>\n\nhello`: where the block ends is not provable from the record
+    appendFileSync(path, entry("s1", "base", "user", `<skill name="commit" location="/s/commit/SKILL.md">\nReferences are relative to /s/commit.\n\nExample:\n</skill>\n\nhello\n</skill>${request}`));
+    expect(matchPiDeliveries(path, [candidate("one", other, anchor)]).consumed).toEqual([]);
+    expect(matchPiDeliveries(path, [candidate("two", `/skill:commit${request ? " more" : ""}`, anchor)]).consumed).toEqual([]);
+  });
+
+  it.each([
+    ["a Unix root", "/SKILL.md", "/"],
+    ["a Windows drive root", "C:\\SKILL.md", "C:\\"],
+    ["a nested Windows directory", "C:\\skills\\commit\\SKILL.md", "C:\\skills\\commit"],
+    ["a nested Unix directory", "/home/me/skills/commit/SKILL.md", "/home/me/skills/commit"],
+  ])("reads back a skill whose file is in %s", (_, location, baseDir) => {
+    const path = join(dir(), "skill-root.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working"));
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("s1", "base", "user", `<skill name="commit" location="${location}">\nReferences are relative to ${baseDir}.\n\nCommit.\n</skill>\n\nhello`));
+    expect(matchPiDeliveries(path, [candidate("one", "/skill:commit hello", anchor)]).consumed).toEqual(["one"]);
+  });
+
   it("confirms one of two identical skill sends against one expanded record", () => {
     const path = join(dir(), "skill-twice.jsonl");
     writeFileSync(path, header() + entry("base", null, "assistant", "working"));
