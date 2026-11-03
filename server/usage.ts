@@ -1146,7 +1146,7 @@ export class UsageService {
 }
 
 /** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
-function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
+export function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
   return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
 }
 

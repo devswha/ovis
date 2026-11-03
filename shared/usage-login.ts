@@ -40,6 +40,8 @@ export interface UsageLoginPrompt extends UsageLoginPromptText {
   readonly provider: "claude" | "codex";
   /** the CLI has exited: whether it signed in, the accounts (GET /api/usage) tell */
   readonly ended: boolean;
+  /** Present once ended: the CLI exited successfully and its own credential home has a usable sign-in. */
+  readonly succeeded?: boolean;
 }
 
 /** POST /api/usage/login/code: the code a sign-in page showed, typed into that login's CLI. */

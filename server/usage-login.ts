@@ -6,6 +6,7 @@ import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
+import { loginAccount } from "./usage-login-account.ts";
 import { isSecureRequest, parseCookies } from "./auth.ts";
 import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { psQuote } from "./powershell.ts";
@@ -14,7 +15,7 @@ import { writePrivateState } from "./private-state.ts";
 import { PtySession } from "./pty/session.ts";
 import { newOwnerRecord, ownerGone, parseBirth, type ProcessBirth } from "./process-owner.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
-import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
+import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type CredentialHome, type UsageContext } from "./usage.ts";
 
 const LOGIN = {
   claude: { cli: "claude", binaries: ["claude"], args: ["auth", "login"] },
@@ -75,6 +76,9 @@ type Holder = LoginHolder | Launch | PrivateHolder;
 /** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
+  readonly home: CredentialHome;
+  exitCode: number | null;
+  succeeded: boolean;
   readonly owner: string;
   /**
    * The secret of the browser that started it, sent back only in its HttpOnly cookie: two browsers can share an
@@ -163,11 +167,11 @@ export class UsageLoginService {
     const secret = Buffer.from(login.secret);
     return sent.length === secret.length && timingSafeEqual(sent, secret) ? login : undefined;
   }
-  private readonly endedListeners: (() => void)[] = [];
+  private readonly endedListeners: ((account: string | null) => void)[] = [];
   private stopped = false;
 
   /** Called once a followed sign-in's CLI exits: the usage it may have changed is read again. */
-  onLoginEnded(listener: () => void): void { this.endedListeners.push(listener); }
+  onLoginEnded(listener: (account: string | null) => void): void { this.endedListeners.push(listener); }
   /**
    * One login at a time per credential home, Add account and Sign in again alike: two CLIs writing
    * one home race each other's tokens. By home, the login or launch of this server holding it.
@@ -222,7 +226,7 @@ export class UsageLoginService {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         const login = this.owned(searchParams.get("login") ?? "", request, owner);
         if (login === undefined) return gone();
-        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true } satisfies UsageLoginPrompt);
+        if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.succeeded } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
       }
@@ -265,10 +269,16 @@ export class UsageLoginService {
     const done = (async () => {
       const login = this.privates.get(id);
       if (login === undefined || login.ended) return;
-      login.ended = true;
       login.output = "";
+      let account: string | null = null;
+      try {
+        if (login.exitCode === 0 && !login.cancelled) account = await loginAccount(this.context, login);
+      } catch {
+        // Credential readers may fail; never put their contents in an error or leave the login held.
+        console.warn("Could not identify the account after its sign-in");
+      }
+      login.succeeded = account !== null;
       liveLocks.delete(login.lock);
-      login.changed.resolve();
       // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
       if (login.madeHome !== null) {
         try { rmdirSync(login.madeHome); }
@@ -280,7 +290,9 @@ export class UsageLoginService {
         }
       }
       for (const [home, holder] of this.logins) if (isPrivate(holder) && holder.launch === login.lock) this.release(home, holder);
-      for (const listener of this.endedListeners) listener();
+      for (const listener of this.endedListeners) listener(account);
+      login.ended = true;
+      login.changed.resolve();
       const ended = [...this.privates].filter(([, entry]) => entry.ended);
       for (const [old] of ended.slice(0, Math.max(0, ended.length - PRIVATE_LOGINS_MAX))) { this.privates.delete(old); this.settling.delete(old); }
     })();
@@ -572,7 +584,10 @@ export class UsageLoginService {
                 login.changed = Promise.withResolvers<void>();
               }
             },
-            onExit: () => {},
+            onExit: (code) => {
+              const login = this.privates.get(loginId);
+              if (login !== undefined) login.exitCode = code;
+            },
           });
         } catch (error) {
           liveLocks.delete(lock);
@@ -581,7 +596,12 @@ export class UsageLoginService {
         }
         const done = proc.exited.then(() => this.settle(loginId));
         const secret = randomUUID();
-        this.privates.set(loginId, { provider: id === "claude" ? "claude" : "codex", owner, secret, cancelled: false, lock, done, changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false });
+        this.privates.set(loginId, {
+          provider: id === "claude" ? "claude" : "codex",
+          home: env[homeVariable] ? { kind: "dir", dir: env[homeVariable] } : { kind: "default" },
+          exitCode: null, succeeded: false, owner, secret, cancelled: false, lock, done,
+          changed: Promise.withResolvers<void>(), read: false, madeHome: unusedCredentialHome, proc, output: "", ended: false,
+        });
         unusedCredentialHome = null;
         reserved = null;
         // a start whose answer never reached its browser (the dialog closed meanwhile) leaves no one to end it
