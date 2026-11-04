@@ -35,6 +35,10 @@ describe("tab labels from the first message", () => {
     // an upload's name in the words after another mention is the user's, not the path's
     expect(shortTabLabel("@/tmp/a.png Why paste-20261104-101500-0a1b2c3d.png")).toBe("Why paste-20261104-10150\u2026");
     expect(shortTabLabel("@/tmp/a.png Please inspect /tmp/paste-20261104-101500-0a1b2c3d.png first")).toBe("Please inspect\u2026");
+    // nor in a relative path shaped like an upload's (#2682)
+    expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png for me")).toBe("Please review\u2026");
+    // a folder whose name holds " @" or " ~" is still the upload's path
+    for (const folder of ["Company @ Work", "Company ~ Work"]) expect(shortTabLabel(`@/Users/me/${folder}/.ovis/paste-20261104-101500-0a1b2c3d.png Fix footer`)).toBe("Fix footer");
   });
 
   it("drops a label an earlier version learned from an attachment, and learns the pane's again", () => {
