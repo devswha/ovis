@@ -261,6 +261,38 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([]);
   });
 
+  it("keeps two pins made in the Herdr app one right after the other", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const core = fakeCore([{ address: "t1", state: "live", labels: {} }, { address: "t2", state: "live", labels: {} }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    core.tell({ type: "labels", terminal: "t1", data: { labels: { "herdr.pinned": "1" } } });
+    core.tell({ type: "labels", terminal: "t2", data: { labels: { "herdr.pinned": "1" } } });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual(["local:t1", "local:t2"]);
+    expect(core.written).toEqual([]);
+  });
+
+  it("takes our own writes' labels events for ours even when they come after hc's answers", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const core = fakeCore([{ address: "t1", state: "live", labels: {} }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    core.state.held = [];
+    preferences.set({ settings: {}, pins: ["local:t1"] });
+    await pins.idle();
+    preferences.set({ settings: {}, pins: [] });
+    await pins.idle();
+    core.release();
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([]);
+    expect(core.written.map((write) => write.labels["herdr.pinned"])).toEqual(["1", ""]);
+  });
+
   it("unpins nothing while no browser has shared its pins", async () => {
     const dir = stateDir();
     const preferences = store(dir);

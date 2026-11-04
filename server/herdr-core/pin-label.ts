@@ -89,6 +89,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
 
   /** Each terminal's label writes in order, each one the pin wanted when its turn comes. */
   const writes = new Map<string, Promise<void>>();
+  /** per terminal, the pins our label writes set, whose labels events have not come back yet */
+  const echoes = new Map<string, boolean[]>();
   /** a write hc refused is tried again, waiting longer each time */
   const retries = new Map<string, { timer: ReturnType<typeof setTimeout>; wait: number }>();
   const retry = (address: string) => {
@@ -102,6 +104,10 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       if (stopped || !live.has(address) || refused.has(address) || !agents.has(address) || store.get().pins === undefined) return;
       const pinned = listed(address);
       if (live.get(address) === pinned) { setAgreed(address, pinned); return; }
+      // hc tells every label write back as a labels event, in order: that one is ours, not the app's
+      const queued = echoes.get(address) ?? [];
+      queued.push(pinned);
+      echoes.set(address, queued);
       try {
         await hc.call("terminal.label", { terminal: address, labels: { [PINNED_LABEL]: pinned ? "1" : "" } });
         live.set(address, pinned);
@@ -111,6 +117,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       } catch (error) {
         // left unagreed: tried again later, and the next snapshot settles it from what each side says then
         console.warn(`herdr-core: could not ${pinned ? "pin" : "unpin"} ${address} for the Herdr app:`, error);
+        // a write hc refused sends no event back
+        const index = queued.lastIndexOf(pinned);
+        if (index >= 0) queued.splice(index, 1);
         retry(address);
       }
     });
@@ -121,8 +130,13 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   /** A terminal's label heard: settled against what both sides last agreed on. */
   const heard = (address: string, labelPinned: boolean) => {
     live.set(address, labelPinned);
-    // a write of ours on its way: its own event is no change of the app's, and the write settles it
-    if (writes.has(address)) return;
+    // the event of a write of ours, early or late: no change of the app's
+    const queued = echoes.get(address);
+    if (queued && queued.length > 0) {
+      if (queued[0] === labelPinned) { queued.shift(); return; }
+      // a label neither of our writes set: the app's, and what we sent no longer tells its order
+      queued.length = 0;
+    }
     // only an agent is in the Agents list: a shell's pin is never pruned from it as an unpin
     if (!agents.has(address)) return;
     refused.delete(address);
@@ -164,6 +178,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   };
   const gone = (address: string) => {
     live.delete(address);
+    echoes.delete(address);
     agents.delete(address);
     refused.delete(address);
     clearTimeout(retries.get(address)?.timer);
@@ -222,6 +237,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       closeStream = () => { closeStream = null; void channel.close(); };
       core = hello.core.id;
       live.clear();
+      echoes.clear();
       agents.clear();
       refused.clear();
       const shown = new Set(result.terminals.filter((terminal) => terminal.state === "live").map((terminal) => agreedKey(terminal.address)));
