@@ -275,7 +275,7 @@ describe("buildSnapshot, what herdr-core reports beyond placement", () => {
       terminal("t3", { parent: "vps/t14" }),
     ], layout, "0.1.17");
     expect(snapshot.workspaces.map((w) => [w.workspace_id, w.label])).toEqual([["s1", "here"], [OTHER_WORKSPACE_ID, "Other terminals"]]);
-    expect(snapshot.panes.map((p) => [p.pane_id, p.tab_id, p.parent_pane_id])).toEqual([["t1", "s1t1", undefined], ["t3", `${OTHER_WORKSPACE_ID}:t3`, undefined]]);
+    expect(snapshot.panes.map((p) => [p.pane_id, p.tab_id, (p as HerdrPane).parent_pane_id])).toEqual([["t1", "s1t1", undefined], ["t3", `${OTHER_WORKSPACE_ID}:t3`, undefined]]);
   });
 
   it("carries a blocked agent's kind, its message as written and its progress, and only what it reported", () => {
