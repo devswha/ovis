@@ -291,7 +291,7 @@ index 10e604114ae9fffc25c931497413800b0b6bd7bb..f99f000ed8b1b28d8ee35e22f1ebd609
    compositionstart(): void;
    compositionupdate(ev: CompositionEvent): void;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf25472643e8d42b8 100644
+index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..f2b54f0da6ac820ddddbe4159888f7aa0f26d282 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -6,6 +6,19 @@
@@ -633,7 +633,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -185,7 +357,9 @@ export class CompositionHelper {
+@@ -185,22 +357,25 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
@@ -643,7 +643,34 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..90d18912693a79ea9ce4f1cdf2547264
        // Ignore if a composition has started since the timeout
        if (!this._isComposing) {
          const newValue = this._textarea.value;
-@@ -218,25 +392,44 @@ export class CompositionHelper {
+ 
+-        const diff = newValue.replace(oldValue, '');
+-
+-        this._dataAlreadySent = diff;
+-
+-        if (newValue.length > oldValue.length) {
+-          this._coreService.triggerDataEvent(diff, true);
+-        } else if (newValue.length < oldValue.length) {
+-          this._coreService.triggerDataEvent(`${C0.DEL}`, true);
+-        } else if ((newValue.length === oldValue.length) && (newValue !== oldValue)) {
+-          this._coreService.triggerDataEvent(newValue, true);
+-        }
++        // Gboard can replace a trailing space with ". ". The old value is then no
++        // longer a substring: replace(oldValue, '') would resend the whole line.
++        // Keep the shared prefix and replace only the edited suffix. Compare code
++        // points so an emoji is never split into two surrogate halves.
++        const before = Array.from(oldValue);
++        const after = Array.from(newValue);
++        let prefix = 0;
++        while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
++        const inserted = after.slice(prefix).join('');
++        this._dataAlreadySent = inserted;
++        const input = C0.DEL.repeat(before.length - prefix) + inserted;
++        if (input) this._coreService.triggerDataEvent(input, true);
+ 
+       }
+     }, 0);
+@@ -218,25 +393,44 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
