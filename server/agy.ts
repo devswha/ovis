@@ -23,6 +23,10 @@ interface Index { identity: string; size: number; changed: string; scanned: numb
 const indexes = new Map<string, Index>();
 /** The last snapshot read per catalog, keyed on the stats of the files it copied. */
 const catalogs = new Map<string, { key: string; rows: number[] }>();
+const MAX_CATALOGS = 32;
+// Timestamps tick coarsely, so a same-size rewrite just after a read can keep both of them. Only a
+// read this long after the files' last change may be reused (git's "racy" rule).
+const CATALOG_SETTLED_MS = 2000;
 export function forgetAgyState(path?: string): void {
   if (path === undefined) { indexes.clear(); catalogs.clear(); } else { indexes.delete(path); catalogs.delete(agyDatabasePath(path)); }
 }
@@ -41,6 +45,7 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
   const sideFds: number[] = [];
   let snapshot: string | undefined;
   let catalogKey: string | undefined;
+  const began = Date.now();
   try {
     if (realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
     const readFlags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
@@ -74,8 +79,17 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
       // Unchanged pinned files hold the bytes the last validated copy read.
       const key = snapshotFiles.map(({ stat }) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join("|");
       const cached = catalogs.get(dbPath);
-      if (cached?.key === key) return new Set(cached.rows);
-      catalogKey = key;
+      if (cached?.key === key) {
+        for (const file of snapshotFiles) {
+          const now = statSync(file.path, { bigint: true });
+          if (now.dev !== file.stat.dev || now.ino !== file.stat.ino || realpathSync(file.path) !== file.path) throw new AgyUnavailable();
+        }
+        catalogs.delete(dbPath);
+        catalogs.set(dbPath, cached);
+        return new Set(cached.rows);
+      }
+      if (snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
+        && began - Number(stat.ctimeNs / 1_000_000n) >= CATALOG_SETTLED_MS)) catalogKey = key;
       // macOS: tmpdir() is under the /var symlink, which SQLITE_OPEN_NOFOLLOW refuses
       // (assigned before resolving, so a failed realpath still removes the directory)
       snapshot = mkdtempSync(join(tmpdir(), "ovis-agy-catalog-"));
@@ -113,7 +127,11 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
       || (!wal && existsSync(`${dbPath}-journal`))) throw new AgyUnavailable();
     if (rows.length > MAX_ENTRIES || rows.some((row) => !Number.isSafeInteger(row.idx) || row.idx < 0)) throw new AgyUnavailable();
     const indices = rows.map((row) => row.idx);
-    if (catalogKey !== undefined) catalogs.set(dbPath, { key: catalogKey, rows: indices });
+    if (catalogKey !== undefined) {
+      catalogs.delete(dbPath);
+      catalogs.set(dbPath, { key: catalogKey, rows: indices });
+      if (catalogs.size > MAX_CATALOGS) catalogs.delete(catalogs.keys().next().value!);
+    }
     return new Set(indices);
   } catch { throw new AgyUnavailable(); }
   finally {

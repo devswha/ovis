@@ -128,14 +128,31 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
     await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 24)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(24, 34)}`);
     expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(32 * 1024 * 1024);
 
-    expect(agyCatalog(transcript).size).toBe(34);
     const writes = spyOn(fs, "writeFileSync");
     try {
       expect(agyCatalog(transcript).size).toBe(34);
-      expect(writes).not.toHaveBeenCalled();
-      await abandonedWal(dbPath, "INSERT INTO steps VALUES (34, NULL);");
-      expect(agyCatalog(transcript).has(34)).toBe(true);
+      // Files changed just now may yet be rewritten under the same timestamps: copy again.
+      writes.mockClear();
+      expect(agyCatalog(transcript).size).toBe(34);
       expect(writes).toHaveBeenCalled();
+      const clock = spyOn(Date, "now").mockReturnValue(Date.now() + 5000);
+      try {
+        expect(agyCatalog(transcript).size).toBe(34);
+        writes.mockClear();
+        expect(agyCatalog(transcript).size).toBe(34);
+        expect(writes).not.toHaveBeenCalled();
+        await abandonedWal(dbPath, "INSERT INTO steps VALUES (34, NULL);");
+        expect(agyCatalog(transcript).has(34)).toBe(true);
+        expect(writes).toHaveBeenCalled();
+        // A reused catalog still requires the path to name the pinned database.
+        expect(agyCatalog(transcript).size).toBe(35);
+        writes.mockClear();
+        expect(() => agyCatalog(transcript, () => {
+          fs.renameSync(dbPath, `${dbPath}.old`);
+          fs.copyFileSync(`${dbPath}.old`, dbPath);
+        })).toThrow(AgyUnavailable);
+        expect(writes).not.toHaveBeenCalled();
+      } finally { clock.mockRestore(); }
     } finally { writes.mockRestore(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
