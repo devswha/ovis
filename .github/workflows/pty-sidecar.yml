@@ -100,10 +100,12 @@ jobs:
           name: ovis-pty-sidecar
           path: pty-sidecar/*
           if-no-files-found: error
-  # Pull requests build without signing; a release cannot publish until this job has attested.
+  # Pull requests build without signing; a release cannot publish until this job has attested. The
+  # provenance names the run's own ref and commit, so a repair dispatched from another ref than the
+  # tag it builds attests nothing rather than a source the binaries were not built from.
   attest:
     needs: manifest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (inputs.ref == github.sha || inputs.ref == github.ref)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

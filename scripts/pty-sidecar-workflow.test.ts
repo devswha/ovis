@@ -11,7 +11,7 @@ test("release and repair runs attest every Rust PTY host binary; pull requests a
   for (const name of ["build", "manifest"]) expect(sidecar.jobs[name]!.permissions).toBeUndefined();
   const attest = sidecar.jobs["attest"]!;
   expect(attest.needs).toBe("manifest");
-  expect(attest.if).toBe("github.event_name != 'pull_request'");
+  expect(attest.if).toBe("github.event_name != 'pull_request' && (inputs.ref == github.sha || inputs.ref == github.ref)");
   expect(attest.permissions).toEqual(ATTESTS);
   const download = attest.steps!.find((step) => step.uses?.startsWith("actions/download-artifact@"));
   expect(download?.with).toEqual({ name: "ovis-pty-sidecar", path: "pty-sidecar" });
