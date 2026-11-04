@@ -24,13 +24,14 @@ import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 
 /**
- * Where this page goes back to the phone's list of PCs, when it is one PC of several: a PC's page
- * on the hosted shell (its front page lists the paired PCs) or the phone app (its list of PCs).
- * Null in a PC's own app, whose sidebar lists its PCs itself.
+ * Which list of PCs this page goes back to, when it shows one PC of a phone's list: the phone app's
+ * own list ("app"), or the hosted shell's front page on a PC's page there ("shell"). Null in a PC's
+ * own app, whose sidebar lists its PCs itself.
  */
-function pcListExit(): (() => void) | null {
-  if (shellMode() === "relay" && serverIdOfPath(window.location.pathname) !== null) return () => window.location.assign("/");
-  if (inNativeApp()) return () => void changePc();
+export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; pathname: string }): "app" | "shell" | null {
+  // the phone app first: its own list holds every PC it opens, those it reaches through the relay included
+  if (page.nativeApp) return "app";
+  if (page.relayShell && serverIdOfPath(page.pathname) !== null) return "shell";
   return null;
 }
 
@@ -68,7 +69,8 @@ export function MachineSidebar(props: Props) {
   // header (MachineGroup), and its name, which no row then shows, is not searched
   const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
   const unnamed = useMemo(() => new Set(loneHost === null ? [] : [loneHost]), [loneHost]);
-  const exitToPcs = useMemo(pcListExit, []);
+  const exitToPcs = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
+  const leaveForPcs = () => { if (exitToPcs === "app") void changePc(); else window.location.assign("/"); };
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
@@ -203,7 +205,7 @@ export function MachineSidebar(props: Props) {
       {/* one PC of the phone's several: which one, and back to the list in one tap, as a team switcher at a
           sidebar's foot does (Slack, Discord); Settings → Phone & devices keeps its Change PC row too */}
       {exitToPcs !== null && (
-        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={exitToPcs}>
+        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={leaveForPcs}>
           <Monitor aria-hidden="true" />
           <span className="sidebar-footer-pc-name">{loneHostName ?? t("Change PC")}</span>
           {loneHostName !== null && <span className="sidebar-footer-pc-action">{t("Change PC")}</span>}
