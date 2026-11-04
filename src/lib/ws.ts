@@ -989,12 +989,12 @@ export class HerdrSocket {
     return this.canQueueMessages() && this.features.has("pending-hold");
   }
 
-  /** `stop`: the composer's Stop, a lone ESC the bridge keeps ahead of the next message.
-   * `secret`: typed at a masked prompt, so never kept to be held when its connection ends unconfirmed */
-  sendInput(paneId: string, text: string, stop = false, secret = false): boolean {
+  /** `stop`: the composer's Stop, a lone ESC the bridge keeps ahead of the next message. `automatic`: xterm's own reply, nobody typed it.
+   * `secret`: typed at a masked prompt. Neither is kept to be held when its connection ends unconfirmed */
+  sendInput(paneId: string, text: string, stop = false, automatic = false, secret = false): boolean {
     if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
-    try { this.rawSend(stop ? { type: "input", pane_id: paneId, text, stop: true } : { type: "input", pane_id: paneId, text }); } catch { return false; }
-    if (!secret) this.awaitReceipt(paneId, text);
+    try { this.rawSend({ type: "input", pane_id: paneId, text, ...(stop ? { stop: true } : {}), ...(automatic ? { automatic: true } : {}) }); } catch { return false; }
+    if (!secret && !automatic) this.awaitReceipt(paneId, text);
     return true;
   }
 

@@ -1496,7 +1496,7 @@ it("holds typing the socket took when its connection ends before the server conf
     socket.receive({ type: "pong", id: 1 });
     expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
     // typed at a masked prompt: never kept, so never held
-    expect(client.sendInput("w1:p1", "hunter2", false, true)).toBe(true);
+    expect(client.sendInput("w1:p1", "hunter2", false, false, true)).toBe(true);
     expect(client.sendInput("w1:p1", "\x7f")).toBe(true);
     expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
     socket.disconnect();
