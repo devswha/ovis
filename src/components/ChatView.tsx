@@ -1984,12 +1984,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
+    // Upward input moves the view before its scroll event comes: a follow the list queued before
+    // it (a long chat's first open) would land first and take the reader back to the end (#2594).
+    const readingUp = (): void => {
+      scrollInputAt.current = performance.now();
+      dropPendingListScroll(timeline.current);
+    };
     const mark = (event: Event): void => {
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
         if (!active || event.isComposing || event.keyCode === 229) return;
         if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
-        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) scrollInputAt.current = performance.now();
+        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) readingUp();
         return;
       }
       if (event instanceof PointerEvent && (event.type === "pointerup" || event.type === "pointercancel")) {
@@ -2017,7 +2023,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // event, and a new press is a new gesture
       if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
-      if (event instanceof WheelEvent && event.deltaY < 0) scrollInputAt.current = performance.now();
+      if (event instanceof WheelEvent && event.deltaY < 0) readingUp();
       if (event instanceof PointerEvent) {
         if (event.type === "pointerdown") {
           pointer = { x: event.clientX, y: event.clientY };
@@ -2032,7 +2038,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       if ((event.type === "touchstart" || event.type === "touchmove") && event instanceof TouchEvent) {
         const y = event.touches[0]?.clientY;
-        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) scrollInputAt.current = performance.now();
+        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) readingUp();
         touchY = y;
       }
     };
@@ -2118,8 +2124,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // the layout's move left a reader still following short of the end: they go on there, unless
     // what they just clicked is laid out where they are (ChatTimeline manualLayout)
     if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
-      // the list's scroll lands a frame later: the frame painted next is at the end already
-      if (stoppedShort) node.scrollTop = node.scrollHeight;
+      // the list's scroll lands a frame later: the frame painted next is at the end already. Its
+      // scroll event compares with where this write put the view, so a wheel up before it reads as
+      // the reader's move up (#2594).
+      if (stoppedShort) { node.scrollTop = node.scrollHeight; lastScrollTop.current = node.scrollTop; }
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
       else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
     }
