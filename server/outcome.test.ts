@@ -552,6 +552,35 @@ describe("session-scoped command outcomes", () => {
     }
   });
 
+  // the Codex, omp and gjc lookups take the poll's process read too, rather than asking herdr again (#1879)
+  for (const [agent, text] of [["codex", "$imagegen"], ["omp", "/context"], ["gjc", "/context"]] as const) {
+    it(`reads a ${agent} pane's processes once per poll while a command's transcript is open`, async () => {
+      const store = mkdtempSync(join(tmpdir(), `outcome-${agent}-store-`));
+      const previous = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = store;
+      const pane = { ...target(), agent, pid: 2147483645, argv: [agent], cwd: store, agent_session: { ...session("fixture-session"), agent } };
+      try {
+        await withFakeHerdr(pane, async (paneId, _keys, _processReads, calls) => {
+          const catalog: SlashCommand[] = agent === "codex" ? [{ ...row("imagegen"), source: "skill", trigger: "$" }] : [row("context")];
+          const command = commandSendFrom(pane, agent, catalog, text);
+          if (!command) throw new Error("fixture command was not recorded");
+          bindCommandProcess(paneId, command);
+          noteSubmitted(paneId, text, command);
+          await command.visibility?.binding;
+          const before = calls();
+          expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
+          const made = (method: string) => (calls()[method] ?? 0) - (before[method] ?? 0);
+          expect(made("pane.process_info")).toBe(1);
+          expect(made("session.snapshot")).toBe(1);
+        });
+      } finally {
+        if (previous === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previous;
+        rmSync(store, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("omits a known session's sends once a restarted agent still reports that session id", async () => {
     // herdr keeps a restarted Claude Code's old session id until the new process's first turn
     const pane = { ...target(), pid: 2147483645 };
