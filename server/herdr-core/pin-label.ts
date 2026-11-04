@@ -148,9 +148,10 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // a write hc refused sends no event back
         const index = queued.indexOf(echo);
         if (index >= 0) queued.splice(index, 1);
-        // Ovis's change stays Ovis's, even once the terminal is a shell whose row the list prunes
+        // Ovis's change stays Ovis's, even once the terminal is a shell whose row the list prunes;
+        // not a write that landed, nor one a newer change in Ovis's list took back
         const key = agreedKey(address);
-        if (agreed.has(key) && !pending.has(key)) { pending.add(key); saveAgreed(); }
+        if (!echo.heard && listed(address) === pinned && agreed.has(key) && !pending.has(key)) { pending.add(key); saveAgreed(); }
         retry(address);
       }
     });
@@ -160,6 +161,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
 
   /** A terminal's label heard: settled against what both sides last agreed on. */
   const heard = (address: string, labelPinned: boolean) => {
+    const before = live.get(address);
     live.set(address, labelPinned);
     // the event of a write of ours, early or late: no change of the app's
     const queued = echoes.get(address);
@@ -175,6 +177,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       // a label neither of our writes set: the app's, and what we sent no longer tells its order
       queued.length = 0;
     }
+    // the app changed the pin after Ovis's failed write: its change is the last one
+    if (before !== undefined && before !== labelPinned && pending.delete(agreedKey(address))) saveAgreed();
     // only an agent is in the Agents list: a shell's pin is never pruned from it as an unpin
     if (!agents.has(address)) return;
     refused.delete(address);
