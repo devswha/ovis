@@ -7,7 +7,7 @@ diff --git a/react.d.ts b/react.d.ts
 diff --git a/react.mjs b/react.mjs
 --- a/react.mjs
 +++ b/react.mjs
-@@ -1252,6 +1252,22 @@ function calculateOffsetWithOffsetPosition(ctx, offsetParam, params) {
+@@ -1252,6 +1252,29 @@ function calculateOffsetWithOffsetPosition(ctx, offsetParam, params) {
  }
  
  // src/core/clampScrollOffset.ts
@@ -21,16 +21,23 @@ diff --git a/react.mjs b/react.mjs
 +  const horizontal = !!state.props.horizontal;
 +  const view = node.getBoundingClientRect();
 +  let end = 0;
-+  for (const child of content.children) {
-+    const box = child.getBoundingClientRect();
++  const reach = (element) => {
++    const box = element.getBoundingClientRect();
 +    end = Math.max(end, horizontal ? box.right - view.left + node.scrollLeft : box.bottom - view.top + node.scrollTop);
++  };
++  // the header, the footer, and the rows' wrapper, whose height is the list's measured total: a
++  // row drawn taller than measured reaches past it, so the rows inside it count too (one parked out
++  // of view lies far above)
++  for (const child of content.children) {
++    reach(child);
++    for (const row of child.children) reach(row);
 +  }
 +  return Math.max(0, end - (horizontal ? node.clientWidth : node.clientHeight));
 +}
  function clampScrollOffset(ctx, offset, scrollTarget) {
    const state = ctx.state;
    const contentSize = getContentSize(ctx);
-@@ -1260,7 +1276,9 @@ function clampScrollOffset(ctx, offset, scrollTarget) {
+@@ -1260,7 +1283,9 @@ function clampScrollOffset(ctx, offset, scrollTarget) {
      const baseMaxOffset = Math.max(0, contentSize - state.scrollLength);
      const viewOffset = scrollTarget == null ? void 0 : scrollTarget.viewOffset;
      const extraEndOffset = typeof viewOffset === "number" && viewOffset < 0 ? -viewOffset : 0;
@@ -41,7 +48,7 @@ diff --git a/react.mjs b/react.mjs
      clampedOffset = Math.min(offset, maxOffset);
    }
    clampedOffset = Math.max(0, clampedOffset);
-@@ -5668,7 +5686,10 @@ function sortDOMElements(container, indexByElement) {
+@@ -5668,7 +5693,10 @@ function sortDOMElements(container, indexByElement) {
            break;
          }
        }
@@ -53,7 +60,7 @@ diff --git a/react.mjs b/react.mjs
          container.insertBefore(element, nextStableElement);
        } else {
          container.appendChild(element);
-@@ -5716,32 +5737,19 @@
+@@ -5716,32 +5744,19 @@
  function useDOMOrder(ref) {
    const ctx = useStateContext();
 -  const debounceRef = useRef(void 0);
@@ -101,7 +108,7 @@ diff --git a/react.mjs b/react.mjs
 +    }
 +  }, [ctx, version]);
  }
-@@ -6425,8 +6433,11 @@ function ScrollAdjust() {
+@@ -6425,8 +6440,11 @@ function ScrollAdjust() {
                window.getComputedStyle(contentNode)[axis.paddingEndProp]
              );
              const temporaryPaddingEnd = `${(currentPaddingEnd || 0) + pad}px`;
@@ -114,12 +121,12 @@ diff --git a/react.mjs b/react.mjs
              void contentNode.offsetHeight;
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
-@@ -7194,10 +7205,12 @@ function scrollToEnd(ctx, options) {
+@@ -7194,10 +7212,12 @@ function scrollToEnd(ctx, options) {
    }
    const paddingBottom = state.props.stylePaddingBottom || 0;
    const footerSize = peek$(ctx, "footerSize") || 0;
 +  // the end the browser shows, past what the list has measured of it
-+  const unmeasured = Math.max(0, scrollableMaxOffset(state) - Math.max(0, getContentSize(ctx) - state.scrollLength));
++  const unmeasured = Math.max(0, scrollableMaxOffset(state) - (getContentSize(ctx) - state.scrollLength));
    scrollToIndex(ctx, {
      ...options,
      index,
@@ -128,7 +135,7 @@ diff --git a/react.mjs b/react.mjs
      viewPosition: 1
    });
    return true;
-@@ -7288,6 +7301,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
+@@ -7288,6 +7308,7 @@ function createImperativeHandle(ctx, scheduleImperativeScrollCommit) {
    const startImperativeScroll = (resolve) => {
 +    state.mvcpAnchorLock = void 0;
      state.scheduledWork.cancel("imperativeScrollReady");
