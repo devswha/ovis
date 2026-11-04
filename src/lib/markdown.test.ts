@@ -7,7 +7,7 @@ import { FILE_LINK_COUNT, FILE_LINK_LIMIT, linkFilePaths } from "../components/F
 import { HighlightedCode } from "../components/HighlightedCode.tsx";
 import { OpenFileContext } from "./filePaths.ts";
 import { SettingsProvider } from "./settings.ts";
-import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES, foldCode, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
+import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES, foldCode, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
 
 describe("parseMarkdown", () => {
   it("renders inline and display math while leaving fenced code untouched", async () => {
@@ -218,12 +218,16 @@ describe("inline markdown", () => {
       { type: "text", value: " " },
       { type: "file", path: "a%20b.md:3" },
     ]);
-    // not valid encoding, or a control character once decoded: kept as written
-    expect(parseInline("[x](/tmp/100%.png) [y](/tmp/a%0Ab.md)")).toMatchObject([
+    // not valid encoding, a control character or a line once decoded: kept as written
+    expect(parseInline("[x](/tmp/100%.png) [y](/tmp/a%0Ab.md) [z](/tmp/a%23L12)")).toMatchObject([
       { type: "file", path: "/tmp/100%.png" },
       { type: "text", value: " " },
       { type: "file", path: "/tmp/a%0Ab.md" },
+      { type: "text", value: " " },
+      { type: "file", path: "/tmp/a%23L12" },
     ]);
+    // a terminal shows the address as written
+    expect(shownText(parseInline("Open [the guide](/tmp/a%20b.md)?"), true)).toBe("Open the guide (/tmp/a%20b.md)?");
   });
 
   it("links an address written without its scheme, and leaves files and non-addresses alone", () => {
