@@ -10,6 +10,7 @@ import type { ConversationResponse } from "../shared/protocol.ts";
 // A terminal-started Codex with no reported session names its model through its live footer.
 const root = mkdtempSync(join(tmpdir(), "ovis-start-screen-contract-"));
 const originalHome = process.env["HOME"];
+const originalPiAgentDir = process.env["PI_CODING_AGENT_DIR"];
 const piAgentDir = join(root, ".pi", "agent");
 const workspaces: string[] = [];
 let codexPane: string;
@@ -75,7 +76,8 @@ afterAll(async () => {
   server?.stop();
   if (originalHome === undefined) delete process.env["HOME"];
   else process.env["HOME"] = originalHome;
-  delete process.env["PI_CODING_AGENT_DIR"];
+  if (originalPiAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+  else process.env["PI_CODING_AGENT_DIR"] = originalPiAgentDir;
   for (const id of workspaces) await workspaceClose(id);
   rmSync(root, { recursive: true, force: true });
 });

@@ -111,6 +111,8 @@ describe("startScreenMetadata", () => {
   it("names no Pi model without one, or from a line that is not its footer", () => {
     expect(startScreenMetadata("pi-transcript", PI.replace("zorro-davidau-3.8-flash-next \u2022 xhigh", "no-model"))).toEqual({ model: null, reasoning_effort: null });
     expect(startScreenMetadata("pi-transcript", "about 50% of the 262k window is used by model-x")).toEqual({ model: null, reasoning_effort: null });
+    // a narrow pane: Pi cut the id down to two columns after the stats, so the whole id is unknown
+    expect(startScreenMetadata("pi-transcript", "~\n0.0%/262k (auto)  claude-sonnet-4-5-2025")).toEqual({ model: null, reasoning_effort: null });
   });
 
   it("reads only the agents whose screen it knows", () => {
