@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
-import { ChevronDown, ChevronRight, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, ChevronRight, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, MachineContext } from "../lib/machineContext.tsx";
@@ -20,6 +20,19 @@ import { useSettings } from "../lib/settings.ts";
 import { requestSettingsPage } from "../lib/paletteSettings.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway } from "../lib/userError.ts";
+import { changePc, inNativeApp } from "../lib/nativeApp.ts";
+import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
+
+/**
+ * Where this page goes back to the phone's list of PCs, when it is one PC of several: a PC's page
+ * on the hosted shell (its front page lists the paired PCs) or the phone app (its list of PCs).
+ * Null in a PC's own app, whose sidebar lists its PCs itself.
+ */
+function pcListExit(): (() => void) | null {
+  if (shellMode() === "relay" && serverIdOfPath(window.location.pathname) !== null) return () => window.location.assign("/");
+  if (inNativeApp()) return () => void changePc();
+  return null;
+}
 
 /** The PC header's state word; "connected" is the quiet default and shows as a dot alone, every other state also writes its word under the name. */
 export const STATE_WORD: Readonly<Record<MachineState, string>> = {
@@ -55,6 +68,8 @@ export function MachineSidebar(props: Props) {
   // header (MachineGroup), and its name, which no row then shows, is not searched
   const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
   const unnamed = useMemo(() => new Set(loneHost === null ? [] : [loneHost]), [loneHost]);
+  const exitToPcs = useMemo(pcListExit, []);
+  const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
@@ -185,6 +200,16 @@ export function MachineSidebar(props: Props) {
     </div>
     <AgentSidebar machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} />
     <footer className="sidebar-footer">
+      {/* one PC of the phone's several: which one, and back to the list in one tap, as a team switcher at a
+          sidebar's foot does (Slack, Discord); Settings → Phone & devices keeps its Change PC row too */}
+      {exitToPcs !== null && (
+        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={exitToPcs}>
+          <Monitor aria-hidden="true" />
+          <span className="sidebar-footer-pc-name">{loneHostName ?? t("Change PC")}</span>
+          {loneHostName !== null && <span className="sidebar-footer-pc-action">{t("Change PC")}</span>}
+          <ArrowLeftRight aria-hidden="true" />
+        </button>
+      )}
       {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
           showing in every tab. Settings → Phone & devices → Install offers it (SettingsDialog). */}
       <div className="sidebar-footer-row">
