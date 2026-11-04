@@ -22,6 +22,8 @@ import type { usePreferencesSync } from "./preferencesSync.ts";
 import type { useAlertSignals } from "./useAlertSignals.ts";
 
 const POLL_MS = 5000;
+const STREAM_BACKSTOP_MS = 30_000;
+type RosterStreamUpdate = "opened" | "lost" | "closed" | Machine[];
 
 /**
  * Polls and the event stream hand over fresh objects every few seconds even when nothing
@@ -70,7 +72,8 @@ export function useRefetchTimer() {
   return { refetchTimer };
 }
 
-export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
+export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
+  locked: boolean | null;
   rosterIn: () => void;
   setMachines: Dispatch<SetStateAction<Machine[]>>;
   setMachineRosterLoaded: Dispatch<SetStateAction<boolean>>;
@@ -81,6 +84,23 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
   refetchTimer: RefObject<number | null>;
 }) {
   const snapshotRequests = useRef(new SnapshotRequests());
+  const stream = useRef({ open: false, localConnected: false });
+  const polling = useRef<((readNow: boolean) => void) | null>(null);
+  const onRosterStream = useCallback((update: RosterStreamUpdate) => {
+    const previous = stream.current.open && stream.current.localConnected;
+    if (Array.isArray(update)) stream.current.localConnected = update.some((machine) => machine.id === "local" && machine.state === "connected");
+    else if (update === "opened") stream.current.open = true;
+    else { stream.current.open = false; stream.current.localConnected = false; }
+    const slow = stream.current.open && stream.current.localConnected;
+    // Repeated pushed rosters must not postpone the backstop. A lost local PC or stream
+    // reads at once, then watches health as quickly as a tab without push.
+    if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
+  }, []);
+  useEffect(() => {
+    if (locked !== true) return;
+    stream.current = { open: false, localConnected: false };
+    polling.current?.(true);
+  }, [locked]);
   // every PC's dragged workspace order, held until a roster read after its moves comes
   // (lib/workspaceOrder.ts): App's, so a Sidebar remount or PC switch cannot lose it. A roster load
   // once the moves settle may bring that roster sooner; it proves nothing by itself.
@@ -120,6 +140,12 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
     };
     let timer = 0;
     let disposed = false;
+    const schedule = (readNow: boolean): void => {
+      window.clearInterval(timer);
+      if (readNow) tick();
+      const slow = lockedRef.current !== true && stream.current.open && stream.current.localConnected;
+      timer = window.setInterval(tick, slow ? STREAM_BACKSTOP_MS : POLL_MS);
+    };
     void (async (): Promise<void> => {
       // a bookmarked `#auth=<token>` link unlocks without typing; the fragment is
       // stripped before anything renders, and a stale token falls through to the
@@ -127,15 +153,16 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
       const linkToken = takeAuthTokenFromUrl();
       if (linkToken !== null) await authenticate(linkToken).catch(() => undefined);
       if (disposed) return;
-      tick();
-      timer = window.setInterval(tick, POLL_MS);
+      polling.current = schedule;
+      schedule(true);
     })();
     const onVisible = (): void => {
-      if (document.visibilityState === "visible" && !disposed) tick();
+      if (document.visibilityState === "visible" && !disposed) schedule(true);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       disposed = true;
+      polling.current = null;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -153,11 +180,12 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
   useEffect(() => () => {
     if (refetchTimer.current !== null) window.clearTimeout(refetchTimer.current);
   }, []);
-  return { snapshotRequests, reorderCoordinator, load, scheduleRefetch };
+  return { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream };
 }
 
-export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, getTakeNotificationTargetRef }: {
+export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, getTakeNotificationTargetRef }: {
   locked: boolean | null;
+  onRosterStream: (update: RosterStreamUpdate) => void;
   receivePreferencesRef: RefObject<ReturnType<typeof usePreferencesSync>["receive"]>;
   snapshotRequests: RefObject<SnapshotRequests>;
   onRoster: ReturnType<typeof useAlertSignals>["onRoster"];
@@ -202,6 +230,7 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
       // A poll started before this event can carry an older roster or pane status.
       snapshotRequests.current.invalidate();
       if (payload.type === "machines") {
+        onRosterStream(payload.machines);
         paneLifetimes.observe(payload.machines, displayPaneTitle);
         observePaneSessions(payload.machines);
         onRoster(payload.machines);
@@ -251,16 +280,17 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
         scheduleRefetch();
       }
     };
-    return keepEventStream("/api/machines/events", {
+    const stop = keepEventStream("/api/machines/events", {
       // opened or reopened: a shared-settings save paused by failures gets a new round
-      opened: () => preferencesResubscribedRef.current(),
+      opened: () => { onRosterStream("opened"); preferencesResubscribedRef.current(); },
       // lost (the browser reconnects by itself): a shared-settings save waits for that instead of retrying
-      lost: () => preferencesDisconnectedRef.current(),
+      lost: () => { onRosterStream("lost"); preferencesDisconnectedRef.current(); },
       // the browser gave up on it (a proxy's 502 during a restart): a save nobody refused stops waiting for
       // it while a new one is opened, and a refused one waits for that one's opening document (after a 401
       // the next poll locks the app, which ends this effect and its wait)
-      closed: () => preferencesClosedRef.current(),
+      closed: () => { onRosterStream("closed"); preferencesClosedRef.current(); },
       message: onMessage,
     });
-  }, [locked, scheduleRefetch, dropIn, chime, reorderCoordinator]);
+    return () => { stop(); onRosterStream("closed"); };
+  }, [locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
 }
