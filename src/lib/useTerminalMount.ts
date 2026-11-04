@@ -995,15 +995,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       });
       // Every query xterm answers while parsing (device attributes and status, DECRQM, window reports,
       // DECRQSS, color reports) is taken here while a view is parsed, so its answer is never typed into the pane.
-      // Nor while the pane cannot take input (an attach still opening, a disconnect): the answer could not be sent
-      // then, and it would only be told as a key not sent (retainTyped).
-      const unanswered = (): boolean => parsingView || (paneRef.current !== null && !socket.canInput(paneRef.current));
       const queryReplies = [
         ...([{ final: "c" }, { prefix: ">", final: "c" }, { prefix: "=", final: "c" }, { final: "n" }, { prefix: "?", final: "n" },
           { intermediates: "$", final: "p" }, { prefix: "?", intermediates: "$", final: "p" }, { final: "t" }] as const)
-          .map((id) => term.parser.registerCsiHandler(id, unanswered)),
-        term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, unanswered),
-        ...[4, 10, 11, 12, 13, 14, 15, 16, 17, 19].map((id) => term.parser.registerOscHandler(id, (payload) => unanswered() && payload.includes("?"))),
+          .map((id) => term.parser.registerCsiHandler(id, () => parsingView)),
+        term.parser.registerDcsHandler({ intermediates: "$", final: "q" }, () => parsingView),
+        ...[4, 10, 11, 12, 13, 14, 15, 16, 17, 19].map((id) => term.parser.registerOscHandler(id, (payload) => parsingView && payload.includes("?"))),
       ];
       // OSC 8: a hyperlink this app cannot open (OmO's `omo-panel:` rows) is not drawn as one (#739)
       const osc8 = term.parser.registerOscHandler(8, (payload) => hyperlinksRef.current.handler(payload));
@@ -1515,8 +1512,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         setDraft((prev) => applyToDraft(prev, typed.input));
         if (!draftIsEmpty(applyToDraft(EMPTY_DRAFT, typed.input))) draftHeldForRef.current = current;
         // A key the draft cannot hold (Escape, Enter, an arrow, typed right as the terminal opens, say) is told, never
-        // lost in silence. Not Backspace, which edits the draft, nor xterm's own focus and mouse reports, which no one typed.
-        else if (!/^([\x7f\b]+|\x1b\[([IO]|<|M)[\s\S]*)$/.test(typed.input)) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        // lost in silence. Not Backspace, which edits the draft, nor what xterm sends by itself, which no one typed: focus
+        // and mouse reports, and its answers to the program's queries (device attributes and status, cursor position,
+        // modes, window reports, DECRQSS, colors).
+        else if (!/^([\x7f\b]+|\x1b(P|\]|\[([IO]|<|M|[?>=]?[\d;]*\$?[cnRyt]))[\s\S]*)$/.test(typed.input)) {
+          setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
+        }
       };
       const onData = term.onData((data) => {
         // a key from the key bar or the Stop, or a dropped file's paths, ends the swipe before it
