@@ -153,7 +153,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // never for a write that landed
         const key = agreedKey(address);
         const differs = agreed.has(key) && listed(address) !== agreed.get(key);
-        if (!echo.heard && differs !== pending.has(key)) {
+        // saved again while an earlier save failed, so a restart still finds the mark
+        if (!echo.heard && (differs !== pending.has(key) || unsaved)) {
           if (differs) pending.add(key);
           else pending.delete(key);
           saveAgreed();
