@@ -147,7 +147,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
 
   it("gets a reply the viewer's terminal made itself to the program, whether or not hc confirms automatic input", async () => {
     const hello = await hc.hello();
-    const record = await hc.call<{ address: string }>("terminal.run", { argv: ["bash", "-c", "stty -echo; IFS= read -r line; echo \"got:$line\"; exit 3"] });
+    const record = await hc.call("terminal.run", { argv: ["bash", "-c", "stty -echo; IFS= read -r line; echo \"got:$line\"; exit 3"] });
     let screen = "";
     const exit = Promise.withResolvers<number | null>();
     const session = new CoreAttachSession({
