@@ -157,7 +157,8 @@ describe("installCore", () => {
     await installCore(bundled, join(root, "data", "bin"), process.env, log);
     expect(readFileSync(join(root, "data", "bin", "conpty", "conpty.dll"), "utf8")).toBe("dll");
     expect(readFileSync(join(root, "data", "bin", "conpty", "x64", "OpenConsole.exe"), "utf8")).toBe("exe");
-    log.end();
+    // closed before afterEach removes the folder it writes in
+    await new Promise<void>((resolve) => log.end(resolve));
   });
 
   it("swaps a different copy the way hc's installer does, with hc update --from", async () => {

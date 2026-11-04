@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 
 import type { AgentStatus, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
-import { isNamedPipe } from "./herdr-core/pipe.ts";
+import { isNamedPipe, pipeIdentity } from "./herdr-core/pipe.ts";
 
 /**
  * `done` for agents herdr loses track of on the way, and for the pane herdr has focused.
@@ -341,11 +341,11 @@ export class CompletionTracker {
 /**
  * The herdr server this one talks to, as its socket file: a herdr started anew has another.
  * herdr-core's adapter on Windows is a named pipe with no file to stat (a stat opens a connection
- * to it): its name stands, as in finishes.ts.
+ * to it): pipeIdentity stands, as in finishes.ts.
  */
 function herdrSocketId(): string | null {
   const path = herdrSocketPath();
-  if (isNamedPipe(path)) return path;
+  if (isNamedPipe(path)) return pipeIdentity(path);
   try {
     const stat = statSync(path);
     return `${stat.dev}:${stat.ino}`;

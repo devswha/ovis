@@ -76,7 +76,8 @@ bun install
 bun test                     # unit tests (no Electron needed)
 bun run typecheck
 bun run dist                 # stage, bundle, then dist/Ovis-<version>-<arch>.AppImage, or .dmg and .zip,
-                             # or dist/Ovis-Setup-<version>-x64.exe (NSIS, per user, unsigned)
+                             # or dist/Ovis-Setup-<version>-x64.exe (NSIS, per user, unsigned;
+                             # installs to %LOCALAPPDATA%\Programs\ovis-desktop)
 ```
 
 `bun scripts/build.ts stage` downloads herdr-core 0.1.17 and Bun 1.4.2 for this machine
@@ -101,8 +102,15 @@ HC_SESSION=ovis-try XDG_RUNTIME_DIR=$d/run XDG_STATE_HOME=$d/state XDG_CONFIG_HO
 ```
 
 On macOS, `open -n dist/mac-arm64/Ovis.app --args --user-data-dir="$d/app"` with the same `HC_SESSION`.
-On Windows (PowerShell), `$env:HC_SESSION = 'ovis-try'; & "$env:LOCALAPPDATA\Programs\Ovis\Ovis.exe" --user-data-dir="$d\app"`,
-then `& "$d\app\bin\herdr-core.exe" server stop` with the same `HC_SESSION`.
+On Windows (PowerShell), after `dist\Ovis-Setup-*.exe` installed it to `%LOCALAPPDATA%\Programs\ovis-desktop`:
+
+```powershell
+$d = Join-Path $env:TEMP "ovis-try-$(Get-Random)"
+$env:HC_SESSION = 'ovis-try'
+& "$env:LOCALAPPDATA\Programs\ovis-desktop\Ovis.exe" --user-data-dir="$d\app"
+# afterwards
+& "$d\app\bin\herdr-core.exe" server stop
+```
 
 ## Licenses
 

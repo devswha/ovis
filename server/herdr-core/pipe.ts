@@ -25,3 +25,14 @@ export function adapterAddress(stateDir: string, platform: NodeJS.Platform = pro
 export function isNamedPipe(path: string): boolean {
   return path.startsWith(PIPE_PREFIX);
 }
+
+const STARTED = crypto.randomUUID();
+
+/**
+ * The herdr identity of a pipe (finishes.ts, completion.ts), read without touching it. Its name is
+ * the same on every start, but the adapter behind it is this server's own, as the socket file
+ * recreated on every start is on Linux and macOS: the identity is new for each server process.
+ */
+export function pipeIdentity(path: string): string {
+  return `${path}#${STARTED}`;
+}
