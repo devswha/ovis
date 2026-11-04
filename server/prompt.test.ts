@@ -1180,6 +1180,10 @@ ${footer}
     expect(parseInteractivePrompt("claude", `${screen}\n⏺ Updated README.md\n`)).toBeNull();
     expect(parseInteractivePrompt("claude", `${screen}\nREADME.md\n`)).toBeNull();
   });
+
+  test("reads no plan once output runs on from its wrapped footer's last row", () => {
+    expect(parseInteractivePrompt("claude", split("   ctrl+g to edit in VS Code ·\n   ~/.claude/plans/\n   old-plan.m\n   dREADME.md"))).toBeNull();
+  });
 });
 
 describe("Claude's question in a narrow pane", () => {

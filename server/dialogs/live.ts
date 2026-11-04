@@ -178,16 +178,17 @@ const CLAUDE_PLAN_FOOTER_RE = /^ctrl\+g to edit in [^·]+?[ \n]·[ \n]([^]+)$/i;
  * Whether Claude's plan footer, `ctrl+g to edit in VS Code · ~/.claude/plans/x.md`, ends the screen. A narrow pane
  * wraps it with nothing marking the breaks: at a space before the path, or anywhere inside the path, even
  * between `.m` and `d`, and over as many lines as the path needs. So the path's lines are joined as one
- * word, and only its last line may end it in `.md`: output under an answered plan (`⏺ Updated README.md`,
- * a bare `README.md`) comes after a path already complete, so it never extends it. The plan's folder may
- * hold a `·` (`CLAUDE_CONFIG_DIR`), so only the first `·` after the editor's name separates the path.
+ * word, and `.md` may show only at its very end: output under an answered plan (`⏺ Updated README.md`, a bare
+ * `README.md`, even one written on the footer's last row) comes after a path already complete, so it never
+ * extends it; a plan folder with `.md` in its name goes unread instead. The folder may hold a `·`
+ * (`CLAUDE_CONFIG_DIR`), so only the first `·` after the editor's name separates the path.
  */
 function claudePlanFooterEnds(shown: string[]): boolean {
   const at = findLastIndex(shown, (line) => /^ctrl\+g to edit\b/i.test(line));
   const path = at < 0 ? undefined : CLAUDE_PLAN_FOOTER_RE.exec(shown.slice(at).join("\n"))?.[1];
   if (path === undefined) return false;
-  const lines = path.split("\n");
-  return lines.every((_line, index) => lines.slice(0, index + 1).join("").endsWith(".md") === (index === lines.length - 1));
+  const joined = path.replaceAll("\n", "");
+  return joined.indexOf(".md") === joined.length - 3;
 }
 /**
  * The same two hints told from the end of the window. A phone leaves pi a pane barely wide enough
