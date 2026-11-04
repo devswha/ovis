@@ -198,13 +198,34 @@ try {
         await page.evaluate(() => { (window as unknown as { heldSubmits: (() => void)[] | null }).heldSubmits = []; });
         await message.fill("Start with the README");
         await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith("ovis:composer-draft:") && localStorage.getItem(key) === "Start with the README"));
-        await page.evaluate(() => new Promise<void>((granted) => {
+        const holdSendLock = (): Promise<void> => page.evaluate(() => new Promise<void>((granted, refused) => {
           const key = Object.keys(localStorage).find((name) => name.startsWith("ovis:composer-draft:") && localStorage.getItem(name) === "Start with the README")!;
-          void navigator.locks.request(`ovis-send:${key}`, () => new Promise<void>((release) => {
+          navigator.locks.request(`ovis-send:${key}`, () => new Promise<void>((release) => {
             (window as unknown as { releaseSendLock: () => void }).releaseSendLock = release;
             granted();
-          }));
+          })).catch(refused);
         }));
+        const pressSend = (): Promise<void> => page.evaluate(() => { document.querySelector<HTMLElement>('.pane-frame.is-current button[aria-label="Send message"]')!.click(); });
+
+        // a press whose claim the composer leaves behind (another lens) sends nothing: the greeting
+        // comes back with the chat, and does not wait for the other tab's lock
+        await holdSendLock();
+        await pressSend();
+        await greeting.waitFor({ state: "detached" });
+        await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+        await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
+        await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+        await greeting.waitFor({ timeout: 5_000 });
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        // the lock taken after it queues behind the left claim: once it is granted, that claim has run (and sent nothing)
+        await holdSendLock();
+        assert.equal(await page.evaluate(() => (window as unknown as { heldSubmits: unknown[] }).heldSubmits.length), 0, "a claim left behind sends nothing");
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        await greeting.waitFor();
+        await message.fill("Start with the README");
+        console.log("PASS a send left waiting for another tab's lock gives the greeting back when its composer goes");
+
+        await holdSendLock();
         const sent = await page.evaluate(async () => {
           document.querySelector<HTMLElement>('.pane-frame.is-current button[aria-label="Send message"]')!.click();
           // the frame the click is painted in, and nothing later
