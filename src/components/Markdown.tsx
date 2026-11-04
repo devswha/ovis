@@ -158,13 +158,28 @@ function SvgFigure({ value }: { value: string }) {
   );
 }
 
-/** Stats an image before it can load; null context keeps image references as links. */
-type MarkdownImageResolver = (src: string) => Promise<MarkdownImagePreview | null>;
+/**
+ * Stats an image before it can load; null context keeps image references as links. `peek` answers
+ * at once with the preview an earlier mount resolved, so a reopened image starts from it while the
+ * stat runs again.
+ */
+export type MarkdownImageResolver = ((src: string) => Promise<MarkdownImagePreview | null>) & { peek?: (src: string) => MarkdownImagePreview | undefined };
 export const MarkdownImageContext = createContext<MarkdownImageResolver | null>(null);
 /** Chat holds its viewer above virtualized rows; file previews keep their own image behavior. */
 export const MarkdownImageOpenContext = createContext<((image: GalleryImage) => void) | null>(null);
 /** A reconnect retries only failed images; decoded images and pending stats stay as they are. */
 export const MarkdownImageRetryContext = createContext(0);
+
+/** An image's natural size once it decoded, by address: a remount holds that box, not the 16:9 slot. */
+type ImageSize = { width: number; height: number };
+const decodedSizes = new Map<string, ImageSize>();
+const REMEMBERED_SIZES = 500;
+function rememberSize(address: string, image: HTMLImageElement): void {
+  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+  decodedSizes.delete(address);
+  decodedSizes.set(address, { width: image.naturalWidth, height: image.naturalHeight });
+  if (decodedSizes.size > REMEMBERED_SIZES) decodedSizes.delete(decodedSizes.keys().next().value!);
+}
 
 /**
  * An image that holds its box until it decodes (lib/imageBox.ts). With `slot`, the wrapper is the
@@ -174,11 +189,12 @@ export const MarkdownImageRetryContext = createContext(0);
  * up (`display: contents`) and the one image renders bare, nothing remounted: its box, hit area
  * and alignment are its own. Without `slot` (a badge in a sentence) nothing is held and a failure
  * shows `fallback`. `src` is null while an address is still being resolved: the slot stands from
- * the first paint.
+ * the first paint. With `remember`, the slot of an address that decoded before takes that image's
+ * own box (its width, ratio and height bound, as `.markdown-image` lays it out), not 16:9.
  */
-export function ReservedImage({ src: address, alt, width, className, slot, slotStyle, fallback, onError, retry = 0, renderImage }: {
+export function ReservedImage({ src: address, alt, width, className, slot, slotStyle, fallback, onError, retry = 0, renderImage, remember = false }: {
   src: string | null; alt: string; width?: number; className?: string; slot: boolean; slotStyle?: CSSProperties; fallback?: ReactNode; onError?: () => void; retry?: number;
-  renderImage?: (image: ReactNode) => ReactNode;
+  renderImage?: (image: ReactNode) => ReactNode; remember?: boolean;
 }) {
   const t = useT();
   const resource = useResourceUrlState(address, retry);
@@ -190,19 +206,30 @@ export function ReservedImage({ src: address, alt, width, className, slot, slotS
   // an address the transport refused fails like an image that would not decode
   const phase = resource.error !== null ? "failed" : src !== null && settled?.src === src && (!settled.failed || settled.attempt === retry) ? (settled.failed ? "failed" : "decoded") : "loading";
   // a cached image is complete before `onLoad` can fire
+  const element = useRef<HTMLImageElement | null>(null);
   const complete = useCallback((image: HTMLImageElement | null) => {
-    if (image !== null && src !== null && image.complete && image.naturalWidth > 0) setSettled({ src, failed: false });
-  }, [src]);
+    element.current = image;
+    if (image === null || src === null || !image.complete || image.naturalWidth <= 0) return;
+    if (remember && address !== null) rememberSize(address, image);
+    setSettled({ src, failed: false });
+  }, [src, remember, address]);
   if (phase === "failed" && !slot) return <>{fallback}</>;
   const image = src === null ? null : <img ref={complete} className={className} src={src} alt={alt} width={width} loading="lazy"
-    onLoad={() => setSettled({ src, failed: false })} onError={() => { setSettled({ src, failed: true, attempt: retry }); onError?.(); }} />;
+    onLoad={() => { if (remember && address !== null && element.current !== null) rememberSize(address, element.current); setSettled({ src, failed: false }); }}
+    onError={() => { setSettled({ src, failed: true, attempt: retry }); onError?.(); }} />;
+  const size = remember && address !== null ? decodedSizes.get(address) : undefined;
+  // the decoded image is as wide as its authored or natural width allows, its height from its ratio
+  const sized = size === undefined ? slotStyle : {
+    "--image-width": `${width !== undefined && Number.isFinite(width) && width > 0 ? Math.round(width) : size.width}px`,
+    "--image-ratio": `${size.width} / ${size.height}`,
+  } as CSSProperties;
   // Only the image or its reserved slot can be wrapped in a viewer control, never the fallback.
   const content = !slot ? image : phase === "failed"
     ? <span className="image-slot is-failed" style={slotStyle}>
       <span className="image-slot-note"><ImageOff aria-hidden="true" /><span>{t("Image unavailable")}</span>{alt !== "" && <span>{alt}</span>}</span>
     </span>
     : phase === "loading"
-      ? <span className="image-slot is-loading" style={slotStyle} role="status" aria-label={t("Loading image")}>{image}</span>
+      ? <span className={`image-slot is-loading${size === undefined ? "" : " is-sized"}`} style={sized} role="status" aria-label={t("Loading image")}>{image}</span>
       : <span className="image-slot">{image}</span>;
   return content !== null && renderImage ? renderImage(content) : content;
 }
@@ -213,7 +240,11 @@ function MarkdownImage({ src, alt, width, fallback, resolve, interactive, standa
   const retry = useContext(MarkdownImageRetryContext);
   const [attempt, setAttempt] = useState(0);
   const [pending, setPending] = useState(false);
-  const [loaded, setLoaded] = useState<{ src: string; resolve: MarkdownImageResolver; preview: MarkdownImagePreview | null; retry: number } | null>(null);
+  // a preview an earlier mount resolved is drawn from the first frame; the effect below checks it again
+  const [loaded, setLoaded] = useState<{ src: string; resolve: MarkdownImageResolver; preview: MarkdownImagePreview | null; retry: number } | null>(() => {
+    const known = resolve.peek?.(src);
+    return known === undefined ? null : { src, resolve, preview: known, retry: retry + attempt };
+  });
   const request = useRef<{ src: string; resolve: MarkdownImageResolver; failed: boolean; pending: boolean } | null>(null);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   useEffect(() => () => { request.current = null; }, [src, resolve]);
@@ -254,7 +285,7 @@ function MarkdownImage({ src, alt, width, fallback, resolve, interactive, standa
   if (preview === undefined && !standalone) return <span>{alt}</span>;
   if (!standalone && preview?.url === failedUrl) return <>{fallback}</>;
   // A failed byte load retries only after the new stat has passed the same size/type checks.
-  return <ReservedImage src={preview?.url ?? null} alt={alt} width={width} className="markdown-image" slot={standalone} slotStyle={standalone ? imageSlotStyle(width) : undefined} fallback={fallback} retry={loaded?.retry ?? 0} renderImage={preview === undefined || !interactive || openImage === null ? undefined : (image) =>
+  return <ReservedImage src={preview?.url ?? null} alt={alt} width={width} className="markdown-image" slot={standalone} remember={standalone} slotStyle={standalone ? imageSlotStyle(width) : undefined} fallback={fallback} retry={loaded?.retry ?? 0} renderImage={preview === undefined || !interactive || openImage === null ? undefined : (image) =>
     <button type="button" className={`markdown-image-open${standalone ? " is-standalone" : ""}`} aria-label={alt || preview.name} title={t("Open image")} onClick={(event) => {
       event.currentTarget.focus({ preventScroll: true });
       openImage({ src: preview.url, name: alt || preview.name, file: preview.name });

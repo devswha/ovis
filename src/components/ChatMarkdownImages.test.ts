@@ -384,3 +384,26 @@ it("keeps manual Retry usable after a pending retry fails across reconnects", as
   await answer(2, info("/foreground/diagram.png"));
   expect(images()).toHaveLength(1);
 });
+
+it("draws a reopened image from the preview it resolved before, and checks it again", async () => {
+  // Given an image a chat on this PC and pane resolved once.
+  await draw({ machine: "reopen-pc" });
+  await answer(0, info("/project/diagram.png"));
+  expect(images()[0]!.props.src).toContain("/api/machines/reopen-pc/fs/file");
+  await act(async () => { renderer!.unmount(); });
+  renderer = undefined;
+
+  // When the chat mounts it again, before the new stat answers.
+  await draw({ machine: "reopen-pc" });
+
+  // Then the image is in from the first render, and the stat still runs once to check it.
+  expect(images()[0]!.props.src).toContain("path=%2Fproject%2Fdiagram.png");
+  expect(requests).toHaveLength(2);
+  expect(requests[1]!.url.pathname).toBe("/api/machines/reopen-pc/fs/stat");
+
+  // Another pane on the same PC knows nothing of it.
+  await act(async () => { renderer!.unmount(); });
+  renderer = undefined;
+  await draw({ machine: "reopen-pc", pane: "w9:p9" });
+  expect(images()).toHaveLength(0);
+});
