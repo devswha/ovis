@@ -25,6 +25,18 @@ on:
         description: 'Release tag (vX.Y.Z)'
         required: true
         type: string
+    # only the Mac signing hook's secrets, never the repository's others
+    secrets:
+      MAC_DEVELOPER_ID_P12:
+        required: false
+      MAC_DEVELOPER_ID_P12_PASSWORD:
+        required: false
+      MAC_NOTARY_KEY_P8:
+        required: false
+      MAC_NOTARY_KEY_ID:
+        required: false
+      MAC_NOTARY_ISSUER:
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -75,7 +87,10 @@ jobs:
       - name: Install the app's packages
         working-directory: app/electron
         run: bun install --frozen-lockfile
+      # pull requests run the app's tests; a release build of a tag main already tested only builds,
+      # so a flaky test cannot hold back the release (and Ovis.dmg and Ovis.exe, which wait for it)
       - name: Unit tests
+        if: inputs.tag == ''
         working-directory: app/electron
         run: bun test
       - name: Type check
@@ -194,6 +209,12 @@ jobs:
         run: |
           if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" != false ]; then
             echo "::error::$RELEASE_TAG is not a published release." >&2
+            exit 1
+          fi
+          # installed apps read the latest release's feed: replacing its installers (rebuilt, with other
+          # hashes) under that feed would fail their updates, so a latest release is fixed by a new one
+          if [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$RELEASE_TAG" ]; then
+            echo "::error::$RELEASE_TAG is already the latest release; publish a new patch release instead of replacing its desktop files." >&2
             exit 1
           fi
           # installers first, the feed files last: an app never reads a feed whose files are missing
