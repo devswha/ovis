@@ -113,14 +113,16 @@ test("matches an exact reply while another conversation asked the prompt only be
   const notes = "The release notes list three fixes for reconnecting panes and one new setting for remote access from a phone.";
   const later = { path: "other", text: [...turn("a", prompt, "The build cache was cleared and the dependencies were installed again."),
     ...turn("b", "Summarize the release notes.", notes)].join("\n") };
-  // and one whose last finished turn's prompt the tail read cut, its answer another (one too short to tell still counts)
-  const cut = { path: "other", text: turn("b", "Summarize the release notes.", notes).slice(1).join("\n") };
   for (const [shown, recorded] of [[shownAs(spaced[0]), spaced[0]], [screen, answer]] as const) {
     expect(matchCodexTranscript(shown, [candidate("own", recorded), later], new Set(), new Map(), false, owners)).toBe("own");
   }
-  expect(matchCodexTranscript(shownAs(spaced[0]), [candidate("own", spaced[0]), cut], new Set(), new Map(), false, owners)).toBe("own");
-  // a rendering (here a link) binds only while no read may have cut the prompt shown
-  expect(matchCodexTranscript(screen, [candidate("own"), cut], new Set(), new Map(), false, owners)).toBeNull();
+  // one whose last finished turn's prompt the tail read cut still counts, whatever its answer reads as: a reference
+  // link's definition, say, is not on screen, so its answer may still be the one shown
+  const literal = `${text} Read report for details.`;
+  for (const said of [notes, `${text} Read [report][ref] for details.\n\n[ref]: https://example.com/a-long-reference-target-not-on-screen`]) {
+    const cut = { path: "other", text: turn("b", prompt, said).slice(1).join("\n") };
+    expect(matchCodexTranscript(shownAs(literal), [candidate("own", literal), cut], new Set(), new Map(), false, owners)).toBeNull();
+  }
   // asked again as its latest turn, finished or not, it still counts
   const again = { path: "other", text: [...later.text.split("\n"), event({ type: "item_completed", turn_id: "c", item: { type: "UserMessage", content: [{ text: prompt }] } })].join("\n") };
   expect(matchCodexTranscript(screen, [candidate("own"), again], new Set(), new Map(), false, owners)).toBeNull();
