@@ -2250,8 +2250,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   settled turn's do. A turn that ended on its final answer stays settled while the agent works
   again: a turn the agent began by itself (a background task ended) or from the terminal has no
   row yet, and the pending `Working…` head under the rows stands for it, as after a send. That
-  head waits 800 ms first: at a turn's end herdr's status trails the answer by 100–400 ms, and a
-  head under each answer would flash. While it waits it keeps its place unseen, so showing it moves
+  head shows only once the pane was seen at rest under that answer: at a turn's end herdr's status
+  trails the answer (100–400 ms, longer on a busy PC), and a head under each answer would flash.
+  It then waits 800 ms more, for a new turn's first row to bring its own head. While it waits it keeps its place unseen, so showing it moves
   nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. Before
   the chat's first read, `Loading conversation…` is the only line: the rows read may hold the
   running turn's own head. A settled turn folds to its header
@@ -3450,6 +3451,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   paging is disabled until that search ends, so an older page cannot overwrite its result.
 - xterm has `scrollback: 0`; wheel/touch gestures reach herdr's alternate-screen scrollback. The
   mount hides the unused xterm scrollbar.
+- A herdr-core server (`terminal-history`) has no viewport to scroll, so there the browser keeps
+  the history, as VS Code's and Zed's terminals keep their own: xterm holds 2,000 lines, each
+  attach clears them and replays hc's last 2,000 first, and xterm's own scrollbar shows in the
+  column the fit leaves it. The wheel and scrollbar scroll it natively, a swipe through
+  `scrollLines`; a program that reads the mouse, or the alternate screen, still gets the wheel, as
+  in those terminals. Find and the scroll buttons need herdr's own viewport, so herdr-core has
+  neither.
 - An attached touch swipe sends its wheel reports from animation frames, at most 6 per frame and in
   order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
   them over the next few, and a two-screen swipe has drained within 300 ms of the lift. Every step
