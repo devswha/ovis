@@ -89,7 +89,7 @@ export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
- * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr
+ * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
  * GET /api/bridge -> authenticated BridgeIdentity (socket + runtime compatibility)
  * GET /api/machines -> MachineRoster { machines: Machine[] }; GET /api/machines/events -> MachineEvent SSE
  * GET /api/machines?verify_source_boot=:id -> MachineRoster with verified_source_boot { machine_id, boot_id }:
@@ -119,9 +119,14 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *                                          web_ui: { boot_id: string, revision: string | null },
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
- *                                          the server's first look for hc has ended) } (boot_id: this server
+ *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
+ *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
+ *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" }, X-Herdr-Update: 1,
+ *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
+ *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
+ *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
  *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select,
  *         for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
@@ -929,8 +934,11 @@ export type ClientMessage =
   /** a pane another web bridge holds (`attach_held`): take herdr's attach slot from it, here, now */
   | { type: "take-over"; pane_id: string }
   /** `stop`: the composer's Stop (text a lone ESC). The bridge sends it in the pane's turn, after typing
-   * still on its way, and a message sent next waits for it; an older bridge types it like any key. */
-  | { type: "input"; pane_id: string; text: string; stop?: true }
+   * still on its way, and a message sent next waits for it; an older bridge types it like any key.
+   * `automatic`: the browser's terminal made the text itself (an answer to the program's query), nobody
+   * typed it. On herdr-core it reaches the program as hc's automatic input where hc confirmed it, so it
+   * does not make this viewer the active one; everywhere else, and on an older bridge, it is typed as before. */
+  | { type: "input"; pane_id: string; text: string; stop?: true; automatic?: true }
   | { type: "keys"; pane_id: string; keys: string[] }
   /** a composer message, sent to servers whose snapshot lists "submit": the server types it and
    * its own Enter after a short gap, and answers with a submit-result of the same id. `text` is
