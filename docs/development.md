@@ -12,6 +12,11 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+For a loopback-only server, `HOST=127.0.0.1 OVIS_IPV6_LOOPBACK=1 bun run server` also listens on
+`::1` at the same port. Both listeners share the API and WebSocket services; `localhost`,
+`127.0.0.1` and `[::1]` keep their own URLs and browser storage. This option does not change a
+non-loopback bind and requires IPv6 loopback to be available.
+
 The plugin's `start` and `stop` (`scripts/plugin.ts`) take turns through `lifecycle.lock` in the
 plugin's state directory (the owner lock of `server/owner-guard.ts`, taken over once its owner is
 proved gone): a start holds it until its server answers or the start fails, a stop until the server
@@ -70,6 +75,35 @@ is one 101 completion; its handshake carries the same response headers, and the 
 still returns `undefined`. Ordinary responses carry the server ID too. The default
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` fill absent headers only,
 preserving each route's CSP, framing, MIME, caching and compression headers.
+
+## Machine event transport and rollback
+
+New browser clients subscribe to `machine-events` on the existing local `/ws` connection when
+its `features` frame advertises that capability. The `machine-event` frames carry the same
+machine roster, redacted sidebar values, shared preferences, seen finishes and filtered device
+pairings as `/api/machines/events`. The local connection is kept even while a remote PC is
+selected; remote terminal sockets do not subscribe to this document.
+
+Older servers still use SSE. Set `OVIS_MACHINE_EVENTS_WS=0` in the server environment and restart
+only Ovis to disable the capability and return new clients to SSE without changing stored data.
+Removing that override and restarting restores the WebSocket transport. The SSE endpoint remains
+available to older clients and bridge/relay consumers. A reconnect negotiates the transport again;
+no terminal input is replayed by this subscription.
+
+A page takes machine events over SSE whenever its socket does not carry them: a connection that
+has not said whether it does within five seconds, a socket stopped for output (4008, which only
+reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
+never close the terminal or stall its output: one that would put more than `OUTPUT_LOW_BYTES`
+(64 KiB) on the socket, counting what is queued already, ends the subscription with that frame
+instead. A roster carries every PC's snapshot, so a page whose roster is larger than that takes
+machine events over SSE, one stream per tab as before this transport. The next connection that offers the capability takes over
+from SSE again.
+
+This avoids consuming one long-lived HTTP/1.1 request per browser tab. It does not make every tab
+share its rendered conversation, terminal or JavaScript heap, and is not a claim of a measured RAM
+reduction. Compare the same pages, conversation sizes and activity before claiming one. In
+particular, the conversation cache's byte budget is an upper bound on retained serialized answers,
+not a measurement of a tab's resident memory or its parsed objects and rendered nodes.
 
 ## Checks
 
@@ -193,7 +227,7 @@ bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New 
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
 bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
-bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513)
+bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513), and again with each lookbehind handed to RegExp as text refused, as Safari before 16.4 refuses it; the build turns every regular expression with one into such a call (#2534)
 bun scripts/push-health-demo-regression.ts # the alerts health notice with a stand-in PushManager: a retired subscription told once over the pane and in Settings, repaired once; a refusal, a key mismatch, denied, unsupported, offline, loading and a watching device's refused test, at 390 and 1440, light and dark, Korean at 390
 bun scripts/device-security-demo-regression.ts # Phone & devices on demo fixtures: revoking every device (the caller's warning, the confirmation, a refused write, a watching device) and the line every window gets when a device pairs
 bun scripts/chat-browser-qa.ts  # chat lens end to end
