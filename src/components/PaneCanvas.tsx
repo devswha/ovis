@@ -167,20 +167,23 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     else run(() => api.closePane(target.pane_id));
   };
   const target = menu ? snapshot?.panes.find((item) => item.pane_id === menu.paneId) : null;
-  const layoutItems = (target: HerdrPane): RowMenuItem[] => appLayout ? [] : [
-    { id: "rename", label: t("Rename pane"), icon: Pencil, run: () => setRenaming(target) },
-    ...(target.label ? [{ id: "clear-name", label: t("Clear pane name"), icon: Eraser, run: () => run(() => api.renamePane(target.pane_id, "")) }] : []),
-    ...(pane && target.pane_id !== pane.pane_id ? [{ id: "swap-focused", label: t("Swap with focused pane"), icon: ArrowLeftRight,
+  const layoutItems = (target: HerdrPane): RowMenuItem[] => [
+    // herdr-core names no pane, and swaps, zooms and resizes none (lib/machineContext.tsx `arrange`)
+    ...(!appLayout.arrange ? [] : [{ id: "rename", label: t("Rename pane"), icon: Pencil, run: () => setRenaming(target) }]),
+    ...(appLayout.arrange && target.label ? [{ id: "clear-name", label: t("Clear pane name"), icon: Eraser, run: () => run(() => api.renamePane(target.pane_id, "")) }] : []),
+    ...(appLayout.arrange && pane && target.pane_id !== pane.pane_id ? [{ id: "swap-focused", label: t("Swap with focused pane"), icon: ArrowLeftRight,
       run: () => run(() => api.swapPaneWith(pane.pane_id, target.pane_id)) }] : []),
-    { id: "split-right", label: t("Split right"), icon: Columns2, run: () => run(() => split(target, "right")) },
-    { id: "split-down", label: t("Split down"), icon: Rows2, run: () => run(() => split(target, "down")) },
-    { id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
+    ...(!appLayout.split ? [] : [
+      { id: "split-right", label: t("Split right"), icon: Columns2, run: () => run(() => split(target, "right")) },
+      { id: "split-down", label: t("Split down"), icon: Rows2, run: () => run(() => split(target, "down")) },
+    ]),
+    ...(!appLayout.arrange ? [] : [{ id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
       run: () => run(async () => {
         const tabId = latest.current.tabId;
         const selection = latest.current.selection;
         await api.zoomPane(target.pane_id, layout ? zoomMode(layout, target.pane_id) : "on");
         if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(target.pane_id);
-      }) },
+      }) }]),
   ];
   const itemsFor = (target: HerdrPane): RowMenuItem[] => [
     ...layoutItems(target),
@@ -335,7 +338,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;
     })}
-    {alone === null && !appLayout && layout?.splits.map((item) => {
+    {alone === null && appLayout.arrange && layout?.splits.map((item) => {
       const vertical = item.direction === "right";
       const path = splitPath(item.id);
       if (path === null) return null;

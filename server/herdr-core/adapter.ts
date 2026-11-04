@@ -5,7 +5,7 @@ import { AGENT_LABELS } from "../agents-routes.ts";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
 import { SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { type HcConnection, HcError } from "./connection.ts";
-import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, OTHER_WORKSPACE_ID, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, OTHER_WORKSPACE_ID, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, SPLIT_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.generated.ts";
 
 /**
@@ -25,8 +25,10 @@ import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.genera
  * - `events.subscribe` from hc's own event stream: status changes per pane, and terminal and layout
  *   changes as herdr's lifecycle events.
  *
- * Everything else (workspaces, tabs, splits, focus, worktrees, plugins) belongs to the Herdr app's
- * window and is refused as `unsupported`. The live terminal itself is `hc attach`, which the server
+ * On a core no Herdr app arranges (its document was never written: the desktop app's own core),
+ * Ovis keeps workspace and tab names, splits and a pane's move to another workspace in terminal
+ * labels (`ping` says so in `layout`); where the app arranges them, they are the app's. Everything
+ * else (reordering, zoom, swap, resize, focus, worktrees, plugins) is refused as `unsupported`. The live terminal itself is `hc attach`, which the server
  * runs in place of `herdr terminal attach` (server/core/terminal-process.ts).
  *
  * As herdr does, each request has a connection of its own that ends with its answer; only an
@@ -301,14 +303,31 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return found;
   };
 
-  const snapshot = async (): Promise<SessionSnapshot> => {
+  /** herdr's snapshot of the core, and whether Ovis keeps its layout (ownsLayout), from one read of the app's document */
+  const read = async (): Promise<{ shown: SessionSnapshot; own: boolean }> => {
     const [list, doc, hello] = await Promise.all([
       hc.call("terminal.list", {}),
       hc.call("doc.get", { name: LAYOUT_DOC }),
       hc.hello(),
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
-    return buildSnapshot(list.terminals, doc.value, hello.version, firstTurn);
+    return { shown: buildSnapshot(list.terminals, doc.value, hello.version, firstTurn), own: ownsLayout(doc.value) };
+  };
+  const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
+  /** The snapshot, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
+  const ownLayout = async (): Promise<SessionSnapshot> => {
+    const { shown, own } = await read();
+    if (!own) throw new AdapterError("unsupported", "the Herdr app arranges this core's workspaces, tabs and panes");
+    return shown;
+  };
+  const label = async (addresses: string[], labels: Record<string, string>): Promise<void> => {
+    await Promise.all(addresses.map((address) => hc.call("terminal.label", { terminal: address, labels })));
+  };
+  /** A name asked for, as herdr's rename takes it: the workspace-routes refuse an empty one first. */
+  const nameOf = (params: Record<string, unknown>): string => {
+    const name = params["label"];
+    if (typeof name !== "string" || name === "") throw new AdapterError("invalid_params", "label is required");
+    return name;
   };
 
   const paneOf = async (paneId: string, missing = "pane_not_found") => {
@@ -407,8 +426,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
 
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
-      const hello = await hc.hello();
-      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core" } };
+      const [hello, doc] = await Promise.all([hc.hello(), hc.call("doc.get", { name: LAYOUT_DOC })]);
+      const own = ownsLayout(doc.value);
+      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: own, move: own } } };
     },
     async "session.snapshot"() {
       return { snapshot: await snapshot() };
@@ -578,11 +598,74 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       await end(panes.map((pane) => pane.pane_id));
       return { type: "ok" };
     },
+    // A name Ovis gives is a label on each of the workspace's or tab's terminals, so it stays when
+    // the first one closes (snapshot.ts `groups` names a group by its first terminal).
+    async "workspace.rename"(params) {
+      const workspaceId = paneIdOf(params, "workspace_id");
+      const name = nameOf(params);
+      if (workspaceId === OTHER_WORKSPACE_ID) throw new AdapterError("unsupported", "Other terminals holds terminals no workspace made: it has no name to change");
+      const panes = (await ownLayout()).panes.filter((pane) => pane.workspace_id === workspaceId);
+      if (panes.length === 0) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+      await label(panes.map((pane) => pane.pane_id), { [WORKSPACE_NAME_LABEL]: name });
+      return { type: "ok" };
+    },
+    async "tab.rename"(params) {
+      const tabId = paneIdOf(params, "tab_id");
+      const name = nameOf(params);
+      const panes = (await ownLayout()).panes.filter((pane) => pane.tab_id === tabId);
+      if (panes.length === 0) throw new AdapterError("tab_not_found", `tab ${tabId} not found`);
+      await label(panes.map((pane) => pane.pane_id), { [TAB_NAME_LABEL]: name });
+      return { type: "ok" };
+    },
+    // A split is one more shell labeled with the pane's space and tab, and the side it went to
+    // (snapshot.ts places it); hc has no focus to move, so `focus` changes nothing.
+    async "pane.split"(params) {
+      const paneId = paneIdOf(params, "target_pane_id");
+      const direction = params["direction"];
+      if (direction !== "right" && direction !== "down") throw new AdapterError("invalid_params", "direction must be right or down");
+      const pane = (await ownLayout()).panes.find((candidate) => candidate.pane_id === paneId);
+      if (!pane) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
+      const labels = (await terminal(paneId)).labels ?? {};
+      // only a tab its labels make takes another pane: one in Other terminals, or a helper's under
+      // its parent's tab, is one terminal's own
+      if (labels[SPACE_LABEL] !== pane.workspace_id || labels[TAB_LABEL] !== pane.tab_id) throw new AdapterError("unsupported", `pane ${paneId} is in a tab of its own terminal: it does not split`);
+      const names = Object.fromEntries([WORKSPACE_NAME_LABEL, TAB_NAME_LABEL].flatMap((key) => (labels[key] ? [[key, labels[key]]] : [])));
+      const { root_pane } = await startShell({ ...(pane.cwd ? { cwd: pane.cwd } : {}) }, { [SPACE_LABEL]: pane.workspace_id, [TAB_LABEL]: pane.tab_id, ...names, [SPLIT_LABEL]: direction });
+      return { pane: root_pane };
+    },
+    // A pane goes to a new tab of another workspace by its labels alone: its terminal, its program and
+    // its id stay. It takes that workspace's name with it, so it never renames the workspace by
+    // becoming its first terminal. Only `new_tab` is a destination Ovis asks for.
+    async "pane.move"(params) {
+      const paneId = paneIdOf(params);
+      const destination = params["destination"];
+      if (!isRecord(destination) || destination["type"] !== "new_tab") throw new AdapterError("unsupported", "herdr-core moves a pane only to a new tab");
+      const workspaceId = paneIdOf(destination, "workspace_id");
+      const before = await ownLayout();
+      const pane = before.panes.find((candidate) => candidate.pane_id === paneId);
+      if (!pane) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
+      const workspace = before.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+      if (!workspace && workspaceId !== OTHER_WORKSPACE_ID) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+      const tabName = typeof destination["label"] === "string" ? destination["label"] : "";
+      // `key: ""` takes a label off (hc terminal.label)
+      const place = workspaceId === OTHER_WORKSPACE_ID
+        ? { [SPACE_LABEL]: "", [TAB_LABEL]: "", [WORKSPACE_NAME_LABEL]: "" }
+        : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label };
+      await label([paneId], { ...place, [TAB_NAME_LABEL]: tabName, [SPLIT_LABEL]: "" });
+      const after = await snapshot();
+      const moved = after.panes.find((candidate) => candidate.pane_id === paneId);
+      if (!moved) throw new AdapterError("internal", `hc relabeled ${paneId}, but it is not in the snapshot`);
+      return { move_result: {
+        pane: moved,
+        closed_tab_id: after.tabs.some((tab) => tab.tab_id === pane.tab_id) ? null : pane.tab_id,
+        closed_workspace_id: after.workspaces.some((candidate) => candidate.workspace_id === pane.workspace_id) ? null : pane.workspace_id,
+      } };
+    },
   };
 
   return async (request) => {
     const method = methods[request.method];
-    if (!method) return { error: { code: "unsupported", message: `${request.method} is not available on herdr-core: the Herdr app owns its workspaces, tabs and panes` } };
+    if (!method) return { error: { code: "unsupported", message: `${request.method} is not available on herdr-core` } };
     try {
       return { result: await method(request.params) };
     } catch (error) {
@@ -593,6 +676,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       return { error: { code: "internal", message: `herdr-core could not answer ${request.method}` } };
     }
   };
+}
+
+/**
+ * Whether Ovis keeps this core's workspaces, tabs and splits in labels: only where no Herdr app
+ * arranges them, its `herdr-app` document never written (or deleted: hc keeps a null value).
+ */
+function ownsLayout(doc: unknown): boolean {
+  return doc === null || doc === undefined;
 }
 
 /** One hc event notification (herdr-core schema/README.md, Events). */

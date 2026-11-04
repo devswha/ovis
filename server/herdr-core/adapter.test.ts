@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, jest } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate, agentManifests, agentStart, ping } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
 import { paintedScreen, type SeenObserver, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
@@ -162,7 +162,12 @@ describe("herdr-core adapter", () => {
 
   it("says it is herdr-core, so the browser offers only what herdr-core can do", async () => {
     const { socket } = await setup([terminal("t1")]);
-    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core" });
+    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false } });
+  });
+
+  it("offers Ovis's own layout calls only on a core whose Herdr app document was never written", async () => {
+    const { socket } = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }) });
+    expect((await ping(socket)).layout).toEqual({ rename: true, split: true, move: true });
   });
 
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
@@ -265,7 +270,12 @@ describe("herdr-core adapter", () => {
   it("refuses what only the Herdr app does, and a pane hc does not have, in herdr's codes", async () => {
     const { socket } = await setup([terminal("t1")]);
     const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
-    expect(await failure(herdrRpc("pane.split", { pane_id: "t1", direction: "right" }, socket))).toBe("unsupported");
+    expect(await failure(herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket))).toBe("unsupported");
+    // the Herdr app arranges this core (its document is written): its names and places are its own
+    expect(await failure(workspaceRename("s1", "x", socket))).toBe("unsupported");
+    expect(await failure(tabRename("s1t1", "x", socket))).toBe("unsupported");
+    expect(await failure(paneMoveToNewTab("t1", "hc-other", null, socket))).toBe("unsupported");
+    expect(await failure(herdrRpc("tab.move", { tab_id: "s1t1", insert_index: 0 }, socket))).toBe("unsupported");
     expect(await failure(paneGet("t9", socket))).toBe("pane_not_found");
     expect(await failure(paneSendText("t9", "x", socket))).toBe("pane_not_found");
   });

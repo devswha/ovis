@@ -27,6 +27,8 @@ export const TAB_LABEL = "herdr.tab";
 /** The names a person gave a workspace or tab Ovis made: names live in the app's document, which Ovis never writes. */
 export const WORKSPACE_NAME_LABEL = "ovis.workspace";
 export const TAB_NAME_LABEL = "ovis.tab";
+/** The side a pane Ovis split off went to (`right`, `down`), on a core whose layout Ovis keeps (adapter.ts `pane.split`). */
+export const SPLIT_LABEL = "ovis.split";
 /**
  * The last turn a person looked at, shared by every Herdr client (herdr-app docs/labels.md): an
  * agent at rest whose turn is past it is done, one at or below it idle. Missing, the program's own
@@ -224,8 +226,10 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
     if (tab && !tab.label) tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.indexOf(tab) + 1);
-    // beside what the tab already shows, never over it: the app places it when it adopts it
-    if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
+    // beside what the tab already shows, never over it: the app places it when it adopts it. A pane
+    // split downwards goes under all of it instead
+    if (tab && terminal.labels?.[SPLIT_LABEL] === "down") tab.placed.push({ terminal, x: 0, y: tab.placed.length ? Math.max(...tab.placed.map((held) => held.y + held.terminal.rows + 1)) : 0 });
+    else if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
     else {
       ids.add(tabId);
       group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
