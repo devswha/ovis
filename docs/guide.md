@@ -420,6 +420,8 @@ Turn it on in **Settings → Voice input**, then tap the mic beside Attach (chat
 
 A phone reaches the app on this PC in one of two ways. The **Ovis relay** needs nothing set up on the phone or your network: turn it on and scan a QR code. **Tailscale** keeps everything inside your own network, with an HTTPS address for this PC. Either way the app installs on the phone's home screen and gets push alerts.
 
+On an iPhone or iPad the app needs iOS 16 or later (Safari 16 or later on a Mac), and push alerts need iOS 16.4 or later.
+
 ### Through the Ovis relay
 
 The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, no account and nothing to set up on the phone. It's off until you turn it on. While it's on, the PC and the phone each connect out to a relay that Ovis runs at `relay.ovis.sh`, which passes their traffic between them. Everything they send is end-to-end encrypted between the phone and the PC, so the relay can't read it. To turn it on, open **Settings → Phone & devices** on the PC, switch on **Ovis relay**, then point the phone's camera at the QR code that shows up. On a fresh install, the setup guide's **Connect your phone** offers it first: choose **Turn on the Ovis relay** and its QR code shows right there. **Use Tailscale or Wi-Fi instead**, under it, shows this page's own address and pairing QR code, or sends you to **Settings → Phone & devices** when the page is open on the PC itself.
@@ -784,6 +786,12 @@ session, `default` otherwise); nothing connects to it.
 `OVIS_RUNTIME=herdr-core` is Linux/macOS only: there is no Windows named pipe support yet.
 Ovis refuses to start with this runtime on Windows; use the default `herdr` runtime there.
 
+On a Linux or macOS PC with herdr-core and no herdr, the one-line installer
+(`curl -fsSL https://ovis.sh/install.sh | sh`) sets this up by itself: no herdr and no plugin, Ovis
+in `~/.local/share/ovis/app`, `OVIS_RUNTIME=herdr-core` in `~/.config/ovis/env`, and a user service
+that starts it at login (`systemctl --user status ovis` on Linux, the `sh.ovis.server` LaunchAgent on
+macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
+
 - **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
   order and names; every terminal block in a tab is a pane. A terminal no tab holds that another
   one started (a helper an agent started with `hc run`) has a tab of its own right after the tab
@@ -806,9 +814,20 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
   words after its name, and the row's and the state's tooltips give its message in its own words;
   a progress it reports (0 to 100) while it works or waits is a percent after the name. Nothing
   is shown that it did not report.
+- **Read finishes:** Ovis and the Herdr app agree on which finishes someone has looked at,
+  through herdr-core's `herdr.seen` terminal label. A finish you read in Ovis is no longer
+  **done** in the Herdr app, and one you looked at in the app is no longer **done** in Ovis; one
+  marked unread elsewhere is **done** again (Ovis does not read it for you again while it stays on
+  your screen). A terminal no client has labeled yet shows a turn that ended since Ovis started as
+  **done**, until someone reads it. A remote PC's finishes are not shared this way.
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
-  it or resized it: the app's window, or your phone once you type or open it there.
+  it or resized it: the app's window, or your phone once you type or open it there. herdr-core
+  keeps no view of its own to scroll, so the browser keeps the scrollback, as a desktop terminal
+  does: each attach starts with the terminal's last 2,000 lines of history, and the wheel, a
+  swipe or the scrollbar scrolls back through them while the program does not read the mouse. A
+  full-screen program (an editor, `htop`) has no history; its wheel goes to the program as on
+  herdr.
 - **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
   not kept current behind your back. A recent tab you switch away from keeps its last screen until
   you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
@@ -818,8 +837,8 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
   as typed text, and a send waits for you to confirm it.
 - **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
   splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
-  those actions on such a PC. Search and scrollback selection in a pane, plugins and worktrees
-  are not available either. Remote PCs keep running herdr's TUI server.
+  those actions on such a PC. Search in a pane, scrolling or selecting the history through the
+  scroll buttons beside it, plugins and worktrees are not available either. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 

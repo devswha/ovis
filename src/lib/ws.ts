@@ -117,6 +117,9 @@ export class HerdrSocket {
   private readonly disconnectHandlers = new Set<() => void>();
   private readonly beforeReplayHandlers = new Set<() => void>();
   private featuresKnown = false;
+  /** `terminal-history` from this connection's latest features frame (trusted or not) or snapshot: it says how to draw, not what to send */
+  private terminalHistory = false;
+  private machineEventsOffered: boolean | null = null;
   private readonly outputSeen = new Set<string>();
   private readonly inputReady = new Set<string>();
   /** each pane's changes of input on this connection (readiness given, lost or given again, attach, detach); see inputLease */
@@ -326,6 +329,8 @@ export class HerdrSocket {
     this.inputReady.clear();
     this.outputSeen.clear();
     this.featuresKnown = false;
+    this.terminalHistory = false;
+    this.machineEventsOffered = null;
     this.featuresSeen = new Promise((resolve) => { this.markFeatures = resolve; });
     this.clearConnectTimer();
     this.connectTimer = window.setTimeout(() => {
@@ -399,6 +404,12 @@ export class HerdrSocket {
       // seconds on herdr; an older bridge lists them in its snapshot only. Each list is the bridge's
       // latest word, but what it restores is asked for once per connection, by the first of them. A features
       // frame counts only when trusted (trustFeatures); otherwise its snapshot says, as an older bridge's does.
+      // an untrusted features frame still says how its attach replays draw: history it lists ahead of the
+      // snapshot would be cut by a scrollback lowered until the snapshot came
+      if (message.type === "features" || message.type === "snapshot") {
+        this.terminalHistory = (message.features ?? []).includes("terminal-history");
+        this.machineEventsOffered = message.features?.includes("machine-events") ?? false;
+      }
       if ((message.type === "features" && this.featuresTrusted(message)) || message.type === "snapshot") {
         const first = !this.featuresKnown;
         this.features = new Set(message.features ?? []);
@@ -520,6 +531,7 @@ export class HerdrSocket {
 
   /** Drops the current connection: its submits settle as disconnected and the disconnect handlers run. */
   private endConnection(): void {
+    this.machineEventsOffered = null;
     if (this.submits.size > 0) this.trace.record("submit_disconnect", { pending: this.submits.size }, true);
     if (this.openedAt !== null && Date.now() - this.openedAt >= STABLE_CONNECTION_MS) this.retries = 0;
     this.openedAt = null;
@@ -745,6 +757,13 @@ export class HerdrSocket {
     for (const handler of this.handlers) handler(message);
   }
 
+  /** Transport capability only; it grants no input authority or herdr lifetime trust. */
+  get machineEventsAvailable(): boolean | null { return this.machineEventsOffered; }
+
+  setMachineEvents(enabled: boolean): void {
+    if (this.machineEventsOffered) this.send({ type: "machine-events", enabled });
+  }
+
   on(handler: Handler): () => void {
     this.handlers.add(handler);
     return () => {
@@ -851,6 +870,11 @@ export class HerdrSocket {
   /** Before the features are known, a watch waits for capability discovery rather than acquiring an attach. */
   canWatch(): boolean {
     return !this.featuresKnown || this.features.has("watch");
+  }
+
+  /** Whether the browser keeps a pane's scrollback (`terminal-history`); false until the features come. */
+  hasTerminalHistory(): boolean {
+    return this.terminalHistory;
   }
 
   unwatch(paneId: string): void {
