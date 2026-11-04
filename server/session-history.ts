@@ -1043,13 +1043,30 @@ function hermesSessions(cwds: readonly string[], hermesHome: string, budget: Bud
 }
 
 /**
+ * When a jcode session started, from the id it was given: a generated id's 13-digit part is epoch
+ * millis (jcode's own `session_id_timestamp_ms` reads it the same way); an id without one, or one
+ * whose part names no real instant, leaves the start unknown.
+ */
+function jcodeStartedAt(id: string): string | null {
+  for (const part of id.split("_")) {
+    if (/^\d{13}$/.test(part)) return iso(Number(part));
+  }
+  return null;
+}
+
+/**
  * Jcode: `~/.jcode/session-metadata-v1.sqlite3` (or $JCODE_HOME's) `recent_sessions` is the index
  * its own `--resume` picker lists from (crates/jcode-base/src/recent_session_index.rs), keyed by the
  * working folder a session ran in. A row's title is Jcode's own: `custom_title`, then a saved
  * bookmark's `save_label`, then `todo_title`, then the generated one
- * (RecentSessionMetadata::display_title). The transcripts beside it (`sessions/<id>.json`) are not
- * read: the index names the session and `jcode --resume <id>` reopens it, and they are too large to
- * read inside the bound. The index carries no prompt text, so a row has no first message.
+ * (RecentSessionMetadata::display_title). The index has no creation column and no prompt text. A
+ * generated id carries the creation time itself (`session_<name>_<millis>_<hex>`,
+ * crates/jcode-core/src/id.rs `new_memorable_session_id_avoiding`, which stamps Utc::now's millis),
+ * so a row's start is its id's 13-digit part, as jcode's own search reads it
+ * (session_search.rs `session_id_timestamp_ms`); an id without one (a hand-made or recovery name)
+ * keeps its start unknown. The transcripts beside it (`sessions/<id>.json`) are not read: a 267 KB
+ * median and 20 MB at the largest, with the person's first words behind 45 KB of injected context
+ * (62 KB at the ninth decile), so the index's own silence is the honest answer for a first message.
  */
 function jcodeSessions(cwds: readonly string[], dbPath: string, budget: Budget): Row[] {
   return withDatabase(budget, dirname(dbPath), dbPath, (db) => {
@@ -1073,8 +1090,7 @@ function jcodeSessions(cwds: readonly string[], dbPath: string, budget: Budget):
        ORDER BY updated DESC LIMIT ${MAX_ROWS}`,
     ).all(...spellings).map((session) => row("jcode", session.id, {
       title: session.title,
-      // the index keeps no creation time: only when the session last ran
-      startedAt: null,
+      startedAt: jcodeStartedAt(session.id),
       updatedAt: iso(session.updated) ?? new Date(0).toISOString(),
     }));
   }) ?? [];

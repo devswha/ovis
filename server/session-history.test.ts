@@ -1651,8 +1651,12 @@ describe("GET /api/sessions/history", () => {
 describe("jcode sessions", () => {
   // recent_sessions is the index jcode's own --resume picker lists (recent_session_index.rs): a row
   // per session of the folder, titled by custom_title, a saved bookmark, todo_title, or the
-  // generated one, with the last time it ran and no prompt text at all.
+  // generated one, with the last time it ran and no prompt text at all. A generated id
+  // (`session_<name>_<millis>_<hex>`) is the one place a start time survives: the index's own rows
+  // here are named by an id that carries none, so their start stays unknown.
   const store = (home: string) => new Database(join(home, ".jcode", "session-metadata-v1.sqlite3"), { create: false });
+  /** A jcode-generated id: its 13-digit part is the creation time in epoch millis. */
+  const generated = (millis: number) => `session_fox_${millis}_0123456789abcdef`;
 
   it("lists the folder's rows with jcode's own title precedence and no first message", async () => {
     const home = newHome();
@@ -1676,6 +1680,23 @@ describe("jcode sessions", () => {
       expect(row.resume?.argv).toEqual(["jcode", "--resume", row.id]);
       expect(Number.isNaN(Date.parse(row.updatedAt))).toBe(false);
     }
+  });
+
+  it("reads a generated id's creation time as its start, and leaves a row whose id carries none unknown", async () => {
+    const home = newHome();
+    install("jcode", home);
+    const db = store(home);
+    const insert = db.query("INSERT INTO recent_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    insert.run(generated(1790000010000), CWD, "Generated start", null, null, 1790000020000, 1790000020000, 0, null);
+    // a hand-made or recovery id names no instant: the row's start is the index's silence
+    insert.run("session_existing_live_busy", CWD, "No instant", null, null, 1790000009000, 1790000009000, 0, null);
+    db.close();
+    const rows = await listSessions("jcode", CWD, { home, env: {} });
+    expect(rows.map((row) => [row.id, row.startedAt])).toEqual([
+      [generated(1790000010000), new Date(1790000010000).toISOString()],
+      ["session_existing_live_busy", null],
+      [ID(2), null], [ID(1), null],
+    ]);
   });
 
   it("keeps a row's index time when only its last run names one, and reads $JCODE_HOME's store", async () => {
