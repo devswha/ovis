@@ -128,22 +128,19 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
     await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 24)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(24, 34)}`);
     expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(32 * 1024 * 1024);
 
-    const changed = () => Math.max(fs.statSync(dbPath).mtimeMs, fs.statSync(`${dbPath}-wal`).ctimeMs);
+    const changed = () => Math.max(...[dbPath, `${dbPath}-wal`].flatMap((file) => [fs.statSync(file).mtimeMs, fs.statSync(file).ctimeMs]));
     let now = changed() + 100;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
     const writes = spyOn(fs, "writeFileSync");
     try {
       expect(agyCatalog(transcript).size).toBe(34);
-      expect(writes).toHaveBeenCalled();
-      // A turn's reads share one copy for a while...
+      // Files changed just before a copy may yet be rewritten under the same times: copy again.
       writes.mockClear();
       expect(agyCatalog(transcript).size).toBe(34);
-      expect(writes).not.toHaveBeenCalled();
-      // ...then copy again, since files changed just before the copy may be rewritten under the same times.
+      expect(writes).toHaveBeenCalled();
+      // Copied once they had settled, a catalog is reused for as long as it does not change.
       now += 2500;
       expect(agyCatalog(transcript).size).toBe(34);
-      expect(writes).toHaveBeenCalled();
-      // A settled catalog is reused for as long as it does not change.
       now += 60_000;
       writes.mockClear();
       expect(agyCatalog(transcript).size).toBe(34);
@@ -152,10 +149,8 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
       now = changed() + 100;
       expect(agyCatalog(transcript).has(34)).toBe(true);
       expect(writes).toHaveBeenCalled();
-      // A new step written within the copy's window shows on the first read after it.
       await abandonedWal(dbPath, "INSERT INTO steps VALUES (35, NULL);");
-      expect(agyCatalog(transcript).has(35)).toBe(false);
-      now += 2500;
+      now = changed() + 2500;
       expect(agyCatalog(transcript).has(35)).toBe(true);
       // A reused catalog still requires the path to name the pinned database.
       writes.mockClear();
@@ -167,7 +162,9 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
       // ...and unchanged pinned files through the read, as a fresh copy does.
       fs.rmSync(dbPath);
       fs.renameSync(`${dbPath}.old`, dbPath);
+      now = changed() + 2500;
       expect(agyCatalog(transcript).size).toBe(36);
+      writes.mockClear();
       expect(() => agyCatalog(transcript, () => fs.truncateSync(dbPath, 0))).toThrow(AgyUnavailable);
       expect(writes).not.toHaveBeenCalled();
     } finally { writes.mockRestore(); clock.mockRestore(); }
