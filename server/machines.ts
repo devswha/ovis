@@ -22,7 +22,7 @@ import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-docum
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
 import { REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
-import { SshConnection, sshClient, sweepSshDirs } from "./ssh.ts";
+import { SshConnection, sshClient } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 
 interface StoredMachine { id: string; name: string; target: SshTarget; enabled: boolean; snapshot?: SessionSnapshot | null }
@@ -304,8 +304,6 @@ export class MachineManager {
     this.profileState = new HerdrProfileState(stateDir);
     this.statePath = join(stateDir, "machines.json");
     this.sshDir = join(stateDir, "ssh");
-    // connection folders an earlier server never removed
-    void sweepSshDirs();
     this.settingsPath = join(stateDir, "machine-settings.json");
     try {
       const saved: unknown = JSON.parse(readFileSync(this.settingsPath, "utf8"));
