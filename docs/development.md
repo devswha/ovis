@@ -735,15 +735,21 @@ latest only once it has both. A red `mac-dmg` or `windows-app` job leaves the re
 **Actions → Mac app** or **Actions → Windows app** for its tag instead of releasing again.
 
 The **Desktop app** job (`.github/workflows/desktop.yml`) builds the desktop app
-([app/electron](../app/electron/README.md)) from the tag, each on its own OS and CPU:
-`Ovis-X.Y.Z-x86_64.AppImage` and `Ovis-X.Y.Z-arm64.AppImage`, and `Ovis-X.Y.Z-arm64.dmg`/`.zip` and
-`Ovis-X.Y.Z-x64.dmg`/`.zip`, with their `.blockmap` files. Its version is the tag's: the build
+([app/electron](../app/electron/README.md)) from the tag, each on its own OS and CPU, under names
+without the version, so `releases/latest/download/<name>` always gives the newest:
+`Ovis-linux-x64.deb`, `Ovis-linux-arm64.deb` (the download for Ubuntu and Debian),
+`Ovis-linux-x64.AppImage`, `Ovis-linux-arm64.AppImage`, `Ovis-mac-arm64.dmg`, `Ovis-mac-x64.dmg`, and
+`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), with their `.blockmap` files.
+The AppImage carries the static AppImage runtime (electron-builder's `toolsets.appimage`), so it
+needs no libfuse2, only the fuse3 a desktop has; without FUSE at all it runs with
+`APPIMAGE_EXTRACT_AND_RUN=1`. Its version is the tag's: the build
 stops unless `package.json` says the same. It attaches them with the update feed: `latest-linux.yml`,
 `latest-linux-arm64.yml` and one `latest-mac.yml` for both Macs (the two Mac builds' feeds merged by
 `bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
 `https://github.com/devswha/ovis/releases/latest/download` (electron-updater's generic provider), so
 an installed app sees a version once it is GitHub's latest, the same moment `ovis.sh/Ovis.dmg` and
-`ovis.sh/Ovis.exe` move; a download page links to `releases/latest/download/<name>` the same way.
+`ovis.sh/Ovis.exe` move. Only the AppImage and the Mac app update themselves; a deb is updated by
+installing the new one.
 The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
 variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
 `MAC_*` secrets as Ovis for Mac and fails if one is missing. A red `desktop` job leaves the release

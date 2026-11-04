@@ -135,7 +135,9 @@ async function dist(): Promise<void> {
   const tag = process.env["OVIS_RELEASE_TAG"]?.trim();
   if (tag && tag !== `v${version}`) throw new Error(`OVIS_RELEASE_TAG is ${tag}, but package.json says ${version}`);
   const [os, arch] = target.split("-") as [string, string];
-  const args = [join(here, "node_modules", ".bin", "electron-builder"), os === "darwin" ? "--mac" : "--linux", `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`];
+  const platform = os === "darwin" ? "mac" : "linux";
+  // the CPU written out, since electron-builder's ${arch} says x86_64 in an AppImage's name and amd64 in a deb's
+  const args = [join(here, "node_modules", ".bin", "electron-builder"), `--${platform}`, `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`, `-c.${platform}.artifactName=Ovis-${platform}-${arch}.\${ext}`];
   const feed = process.env["OVIS_UPDATE_FEED"]?.trim();
   if (feed) {
     if (new URL(feed).protocol !== "https:") throw new Error("OVIS_UPDATE_FEED must be an https address");

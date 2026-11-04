@@ -15,15 +15,21 @@ extraResources:
     to: icon.png
 icon: ../assets/icon-only.png
 npmRebuild: false
+# the installers' names carry no version (Ovis-linux-x64.AppImage, Ovis-linux-x64.deb, Ovis-mac-arm64.dmg)
+# so releases/latest/download/<name> always links the newest: scripts/build.ts sets artifactName per build
+toolsets:
+  # the static AppImage runtime, which needs no libfuse2 (gone from recent Ubuntu)
+  appimage: '1.0.3'
 linux:
-  target: AppImage
+  target:
+    - AppImage
+    - deb
   category: Development
   executableName: ovis
   syncDesktopName: true
-  artifactName: Ovis-${version}-${arch}.${ext}
+  maintainer: devswha <devswha@users.noreply.github.com>
 mac:
   target:
     - dmg
     - zip
   category: public.app-category.developer-tools
-  artifactName: Ovis-${version}-${arch}.${ext}

@@ -20,12 +20,15 @@ interface Feed {
   [key: string]: unknown;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const isFeedFile = (value: unknown): value is FeedFile => isRecord(value) && typeof value["url"] === "string" && typeof value["sha512"] === "string";
+const isFeed = (value: unknown): value is Feed =>
+  isRecord(value) && typeof value["version"] === "string" && Array.isArray(value["files"]) && value["files"].length > 0 && value["files"].every(isFeedFile);
+
 function read(text: string, name: string): Feed {
-  const feed = Bun.YAML.parse(text) as Partial<Feed> | null;
-  if (!feed || typeof feed.version !== "string" || !Array.isArray(feed.files) || feed.files.length === 0) {
-    throw new Error(`${name} is not an update feed (no version or files)`);
-  }
-  return feed as Feed;
+  const feed: unknown = Bun.YAML.parse(text);
+  if (!isFeed(feed)) throw new Error(`${name} is not an update feed (no version, or a file without url and sha512)`);
+  return feed;
 }
 
 /**
