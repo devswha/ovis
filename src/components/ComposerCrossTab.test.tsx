@@ -16,9 +16,14 @@ const saved = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
 /** the storage every tab of the origin shares */
 let data: Map<string, string>;
+let refuseLocks = false;
+/** called after each storage read, with what was read already returned to the reader */
+let onRead: ((key: string) => void) | null = null;
+const leaseKey = `ovis:composer-sending:${draftKey}`;
 
 /** Web Locks as the browser grants them: one holder per name, the others queued in order. */
 function locks(): { request(name: string, run: () => unknown): Promise<unknown> } {
+  if (refuseLocks) return { request: () => Promise.reject(new DOMException("denied", "SecurityError")) };
   const tails = new Map<string, Promise<unknown>>();
   return {
     request(name, run) {
@@ -46,10 +51,15 @@ beforeEach(() => {
   for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   setGlobals();
   data = new Map<string, string>();
-  spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
+  onRead = null;
+  spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => {
+    const value = data.get(key) ?? null;
+    onRead?.(key);
+    return value;
+  });
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
   spyOn(paneLifetimes.paneStorage, "removeItem").mockImplementation((key) => { data.delete(key); });
-  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
+  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, showQuickReplies: true }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([]);
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
@@ -70,7 +80,7 @@ afterEach(() => {
 });
 
 /** This tab's composer with `draft` in its box: the messages it sends, and its Send button. */
-async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void>; disconnect: () => Promise<void> }> {
+async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void>; disconnect: () => Promise<void>; reconnect: () => Promise<void>; quickReply: () => Promise<string>; unmount: () => Promise<void> }> {
   const sent: string[] = [];
   composerDrafts.set(draftKey, draft);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (message) => { sent.push(message); return onSend(message); }, onAbort() {}, onUploadImage: async () => "" };
@@ -79,6 +89,13 @@ async function tabWith(draft: string, onSend: (message: string) => ReturnType<Co
     sent,
     press: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Send message" }).props.onClick(); }),
     disconnect: () => act(async () => { renderer!.update(<Composer {...props} connected={false} />); }),
+    reconnect: () => act(async () => { renderer!.update(<Composer {...props} />); }),
+    quickReply: async () => {
+      const button = renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply")[0]!;
+      await act(async () => { button.props.onClick(); });
+      return String(button.props.children);
+    },
+    unmount: () => act(async () => { renderer!.unmount(); renderer = undefined; }),
   };
 }
 
@@ -104,19 +121,29 @@ it("does not send a draft another tab sent before this one heard of it, without 
   expect(tab.sent).toEqual([]);
 });
 
-it("settles an acknowledged send only once the pane's send lock is free", async () => {
-  const lockManager = locks();
-  setGlobals(lockManager);
+it("does not send a draft whose other tab's acknowledgement lands while this tab claims it", async () => {
+  setGlobals(locks());
+  const tab = await tabWith("deploy");
+  // the other tab's send of the same draft is on its way
+  data.set(leaseKey, JSON.stringify({ sent: "deploy", at: Date.now() }));
+  // and is acknowledged as this tab reads the draft: it clears the text, then ends its lease
+  onRead = (key) => {
+    if (key !== draftKey) return;
+    onRead = null;
+    data.delete(draftKey);
+    data.delete(leaseKey);
+  };
+  await tab.press();
+  expect(tab.sent).toEqual([]);
+});
+
+it("settles an acknowledged send as soon as it is acknowledged", async () => {
+  setGlobals(locks());
   let acknowledge = (_ok: boolean): void => {};
   const tab = await tabWith("deploy", () => new Promise<boolean>((resolve) => { acknowledge = resolve; }));
   await tab.press();
   expect(tab.sent).toEqual(["deploy"]);
-  // another tab claims the pane while the acknowledgement arrives: the draft is read as it was until it is done
-  let release = (): void => {};
-  const other = lockManager.request(lockName, () => new Promise<void>((resolve) => { release = resolve; }));
   await act(async () => { acknowledge(true); });
-  expect(data.get(draftKey)).toBe("deploy");
-  await act(async () => { release(); await other; });
   expect(data.has(draftKey)).toBe(false);
   expect(composerDrafts.read(draftKey).sending).toBe(false);
 });
@@ -132,6 +159,42 @@ it("does not send a claim that waited for the lock once the terminal disconnecte
   await act(async () => { release(); await other; });
   expect(tab.sent).toEqual([]);
   expect(data.get(draftKey)).toBe("deploy");
+});
+
+it("does not send a claim that waited for the lock across a disconnect and reconnect", async () => {
+  const lockManager = locks();
+  setGlobals(lockManager);
+  const tab = await tabWith("deploy");
+  let release = (): void => {};
+  const other = lockManager.request(lockName, () => new Promise<void>((resolve) => { release = resolve; }));
+  await tab.press();
+  await tab.disconnect();
+  await tab.reconnect();
+  await act(async () => { release(); await other; });
+  expect(tab.sent).toEqual([]);
+  expect(data.get(draftKey)).toBe("deploy");
+});
+
+it("does not send a quick reply that waited for the lock once its composer is gone", async () => {
+  const lockManager = locks();
+  setGlobals(lockManager);
+  const tab = await tabWith("");
+  let release = (): void => {};
+  const other = lockManager.request(lockName, () => new Promise<void>((resolve) => { release = resolve; }));
+  await tab.quickReply();
+  await tab.unmount();
+  await act(async () => { release(); await other; });
+  expect(tab.sent).toEqual([]);
+});
+
+it("sends at once when the browser refuses the lock", async () => {
+  refuseLocks = true;
+  try {
+    setGlobals(locks());
+    const tab = await tabWith("deploy");
+    await tab.press();
+    expect(tab.sent).toEqual(["deploy"]);
+  } finally { refuseLocks = false; }
 });
 
 it("sends a draft no other tab sent, once (control)", async () => {

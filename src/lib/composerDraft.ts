@@ -157,6 +157,9 @@ export class ComposerDraftStore {
    * settled it since this tab drew it, before its storage event arrived here (#2369).
    */
   claim(key: string, sent: string): boolean {
+    // the lease is read before the text: a tab's acknowledgement clears the text and only then ends its
+    // lease, so a claim sees either that send still on its way or the draft it settled
+    if (this.own.has(key) || this.inFlight(key) !== null) return false;
     this.refresh(key);
     return this.read(key).text === sent && this.begin(key, sent);
   }
@@ -242,7 +245,12 @@ export const composerDrafts = new ComposerDraftStore();
 export function underSendLock(key: string, section: () => boolean | void): boolean {
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
   if (!locks) return section() !== false;
-  void locks.request(`ovis-send:${key}`, () => { section(); });
+  let ran = false;
+  // a lock manager that refuses the request (the spec allows a SecurityError) leaves the lease alone guarding, as plain HTTP does
+  void locks.request(`ovis-send:${key}`, () => { ran = true; section(); }).catch((error: unknown) => {
+    if (ran) throw error;
+    section();
+  });
   return true;
 }
 paneLifetimes.onRetire((machineId) => composerDrafts.forget(machineId));

@@ -302,6 +302,10 @@ export function Composer({
   const { text, sending } = useSyncExternalStore(composerDrafts.subscribe, () => composerDrafts.read(draftKey));
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // each time the terminal disconnects: a send that waited for the lock goes only on the connection it was pressed on (#2369)
+  const drops = useRef(0);
+  const wasConnected = useRef(connected);
+  if (wasConnected.current !== connected) { if (!connected) drops.current++; wasConnected.current = connected; }
   const setText = useCallback((value: string | ((previous: string) => string)) => composerDrafts.set(draftKey, value), [draftKey]);
   // comments on the agent's replies (#511) go first in the next message, unless it is a slash command or an answer
   const commentsKey = replyCommentsKey(paneStorageId(machineId, paneId));
@@ -862,11 +866,12 @@ export function Composer({
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
+    const pressedOn = drops.current;
     // what goes is read again inside the pane's cross-tab lock: another tab may have sent this draft or
     // its comments since this one drew them (#2369)
     return underSendLock(draftKey, () => {
       // a claim that waited for the lock goes only where and while it was pressed
-      if (!mounted.current || !connectedRef.current || draftKeyRef.current !== draftKey) return false;
+      if (!mounted.current || !connectedRef.current || drops.current !== pressedOn || draftKeyRef.current !== draftKey) return false;
       const waiting = new Set(replyComments.read(commentsKey).map((item) => item.id));
       if (!sentComments.every((item) => waiting.has(item.id)) || !composerDrafts.claim(draftKey, sent)) return false;
       sendId = composerDrafts.sendOf(draftKey);
@@ -879,12 +884,8 @@ export function Composer({
         const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
         const result = agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
         if (!(result instanceof Promise)) { settle(result); ended(); return true; }
-        // the acknowledgement settles the draft inside the lock too: a claim never reads it half settled
-        const unconfirmed = (): void => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); };
-        void result.then(
-          (answer) => underSendLock(draftKey, () => { try { settle(answer); } catch { unconfirmed(); } finally { ended(); } }),
-          () => underSendLock(draftKey, () => { unconfirmed(); ended(); }),
-        );
+        // settled outside the lock: it clears the draft before it ends the lease, which a claim reads first
+        void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(ended);
       } catch {
         ended();
         if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again."));
@@ -974,8 +975,10 @@ export function Composer({
       const note = t("Not confirmed. Check the terminal before sending again.");
       if (mounted.current) setNote(draft === undefined ? note : draftSendNote(note, draft));
     };
-    // its lease is claimed in the pane's cross-tab lock, as Send's is (#2369)
+    // its lease is claimed in the pane's cross-tab lock, as Send's is, and only where and while it was pressed (#2369)
+    const pressedOn = drops.current;
     underSendLock(draftKey, () => {
+      if (!mounted.current || !connectedRef.current || drops.current !== pressedOn || draftKeyRef.current !== draftKey) return;
       if (!composerDrafts.begin(draftKey)) return;
       const sendId = composerDrafts.sendOf(draftKey);
       try {
