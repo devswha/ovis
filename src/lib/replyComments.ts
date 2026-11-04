@@ -1,4 +1,4 @@
-import { SEND_LEASE_MS } from "./composerDraft.ts";
+import { isSendLeaseKey, SEND_LEASE_MS, sendLease } from "./composerDraft.ts";
 import { paneLifetimes, REPLY_COMMENTS_PREFIX } from "./paneLifetime.ts";
 
 /**
@@ -17,7 +17,14 @@ export interface ReplyComment {
   comment: string;
   /** `diff`: a note on a line of a file's diff (#1603, lib/diffLineNotes.ts), its quote the line and where it is */
   source?: "diff";
+  /**
+   * moved to this pane while a send on the pane it came from was on its way, maybe from another tab
+   * (#2356): that send may carry it, so no send takes it while that send's lease (the draft and the
+   * time it began) holds
+   */
+  heldFor?: SendHold;
 }
+export interface SendHold { draft: string; at: number }
 
 type CommentStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -100,19 +107,23 @@ export class ReplyCommentStore {
     this.reservations++;
     this.notify();
   }
+  /** The comments no send on its way carries: none this tab's sends reserved, none held for another tab's. */
   unreserved(list: readonly ReplyComment[]): readonly ReplyComment[] {
-    return list.some((item) => this.reserved.has(item.id)) ? list.filter((item) => !this.reserved.has(item.id)) : list;
+    const free = list.filter((item) => !this.reserved.has(item.id) && !this.held(item));
+    return free.length === list.length ? list : free;
   }
+  /** whether the send `item` is held for is still on its way, as its lease in storage says */
+  private held(item: ReplyComment): boolean {
+    const hold = item.heldFor;
+    if (typeof hold !== "object" || hold === null || typeof hold.draft !== "string") return false;
+    try { return sendLease(this.storage(), hold.draft)?.at === hold.at; } catch { return false; }
+  }
+  /** a send settling under `key` follows every move since: a record of each stays until it lapses, as another send may follow it too */
   removeSent(key: string, sent: readonly ReplyComment[]): void {
     const ids = new Set(sent.map((item) => item.id));
-    const keys = this.chain(key);
-    for (const at of keys) {
+    for (const at of this.chain(key)) {
       const list = this.read(at);
       if (list.some((item) => ids.has(item.id))) this.write(at, list.filter((item) => !ids.has(item.id)));
-    }
-    // the record of a move kept for this send has done its work
-    for (const at of keys.slice(0, -1)) {
-      try { if (this.storedForward(at) !== null) this.storage().removeItem(at); } catch { /* private mode */ }
     }
   }
   /** `key` and every key its list moved on to since, by this tab or another */
@@ -137,17 +148,21 @@ export class ReplyCommentStore {
   /**
    * herdr gave the pane a new ID: all its waiting comments go with it, after any the new ID holds
    * already, and a send begun under the old ID still removes the ones it carried once it is acknowledged.
-   * `sending`: a send on the old ID is on its way, maybe from another tab: the move is also recorded under
-   * the old key, which reads as no comments, so the tab that sent it follows it too (#2356).
+   * `sending`: the lease of a send on the old ID on its way, maybe from another tab (#2356). The comments
+   * are held for it, as any tab can see, and the move is also recorded under the old key, which reads as
+   * no comments, so the tab that sent it follows it too. A move of comments still held for an earlier
+   * send is recorded as well.
    */
-  move(from: string, to: string, sending = false): void {
+  move(from: string, to: string, sending: SendHold | null = null): void {
     const moving = this.read(from);
     if (moving.length === 0 || from === to) return;
     const there = this.read(to);
-    const held = new Set(there.map((item) => item.id));
-    if (!this.write(to, [...there, ...moving.filter((item) => !held.has(item.id))])) return;
+    const ids = new Set(there.map((item) => item.id));
+    // one held for an earlier send stays held for it: that send may carry it
+    const moved = moving.filter((item) => !ids.has(item.id)).map((item) => sending === null || this.held(item) ? item : { ...item, heldFor: sending });
+    if (!this.write(to, [...there, ...moved])) return;
     let recorded = false;
-    if (sending) {
+    if (sending !== null || moving.some((item) => this.held(item))) {
       try { this.storage().setItem(from, JSON.stringify({ movedTo: to, at: Date.now() })); recorded = true; } catch { /* storage refused: this tab still follows it */ }
     }
     if (recorded) this.notify();
@@ -157,14 +172,18 @@ export class ReplyCommentStore {
   clear(key: string): void {
     if (this.read(key).length > 0) this.write(key, NONE);
   }
-  /** Another tab or a retired herdr changed storage: readers read again. */
-  refresh(): void { this.notify(); }
+  /** Another tab or a retired herdr changed storage, or a send held for ended: readers read again. */
+  refresh(): void {
+    this.reservations++;
+    this.notify();
+  }
 }
 
 export const replyComments = new ReplyCommentStore();
 paneLifetimes.onRetire(() => replyComments.refresh());
 if (typeof window !== "undefined") window.addEventListener("storage", (event) => {
-  if (event.key === null || event.key.startsWith(REPLY_COMMENTS_PREFIX)) replyComments.refresh();
+  // a send's lease ending frees the comments held for it (#2356)
+  if (event.key === null || event.key.startsWith(REPLY_COMMENTS_PREFIX) || isSendLeaseKey(event.key)) replyComments.refresh();
 });
 
 /** `> ` before each line of the quote; its blank lines stay inside the quote as a bare `>`. */
