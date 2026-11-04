@@ -2124,10 +2124,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // the layout's move left a reader still following short of the end: they go on there, unless
     // what they just clicked is laid out where they are (ChatTimeline manualLayout)
     if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
-      // the list's scroll lands a frame later: the frame painted next is at the end already. Its
-      // scroll event compares with where this write put the view, so a wheel up before it reads as
-      // the reader's move up (#2594).
-      if (stoppedShort) { node.scrollTop = node.scrollHeight; lastScrollTop.current = node.scrollTop; }
+      // the list's scroll lands a frame later: the frame painted next is at the end already
+      if (stoppedShort) node.scrollTop = node.scrollHeight;
       if (timeline.current) timeline.current.scrollToEnd({ animated: false });
       else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
     }
