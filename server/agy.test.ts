@@ -62,9 +62,9 @@ it("reads a checkpointed WAL catalog without recreating missing side files", () 
 });
 
 it.each([
-  ["database", 32 * 1024 * 1024 + 1, 0],
-  ["WAL", 8192, 32 * 1024 * 1024 + 1],
-  ["combined", 16 * 1024 * 1024, 16 * 1024 * 1024 + 1],
+  ["database", 256 * 1024 * 1024 + 1, 0],
+  ["WAL", 8192, 256 * 1024 * 1024 + 1],
+  ["combined", 128 * 1024 * 1024, 128 * 1024 * 1024 + 1],
 ] as const)("rejects an oversized %s before copying the catalog", (_name, dbBytes, walBytes) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-catalog-limit-")));
   try {
@@ -114,6 +114,29 @@ it.each(["wal", "shm", null] as const)("reads a WAL catalog with %s missing with
     expect(exitCode).toBe(0);
     // Incomplete pairs read only the checkpointed main file, as session-history does.
     expect(JSON.parse(stdout)).toEqual(missing === null ? [0, 1] : [0]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("reads a long session's live WAL catalog past 32 MiB and copies it again only when it changes", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-wal-large-")));
+  try {
+    const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
+    const dbPath = agyDatabasePath(transcript);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    // 24 MiB checkpointed plus about 10 MiB of WAL, the shape of a long turn (#2618).
+    const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, at) => `INSERT INTO steps VALUES (${from + at}, randomblob(1048576));`).join("");
+    await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 24)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(24, 34)}`);
+    expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(32 * 1024 * 1024);
+
+    expect(agyCatalog(transcript).size).toBe(34);
+    const writes = spyOn(fs, "writeFileSync");
+    try {
+      expect(agyCatalog(transcript).size).toBe(34);
+      expect(writes).not.toHaveBeenCalled();
+      await abandonedWal(dbPath, "INSERT INTO steps VALUES (34, NULL);");
+      expect(agyCatalog(transcript).has(34)).toBe(true);
+      expect(writes).toHaveBeenCalled();
+    } finally { writes.mockRestore(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

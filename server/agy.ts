@@ -12,13 +12,20 @@ import { toolSummary } from "./transcript-records.ts";
 const MAX_ENTRIES = 100_000;
 const MAX_LINE = 16 * 1024 * 1024;
 const SCAN_BYTES = 32 * 1024 * 1024;
+// The catalog's database and WAL grow with the session's payloads, not its step count: a long
+// session passes 32 MiB during a turn (#2618). The copy is still bounded, and made only on change.
+const CATALOG_BYTES = 256 * 1024 * 1024;
 const hash = (value: string): string => createHash("sha256").update(value).digest("base64url");
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export class AgyUnavailable extends Error { constructor() { super("Agy history is unavailable"); } }
 interface Step { index: number; start: number; end: number; type: string; status: string; digest: string; activity?: "working" | "idle" }
 interface Index { identity: string; size: number; changed: string; scanned: number; revision: string; steps: Step[]; visible: Step[]; retired: Set<number> }
 const indexes = new Map<string, Index>();
-export function forgetAgyState(path?: string): void { if (path === undefined) indexes.clear(); else indexes.delete(path); }
+/** The last snapshot read per catalog, keyed on the stats of the files it copied. */
+const catalogs = new Map<string, { key: string; rows: number[] }>();
+export function forgetAgyState(path?: string): void {
+  if (path === undefined) { indexes.clear(); catalogs.clear(); } else { indexes.delete(path); catalogs.delete(agyDatabasePath(path)); }
+}
 
 /** The catalog beside this resolved native ledger; also watched for saved rewinds. */
 export function agyDatabasePath(path: string): string {
@@ -33,6 +40,7 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
   let fd: number | undefined;
   const sideFds: number[] = [];
   let snapshot: string | undefined;
+  let catalogKey: string | undefined;
   try {
     if (realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
     const readFlags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
@@ -62,9 +70,12 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
         files.push({ path, fd: sideFd, stat });
       }
       const snapshotFiles = files.slice(0, 2);
-      // Match the ledger's 32 MiB byte budget: 100,000 integer indices need
-      // under 1 MiB; larger payload-heavy stores should fall back, not be copied per poll.
-      if (snapshotFiles.reduce((bytes, file) => bytes + file.stat.size, 0n) > BigInt(SCAN_BYTES)) throw new AgyUnavailable();
+      if (snapshotFiles.reduce((bytes, file) => bytes + file.stat.size, 0n) > BigInt(CATALOG_BYTES)) throw new AgyUnavailable();
+      // Unchanged pinned files hold the bytes the last validated copy read.
+      const key = snapshotFiles.map(({ stat }) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join("|");
+      const cached = catalogs.get(dbPath);
+      if (cached?.key === key) return new Set(cached.rows);
+      catalogKey = key;
       // macOS: tmpdir() is under the /var symlink, which SQLITE_OPEN_NOFOLLOW refuses
       // (assigned before resolving, so a failed realpath still removes the directory)
       snapshot = mkdtempSync(join(tmpdir(), "ovis-agy-catalog-"));
@@ -101,7 +112,9 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
     if (existsSync(`${dbPath}-wal`) !== walBefore || existsSync(`${dbPath}-shm`) !== shmBefore
       || (!wal && existsSync(`${dbPath}-journal`))) throw new AgyUnavailable();
     if (rows.length > MAX_ENTRIES || rows.some((row) => !Number.isSafeInteger(row.idx) || row.idx < 0)) throw new AgyUnavailable();
-    return new Set(rows.map((row) => row.idx));
+    const indices = rows.map((row) => row.idx);
+    if (catalogKey !== undefined) catalogs.set(dbPath, { key: catalogKey, rows: indices });
+    return new Set(indices);
   } catch { throw new AgyUnavailable(); }
   finally {
     db?.close();
