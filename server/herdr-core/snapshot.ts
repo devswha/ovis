@@ -149,6 +149,34 @@ function tile(node: unknown, x: number, y: number, take: (address: string) => Hc
   return stacked ? { width: across, height: length } : { width: length, height: across };
 }
 
+/**
+ * A tab's terminals as a split tree in the app document's shape, for `tile`: each pane Ovis split off
+ * (`ovis.split` = `right:t3`, `down:t3`) halves the pane it names, as herdr's split does; any other
+ * terminal, or one naming a pane not in the tab before it, goes to the right of the whole tab.
+ */
+function splitTree(terminals: readonly HcTerminal[]): Record<string, unknown> {
+  const leaves = new Map<string, Record<string, unknown>>();
+  const leaf = (address: string) => {
+    const node: Record<string, unknown> = { content: { terminal: address } };
+    leaves.set(address, node);
+    return node;
+  };
+  let root = leaf(terminals[0]!.address);
+  for (const terminal of terminals.slice(1)) {
+    const split = /^(right|down):(.+)$/.exec(terminal.labels?.[SPLIT_LABEL] ?? "");
+    const target = split ? leaves.get(split[2]!) : undefined;
+    if (!split || !target) {
+      root = { type: "row", children: [root, leaf(terminal.address)] };
+      continue;
+    }
+    // the split pane's leaf becomes the split, holding that pane and the new one
+    const kept = leaf(split[2]!);
+    delete target["content"];
+    Object.assign(target, { type: split[1] === "down" ? "column" : "row", children: [kept, leaf(terminal.address)] });
+  }
+  return root;
+}
+
 function basename(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
@@ -206,6 +234,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   // a terminal the app has not placed yet, labeled with its space (and tab) the way the app labels
   // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
   const rest: HcTerminal[] = [];
+  const labelTabs = new Set<Group["tabs"][number]>();
   for (const terminal of [...live.values()].filter((candidate) => !placed.has(candidate.address))) {
     // named as a placed terminal is: `where` (`<space> / <tab>`), then Ovis's own labels
     const where = terminal.labels?.["where"]?.split(" / ").map((part) => part.trim());
@@ -226,14 +255,27 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
     for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
     const tab = group.tabs.find((candidate) => candidate.id === tabId);
     if (tab && !tab.label) tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.indexOf(tab) + 1);
-    // beside what the tab already shows, never over it: the app places it when it adopts it. A pane
-    // split downwards goes under all of it instead
-    if (tab && terminal.labels?.[SPLIT_LABEL] === "down") tab.placed.push({ terminal, x: 0, y: tab.placed.length ? Math.max(...tab.placed.map((held) => held.y + held.terminal.rows + 1)) : 0 });
-    else if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
+    // beside what the tab already shows, never over it: the app places it when it adopts it
+    if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
     else {
       ids.add(tabId);
-      group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+      const made = { id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] };
+      labelTabs.add(made);
+      group.tabs.push(made);
     }
+  }
+  // a tab its labels make, with the splits Ovis made in it: laid out as their tree
+  for (const tab of labelTabs) {
+    if (tab.placed.length < 2) continue;
+    const waiting = new Map(tab.placed.map(({ terminal }) => [terminal.address, terminal]));
+    const take = (address: string): HcTerminal | null => {
+      const terminal = waiting.get(address) ?? null;
+      waiting.delete(address);
+      return terminal;
+    };
+    const held: Placed[] = [];
+    tile(splitTree(tab.placed.map(({ terminal }) => terminal)), 0, 0, take, held);
+    tab.placed = held;
   }
   // a terminal another one started (an agent's helper, `hc run` from a shell) that nothing above
   // placed: a tab of its own right after its parent's tab and the helpers already there, so it

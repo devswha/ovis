@@ -574,7 +574,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const cwd = typeof params["cwd"] === "string" ? params["cwd"] : shown.panes.find((pane) => pane.workspace_id === workspaceId)?.cwd ?? undefined;
       const label: Record<string, string> = typeof params["label"] === "string" && params["label"] ? { [TAB_NAME_LABEL]: params["label"] } : {};
       // "Other terminals" is no space of the app's: a tab there is a terminal of its own
-      const space: Record<string, string> = workspaceId === OTHER_WORKSPACE_ID ? {} : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}` };
+      // with the workspace's name, which stays when the tab the name was given in closes (snapshot.ts `groups`)
+      const space: Record<string, string> = workspaceId === OTHER_WORKSPACE_ID ? {} : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label };
       const { tab, root_pane } = await startShell({ ...params, ...(cwd ? { cwd } : {}) }, { ...space, ...label });
       return { type: "tab_created", tab, root_pane };
     },
@@ -617,20 +618,23 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       await label(panes.map((pane) => pane.pane_id), { [TAB_NAME_LABEL]: name });
       return { type: "ok" };
     },
-    // A split is one more shell labeled with the pane's space and tab, and the side it went to
-    // (snapshot.ts places it); hc has no focus to move, so `focus` changes nothing.
+    // A split is one more shell labeled with the pane's space and tab, and the pane it split and the
+    // side it went to (snapshot.ts `splitTree`); hc has no focus to move, so `focus` changes nothing.
     async "pane.split"(params) {
       const paneId = paneIdOf(params, "target_pane_id");
       const direction = params["direction"];
       if (direction !== "right" && direction !== "down") throw new AdapterError("invalid_params", "direction must be right or down");
-      const pane = (await ownLayout()).panes.find((candidate) => candidate.pane_id === paneId);
+      const shown = await ownLayout();
+      const pane = shown.panes.find((candidate) => candidate.pane_id === paneId);
       if (!pane) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
       const labels = (await terminal(paneId)).labels ?? {};
       // only a tab its labels make takes another pane: one in Other terminals, or a helper's under
       // its parent's tab, is one terminal's own
       if (labels[SPACE_LABEL] !== pane.workspace_id || labels[TAB_LABEL] !== pane.tab_id) throw new AdapterError("unsupported", `pane ${paneId} is in a tab of its own terminal: it does not split`);
-      const names = Object.fromEntries([WORKSPACE_NAME_LABEL, TAB_NAME_LABEL].flatMap((key) => (labels[key] ? [[key, labels[key]]] : [])));
-      const { root_pane } = await startShell({ ...(pane.cwd ? { cwd: pane.cwd } : {}) }, { [SPACE_LABEL]: pane.workspace_id, [TAB_LABEL]: pane.tab_id, ...names, [SPLIT_LABEL]: direction });
+      // the workspace's name as shown, and the tab's own where it has one, stay when the split pane closes
+      const workspaceName = shown.workspaces.find((candidate) => candidate.workspace_id === pane.workspace_id)?.label;
+      const names = { ...(workspaceName ? { [WORKSPACE_NAME_LABEL]: workspaceName } : {}), ...(labels[TAB_NAME_LABEL] ? { [TAB_NAME_LABEL]: labels[TAB_NAME_LABEL] } : {}) };
+      const { root_pane } = await startShell({ ...(pane.cwd ? { cwd: pane.cwd } : {}) }, { [SPACE_LABEL]: pane.workspace_id, [TAB_LABEL]: pane.tab_id, ...names, [SPLIT_LABEL]: `${direction}:${paneId}` });
       return { pane: root_pane };
     },
     // A pane goes to a new tab of another workspace by its labels alone: its terminal, its program and
@@ -646,6 +650,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       if (!pane) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
       const workspace = before.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
       if (!workspace && workspaceId !== OTHER_WORKSPACE_ID) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+      // a helper with no labels shows under its parent's tab (snapshot.ts `groups`), never in Other terminals
+      const parent = workspaceId === OTHER_WORKSPACE_ID ? (await terminal(paneId)).parent : undefined;
+      if (parent && parent !== paneId && before.panes.some((candidate) => candidate.pane_id === parent)) throw new AdapterError("unsupported", `pane ${paneId} shows under the terminal that started it: it cannot go to Other terminals`);
       const tabName = typeof destination["label"] === "string" ? destination["label"] : "";
       // `key: ""` takes a label off (hc terminal.label)
       const place = workspaceId === OTHER_WORKSPACE_ID

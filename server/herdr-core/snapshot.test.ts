@@ -221,6 +221,28 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.layouts[0]!.panes.map((p) => [p.pane_id, p.rect.x])).toEqual([["t1", 0], ["t2", 81]]);
   });
 
+  it("lays the panes Ovis split off out as the split tree, each beside or under the pane it split", () => {
+    const at = { "herdr.space": "ovis-s", "herdr.tab": "ovis-t" };
+    // t1 split right into t2, then t2 split down into t3, then t1 split down into t4
+    const snapshot = buildSnapshot([
+      terminal("t1", { cols: 80, rows: 24, labels: at }),
+      terminal("t2", { cols: 80, rows: 24, labels: { ...at, "ovis.split": "right:t1" } }),
+      terminal("t3", { cols: 80, rows: 24, labels: { ...at, "ovis.split": "down:t2" } }),
+      terminal("t4", { cols: 80, rows: 24, labels: { ...at, "ovis.split": "down:t1" } }),
+    ], null, "0.1.17");
+    const rects = Object.fromEntries(snapshot.layouts[0]!.panes.map((p) => [p.pane_id, [p.rect.x, p.rect.y]]));
+    expect(rects).toEqual({ t1: [0, 0], t4: [0, 25], t2: [81, 0], t3: [81, 25] });
+  });
+
+  it("puts a pane split off one that has closed to the right of the whole tab", () => {
+    const at = { "herdr.space": "ovis-s", "herdr.tab": "ovis-t" };
+    const snapshot = buildSnapshot([
+      terminal("t1", { cols: 80, rows: 24, labels: at }),
+      terminal("t3", { cols: 80, rows: 24, labels: { ...at, "ovis.split": "down:t2" } }),
+    ], null, "0.1.17");
+    expect(snapshot.layouts[0]!.panes.map((p) => [p.pane_id, p.rect.x, p.rect.y])).toEqual([["t1", 0, 0], ["t3", 81, 0]]);
+  });
+
   it("keeps the name a person gave once the app adopts the terminal into an unnamed space and tab", () => {
     const layout = { spaces: [{ id: "ovis-s", name: "", tabs: [{ id: "ovis-t", name: "", root: block("t1") }] }] };
     const snapshot = buildSnapshot([terminal("t1", { labels: { "herdr.space": "ovis-s", "herdr.tab": "ovis-t", "ovis.workspace": "web", "ovis.tab": "logs" } }), terminal("t2", { labels: { "ovis.tab": "scratch" } })], layout, "0.1.14");

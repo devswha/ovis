@@ -263,8 +263,8 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       expect(snapshot.workspaces.find((workspace) => workspace.workspace_id === api.workspace.workspace_id)?.label).toBe("backend");
       expect(snapshot.tabs.find((tab) => tab.tab_id === api.tab.tab_id)?.label).toBe("server");
       const rects = Object.fromEntries(snapshot.layouts.find((layout) => layout.tab_id === api.tab.tab_id)!.panes.map((pane) => [pane.pane_id, pane.rect]));
-      expect(Object.keys(rects)).toEqual([api.root_pane.pane_id, right.pane_id, below.pane_id]);
-      // the right half starts past the first pane on its row, the lower one below it
+      expect(Object.keys(rects).sort()).toEqual([api.root_pane.pane_id, right.pane_id, below.pane_id].sort());
+      // the right half starts past the split pane and the one under it, the lower one below the split pane
       expect([rects[right.pane_id]!.x > 0, rects[right.pane_id]!.y]).toEqual([true, 0]);
       expect([rects[below.pane_id]!.x, rects[below.pane_id]!.y > 0]).toEqual([0, true]);
 

@@ -531,7 +531,7 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
 
 describe("herdr-core adapter, new and closed terminals", () => {
   /** a core whose terminal list follows its own terminal.run, terminal.kill and terminal.rm */
-  async function living(start: HcTerminal[]) {
+  async function living(start: HcTerminal[], extra: Record<string, Handler> = {}) {
     const terminals = [...start];
     const runs: Record<string, unknown>[] = [];
     const ends: string[] = [];
@@ -555,9 +555,25 @@ describe("herdr-core adapter, new and closed terminals", () => {
         terminals.splice(terminals.findIndex((entry) => entry.address === params["terminal"]), 1);
         return { removed: params["terminal"] };
       },
+      ...extra,
     });
     return { ...ready, runs, ends };
   }
+  /** a core no Herdr app arranges: its layout document was never written */
+  const NO_DOC = { "doc.get": () => ({ value: null, version: 0 }) };
+
+  it("keeps a renamed workspace's name on a new tab, so it stays when the tab it was given in closes", async () => {
+    const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T", "ovis.workspace": "Named" } })], NO_DOC);
+    await tabCreate({ workspaceId: "S" }, socket);
+    expect(runs[0]!["labels"]).toMatchObject({ "herdr.space": "S", "ovis.workspace": "Named" });
+    await tabClose("T", socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.label)).toEqual(["Named"]);
+  });
+
+  it("refuses to move a helper to Other terminals, where its parent's tab would still show it", async () => {
+    const { socket } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }), terminal("t2", { parent: "t1" }), terminal("t3")], NO_DOC);
+    await expect(paneMoveToNewTab("t2", "hc-other", null, socket)).rejects.toMatchObject({ code: "unsupported" });
+  });
 
   it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {
     const { socket, runs } = await living([terminal("t1")]);
