@@ -7,7 +7,7 @@
 # only while they have room for its Linux jobs and to ubuntu-24.04 otherwise, and any other event
 # stays on ubuntu-24.04. "Room" is counted from the Actions API, since the workflow token cannot
 # list runners: CI_SELF_HOSTED_CAPACITY (default 10) minus the queued and running jobs of every
-# workflow that target those labels must leave at least the jobs one run needs. When that count
+# workflow that could take those runners must leave at least the jobs one run needs. When that count
 # fails, the pull request stays hosted. Setting the variable to labels sends every pull request to
 # them, and the value "ubuntu-24.04" (a JSON string, which pages.yml and
 # release.yml also accept) keeps every job hosted while that PC is offline. A push to main takes the
@@ -39,17 +39,23 @@ choose_labels() {
   echo "linux=$compact"
 }
 
-# Prints how many jobs of queued or running workflow runs target every label in $1, stopping once
-# the count passes $2 (one API call per run adds up while many runs wait); fails when the API does.
+# the labels of the pull requests' runners (run.sh registers them with self-hosted, Linux and X64):
+# a job that asks only for labels among these can take one of them
+pool_labels='["self-hosted","linux","x64","self-hosted-ovis"]'
+
+# Prints how many unfinished jobs of queued or running workflow runs could take one of those
+# runners, stopping once the count passes $1 (one API call per run adds up while many runs wait);
+# fails when the API does.
 busy_jobs() {
-  local probe="$1" limit="$2" ids id jobs n total=0
+  local limit="$1" ids id jobs n total=0
   ids=$(for status in in_progress queued; do
-    gh api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[].id' || exit 1
+    gh api --paginate "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[].id' || exit 1
   done) || return 1
   for id in $ids; do
-    jobs=$(gh api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
-    n=$(jq -e --argjson probe "$probe" '[.jobs[] | select(.status != "completed")
-      | select([.labels[] | ascii_downcase] as $l | $probe | all(ascii_downcase as $x | $l | index($x) != null))] | length' <<<"$jobs") || return 1
+    jobs=$(gh api --paginate "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
+    n=$(jq -s -e --argjson pool "$pool_labels" '[.[].jobs[] | select(.status != "completed")
+      | [.labels[] | ascii_downcase] | select(index("self-hosted") != null and all(.[]; . as $x | $pool | index($x) != null))]
+      | length' <<<"$jobs") || return 1
     total=$((total + n))
     if (( total > limit )); then break; fi
   done
@@ -60,11 +66,12 @@ route_pull_request() {
   local busy
   if [[ -z "${capacity//[[:space:]]/}" ]]; then
     capacity=10
-  elif ! [[ "$capacity" =~ ^[0-9]+$ ]]; then
+  elif ! [[ "$capacity" =~ ^[0-9]{1,4}$ ]]; then
     echo "::error::repository variable CI_SELF_HOSTED_CAPACITY must be a whole number, got: $capacity" >&2
     exit 1
   fi
-  if ! busy=$(busy_jobs "$default_labels" $((capacity - linux_jobs))); then
+  capacity=$((10#$capacity))
+  if ! busy=$(busy_jobs $((capacity - linux_jobs))); then
     echo "::warning::could not count the self-hosted runners' jobs; using ubuntu-24.04" >&2
     echo "linux=$hosted"
   elif (( capacity - busy >= linux_jobs )); then

@@ -24,9 +24,9 @@ afterAll(() => {
 const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$*" >> "$FAKE_GH/calls"
-[ "$1" = api ] || exit 1
-case "$2" in
-  */jobs*) id=\${2#*/runs/}; f=jobs-\${id%%/*} ;;
+[ "$1" = api ] && [ "$2" = --paginate ] || exit 1
+case "$3" in
+  */jobs*) id=\${3#*/runs/}; f=jobs-\${id%%/*} ;;
   *status=in_progress*) f=in_progress ;;
   *status=queued*) f=queued ;;
   *) exit 1 ;;
@@ -111,13 +111,31 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: [...others, ...running(5, ["Self-Hosted", "self-hosted-ovis"])] } }) }))
         .toEqual(ovis);
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: [...others, ...running(7)] } }) })).toBe("ubuntu-24.04");
+      // a job asking for fewer labels can take those runners too
+      for (const labels of [["self-hosted"], ["self-hosted", "linux", "x64"]]) {
+        expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(7, labels) } }) })).toBe("ubuntu-24.04");
+      }
+    });
+
+    it("counts the jobs on every page", () => {
+      const state = actions({ in_progress: { 1: running(1) } });
+      const page = (jobs: Job[]) => JSON.stringify({ jobs });
+      writeFileSync(join(state, "jobs-1.json"), `${page(running(4))}\n${page(running(3))}\n`);
+      writeFileSync(join(state, "in_progress.json"), `{"workflow_runs":[]}\n{"workflow_runs":[{"id":1}]}\n`);
+      // counted, not a failed count falling back to hosted
+      const result = route({ ...pr, FAKE_GH: state });
+      expect(result.stdout).toBe('linux="ubuntu-24.04"\n');
+      expect(result.stderr).toContain("at least 7 of 10");
+      expect(result.stderr).not.toContain("::warning::");
     });
 
     it("takes the capacity from CI_SELF_HOSTED_CAPACITY", () => {
       expect(routed({ ...pr, FAKE_GH: actions({}), SELF_HOSTED_CAPACITY: "4" })).toEqual(ovis);
       expect(routed({ ...pr, FAKE_GH: actions({}), SELF_HOSTED_CAPACITY: "3" })).toBe("ubuntu-24.04");
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(10) } }), SELF_HOSTED_CAPACITY: "14" })).toEqual(ovis);
-      for (const value of ["ten", "-1", "4.5"]) {
+      expect(routed({ ...pr, FAKE_GH: actions({}), SELF_HOSTED_CAPACITY: "08" })).toEqual(ovis);
+      expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(6) } }), SELF_HOSTED_CAPACITY: "010" })).toEqual(ovis);
+      for (const value of ["ten", "-1", "4.5", "99999999999999999999"]) {
         const result = route({ ...pr, FAKE_GH: actions({}), SELF_HOSTED_CAPACITY: value });
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
