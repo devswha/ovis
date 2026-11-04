@@ -265,6 +265,7 @@ For isolated phone viewer and keyboard layout regressions (no herdr session; the
 bun scripts/file-viewer-mobile-regression.ts  # 8 viewport cases × tall/wide images
 bun scripts/keyboard-viewport-regression.ts   # keyboard, rotation and measured standalone status inset
 bun scripts/keyboard-viewport-demo-regression.ts # original real-app viewport suite on disposable demo fixtures
+bun scripts/unconfirmed-input-demo-regression.ts # typing the socket took but the server never read, then a dropped connection: held for review, not lost and not sent after the reconnect (#2587)
 bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keyboard control: current-mode focus, measured state, composition refusal, observe/held/offline/ended; `--serve-ios` only serves the build on loopback for a Simulator
 bun scripts/droplet-demo-regression.ts        # real-app alerts below the header, keyboard and landscape
 bun scripts/chat-greeting-demo-regression.ts  # an empty chat's greeting: centred on a desktop, docked on a phone
@@ -1035,10 +1036,15 @@ pages or credentials.
 ### Self-hosted runner
 
 `ci.yml`'s Linux jobs of a push run on the maintainer PC's runners (labels
-`["self-hosted","self-hosted-ovis"]`) by default; other events, pull requests included, stay on
-`ubuntu-24.04`, so a pull request's timing-sensitive browser checks do not share that PC's CPU with
-the agents working there. The repository variable `CI_SELF_HOSTED_LABELS` overrides that (labels
-send same-repository pull requests back to the self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
+`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too
+while those runners have room for its four Linux jobs, and to `ubuntu-24.04` (with the browser
+checks sharded) when they do not, so neither pool queues while the other sits idle. The workflow
+token cannot list runners, so Detect changes counts room from the Actions API: the repository
+variable `CI_SELF_HOSTED_CAPACITY` (default 10, the PC's `self-hosted-ovis` runners) minus the
+queued and running jobs of every workflow that target those labels. When that count fails, the
+pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
+`CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
+self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline. `pages.yml`
 and `release.yml` stay on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 
