@@ -94,6 +94,27 @@ HC_SESSION=ovis-try XDG_RUNTIME_DIR=$d/run XDG_STATE_HOME=$d/state XDG_CONFIG_HO
 
 On macOS, `open -n dist/mac-arm64/Ovis.app --args --user-data-dir="$d/app"` with the same `HC_SESSION`.
 
+## End-to-end checks
+
+`scripts/e2e.ts` checks a built app the way a new user meets it, in a temporary HOME with its own
+PATH (no herdr, no hc), hc session and user data folder, so nothing of the PC's own is touched:
+
+```sh
+bun scripts/e2e.ts dist/Ovis-*.AppImage       # Linux; starts its own Xvfb when there is no DISPLAY
+bun scripts/e2e.ts dist/mac-arm64/Ovis.app    # macOS, from a logged-in desktop session
+bun scripts/e2e.ts --update                   # Linux: packages 0.0.1 and 0.0.2 from stage/ and out/,
+                                              # then updates the first from a local https feed
+```
+
+It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
+stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
+stays), the tray's items, a killed app (the next start ends the server left behind) and, with
+`--update`, Restart to Update. The app's main process is driven through its inspector, which
+also presses the tray's items. Screenshots, the app's output and `results.json` go to `--out`
+(a temporary folder by default); the exit code is 0 when every check passed. A check that fails
+for a filed bug says KNOWN with the issue and does not fail the run. Without `libfuse.so.2` the
+AppImage runs unpacked (`APPIMAGE_EXTRACT_AND_RUN=1`).
+
 ## Licenses
 
 The app ships Ovis's own `LICENSE` and `THIRD_PARTY_NOTICES.md` in `resources/ovis/`,
