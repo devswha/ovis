@@ -67,9 +67,9 @@ import { lettaLocalSettings, resolveLettaTranscript } from "./letta-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
+import { copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
-import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
+import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
@@ -1585,9 +1585,11 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   }
   const environment = processEnviron(foreground.pid);
   const argv = foreground.argv ?? [];
-  const selected = copilotProcessSession(environment, argv, foreground.pid);
+  const resolution = readCopilotProcessSession(environment, argv, foreground.pid);
+  const selected = resolution.session;
   const logged = selected?.logged ? selected : null;
-  if (logged !== null && !(await claimedByPeer(logged.sessionId))) {
+  const peerConflict = logged !== null && await claimedByPeer(logged.sessionId);
+  if (logged !== null && !peerConflict) {
     const path = copilotTranscriptFile(logged.sessionId, selected);
     if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged.sessionId)
       return { path, binding: `${foreground.pid}:${logged.generation}`, peerClaims: await peerClaims! };
@@ -1605,8 +1607,12 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     && !(await claimedByPeer(pending.sessionId))) {
     throw new ConversationNotStarted(pending.sessionId, "copilot-transcript", pending.path);
   }
+  const diagnostic = resolution.diagnostic ?? (peerConflict ? "copilot_peer_conflict"
+    : logged !== null ? "copilot_transcript_unreadable"
+    : report == null ? "copilot_report_missing"
+    : selected?.sessionId !== report.value ? "copilot_report_mismatch" : "copilot_transcript_unreadable");
   throw new ConversationUnavailable(copilotExplicitResume(argv) ? "copilot_resume_unknown" : report == null ? "no_session_id" : "no_session_path",
-    undefined, copilotExplicitResume(argv) ? "copilot_resume_unproved" : "copilot_foreground_unproved");
+    undefined, diagnostic);
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
@@ -1878,7 +1884,9 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (!(error instanceof ConversationUnavailable)) throw error;
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (pane === undefined) { launchedAgents.forget(paneId); throw error; }
-    if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
+    // A chat that names the history it shows may wait out a rejection that says nothing of that history's end
+    if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)
+      && !(page.history_id !== undefined && copilotRecoverable(error.diagnostic))) throw new HistoryChanged();
     if (pane.agent === "copilot") throw error;
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);
