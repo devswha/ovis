@@ -57,6 +57,9 @@ it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", asyn
   // a herdr OVIS_HERDR_BIN names outside those places is the TUI Ovis runs
   touch(join(root, "opt", "herdr"));
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_HERDR_BIN: join(root, "opt", "herdr") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
+  // a config HERDR_CONFIG_PATH names is herdr's TUI too
+  touch(join(root, "etc", "herdr.toml"));
+  expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, HERDR_CONFIG_PATH: join(root, "etc", "herdr.toml") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
   // a bare name is found on PATH, as the spawn finds it
   touch(join(root, "bin", "custom-herdr"));
   chmodSync(join(root, "bin", "custom-herdr"), 0o755);
@@ -87,6 +90,9 @@ it("never chooses herdr-core by itself where it is not served", async () => {
   for (const platform of ["win32", "freebsd"] as const) {
     expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform, find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
   }
+  // nor from a saved choice, which a state folder carried over from another PC may hold
+  saveRuntime(state, 7, { runtime: "herdr-core", previous: null });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
 });
 
 it("takes OVIS_RUNTIME first, then the choice saved in Settings, then the PC's facts", async () => {

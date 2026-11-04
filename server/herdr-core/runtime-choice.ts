@@ -50,7 +50,10 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
   const named = env["OVIS_HERDR_BIN"];
   // a bare name is looked up on PATH, as the spawn does (server/core/terminal-process.ts)
   const namedFound = named !== undefined && named !== "" && (/[\\/]/.test(named) ? isFile(named) : Bun.which(named, { PATH: env["PATH"] ?? "" }) !== null);
-  const tuiInstalled = herdrOnPath || namedFound || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")));
+  // HERDR_CONFIG_PATH names herdr's config wherever it is kept (herdrConfigPath in server/herdr-sidebar.ts)
+  const configPath = env["HERDR_CONFIG_PATH"];
+  const tuiInstalled = herdrOnPath || namedFound || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")))
+    || (configPath !== undefined && configPath !== "" && isFile(configPath));
   // the socket HERDR_SOCKET names and the default one are both traces: a stale variable hides no running TUI
   const tuiRunning = [env["HERDR_SOCKET"], ...herdrDirs.map((dir) => join(dir, "herdr.sock"))].some((socket) => socket !== undefined && socket !== "" && exists(socket));
   const systemApps = options.systemAppDirs ?? (platform === "darwin" ? ["/Applications"] : []);
@@ -94,12 +97,13 @@ export async function chooseRuntime(options: ChooseOptions): Promise<RuntimeChoi
   const env = options.env ?? process.env;
   const named = environmentRuntime(env);
   if (named !== undefined) return { runtime: named, source: "env", reason: `OVIS_RUNTIME=${named}` };
+  // herdr-core is served on Linux and macOS only: elsewhere only OVIS_RUNTIME asks for it, and fails loudly;
+  // a saved choice (a state folder carried over from another PC) never does
+  const platform = options.platform ?? process.platform;
+  if (platform !== "linux" && platform !== "darwin") return { runtime: "herdr", source: "detected", reason: `herdr-core is not served on ${platform}` };
   const saved = readSavedRuntime(options.stateDir, options.port);
   if (saved !== null) return { runtime: saved.runtime, source: "saved", reason: `chosen in Settings (${runtimeFile(options.port)})` };
   const traces = runtimeTraces(options);
-  // herdr-core is served on Linux and macOS only: elsewhere only OVIS_RUNTIME asks for it, and fails loudly
-  const platform = options.platform ?? process.platform;
-  if (platform !== "linux" && platform !== "darwin") return { runtime: "herdr", source: "detected", reason: `herdr-core is not served on ${platform}` };
   if (traces.tuiInstalled || traces.tuiRunning) return { runtime: "herdr", source: "detected", reason: "herdr's TUI is on this PC" };
   if (!traces.appInstalled && !traces.coreRunning) return { runtime: "herdr", source: "detected", reason: "neither herdr's TUI nor the Herdr app is on this PC" };
   const core = await (options.find ?? (() => discoverHc({ env, ...(options.home === undefined ? {} : { home: options.home }), ...(options.platform === undefined ? {} : { platform: options.platform }) })))();
