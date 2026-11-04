@@ -145,6 +145,11 @@ const BLOCKED_PROMPT_READS = 6;
  * enough that a turn the agent begins by itself shows its Working head within a second.
  */
 const ANSWER_STATUS_LAG_MS = 800;
+/**
+ * How long a Claude turn stays "Working…" after herdr's status rests before its answer is read: the
+ * transcript trailed the status by up to about 1 s at the turn ends measured (#2550).
+ */
+const ANSWER_READ_WAIT_MS = 2_000;
 // failed prompt reads in a row before the card says it may be out of date: one is a hiccup
 const PROMPT_STALE_READS = 2;
 /** The prompt each pane's chat last read (by paneStorageId): a chat drawn again (back from the
@@ -1262,8 +1267,16 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [screenRead, setScreenRead] = useState(false);
   // Native Grok/Agy events can arrive while Herdr still reports ready/done. This is display
   // feedback only: sending, queuing and stopping retain the server's input authority.
-  const activity = state.activity ?? (agentStatus === "working" ? "working" : "idle");
-  const workStatus = state.activity !== undefined && agentStatus !== "blocked" ? activity === "idle" ? "idle" : "working" : agentStatus;
+  // herdr rested while the turn on screen has no answer yet (the page then): the turn is shown at work
+  // until a read changes that page with anything but more of an unanswered turn (its answer, a turn
+  // of the user's), or for ANSWER_READ_WAIT_MS with no such read. Display only, as above.
+  const [answerWait, setAnswerWait] = useState<{ pane: string; page: ConversationTurn[] } | null>(null);
+  const pageEnd = state.turns.at(-1);
+  const awaitingAnswer = answerWait !== null && answerWait.pane === paneId && (agentStatus === "idle" || agentStatus === "done")
+    && (answerWait.page === state.turns || (pageEnd?.role === "assistant" && !endedOnAnswer(pageEnd)));
+  const shownStatus = awaitingAnswer ? "working" : agentStatus;
+  const activity = state.activity ?? (shownStatus === "working" ? "working" : "idle");
+  const workStatus = state.activity !== undefined && agentStatus !== "blocked" ? activity === "idle" ? "idle" : "working" : shownStatus;
   const [error, setError] = useState<UserFailure | null>(null);
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
   /** reads failed in a row: a slow PC is waited for this many times before the chat alarms */
@@ -1990,6 +2003,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
+    // A wheel or a drag up the transcript moves the view before its scroll event comes: a follow the
+    // list queued before it (a long chat's first open) would land first and take the reader back to
+    // the end (#2594). A key may not scroll the transcript at all (focus on a button), so it drops
+    // nothing: its scroll event decides.
+    const readingUp = (): void => {
+      scrollInputAt.current = performance.now();
+      dropPendingListScroll(timeline.current);
+    };
     const mark = (event: Event): void => {
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
@@ -2023,7 +2044,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // event, and a new press is a new gesture
       if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
-      if (event instanceof WheelEvent && event.deltaY < 0) scrollInputAt.current = performance.now();
+      if (event instanceof WheelEvent && event.deltaY < 0) readingUp();
       if (event instanceof PointerEvent) {
         if (event.type === "pointerdown") {
           pointer = { x: event.clientX, y: event.clientY };
@@ -2038,7 +2059,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       if ((event.type === "touchstart" || event.type === "touchmove") && event instanceof TouchEvent) {
         const y = event.touches[0]?.clientY;
-        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) scrollInputAt.current = performance.now();
+        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) readingUp();
         touchY = y;
       }
     };
@@ -2254,19 +2275,44 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   heldPage.current = state.turns;
   const finishedBeforeSend = sentOver !== null && sentOver.page === state.turns ? sentOver.turn : null;
   const lastShownTurn = state.source === "conversation" ? shownTurns.at(-1) : undefined;
+  // Claude Code's activity is herdr's status, which can rest before a read holds the turn's answer:
+  // the turn stays at work until one does. Before paint, so no frame shows it ended with no answer.
+  const answerEdge = useRef<{ pane: string; status: AgentStatus | undefined }>({ pane: paneId, status: agentStatus });
+  useLayoutEffect(() => {
+    const seen = answerEdge.current;
+    answerEdge.current = { pane: paneId, status: agentStatus };
+    if (seen.pane !== paneId || seen.status !== "working" || (agentStatus !== "idle" && agentStatus !== "done")) return;
+    if (state.conversationSource !== "claude-transcript" || state.activity !== undefined || lastShownTurn === undefined) return;
+    if (lastShownTurn.role === "assistant" && endedOnAnswer(lastShownTurn)) return;
+    setAnswerWait({ pane: paneId, page: state.turns });
+  }, [paneId, agentStatus]);
+  // a read that brings more of the unanswered turn shows the transcript still moves: the wait starts again
+  const awaitedPage = awaitingAnswer ? state.turns : null;
+  useEffect(() => {
+    if (answerWait === null) return;
+    const timer = window.setTimeout(() => setAnswerWait(null), ANSWER_READ_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [answerWait, awaitedPage]);
   const lastSplit = lastShownTurn !== undefined && isLiveWorkTurn(lastShownTurn, true, workStatus, finishedBeforeSend) ? splitTurn(lastShownTurn.parts) : null;
   // the last turn runs and already says the agent works: its work block, or the head standing in
   // for one while it has no answer yet
   const workBlockLive = lastSplit !== null && (visibleWorkParts(lastSplit.work, settings.showThinking).length > 0 || lastSplit.answer.length === 0);
   // a running turn with words and no work rows: the activity is a line under its words, as before
   const answerOnlyLive = lastSplit !== null && !workBlockLive;
+  // the last turn ended on its answer, named by its row (two turns can share a start time)
+  const answeredRow = lastShownTurn?.role === "assistant" && endedOnAnswer(lastShownTurn) ? slots.current.rows[shownTurns.length - 1]?.key ?? null : null;
+  // the answered row the pane was last seen at rest under: working again after that, a turn began.
+  // Blocked (waiting on the user) or an unknown status is no rest: the answer may still be trailed.
+  const restedUnder = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if ((workStatus === "idle" || workStatus === "done") && answeredRow !== null) restedUnder.current = answeredRow;
+  }, [workStatus, answeredRow]);
   // working over a turn that ended on its answer: the status trailing that answer, or a turn the agent
-  // began by itself with no row yet. The next turn's head waits out the lag, so none flashes under
-  // each answer. A send from here has its turn on the way, and its head shows at once.
-  const afterAnswer = workStatus === "working" && lastShownTurn?.role === "assistant" && lastShownTurn !== finishedBeforeSend && endedOnAnswer(lastShownTurn);
-  // the wait runs for that finished turn, named by its start (no later read of it changes that): a new
-  // turn read in already finished waits its own, and the frame it first shows in draws no head
-  const answerTurn = afterAnswer && lastShownTurn !== undefined ? lastShownTurn.ts ?? chatTurnAnchor(lastShownTurn) : null;
+  // began by itself with no row yet. A send from here has its turn on the way, and its head shows at once.
+  const afterAnswer = workStatus === "working" && lastShownTurn !== finishedBeforeSend && answeredRow !== null;
+  // Only a rest seen under that answer tells a new turn from a status still trailing it, however long
+  // the lag; the new turn's head then waits out the lag too, so none flashes under each answer.
+  const answerTurn = afterAnswer && restedUnder.current === answeredRow ? answeredRow : null;
   const [lagOutFor, setLagOutFor] = useState<string | null>(null);
   useEffect(() => {
     if (answerTurn === null) { setLagOutFor(null); return; }
@@ -2373,7 +2419,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
   }, [navigationRef]);
   // the rail scrolls the chat from outside it, where the input listeners do not see the wheel
-  const minimapWheel = useCallback((deltaY: number) => { if (deltaY < 0) scrollInputAt.current = performance.now(); }, []);
+  const minimapWheel = useCallback((deltaY: number) => {
+    if (deltaY < 0) { scrollInputAt.current = performance.now(); dropPendingListScroll(timeline.current); }
+  }, []);
   // a chip's action: the card's first control (the card is drawn into the dock, outside the
   // transcript), or the terminal lens where the command's screen is
   const focusPrompt = useCallback(() => {
@@ -2464,7 +2512,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           thinks (a work block's head says Working). Without native activity the pane status stands
           in. One Working at a time, so none before the first read: its rows may hold the running
           turn's own head. None seen under an answer while the status may still be catching up with it. */}
-      {connected && loaded && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && (activity === "thinking" || !workBlockLive) && (workBlockLive
+      {connected && loaded && !ended && activity !== "idle" && agentStatus !== "blocked" && prompt === null && !(greeted && blank) && (activity === "thinking" || !workBlockLive) && (workBlockLive
         // under the running turn's own head, a second head would read as a second block
         ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{t("Thinking…")}</p>
         // under a running turn's words: removing a line below them moves nothing when it ends

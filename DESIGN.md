@@ -1619,7 +1619,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   alike, shows a few words of the first message its agent was given, about 24 columns (a wide
   character takes two) cut at a word's end with `…` (#2019); its hover stays the pane's title. A
   slash command, a path or a code fence names nothing, so the next line is taken, and an attached
-  file's `@path` mention is left out, an upload's path with spaces whole (#2637). An agent's own name
+  file's `@path` mention is left out, an upload's path with spaces whole (#2637), though never the
+  words after another mention (#2682). An agent's own name
   for its conversation comes before those words: the pane's name, else herdr's pane title, else the
   terminal title of Codex (its thread) or Claude Code (its topic), the agents that name the
   conversation there (another agent's says its state, "Ready"), unless it only says which agent runs
@@ -2250,9 +2251,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   settled turn's do. A turn that ended on its final answer stays settled while the agent works
   again: a turn the agent began by itself (a background task ended) or from the terminal has no
   row yet, and the pending `Working…` head under the rows stands for it, as after a send. That
-  head waits 800 ms first: at a turn's end herdr's status trails the answer by 100–400 ms, and a
-  head under each answer would flash. While it waits it keeps its place unseen, so showing it moves
-  nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. Before
+  head shows only once the pane was seen at rest under that answer: at a turn's end herdr's status
+  trails the answer (100–400 ms, longer on a busy PC), and a head under each answer would flash.
+  It then waits 800 ms more, for a new turn's first row to bring its own head. While it waits it keeps its place unseen, so showing it moves
+  nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. The
+  other way round, herdr can rest before a read holds a Claude turn's answer (about 1 s at worst):
+  the turn stays at work until a read brings its answer or a turn of the user's, or for 2 s with
+  no such read. A read that only adds more of the unanswered turn starts the 2 s again. So it never
+  looks ended with no answer. The Codex app also keeps a turn working until its answer is in. Before
   the chat's first read, `Loading conversation…` is the only line: the rows read may hold the
   running turn's own head. A settled turn folds to its header
   with a hairline under it, and the header reads as a footnote: `--text-dim`, regular weight (the

@@ -89,7 +89,7 @@ export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
- * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr
+ * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
  * GET /api/bridge -> authenticated BridgeIdentity (socket + runtime compatibility)
  * GET /api/machines -> MachineRoster { machines: Machine[] }; GET /api/machines/events -> MachineEvent SSE
  * GET /api/machines?verify_source_boot=:id -> MachineRoster with verified_source_boot { machine_id, boot_id }:
@@ -119,9 +119,14 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *                                          web_ui: { boot_id: string, revision: string | null },
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
- *                                          the server's first look for hc has ended) } (boot_id: this server
+ *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
+ *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
+ *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" }, X-Herdr-Update: 1,
+ *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
+ *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
+ *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
  *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select,
  *         for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
@@ -342,14 +347,16 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         as it does for a send cancelled before any reply; older servers send neither)
  *  POST   /api/pane/prompt/answer { pane_id, prompt_id, option_index?, option_indices?, custom_text? }
  *         -> { ok: true } | 409 prompt_changed (the screen no longer shows that prompt)
- *  POST   /api/workspace/create { cwd?, label?, agent?: { kind, name?, args? } }
+ *  POST   /api/workspace/create { cwd?, label?, agent?: { kind, name?, args? }, env? }
  *         -> WorkspaceCreated (workspace.create, then agent.start in the root pane when `agent` is given;
  *         omo, gjc and dsh-tui, which herdr cannot start, are typed into the root pane's shell)
- *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? }, first_message?, first_message_connection? }
+ *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? }, first_message?, first_message_connection?, env? }
  *         -> TabCreated (tab.create in that workspace, then the same agent launch in the tab's root
  *         pane; without cwd herdr uses the workspace's folder, without label the tab's number)
  *         Both creates trim `label`; a blank one counts as not given, one over MAX_LABEL_CHARS
- *         (shared/labels.ts) is refused with 400 label_too_long.
+ *         (shared/labels.ts) is refused with 400 label_too_long. `env` ({ NAME: value }) is set in the
+ *         new pane's shell, and so in an agent it starts: names are shell identifiers, values text
+ *         without control characters, at most 64 names and 32 KiB in all (else 400 invalid_env).
  *  POST   /api/tab/rename { tab_id, label } -> { ok: true } (tab.rename; an empty label is refused:
  *         herdr would keep it as the name; over MAX_LABEL_CHARS: 400 label_too_long)
  *  POST   /api/tab/move { tab_id, insert_index } -> TabMoved
@@ -384,7 +391,10 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
- *         401 invalid_code when the code is wrong, spent after five tries, or expired)
+ *         401 invalid_code when the code is wrong, spent after five tries, or expired). With
+ *         `Accept: application/json` (a script, never the browser app): 200 DevicePairToken + the same
+ *         Set-Cookie; the script then sends `Authorization: Device <token>` in place of the cookie,
+ *         under the same role, last-seen and revocation
  *  PATCH  /api/devices/:id  { label }    -> PairedDevice;  DELETE /api/devices/:id -> 204 (revoked at its next request)
  *  POST   /api/devices/revoke-all        -> DevicesRevokedAll + Set-Cookie clearing ovis_device and its old name
  *         (X-Herdr-Machine: 1 + same origin, a client that can drive: 403 invalid_origin / read_only;
@@ -471,6 +481,11 @@ export interface RelayStatus {
   readonly sessions: number;
   readonly blocked: null | "serve_only" | "identity_unreadable";
   readonly error: string | null;
+}
+
+/** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
+export interface DevicePairToken {
+  readonly token: string;
 }
 
 /**
@@ -1114,6 +1129,13 @@ export type ServerMessage =
   | { type: "pane-exited"; pane_id: string }
   /** session structure changed (pane created/closed): refetch /api/session */
   | { type: "session-changed" }
+  /**
+   * herdr moved pane `from` to another workspace under the new ID `to`, wherever the move was made. Sent
+   * before the `session-changed` of that move. The server's own state follows it: pending messages are
+   * under `to` (held for an explicit send), and a terminal attached as `from` ended (`pty-exit`): attach
+   * `to` instead. Older bridges never send it; older clients ignore it.
+   */
+  | { type: "pane-moved"; from: string; to: string }
   /** herdr's own focus moved to this pane (its `pane.focused`, also sent for a tab or workspace brought
    * to the front), whoever moved it: its TUI, its CLI or a script. A browser follows it only when
    * asked to (Settings → Terminal); an older bridge never sends it */

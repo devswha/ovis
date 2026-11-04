@@ -34,6 +34,15 @@ describe("preferences sync", () => {
     expect(takePreferences(known, { ...mine, tabLabels: known.tabLabels! }, { revision: 3, settings: {}, pins: [], muted_panes: [] }, null).tabLabels).toEqual({});
   });
 
+  it("keeps a label learned again over an attachment's one another browser's save brings back (#2682)", () => {
+    const stale = "See @/Users/example/Library/\u2026";
+    const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": stale } };
+    const mine: Local = { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Fix footer" } };
+    const taken = takePreferences(known, mine, { revision: 2, settings: {}, pins: [], muted_panes: [], tab_labels: { "w1:p1|t1": stale, "w1:p2|t2": "Two" } }, null);
+    expect(taken.tabLabels).toEqual({ "w1:p1|t1": "Fix footer", "w1:p2|t2": "Two" });
+    expect(preferencesChange(taken.base, { ...mine, tabLabels: taken.tabLabels! })).toEqual({ settings: {}, tab_labels: { "w1:p1|t1": "Fix footer" }, tab_labels_removed: ["w1:p1|t1"] });
+  });
+
   it("sends no learned label while the setting is off, and takes the server's empty map", () => {
     const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: {} };
     const off = { ...DEFAULT_SETTINGS, autoTabNames: false };
@@ -91,6 +100,18 @@ describe("preferences sync", () => {
     const overtaken = takePreferences(base(DEFAULT_SETTINGS, []), local(light, []), { revision: 3, settings: { theme: "dark" }, pins: [] }, inFlight);
     expect(overtaken.patch).toEqual({ theme: "dark" });
     expect(preferencesChange(overtaken.base, local({ ...light, theme: "dark" }, []))).toBeNull();
+  });
+
+  it("keeps a setting or the pins changed back while the change was on its way, and sends them next", () => {
+    // the switch went on and its change is on its way; the user turns it off again before the server's answer, which carries on
+    const on = !DEFAULT_SETTINGS.showUsage;
+    const taken = takePreferences(base(DEFAULT_SETTINGS, []), local(DEFAULT_SETTINGS, []), { revision: 1, settings: { showUsage: on }, pins: [] }, { settings: { showUsage: on } });
+    expect(taken.patch).toEqual({});
+    expect(preferencesChange(taken.base, local(DEFAULT_SETTINGS, []))).toEqual({ settings: { showUsage: DEFAULT_SETTINGS.showUsage } });
+    // a pin made and taken back the same way
+    const unpinned = takePreferences(base(DEFAULT_SETTINGS, []), local(DEFAULT_SETTINGS, []), { revision: 1, settings: {}, pins: ["local:w1:p1"] }, { settings: {}, pins: ["local:w1:p1"] });
+    expect(unpinned.pins).toBeNull();
+    expect(preferencesChange(unpinned.base, local(DEFAULT_SETTINGS, []))).toEqual({ settings: {}, pins: [] });
   });
 
   it("a refused change gives way where another browser saved the same setting or the pins since, and stays elsewhere", () => {

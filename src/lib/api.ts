@@ -1,9 +1,9 @@
 import { apiFetch } from "./api-request-id.ts";
 import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
-import type { SeenFinish } from "../../shared/seen.ts";
+import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import type { AgentCatalogResponse, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import { resumeConnectionTraces } from "./connectionTrace.ts";
-import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -204,6 +204,13 @@ export function fetchHerdrUpdate(): Promise<HerdrUpdateStatus> {
   return getJson<HerdrUpdateStatus>("/api/herdr/update");
 }
 
+/** Settings → About → Terminals: saves `runtime` and has the server start again on it (server/herdr-core/runtime-choice.ts). */
+export async function switchRuntime(runtime: "herdr" | "herdr-core"): Promise<void> {
+  const url = "/api/runtime";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ runtime }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 export async function requestHerdrUpdate(): Promise<void> {
   const url = "/api/herdr/update";
   const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
@@ -277,11 +284,13 @@ export async function savePreferences(body: PreferencesChange, keepalive = false
 
 /**
  * Tells every browser of this server that this one presented a finish (shared/seen.ts). A server
- * that predates it (404) or a watching device (403) keeps the read to this browser.
+ * that predates it (404) or a watching device (403) keeps the read to this browser; one that
+ * predates `presented` ignores it.
  */
-export async function shareSeen(finish: SeenFinish): Promise<void> {
+export async function shareSeen(finish: SeenFinish, presented?: SeenPresentation): Promise<void> {
   const url = "/api/seen";
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(finish) });
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(presented === undefined ? finish : { ...finish, presented }) });
   if (response.ok || response.status === 404 || response.status === 403) return;
   throw await errorFrom(url, response);
 }
@@ -770,6 +779,8 @@ export interface HealthInfo {
   security?: SecuritySummary;
   /** authenticated only; absent from an older server and until the server's first look for hc has ended */
   herdr_core?: HerdrCoreFacts;
+  /** a driving owner only; absent from an older server */
+  herdr_runtime?: HerdrRuntimeFacts;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {
