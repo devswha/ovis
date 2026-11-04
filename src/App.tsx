@@ -1,6 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Ellipsis, FolderOpen, Globe, Link, Menu, MessageSquare, Monitor, Network, PanelLeft, RadioTower, Search, SquareTerminal, Wifi, X } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { authenticate, createTab, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
@@ -87,8 +86,7 @@ import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
 import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionChip.ts";
 import { useHeaderConnection } from "./lib/headerConnection.ts";
-import { connectionRoute, type ConnectionRoute } from "./lib/connectionRoute.ts";
-import { inRelayShell } from "./lib/useRelay.ts";
+import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
@@ -153,27 +151,6 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
     <span className={`conn ${connected ? "conn-live" : "conn-reconnecting"}${quiet ? " conn-quiet" : ""}`} role="status" title={title}>
       <span className="conn-dot" aria-hidden="true" />
       <span className="conn-text">{shown}</span>
-    </span>
-  );
-}
-
-/** How this device reaches the Ovis it shows (lib/connectionRoute.ts), in the header at all times:
-    one glyph and one short word, the sentence in its title. It is about the page's own connection,
-    which every PC the sidebar lists shares, so it sits with the connection chip, not on a PC.
-    Tailscale and LAN are names, the same in every language. */
-function ConnectionRouteMark({ route }: { route: ConnectionRoute }) {
-  const t = useT();
-  const [Icon, word, title]: [LucideIcon, string, string] =
-    route === "relay" ? [RadioTower, t("relay"), t("Connected through the Ovis relay")]
-    : route === "tailscale" ? [Network, "Tailscale", t("Connected over Tailscale")]
-    : route === "lan" ? [Wifi, "LAN", t("Connected over the local network")]
-    : route === "direct" ? [Globe, t("direct"), t("Connected straight to this address")]
-    : [Monitor, t("on this PC"), t("Open on this PC")];
-  return (
-    <span className="conn-route" data-route={route} title={title}>
-      <Icon aria-hidden="true" />
-      <span className="conn-route-word">{word}</span>
-      <span className="visually-hidden">{title}</span>
     </span>
   );
 }
@@ -414,7 +391,6 @@ export function App() {
 
   const { bell, bellVisible, alertsOffDot } = alertsBell({ t, settings, alertsOn, notifications, pushOn, enableNotifications, disableNotifications });
   const connWord = t(connected ? "live" : outputStopped ? "disconnected" : connectedBefore ? "reconnecting" : "connecting");
-  const route = useMemo(() => connectionRoute({ relay: inRelayShell(), hostname: window.location.hostname }), []);
   // each split half has sockets of its own, even on one PC: the line is about the active half's
   const headerConnection = useHeaderConnection({ scope: `${split ? split.active : soloSlot}:${selectedMachineId}`, reportedBy, connected, connectedBefore, outputStopped });
   const crumb = selectedPane && selectedTitle !== null
@@ -744,7 +720,7 @@ export function App() {
         )}
         <div className="header-meta">
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
-          <ConnectionRouteMark route={route} />
+          <ConnectionRouteMark />
           {!guideShown && <ConnectionChip
             connected={connected}
             word={connWord}
