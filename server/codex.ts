@@ -2902,8 +2902,8 @@ async function freshReportedThread(
 }
 
 /** The pane's Codex processes, and the rollouts they hold open (lsof on macOS, /proc elsewhere): one alone is the pane's. */
-async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string> }> {
-  const { list: codexProcesses, key: processes } = await codexProcessesOf(paneId, known);
+async function openRollouts(paneId: string, home: string): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string> }> {
+  const { list: codexProcesses, key: processes } = await codexProcessesOf(paneId);
   const open = new Set<string>();
   if (globalThis.process.platform === "darwin" && codexProcesses.length > 0) {
     // lsof is available on macOS, where /proc does not exist. Keep the same
@@ -3005,7 +3005,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const agent = await codexAgentInfo(paneId, known);
   const session = agent.agent_session;
 
-  const { codexProcesses, processes, open } = await openRollouts(paneId, home, known);
+  // always read now, never the caller's earlier answer: a screen match below binds the rollout to these processes,
+  // and one read before a Codex left (or before its pid came back) would bind a conversation to the wrong one
+  const { codexProcesses, processes, open } = await openRollouts(paneId, home);
   // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
   // a Codex gone since) ties it to no conversation, and the terminal stands in
   if (codexProcesses.length === 0) return null;

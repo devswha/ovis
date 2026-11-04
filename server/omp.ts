@@ -302,8 +302,9 @@ export interface OmpRoute {
  * the pane shows. omp's helpers count for nothing.
  */
 export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): Promise<OmpRoute | "unproved" | null> {
-  // `known`: herdr's answer the caller's poll already read for this pane (null: no processes)
-  const info = known !== undefined ? known : await paneProcessInfo(paneId).catch(() => null);
+  // `known`: herdr's answer the caller's poll already read for this pane. One that named no processes is asked again:
+  // with no omp seen herdr's reported session is trusted, and an omp started since may keep another store
+  const info = known ?? await paneProcessInfo(paneId).catch(() => null);
   let layout: OmpLayout | null = null;
   const pids: number[] = [];
   const launchDirs = new Set<string | null>();

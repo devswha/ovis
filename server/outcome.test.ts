@@ -552,8 +552,9 @@ describe("session-scoped command outcomes", () => {
     }
   });
 
-  // the Codex, omp and gjc lookups take the poll's process read too, rather than asking herdr again (#1879)
-  for (const [agent, text] of [["codex", "$imagegen"], ["omp", "/context"], ["gjc", "/context"]] as const) {
+  // the Codex, omp and gjc lookups take the poll's process read too, rather than asking herdr again (#1879); Codex
+  // reads once more right before a screen match may bind a rollout to its processes
+  for (const [agent, text, reads] of [["codex", "$imagegen", 2], ["omp", "/context", 1], ["gjc", "/context", 1]] as const) {
     it(`reads a ${agent} pane's processes once per poll while a command's transcript is open`, async () => {
       const store = mkdtempSync(join(tmpdir(), `outcome-${agent}-store-`));
       const previous = process.env.CODEX_HOME;
@@ -570,7 +571,7 @@ describe("session-scoped command outcomes", () => {
           const before = calls();
           expect((await served(paneId)).outcomes?.map(({ id }) => id)).toEqual([command.id]);
           const made = (method: string) => (calls()[method] ?? 0) - (before[method] ?? 0);
-          expect(made("pane.process_info")).toBe(1);
+          expect(made("pane.process_info")).toBe(reads);
           expect(made("session.snapshot")).toBe(1);
         });
       } finally {
