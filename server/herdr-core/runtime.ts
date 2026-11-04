@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
+import { SeenMarker } from "./seen-label.ts";
 import { existsSync } from "node:fs";
 import { discoverHc, findHc, lastFoundHc, type FoundHc } from "./discovery.ts";
 
@@ -44,6 +45,14 @@ export function servingCore(): boolean {
   return serving;
 }
 
+let marker: SeenMarker | null = null;
+
+/** The server's one `herdr.seen` writer, which the adapter's events tell what other clients marked seen. */
+export function coreSeenMarker(): SeenMarker {
+  marker ??= new SeenMarker(coreConnection());
+  return marker;
+}
+
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
   connection ??= new HcConnection(() => spawnHcConnect(hcBin()));
@@ -72,7 +81,7 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
   if (statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   chmodSync(stateDir, 0o700);
   const hc = coreConnection();
-  const adapter = await startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
+  const adapter = await startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels));
   chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
   serving = true;
@@ -82,6 +91,7 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
       adapter.stop();
       hc.close();
       connection = null;
+      marker = null;
       serving = false;
       found = null;
     },

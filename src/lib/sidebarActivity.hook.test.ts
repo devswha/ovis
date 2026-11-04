@@ -345,7 +345,8 @@ describe("sidebar finish acknowledgement through React effects", () => {
         expect(post.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
           ["/api/seen", "POST"], ["/api/seen", "POST"],
         ]);
-        expect(delivered).toEqual([{ pc: "local", epoch: "server-a", pane: "a", id: 1, presented: "new" }]);
+        // a retry tells an earlier look: it cannot overrule an unread told since
+        expect(delivered).toEqual([{ pc: "local", epoch: "server-a", pane: "a", id: 1, presented: "held" }]);
       } finally { post.mockRestore(); }
     });
   }
@@ -501,7 +502,8 @@ describe("sidebar finish acknowledgement through React effects", () => {
       // When one later health response confirms sign-in.
       authenticated = true;
       await act(async () => { jest.advanceTimersByTime(2_000); });
-      for (let index = 0; index < 100; index++) await client.update(roster({ [`p${index}`]: 1 }), `p${index}`);
+      // roster updates on the pane still in front (going back to the others would be a look again)
+      for (let index = 0; index < 100; index++) await client.update(roster({ p99: 1 }), "p99");
       await act(async () => { jest.advanceTimersByTime(60_000); });
 
       // Then every finish is delivered exactly once, and health polling stops.
@@ -588,18 +590,20 @@ describe("sidebar finish acknowledgement through React effects", () => {
     // away and back: the same finish, now shown again
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // once told as shown, coming back to it tells nothing more
+    // once told as a look, coming back to it tells nothing more
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // under an overlay and back is shown again too, and a finish that arrived while away is new
+    // an overlay (or content still loading) and a reconnect are no look: the pane stayed selected
     await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a", true);
     await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a");
-    // a reconnect is no look: the pane stayed on screen
     const away = roster({ a: 4, b: 1 }, { b: "working" });
     away[0]!.state = "reconnecting";
     await client.update(away, "a");
     await client.update(roster({ a: 4, b: 1 }, { b: "working" }), "a");
-    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "new"], [4, "held"]]);
+    // a pane selected while covered is new once it is first presented
+    await client.update(roster({ a: 4, b: 5 }), "b", true);
+    await client.update(roster({ a: 4, b: 5 }), "b");
+    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "held"], [4, "held"], [5, "new"]]);
   });
 
   it("upgrades a shared finish when its same-ID answer fingerprint becomes available", async () => {

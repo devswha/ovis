@@ -23,9 +23,8 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { coreConnection, hcBin, servingCore, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, coreSeenMarker, hcBin, servingCore, startRuntime } from "./herdr-core/runtime.ts";
 import { bridgePins } from "./herdr-core/pin-label.ts";
-import { SeenMarker } from "./herdr-core/seen-label.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
 import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
@@ -303,7 +302,7 @@ export function createServer(
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
   // pane's finish now, so a read told late never marks a turn that ended since as seen. A pane brought
   // into view writes it again (shared/seen.ts SeenPresentation); one left on screen does not
-  const seenMarker = servingCore() ? new SeenMarker(coreConnection()) : null;
+  const seenMarker = servingCore() ? coreSeenMarker() : null;
   const markSeen = (finish: SeenFinish, again: boolean) => {
     if (!seenMarker || finish.pc !== LOCAL_MACHINE || machines?.finishEnded(finish.pc, finish.epoch) !== false) return;
     const pane = machines.list().find((machine) => machine.id === LOCAL_MACHINE)?.snapshot?.panes.find((candidate) => candidate.pane_id === finish.pane);

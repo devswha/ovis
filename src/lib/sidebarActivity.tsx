@@ -19,7 +19,10 @@ export const useSidebarActivity = (): SidebarActivity => useContext(SidebarActiv
 
 interface MachineSeen { epoch: string; record: SeenRecord }
 interface SharedFinish extends SeenFinish {
+  /** how the next send tells it: `held` once put off or retried, a look made earlier (shared/seen.ts SeenPresentation) */
   presented: SeenPresentation;
+  /** how the server was told it, once it answered */
+  told?: SeenPresentation;
   retry?: () => Promise<boolean>;
 }
 interface ShareRecovery {
@@ -59,9 +62,11 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
   const shared = useRef(new Map<string, SharedFinish>());
   const recovery = useRef<ShareRecovery>({ timer: undefined, unauthorized: false, running: false, wait: 1_000 });
   const shareRef = useRef(share); shareRef.current = share;
-  // the pane in front of a person at the last look ([pc, epoch, pane]), to tell a pane just brought
-  // into view from one that stayed in front while its finish arrived
+  // the pane selected on a visible page at the last look ([pc, epoch, pane]), and the one brought into
+  // view since that has not been presented yet: a finish that arrives while its pane stays selected is
+  // `held`, even across an overlay, a reconnect or content still loading (shared/seen.ts SeenPresentation)
   const front = useRef<string | null>(null);
+  const arriving = useRef<string | null>(null);
   useEffect(() => {
     const onVisibility = () => setPageVisible(document.visibilityState === "visible");
     document.addEventListener("visibilitychange", onVisibility);
@@ -149,12 +154,16 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
           }
         }
       }
-      const inView = machine.id === selectedMachineId && pageVisible && presentedPaneId !== null && paneInFront();
-      const pane = inView && machine.state === "connected" ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
-      // a reconnect is not a look: the pane stayed on screen
+      const inView = machine.id === selectedMachineId && pageVisible && presentedPaneId !== null;
+      const pane = inView && machine.state === "connected" && paneInFront()
+        ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
       const frontKey = inView ? JSON.stringify([machine.id, epoch, presentedPaneId]) : null;
-      if (frontKey) nextFront = frontKey;
-      const presented: SeenPresentation = frontKey !== null && front.current === frontKey ? "held" : "new";
+      if (frontKey !== null) {
+        nextFront = frontKey;
+        if (front.current !== frontKey) arriving.current = frontKey;
+      }
+      const presented: SeenPresentation = frontKey !== null && arriving.current === frontKey ? "new" : "held";
+      if (pane && arriving.current === frontKey) arriving.current = null;
       if (pane?.agent_status === "done" && !pane.background_wait && pane.finish_id !== undefined && pane.finish_id > 0) {
         const answer = conversationFinishEvidence.answer(seenKey(machine.id, epoch, pane.pane_id), pane.finish_id);
         saveSeen(machine.id, epoch, pane.pane_id, pane.finish_id, answer);
@@ -162,8 +171,8 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         const key = JSON.stringify([finish.pc, finish.epoch, finish.pane]);
         const previous = shared.current.get(key);
         const answerUpgrade = previous?.id === finish.id && previous.answer === undefined && answer !== undefined;
-        // a finish that arrived while the pane stayed in front, now brought into view again
-        const shownAgain = previous?.id === finish.id && previous.presented === "held" && presented === "new";
+        // a finish told as `held`, its pane now brought into view: someone looked again
+        const shownAgain = previous?.id === finish.id && previous.told === "held" && presented === "new";
         if (!previous || finish.id > previous.id || answerUpgrade || shownAgain) {
           const sender = shareRef.current;
           if (sender) {
@@ -174,11 +183,16 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
               const oldest = shared.current.keys().next().value!;
               shared.current.delete(oldest);
             }
+            // a send put off or retried tells a look made earlier: as `held`, so it cannot overrule an
+            // unread told since
             const send = async () => {
               if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
-              if (gate.unauthorized) { sent.retry = send; return false; }
+              if (gate.unauthorized) { sent.presented = "held"; sent.retry = send; return false; }
               try {
-                await sender(finish, presented);
+                const how = sent.presented;
+                sent.presented = "held";
+                await sender(finish, how);
+                sent.told = how;
               } catch (error) {
                 if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
                 const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
@@ -190,7 +204,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
               }
               return true;
             };
-            if (gate.unauthorized || gate.running || gate.timer !== undefined) sent.retry = send;
+            if (gate.unauthorized || gate.running || gate.timer !== undefined) { sent.presented = "held"; sent.retry = send; }
             else void send();
           }
         } else if (finish.id === previous.id) {

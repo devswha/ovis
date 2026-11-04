@@ -19,6 +19,16 @@ export class SeenMarker {
 
   constructor(private readonly hc: Hc) {}
 
+  /**
+   * A terminal's turn and labels as the server learned them (adapter.ts events): a turn some client
+   * marked seen counts as written, so a "mark unread" while the pane stays on screen here stands even
+   * when Ovis was never told of a look at that turn (it was idle in front of the person).
+   */
+  observe(address: string, turn: number, labels: Record<string, string>): void {
+    const seen = seenTurnOf(labels);
+    if (seen !== null && seen >= turn && turn > (this.written.get(address) ?? -1)) this.written.set(address, turn);
+  }
+
   mark(address: string, again = false): Promise<void> {
     const run = (this.turns.get(address) ?? Promise.resolve()).then(() => this.write(address, again));
     const settled = run.catch(() => {});
@@ -35,7 +45,7 @@ export class SeenMarker {
     const seen = seenTurnOf(record.labels);
     if (seen !== null && seen >= turn) {
       // seen here and already marked elsewhere: an unread from another client later still stands
-      if (turn > (this.written.get(address) ?? -1)) this.written.set(address, turn);
+      this.observe(address, turn, record.labels ?? {});
       return;
     }
     await this.hc.call("terminal.label", { terminal: address, labels: { [SEEN_LABEL]: String(turn) } });
