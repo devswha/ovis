@@ -9,7 +9,7 @@ import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
-import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayUnreachableError } from "./channel.ts";
+import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import type { RelaySocket } from "./channel.ts";
 import { failureOf } from "./shellState.ts";
 import { base64url, getDevice } from "./device.ts";
@@ -277,6 +277,7 @@ it("calls the PC offline when the relay assigned the connection but nothing answ
   await flush();
   // Then the failure is the PC's silence, the screen is pc-offline, and the socket is closed.
   const error = outcome.get()?.error;
+  expect(error).toBeInstanceOf(RelayPcOfflineError);
   expect(error).toBeInstanceOf(MuxProtocolError);
   expect(error).toMatchObject({ code: "timeout" });
   expect(failureOf(error, { code: false, paired: true })).toBe("pc-offline");

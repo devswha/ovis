@@ -4,7 +4,7 @@ import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
-import { openRelayChannel, UnsafeRelayDestinationError } from "./channel.ts";
+import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
 import type { RelayChannel, RelayChannelOptions, RelayServerInfo } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { relayResourceUrl, serveRelayResources } from "./resources.ts";
@@ -175,7 +175,13 @@ export class RelayTransport implements Transport {
   /** A reconnect that failed: tried again later, unless no later attempt could succeed. */
   private failed(error: unknown): void {
     if (this.stopped) return;
-    if (!isFatalRelayError(error)) { this.retry(); return; }
+    if (!isFatalRelayError(error)) {
+      // an attempt the relay held PC_ANSWER_MS for an absent PC was a wait, not a hammering: no
+      // growing pause between such waits, so a PC back from a restart is reached within a second
+      if (error instanceof RelayPcOfflineError) this.delay = 1000;
+      this.retry();
+      return;
+    }
     this.close();
     this.options.onFatal?.(error);
   }
