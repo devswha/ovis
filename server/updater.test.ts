@@ -569,6 +569,10 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(updater.status.channel).toBe("stable");
     expect(updater.status.available).toBe(false);
     expect(updater.status.latest_version).toBeNull();
+    // a stable updater fetches refs/tags/v* alone, as every released one did (v0.4.18 to v0.4.22):
+    // the beta/* tags never reach its checkout
+    expect(await git(root, "for-each-ref", "refs/tags/beta/")).toBe("");
+    expect(await git(root, "tag", "--list", "v0.3.0-beta.1")).toBe("v0.3.0-beta.1");
   });
 
   it("on the beta channel, installs the newest beta build, and takes the release after it", async () => {

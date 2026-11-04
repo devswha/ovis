@@ -4,8 +4,8 @@ name: Beta
 # docs/guide.md#beta-builds). Nobody else is offered one: a stable updater takes plain vX.Y.Z tags only.
 #
 # - tag: tags the newest main commit with a successful CI push run beta/vX.Y.Z-beta.N, where X.Y.Z is the
-#   version main is heading for (package.json's, or its next patch once that version is released) and N
-#   counts up per version. The tags stay outside v*, which the installers, the app setups and the
+#   next patch after package.json's version (released; while a release is being prepared, no beta is
+#   made, since the build takes its Rust PTY host from that release) and N counts up per version. The tags stay outside v*, which the installers, the app setups and the
 #   release jobs read as releases. The server's updater on the beta channel builds and installs it like a
 #   release. Whichever CI run triggered it, a run publishes the newest green commit, so a run that waited
 #   or was displaced loses nothing; a commit a newer tag already contains gets none, and one already
@@ -85,10 +85,14 @@ jobs:
               echo "::error::package.json's version '$version' is not X.Y.Z." >&2
               exit 1
             fi
-            # once X.Y.Z is released, main is heading for the next patch
-            if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
-              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            # a release being prepared (package.json raised, vX.Y.Z not out yet) gets no beta: the build
+            # fetches its Rust PTY host from the release of package.json's version, which does not exist yet
+            if ! git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+              echo "v$version is not released yet; no beta until it is."
+              exit 0
             fi
+            # main is heading for the next patch
+            version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
             last=$(git tag --list "beta/v$version-beta.*" | sed -n "s|^beta/v$version-beta\.\([0-9][0-9]*\)$|\1|p" | sort -n | tail -1)
             beta="$version-beta.$(( ${last:-0} + 1 ))"
             echo "new=true" >> "$GITHUB_OUTPUT"
