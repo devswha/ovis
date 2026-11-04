@@ -481,17 +481,17 @@ export interface RelayStatus {
   readonly error: string | null;
 }
 
+/** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
+export interface DevicePairToken {
+  readonly token: string;
+}
+
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
  * the caller's own included (its device cookie is cleared by the answer). Only pairing ends: the
  * access token, this PC itself and the PC's Tailscale login get in as before, and the gate stays
  * closed to strangers.
  */
-/** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
-export interface DevicePairToken {
-  readonly token: string;
-}
-
 export interface DevicesRevokedAll {
   /** how many devices were paired before */
   readonly revoked: number;

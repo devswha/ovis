@@ -1157,3 +1157,26 @@ it("a script pairs for its token in JSON and authenticates with Authorization: D
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("a script's first pairing on a fresh install is kept at once, so its token still works after a restart (#2744)", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-device-header-first-"));
+  const options = { port: 0, hostname: "127.0.0.1", stateDir, token: "configured", tailscaleOwner: null, machines: false, sidecar: false } as const;
+  let app = createServer(options);
+  try {
+    let base = `http://127.0.0.1:${app.port}`;
+    const { code } = await (await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: { ...guard, authorization: "Bearer configured" } })).json() as { code: string };
+    const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: { ...guard, accept: "application/json" }, body: JSON.stringify({ code, label: "Script" }) });
+    expect(paired.status).toBe(200);
+    const { token } = await paired.json() as { token: string };
+    const registry = JSON.parse(readFileSync(join(stateDir, "devices.json"), "utf8")) as { gate_closed_at: string | null; devices: { label: string }[] };
+    expect(registry.devices.map((d) => d.label)).toEqual(["Script"]);
+    expect(registry.gate_closed_at).not.toBeNull();
+    app.stop();
+    app = createServer(options);
+    base = `http://127.0.0.1:${app.port}`;
+    expect((await fetch(`${base}/api/session`, { headers: { authorization: `Device ${token}` } })).status).toBe(200);
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

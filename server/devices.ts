@@ -491,12 +491,16 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     const body = await json();
     if (body instanceof Response) return body;
     if (typeof body["code"] !== "string") return badRequest("missing_code", "code is required");
+    const firstPair = !store.gated;
     const paired = store.pair(body["code"], normalizeLabel(body["label"], "Device"), "drive", Date.now(), streamKeys(request));
     if (paired === null) return jsonResponse({ error: { code: "invalid_code", message: "the code is wrong, spent or expired; start a new pairing on the PC" } }, 401);
     const cookies = [deviceCookie(paired.token, isSecureRequest(request)), CLEAR_LEGACY_DEVICE_COOKIE];
     if (!acceptsJson(request)) return noContent(...cookies);
     // a script asked for the token itself, to send as `Authorization: Device <token>` (#2744); a
-    // browser never asks, so its page never reads the credential its HttpOnly cookie keeps
+    // browser never asks, so its page never reads the credential its HttpOnly cookie keeps. A first
+    // pairing waits in memory for its cookie to come back; a script may store the token and use it
+    // after a restart, so its pairing is confirmed (written, gate closed) before the answer
+    if (firstPair) store.match(paired.token);
     const answer = jsonResponse({ token: paired.token } satisfies DevicePairToken, 200, { "cache-control": "no-store" });
     for (const cookie of cookies) answer.headers.append("set-cookie", cookie);
     return answer;
