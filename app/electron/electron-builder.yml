@@ -15,6 +15,8 @@ extraResources:
     to: icon.png
 icon: ../assets/icon-only.png
 npmRebuild: false
+# notarizes and staples the macOS dmg once electron-builder has signed it (scripts/notarize-dmg.mjs)
+artifactBuildCompleted: ./scripts/notarize-dmg.mjs
 linux:
   target: AppImage
   category: Development
@@ -27,3 +29,16 @@ mac:
     - zip
   category: public.app-category.developer-tools
   artifactName: Ovis-${version}-${arch}.${ext}
+  # Developer ID signing from CSC_LINK + CSC_KEY_PASSWORD or CSC_NAME, and notarization from
+  # APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER (scripts/notarize-dmg.mjs); unsigned without them.
+  # Every Mach-O inside is signed, the bundled hc, Bun and PTY host included, with the inherit plist.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: Ovis uses the microphone for dictation.
+dmg:
+  sign: true
+  # electron-updater updates a Mac from the zip; the dmg is changed after it is built (notarized and stapled)
+  writeUpdateInfo: false
