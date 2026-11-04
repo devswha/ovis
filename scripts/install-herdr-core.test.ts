@@ -32,9 +32,9 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const SYSTEM = join(dir, "system");
 mkdirSync(SYSTEM);
 const linked = new Set(["herdr", "herdr-core", "hc"]);
-for (const from of ["/usr/bin", "/bin"]) {
+for (const from of ["/usr/bin", "/bin"].filter((system) => existsSync(system))) {
   for (const name of readdirSync(from)) {
-    if (linked.has(name)) continue;
+    if (linked.has(name) || !existsSync(join(from, name))) continue;
     linked.add(name);
     symlinkSync(join(from, name), join(SYSTEM, name));
   }
