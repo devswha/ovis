@@ -60,6 +60,7 @@ export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/ui-contexts-regression.ts
+run_script scripts/machine-events-browser-regression.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
 run_script scripts/lan-exposure-notice-regression.ts
@@ -77,6 +78,7 @@ run_script scripts/terminal-viewport-regression.ts
 run_script scripts/terminal-touch-burst-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
+run_script scripts/core-history-scroll-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
 run_script scripts/chat-no-rewind-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
