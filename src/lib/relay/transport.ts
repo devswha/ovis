@@ -98,6 +98,13 @@ function eventProperties(target: EventTarget, names: readonly string[]): void {
   }
 }
 
+/**
+ * How long a reconnect waits at the relay for a PC that is away, under the relay's own 30 s hold
+ * (relay/core.ts OFFLINE_WAIT_MS): with the one-second pause between such waits, a phone opens
+ * about two relay sockets a minute while its PC is away, well under the relay's per-address limit.
+ */
+export const RECONNECT_PC_ANSWER_MS = 25_000;
+
 /** Establish once before boot installs it. A reconnect replaces only the carrier, never streams. */
 export async function openRelayTransport(offer: RelayOffer, options: RelayTransportOptions = {}): Promise<RelayTransport> {
   const transport = new RelayTransport(offer, options);
@@ -149,6 +156,8 @@ export class RelayTransport implements Transport {
     const { code, ...savedOffer } = this.offer;
     const channel = await (this.options.openChannel ?? openRelayChannel)(generation === 1 ? this.offer : savedOffer, {
       ...this.options, signal: this.abort.signal,
+      // a reconnect runs behind the app, not on a waiting screen: it waits at the relay nearly as long as the relay holds it
+      ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         this.channel = undefined;
@@ -176,9 +185,10 @@ export class RelayTransport implements Transport {
   private failed(error: unknown): void {
     if (this.stopped) return;
     if (!isFatalRelayError(error)) {
-      // an attempt the relay held PC_ANSWER_MS for an absent PC was a wait, not a hammering: no
-      // growing pause between such waits, so a PC back from a restart is reached within a second
-      if (error instanceof RelayPcOfflineError) this.delay = 1000;
+      // an attempt the relay held for an absent PC was a wait, not a hammering: no growing pause
+      // between such waits, so a PC back from a restart is reached within a second
+      // (a hidden page keeps the growing pause: showing it again reconnects at once, through wake)
+      if (error instanceof RelayPcOfflineError && globalThis.document?.visibilityState !== "hidden") this.delay = 1000;
       this.retry();
       return;
     }
