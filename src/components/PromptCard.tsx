@@ -25,7 +25,7 @@ export interface PromptCardProps {
   prompt: InteractivePrompt;
   onPromptChanged(): void;
   /** the user edited the card's own answer: its owner keeps the text if the question goes unanswered here */
-  onTextChange?(text: string): void;
+  onTextChange?(text: string, cardGone?: boolean): void;
   /** what the user typed into this question's card before it was drawn again, and has not sent */
   initialText?: string;
   /** the answer went out; `toMessageBox`: the keyboard's focus was in the card, which is about to go, nothing else has taken it since, and the press was a key or a mouse, not a tap */
@@ -53,7 +53,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
     }
     return new Set();
   });
-  const [custom, setCustom] = useState(() => initialText ? initialText : prompt.default_custom_text ?? "");
+  const [custom, setCustom] = useState(() => initialText ?? prompt.default_custom_text ?? "");
   const [sending, setPending] = useState(false);
   const pending = sending || answered;
   const [error, setError] = useState<UserError | null>(null);
@@ -123,7 +123,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
       onAnswered(focusFollowsAnswer({ fromCard, origin, coarse, cardMounted: card !== null, inCard: card?.contains(active) === true, onPage: active === null || active === document.body }));
     } catch (cause) {
       // not sent: the text is the user's again, also once this card is gone
-      onTextChange?.(custom);
+      onTextChange?.(custom, !shown.current);
       if (!shown.current) return false;
       // a card read before the question moved on: refused as changed (409), or as an answer it no longer fits (400).
       // The note stays until the card is replaced or answered again, so the button never looks dead

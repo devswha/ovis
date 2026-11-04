@@ -28,7 +28,7 @@ let answer: { prompt: InteractivePrompt | null } | "fail" = { prompt: null };
 let readWaiters: Array<() => void> = [];
 const nextRead = (): Promise<void> => new Promise((resolve) => { readWaiters.push(resolve); });
 // an answer the server holds open, as it does while it re-reads the screen to confirm it
-let heldAnswer: { arrived: () => void; release: Promise<void> } | null = null;
+let heldAnswer: { arrived: () => void; release: Promise<void>; refuse?: boolean } | null = null;
 try {
   const repo = join(import.meta.dir, ".."), output = join(root, "dist");
   symlinkSync(join(repo, "node_modules"), join(root, "node_modules"), "dir");
@@ -47,7 +47,7 @@ try {
     if (url.pathname === "/api/pane/conversation") return Response.json({ source: "claude-transcript", cursor: null, turns });
     if (url.pathname === "/api/pane/prompt/answer" && heldAnswer !== null) {
       const held = heldAnswer; heldAnswer = null; held.arrived();
-      return held.release.then(() => Response.json({ ok: true }));
+      return held.release.then(() => held.refuse ? Response.json({ error: { code: "prompt_changed", message: "changed" } }, { status: 409 }) : Response.json({ ok: true }));
     }
     if (url.pathname === "/api/pane/commands") return Response.json({ commands: [] });
     if (url.pathname.startsWith("/api/")) return Response.json({ error: "not_found" }, { status: 404 });
@@ -68,6 +68,8 @@ try {
   };
   const setChat = (page: Page, props: Record<string, unknown>) => page.evaluate((next) => (window as unknown as { setChat: (p: unknown) => void }).setChat(next), props);
   const card = (page: Page) => page.locator(".prompt-card");
+  // the Terminal lens: the chat is gone before anything else changes (two prop changes in a row could render as one)
+  const unmount = async (page: Page): Promise<void> => { await setChat(page, { mounted: false }); await card(page).waitFor({ state: "detached" }); };
   // every scenario runs, and the run fails with each that did
   const failed: string[] = [];
   const scenario = async (name: string, run: () => Promise<void>): Promise<void> => {
@@ -79,7 +81,7 @@ try {
     const { page, close, errors } = await open();
     try {
       await card(page).getByText("SESSION-A: deploy the old branch?").waitFor();
-      await setChat(page, { mounted: false });
+      await unmount(page);
       answer = "fail";
       const twoReads = nextRead().then(nextRead);
       await setChat(page, { mounted: true, agentSession: "session-b" });
@@ -89,7 +91,7 @@ try {
       // the same session back: its question is still drawn before the first read answers
       answer = { prompt: question("b", "SESSION-B: run the tests?") };
       await card(page).getByText("SESSION-B: run the tests?").waitFor();
-      await setChat(page, { mounted: false });
+      await unmount(page);
       answer = "fail";
       await setChat(page, { mounted: true });
       assert.equal(await card(page).getByText("SESSION-B: run the tests?").count(), 1, "the same session's card draws again at mount");
@@ -127,10 +129,10 @@ try {
       await card(page).getByText("Which remote?").waitFor();
       await card(page).locator(".prompt-card-custom input").fill("upstream please");
       // back from the Terminal lens with the question still asked: the card shows what was typed
-      await setChat(page, { mounted: false });
+      await unmount(page);
       await setChat(page, { mounted: true });
       assert.equal(await card(page).locator(".prompt-card-custom input").inputValue(), "upstream please", "the card drawn again keeps the typed text");
-      await setChat(page, { mounted: false });
+      await unmount(page);
       answer = { prompt: null };
       const read = nextRead();
       await setChat(page, { mounted: true });
@@ -162,6 +164,50 @@ try {
       assert.equal(draft, "", "a sent answer does not come back as a draft");
       assert.deepEqual(errors, []);
       console.log("PASS an answer sent while its question goes is not put back as a draft");
+    } finally { await close(); }
+  });
+
+  await scenario("same question in another session", async () => {
+    answer = { prompt: question("g", "Which branch?") };
+    const { page, close, errors } = await open();
+    try {
+      const input = card(page).locator(".prompt-card-custom input");
+      await card(page).getByText("Which branch?").waitFor();
+      await input.fill("session A answer");
+      await unmount(page);
+      await setChat(page, { mounted: true, agentSession: "session-b" });
+      await card(page).getByText("Which branch?").waitFor();
+      assert.equal(await input.inputValue(), "", "session B's card does not get session A's text");
+      await page.waitForFunction(() => (window as unknown as { composerDraft: () => string }).composerDraft() === "session A answer");
+      assert.deepEqual(errors, []);
+      console.log("PASS text typed in one session goes to the draft, not to the same question in another");
+    } finally { await close(); }
+  });
+
+  await scenario("refused late", async () => {
+    answer = { prompt: question("h", "Which tag?") };
+    const { page, close, errors } = await open();
+    try {
+      const input = card(page).locator(".prompt-card-custom input");
+      await card(page).getByText("Which tag?").waitFor();
+      let release = (): void => {};
+      const arrived = new Promise<void>((resolve) => { heldAnswer = { arrived: resolve, refuse: true, release: new Promise((done) => { release = done; }) }; });
+      await input.fill("old answer");
+      await input.press("Enter");
+      await arrived;
+      // to the Terminal lens and back while the answer is on its way, and a new answer typed
+      await unmount(page);
+      await setChat(page, { mounted: true });
+      await input.fill("new answer");
+      release();
+      const read = nextRead();
+      answer = { prompt: null };
+      await read;
+      await page.waitForFunction(() => (window as unknown as { composerDraft: () => string }).composerDraft().includes("new answer"));
+      const draft = await page.evaluate(() => (window as unknown as { composerDraft: () => string }).composerDraft());
+      assert.ok(draft.includes("old answer") && draft.includes("new answer"), `both texts are kept (${JSON.stringify(draft)})`);
+      assert.deepEqual(errors, []);
+      console.log("PASS a refused answer that comes back late keeps both its text and the newer one");
     } finally { await close(); }
   });
 
