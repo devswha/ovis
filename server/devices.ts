@@ -325,7 +325,8 @@ export class DeviceStore {
     const device: StoredDevice = {
       id: randomBytes(8).toString("hex"), label: normalizeLabel(label, "Device"), role: "drive",
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
-      created_at: new Date(now).toISOString(), last_seen_at: null,
+      // PAIR authenticates this relay session too, so the device is seen as it pairs.
+      created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),
     };
     this.enroll(device, now, []);
     return { device: { id: device.id, label: device.label, role: device.role } };
@@ -386,7 +387,8 @@ export class DeviceStore {
   /** Notes when a device was last seen, at most once a minute on disk. */
   private noteSeen(device: StoredDevice, now: number): void {
     const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
-    if (now - seen < LAST_SEEN_WRITE_MS) return;
+    // A blocked registry stays as it is on disk until the server restarts.
+    if (this.error !== null || now - seen < LAST_SEEN_WRITE_MS) return;
     try {
       const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
       // devices.json is also the authorization registry: a torn write here would lock every device out
