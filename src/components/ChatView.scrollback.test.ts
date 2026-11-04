@@ -36,10 +36,20 @@ describe("terminal scrollback snapshot", () => {
     expect(html).not.toContain("Copy as markdown");
   });
 
-  it("retains a matched command's outcome without duplicating its text", () => {
+  it("retains a matched command's outcome as a named chip, not a second bubble", () => {
     const html = render(raw, [outcome]);
     expect(html).toContain('data-outcome-state="accepted"');
-    expect(html.match(/Thought TPS Todo are my words/g)).toHaveLength(1);
+    expect(html).not.toContain("chat-turn-sent");
+    expect(html).toContain('<span class="chat-outcome-command">Thought TPS Todo are my words</span>');
+  });
+
+  it("names each chip's command, so two sends shown in the snapshot stay apart", () => {
+    const html = render("$ ls\nREADME.md\n$ pwd\n/home/me\n", [
+      { ...outcome, id: "ls", text: "ls" },
+      { ...outcome, id: "pwd", text: "pwd", state: "unknown" },
+    ]);
+    expect(html).toContain('<span class="chat-outcome-command">ls</span>');
+    expect(html).toContain('<span class="chat-outcome-command">pwd</span>');
   });
 
   it("labels an unmatched send's status with its command, without adding a provisional bubble", () => {
@@ -49,7 +59,7 @@ describe("terminal scrollback snapshot", () => {
     expect(html).toContain('<span class="chat-outcome-command">an unmatched command</span>');
   });
 
-  it("does not take a short command or result as shown from a word inside another line", () => {
+  it("does not take a short result as shown from a word inside another line", () => {
     const html = render("$ make tools\nbuild ok, 3 warnings\n", [
       { ...outcome, id: "ls", text: "ls", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "ok" },
     ]);

@@ -890,17 +890,15 @@ function OutcomeChip({ outcome, actions, snapshot }: { outcome: CommandOutcome; 
   const action = chip.action === "answer" ? actions?.answer ?? null : chip.action === "terminal" && terminal !== null ? () => terminal(outcome.text) : null;
   // a recognized result shows what the agent printed; the unconfirmed preview of the same screen goes
   // beside a raw terminal snapshot the screen is already shown: only what it lacks is repeated
-  // whole lines only, so a short command or result is not taken as shown by a word that happens to match
+  // whole lines only, so a short result is not taken as shown by a word that happens to match
   const lines = snapshot === undefined ? null : `\n${snapshot.replace(/[ \t]+$/gmu, "")}\n`;
   const resultShown = (text: string) => lines !== null && lines.includes(`\n${text.trim()}\n`);
-  const sent = outcome.text.trim();
-  const commandShown = lines !== null && sent !== "" && !sent.includes("\n")
-    && lines.split("\n").some((line) => line === sent || line.endsWith(` ${sent}`));
   const preview = snapshot !== undefined || outcome.result_text ? "" : outcome.preview ?? "";
   const [dismissed, setDismissed] = useChatRowToggle(`outcome-result:${outcome.id}`, false);
   const recorded = outcomeResultText(outcome, dismissed === true);
   const result = recorded !== null && resultShown(recorded) ? null : recorded;
-  const command = snapshot !== undefined && !commandShown ? outcomeCommand(outcome.text) : "";
+  // the chips sit together under the snapshot, not by their commands: each names the command it is for
+  const command = snapshot !== undefined ? outcomeCommand(outcome.text) : "";
   const note = outcomeNote(t, outcome);
   return <div className="chat-outcome" data-outcome-state={chip.state}>
     <div className="chat-outcome-row">
