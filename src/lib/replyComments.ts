@@ -1,3 +1,4 @@
+import { SEND_LEASE_MS } from "./composerDraft.ts";
 import { paneLifetimes, REPLY_COMMENTS_PREFIX } from "./paneLifetime.ts";
 
 /**
@@ -42,7 +43,6 @@ export class ReplyCommentStore {
   /** what was read for each key, with the raw text it was read from: a read returns the same array until it changes */
   private cache = new Map<string, { raw: string | null; list: readonly ReplyComment[] }>();
   private listeners = new Set<() => void>();
-  private count = 0;
   /** the pane ID each moved list went to (lib/paneMove.ts): a send begun under the old one settles there too */
   private forwards = new Map<string, string>();
   /** the comments a send on its way carries, by id: no other send takes them until it settles, wherever they moved */
@@ -50,7 +50,8 @@ export class ReplyCommentStore {
   private reservations = 0;
   constructor(
     private storage: () => CommentStorage = () => paneLifetimes.paneStorage,
-    private newId: () => string = () => `${Date.now().toString(36)}-${(++this.count).toString(36)}`,
+    // random, not a count of this tab's: another tab saving in the same millisecond must not share it, as a send removes by id
+    private newId: () => string = () => `${Date.now().toString(36)}-${Array.from(crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(36)).join("")}`,
   ) {}
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private notify(): void { for (const listener of this.listeners) listener(); }
@@ -104,28 +105,53 @@ export class ReplyCommentStore {
   }
   removeSent(key: string, sent: readonly ReplyComment[]): void {
     const ids = new Set(sent.map((item) => item.id));
-    for (const at of this.chain(key)) {
+    const keys = this.chain(key);
+    for (const at of keys) {
       const list = this.read(at);
       if (list.some((item) => ids.has(item.id))) this.write(at, list.filter((item) => !ids.has(item.id)));
     }
+    // the record of a move kept for this send has done its work
+    for (const at of keys.slice(0, -1)) {
+      try { if (this.storedForward(at) !== null) this.storage().removeItem(at); } catch { /* private mode */ }
+    }
   }
-  /** `key` and every key its list moved on to since */
+  /** `key` and every key its list moved on to since, by this tab or another */
   private chain(key: string): string[] {
     const keys = [key];
-    for (let next = this.forwards.get(key); next !== undefined && !keys.includes(next); next = this.forwards.get(next)) keys.push(next);
+    const next = (at: string): string | null => this.forwards.get(at) ?? this.storedForward(at);
+    for (let to = next(key); to !== null && !keys.includes(to); to = next(to)) keys.push(to);
     return keys;
+  }
+  /** Where another tab moved `key`'s list while a send was on its way (#2356): kept no longer than that send's lease. */
+  private storedForward(key: string): string | null {
+    try {
+      const value: unknown = JSON.parse(this.storage().getItem(key) ?? "null");
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+      const { movedTo, at } = value as { movedTo?: unknown; at?: unknown };
+      if (typeof movedTo !== "string" || typeof at !== "number" || !Number.isFinite(at)) return null;
+      return Date.now() - at > SEND_LEASE_MS ? null : movedTo;
+    } catch {
+      return null;
+    }
   }
   /**
    * herdr gave the pane a new ID: all its waiting comments go with it, after any the new ID holds
    * already, and a send begun under the old ID still removes the ones it carried once it is acknowledged.
+   * `sending`: a send on the old ID is on its way, maybe from another tab: the move is also recorded under
+   * the old key, which reads as no comments, so the tab that sent it follows it too (#2356).
    */
-  move(from: string, to: string): void {
+  move(from: string, to: string, sending = false): void {
     const moving = this.read(from);
     if (moving.length === 0 || from === to) return;
     const there = this.read(to);
     const held = new Set(there.map((item) => item.id));
     if (!this.write(to, [...there, ...moving.filter((item) => !held.has(item.id))])) return;
-    this.write(from, NONE);
+    let recorded = false;
+    if (sending) {
+      try { this.storage().setItem(from, JSON.stringify({ movedTo: to, at: Date.now() })); recorded = true; } catch { /* storage refused: this tab still follows it */ }
+    }
+    if (recorded) this.notify();
+    else this.write(from, NONE);
     this.forwards.set(from, to);
   }
   clear(key: string): void {

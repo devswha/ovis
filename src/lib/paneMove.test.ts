@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { paneStorageId, type Machine } from "../../shared/machines.ts";
-import { ComposerDraftStore } from "./composerDraft.ts";
+import { ComposerDraftStore, SEND_LEASE_MS } from "./composerDraft.ts";
 import { ReplyCommentStore } from "./replyComments.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { carryPaneState } from "./paneMove.ts";
@@ -64,6 +64,42 @@ it("moves every waiting comment with the pane, and a send begun before the move 
   comments.removeSent(before, carried);
   expect(comments.read(after).map((item) => item.comment)).toEqual(["save for next message"]);
   expect(comments.read(before)).toEqual([]);
+});
+it("removes the comments a send carried after another tab moved the pane during it (#2356)", () => {
+  const { data, storage } = fixture();
+  // two tabs of one browser: each has its own stores over the same storage
+  const sender = { drafts: new ComposerDraftStore(storage), comments: new ReplyCommentStore(storage) };
+  const mover = { drafts: new ComposerDraftStore(storage), comments: new ReplyCommentStore(storage) };
+  const before = "ovis:reply-comments:w1:p1", after = "ovis:reply-comments:w2:p4";
+  sender.comments.add(before, "selected", "carried");
+  sender.drafts.set("ovis:composer-draft:w1:p1", "go");
+  expect(sender.drafts.claim("ovis:composer-draft:w1:p1", "go")).toBe(true);
+  const carried = sender.comments.read(before);
+  sender.comments.reserve(carried);
+  mover.comments.add(before, "later", "for the next message");
+  carryPaneState("local", "w1:p1", "w2:p4", mover.drafts, storage, mover.comments);
+  // the moved pane's next message in the tab that moved it carries none of them while that send is on its way
+  expect(mover.comments.unreserved(mover.comments.read(after))).toEqual([]);
+  // acknowledged in the tab that sent it, under the ID it went with
+  sender.comments.removeSent(before, carried);
+  sender.drafts.end("ovis:composer-draft:w1:p1", sender.drafts.sendOf("ovis:composer-draft:w1:p1"));
+  // its storage event reaches the tab that moved the pane
+  mover.drafts.refresh("ovis:composer-draft:w1:p1");
+  expect(mover.comments.unreserved(mover.comments.read(after)).map((item) => item.comment)).toEqual(["for the next message"]);
+  expect(mover.comments.read(after).map((item) => item.comment)).toEqual(["for the next message"]);
+  // the record of the move is gone with the send it was kept for
+  expect(data.has(before)).toBe(false);
+});
+it("follows no record of another tab's move once a send could no longer be on its way (#2356)", () => {
+  const { data, storage } = fixture();
+  const sender = new ReplyCommentStore(storage), mover = new ReplyCommentStore(storage);
+  const before = "ovis:reply-comments:w1:p1", after = "ovis:reply-comments:w2:p4";
+  sender.add(before, "selected", "carried");
+  const carried = sender.read(before);
+  data.set(before, JSON.stringify({ movedTo: after, at: Date.now() - SEND_LEASE_MS - 1 }));
+  data.set(after, JSON.stringify(carried));
+  sender.removeSent(before, carried);
+  expect(mover.read(after)).toEqual(carried);
 });
 it("keeps the comments a refused send carried on the moved pane, after any it held already (#511)", () => {
   const { storage, drafts, comments } = fixture();

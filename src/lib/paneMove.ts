@@ -24,7 +24,22 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
   // the ones it carried from wherever they went once it is acknowledged. Inside the old ID's send lock, so
   // no tab's send claims them half moved (#2369)
   underSendLock(`ovis:composer-draft:${before}`, () => {
-    comments.move(REPLY_COMMENTS_PREFIX + before, REPLY_COMMENTS_PREFIX + after);
+    // a send on its way from any tab (its lease) may be acknowledged in a tab that did not move the pane (#2356)
+    const draft = `ovis:composer-draft:${before}`;
+    drafts.refresh(draft);
+    const sending = drafts.read(draft).sending;
+    const moving = comments.read(REPLY_COMMENTS_PREFIX + before);
+    comments.move(REPLY_COMMENTS_PREFIX + before, REPLY_COMMENTS_PREFIX + after, sending);
+    // which of them that send carries is known only in its tab: none goes with this tab's next message
+    // until it settles (its lease ends here or lapses)
+    if (sending && moving.length > 0) {
+      comments.reserve(moving);
+      const unsubscribe = drafts.subscribe(() => {
+        if (drafts.read(draft).sending) return;
+        unsubscribe();
+        comments.release(moving);
+      });
+    }
     drafts.move(`ovis:composer-draft:${before}`, `ovis:composer-draft:${after}`);
   });
   // a touch screen's terminal input line, through its store (it keeps the line in memory too); a
