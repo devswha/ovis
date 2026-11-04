@@ -149,7 +149,6 @@ try {
         await page.keyboard.press("Escape");
         await destinations.waitFor({ state: "detached" });
         assert.ok(await page.locator(".header-more-button").evaluate((node) => node === document.activeElement), "Escape gives the focus back to the header's More");
-        await page.setViewportSize({ width: 466, height: 678 });
 
         await page.setViewportSize({ width: 390, height: 844 });
         await page.locator(".tab-strip").waitFor();
