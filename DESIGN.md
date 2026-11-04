@@ -2254,7 +2254,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   head under each answer would flash. While it waits it keeps its place unseen, so showing it moves
   nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. The
   other way round, herdr can rest before a read holds a Claude turn's answer (about 1 s at worst):
-  the turn stays at work until a read changes what the chat shows, for up to 2 s, so it never
+  the turn stays at work until a read brings its answer or a turn of the user's, or for 2 s with
+  no such read. A read that only adds more of the unanswered turn starts the 2 s again. So it never
   looks ended with no answer. The Codex app also keeps a turn working until its answer is in. Before
   the chat's first read, `Loading conversation…` is the only line: the rows read may hold the
   running turn's own head. A settled turn folds to its header
