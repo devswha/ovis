@@ -192,8 +192,19 @@ try {
 
         // The first message puts the composer back at the bottom, with no animation, before
         // anything is heard back: the submit frame is held, so no turn and no "working" end it.
+        // A send is claimed in the pane's cross-tab Web Lock (#2369), granted in a later task; here
+        // another tab's acknowledgement holds that lock over the click, so the grant always comes
+        // after the click's frame: the greeting goes with the press, not with the grant.
         await page.evaluate(() => { (window as unknown as { heldSubmits: (() => void)[] | null }).heldSubmits = []; });
         await message.fill("Start with the README");
+        await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith("ovis:composer-draft:") && localStorage.getItem(key) === "Start with the README"));
+        await page.evaluate(() => new Promise<void>((granted) => {
+          const key = Object.keys(localStorage).find((name) => name.startsWith("ovis:composer-draft:") && localStorage.getItem(name) === "Start with the README")!;
+          void navigator.locks.request(`ovis-send:${key}`, () => new Promise<void>((release) => {
+            (window as unknown as { releaseSendLock: () => void }).releaseSendLock = release;
+            granted();
+          }));
+        }));
         const sent = await page.evaluate(async () => {
           document.querySelector<HTMLElement>('.pane-frame.is-current button[aria-label="Send message"]')!.click();
           // the frame the click is painted in, and nothing later
@@ -210,7 +221,7 @@ try {
             status: document.querySelector(".pane-frame.is-current .composer-status")!.getAttribute("data-status"),
           };
         });
-        assert.equal(sent.held, 1, "the message is on its way and nothing answered it");
+        assert.equal(sent.held, 0, "the claim waits for the other tab's lock");
         assert.equal(sent.turns, 0);
         assert.notEqual(sent.status, "working");
         assert.equal(sent.greetings, 0, `the greeting goes with the send itself: ${JSON.stringify(sent)}`);
@@ -219,6 +230,12 @@ try {
         assert.equal(sent.animations, 0, "the composer snaps: nothing animates");
         assert.ok(sent.gap <= 1, `composer docked in the frame of the first send: ${JSON.stringify(sent)}`);
         assert.deepEqual((await geometryOf(page)).mount, docked.mount, "the xterm mount keeps its size when the greeting goes");
+        // the lock goes free: the claim runs and the message is on its way, still docked and ungreeted
+        await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
+        await page.waitForFunction(() => (window as unknown as { heldSubmits: unknown[] }).heldSubmits.length === 1, undefined, { timeout: 5_000 });
+        assert.equal(await page.locator(".pane-frame.is-current .composer-greeting").count(), 0, "the greeting stays away once the claim ran");
+        assert.equal(await page.locator(".pane-frame.is-current .chat-empty").count(), 0);
+        assert.equal((await geometryOf(page)).transform, "none");
         console.log("PASS the first message sent docks the composer in the same frame, before any turn or status arrives");
 
         // still nothing heard back: another lens and back, and a conversation read again, do not
