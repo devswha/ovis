@@ -21,9 +21,13 @@ interface MachineSeen { epoch: string; record: SeenRecord }
 interface SharedFinish extends SeenFinish {
   /** how the next send tells it: `held` once put off or retried, a look made earlier (shared/seen.ts SeenPresentation) */
   presented: SeenPresentation;
-  /** how the server was told it, once it answered */
+  /** how the server was told it, once it answered: `new` once any send of this finish was told as a look */
   told?: SeenPresentation;
   retry?: () => Promise<boolean>;
+  /** a send of it is waiting for its answer */
+  sending?: boolean;
+  /** its pane was brought into view again while a send was in flight: tell that look once it answers */
+  returned?: boolean;
 }
 interface ShareRecovery {
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -180,7 +184,10 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         if (!previous || finish.id > previous.id || answerUpgrade || shownAgain) {
           const sender = shareRef.current;
           if (sender) {
-            const sent: SharedFinish = { ...finish, presented };
+            // an answer upgrade of the same finish keeps what was told of it, and a return still to tell
+            const sent: SharedFinish = { ...finish, presented,
+              ...(answerUpgrade && previous.told ? { told: previous.told } : {}),
+              ...(answerUpgrade && previous.sending && previous.returned ? { returned: true } : {}) };
             shared.current.delete(key);
             shared.current.set(key, sent);
             while (shared.current.size > SEEN_LIMIT) {
@@ -195,9 +202,22 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
               try {
                 const how = sent.presented;
                 sent.presented = "held";
-                await sender(finish, how);
-                sent.told = how;
+                sent.sending = true;
+                try { await sender(finish, how); } finally { sent.sending = false; }
+                if (sent.told !== "new") sent.told = how;
+                const current = shared.current.get(key);
+                // a share it was upgraded to while this one was in flight
+                if (how === "new" && current !== sent && current?.id === sent.id) current.told = "new";
+                if (sent.returned) {
+                  delete sent.returned;
+                  if (sent.told === "held" && current === sent && recovery.current === gate) {
+                    sent.presented = "new";
+                    return await send();
+                  }
+                }
               } catch (error) {
+                // the look it carried is put off: a retry tells it as `held`
+                delete sent.returned;
                 if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
                 const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
                 if (status === 401) gate.unauthorized = true;
@@ -212,6 +232,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
             else void send();
           }
         } else if (finish.id === previous.id) {
+          if (previous.sending && presented === "new") previous.returned = true;
           // Keep frequently observed panes in the bounded latest-state window.
           shared.current.delete(key);
           shared.current.set(key, previous);
