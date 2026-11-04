@@ -1158,6 +1158,9 @@ ${footer}
     ["wrapped before the path", split("   ctrl+g to edit in VS Code ·\n   ~/.claude/plans/plan-readme-heading-mellow-pike.md")],
     ["over three lines", phone],
     ["on one line", split("   ctrl+g to edit in VS Code · ~/.claude/plans/plan-a.md")],
+    ["wrapped inside the extension", split("   ctrl+g to edit in VS Code · ~/.claude/plans/aaaaaaaaa.m\n   d")],
+    ["over four lines", phone.replace("   e-readme-mellow-pike.md", "   e-readme-and-the-changelog-in-one-go-m\n   ellow-pike.md")],
+    ["with a · in its folder", phone.replace("   ~/.claude/plans/plan-add-a-heading-to-th\n   e-readme-mellow-pike.md", "   ~/claude·work/plans/plan-add-a-heading-t\n   o-the-readme-mellow-pike.md")],
   ];
 
   test.each(screens)("reads the plan with its footer %s", (_footer, screen) => {
@@ -1171,6 +1174,7 @@ ${footer}
 
   test.each(screens)("reads no plan once output follows its footer %s", (_footer, screen) => {
     expect(parseInteractivePrompt("claude", `${screen}\n⏺ User approved Claude's plan\n`)).toBeNull();
+    expect(parseInteractivePrompt("claude", `${screen}\n⏺ Updated README.md\n`)).toBeNull();
   });
 });
 
