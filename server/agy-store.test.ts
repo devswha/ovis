@@ -93,9 +93,43 @@ it("backs off a pid whose lock keeps changing hands during every scan", async ()
       return path === "A" || (path === "B" && ++bCalls % 2 === 1) ? [4242] : [];
     };
     for (now = 0; now <= 120_000; now += 6_000) expect(await windowsHeldPaths(4242, holders, () => ["A", "B"])).toEqual([]);
-    expect(new Set(scans).size).toBeLessThan(15);
+    // the 5, 10, 20, 40, 60 second schedule, read on a six-second poll
+    expect([...new Set(scans)]).toEqual([0, 6_000, 18_000, 42_000, 84_000]);
   } finally { Date.now = realNow; }
 });
+
+for (const recovery of ["a new lock file", "another pane's scan"]) {
+  it(`starts the backoff over after a moving lock settles through ${recovery}`, async () => {
+    resetWindowsScanCacheForTest();
+    const realNow = Date.now;
+    let now = 0;
+    Date.now = () => now;
+    try {
+      let moving = true, aCalls = 0, active = "";
+      let paths = ["A", "B"];
+      const holders = (path: string) => moving && path === "A" ? (++aCalls % 2 ? [4242] : []) : path === active ? [4242] : [];
+      const candidates = () => paths;
+      // the moving lock pushes the pid's backoff up to its 60-second cap
+      for (now of [0, 5_000, 15_000, 35_000, 75_000]) expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
+      moving = false;
+      now = 76_000;
+      if (recovery === "a new lock file") {
+        paths = ["A", "B", "C"];
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual([]);
+        active = "C";
+        now = 82_000;
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["C"]);
+      } else {
+        active = "A";
+        await windowsHeldPaths(4243, holders, candidates);
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["A"]);
+        active = "B";
+        now = 77_000;
+        expect(await windowsHeldPaths(4242, holders, candidates)).toEqual(["B"]);
+      }
+    } finally { Date.now = realNow; }
+  });
+}
 
 it("proves nothing from a scan in which a holder query failed", async () => {
   resetWindowsScanCacheForTest();

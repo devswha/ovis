@@ -186,6 +186,7 @@ const windowsNegative = new Map<number, { listing: string; scanAt: number; delay
 const windowsHeld = new Map<number, { path: string; proven: number }>();
 const WINDOWS_HELD_MAX_AGE_MS = 60_000;
 function rememberHeld(pid: number, path: string, proven: number): void {
+  windowsNegative.delete(pid);
   windowsHeld.set(pid, { path, proven });
   if (windowsHeld.size > 64) windowsHeld.delete(windowsHeld.keys().next().value!);
 }
@@ -230,13 +231,14 @@ export async function windowsHeldPaths(
   const moved = held.length !== scanned.length;
   if (moved) invalidateWindowsScan();
   else if (held.length === 1 && scan.complete) {
-    windowsNegative.delete(pid);
     rememberHeld(pid, held[0]!, scan.at);
     return held;
   }
   const previous = windowsNegative.get(pid);
   if (previous?.scanAt !== scan.at) {
-    const delay = Math.min((previous?.delay ?? WINDOWS_SCAN_TTL_MS / 2) * 2, 60_000);
+    // a changed listing starts over even when no scan was left to compare it with
+    const base = previous?.listing === scan.candidates ? previous.delay : WINDOWS_SCAN_TTL_MS / 2;
+    const delay = Math.min(base * 2, 60_000);
     windowsNegative.set(pid, { listing: scan.candidates, scanAt: scan.at, delay, next: scan.at + delay });
     if (windowsNegative.size > 64) windowsNegative.delete(windowsNegative.keys().next().value!);
   }
