@@ -129,6 +129,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const revision = version;
       const output = outputVersion;
       const cols = terminal.cols, rows = terminal.rows;
+      // A failed read must not borrow the last valid metrics used by the idle-reset comparison.
+      let readMetrics: PaneScrollInfo | null = null;
       try {
         let found: PaneFindResponse | null = null;
         if (query) {
@@ -137,6 +139,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         }
         const metrics = found?.scroll ?? await api.fetchPaneScroll(paneId);
         if (!alive || revision !== version || cols !== terminal.cols || rows !== terminal.rows) return;
+        readMetrics = metrics;
         setScroll((old) => validScroll(metrics) ? old && old.offset_from_bottom === metrics.offset_from_bottom && old.max_offset_from_bottom === metrics.max_offset_from_bottom && old.viewport_rows === metrics.viewport_rows ? old : metrics : null);
         if (validScroll(metrics)) {
           // metrics that moved without output (another client, history growing under a held view) mean the pane is not idle
@@ -163,7 +166,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       } finally {
         pending = false;
         // an idle pane at the bottom backs off; output, a scroll, a resize, moved metrics or coming back into view resets it
-        if (alive) schedule(scrollPollDelay(dirty, idle++, scrollRef.current, !urgent && !query));
+        if (alive) schedule(scrollPollDelay(dirty, idle++, readMetrics, !urgent && !query && !heldPage));
       }
     };
     const wake = () => { dirty = true; urgent = true; idle = 0; schedule(); };
@@ -233,7 +236,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     // output alone: a view following the bottom only learns the history grew, so it reads at the follow pace
     const parsed = terminal.onWriteParsed(() => {
       outputVersion++; clearHits(); dirty = true; idle = 0;
-      schedule(scrollPollDelay(true, 0, scrollRef.current, !urgent && !query));
+      schedule(scrollPollDelay(true, 0, scrollRef.current, !urgent && !query && !heldPage));
     });
     const rendered = terminal.onRender(paintHits);
     const resized = terminal.onResize(() => { version++; clearHits(); setScroll(null); wake(); paint(); });

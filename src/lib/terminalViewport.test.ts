@@ -92,6 +92,16 @@ describe("scroll metrics poll", () => {
     // not busy: the idle rules are unchanged
     expect(scrollPollDelay(false, 20, bottom, true)).toBe(SCROLL_POLL_IDLE_MAX_MS);
   });
+  it("keeps a held page on the busy cadence even at the bottom of an alternate screen", () => {
+    const bottom = { max_offset_from_bottom: 0, offset_from_bottom: 0, viewport_rows: 24 };
+    // A pending page means output is no longer the only reason for a fresh read.
+    expect(scrollPollDelay(true, 0, bottom, false)).toBe(SCROLL_POLL_BUSY_MS);
+  });
+  it("uses the busy cadence for a failed or invalid current read despite output-only activity", () => {
+    for (const metrics of [null, undefined, { max_offset_from_bottom: 0, offset_from_bottom: 0, viewport_rows: 0 }]) {
+      expect(scrollPollDelay(true, 0, metrics, true)).toBe(SCROLL_POLL_BUSY_MS);
+    }
+  });
   it("keeps the follow pace between the busy cadence and the idle cap", () => {
     expect(SCROLL_POLL_FOLLOW_MS).toBeGreaterThan(SCROLL_POLL_BUSY_MS);
     expect(SCROLL_POLL_FOLLOW_MS).toBeLessThan(SCROLL_POLL_IDLE_MAX_MS);
