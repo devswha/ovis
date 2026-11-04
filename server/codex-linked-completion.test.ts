@@ -75,6 +75,8 @@ const collisions: [string, string, { path: string; text: string }][] = [
   ["an unfinished turn after an older finished one", spaced[0], unfinished("rendered", spaced[1], true)],
   // its prompt pushed out of the tail read (by a large tool output) and its turn not finished in it
   ["its prompt cut from the read", spaced[0], { path: "rendered", text: unfinished("rendered", spaced[1], false).text.split("\n").slice(1).join("\n") }],
+  // its finished turn's prompt pushed out of the tail read
+  ["its finished turn's prompt cut from the read", spaced[0], { path: "rendered", text: candidate("rendered", spaced[1]).text.split("\n").slice(1).join("\n") }],
 ];
 for (const [kind, literal, rendered] of collisions) {
   test(`keeps an exact reply unbound while a same-prompt conversation's answer with ${kind} may render the same`, () => {
@@ -100,6 +102,28 @@ test("matches an exact or rendered reply when its conversation is the only one a
     expect(matchCodexTranscript(shown, [candidate("own", recorded), elsewhere], new Set(), new Map(), false, owners)).toBe("own");
     expect(matchCodexTranscript(shown, [candidate("own", recorded)], new Set(), new Map(), false, owners)).toBe("own");
   }
+});
+
+test("matches an exact reply while another conversation asked the prompt only before its latest finished turn", () => {
+  const turn = (id: string, asked: string, said: string) => [
+    event({ type: "item_completed", turn_id: id, item: { type: "UserMessage", content: [{ text: asked }] } }),
+    JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: said }] } }),
+    event({ type: "task_complete", turn_id: id, last_agent_message: said }),
+  ];
+  const notes = "The release notes list three fixes for reconnecting panes and one new setting for remote access from a phone.";
+  const later = { path: "other", text: [...turn("a", prompt, "The build cache was cleared and the dependencies were installed again."),
+    ...turn("b", "Summarize the release notes.", notes)].join("\n") };
+  // and one whose last finished turn's prompt the tail read cut, its answer another (one too short to tell still counts)
+  const cut = { path: "other", text: turn("b", "Summarize the release notes.", notes).slice(1).join("\n") };
+  for (const [shown, recorded] of [[shownAs(spaced[0]), spaced[0]], [screen, answer]] as const) {
+    expect(matchCodexTranscript(shown, [candidate("own", recorded), later], new Set(), new Map(), false, owners)).toBe("own");
+  }
+  expect(matchCodexTranscript(shownAs(spaced[0]), [candidate("own", spaced[0]), cut], new Set(), new Map(), false, owners)).toBe("own");
+  // a rendering (here a link) binds only while no read may have cut the prompt shown
+  expect(matchCodexTranscript(screen, [candidate("own"), cut], new Set(), new Map(), false, owners)).toBeNull();
+  // asked again as its latest turn, finished or not, it still counts
+  const again = { path: "other", text: [...later.text.split("\n"), event({ type: "item_completed", turn_id: "c", item: { type: "UserMessage", content: [{ text: prompt }] } })].join("\n") };
+  expect(matchCodexTranscript(screen, [candidate("own"), again], new Set(), new Map(), false, owners)).toBeNull();
 });
 
 test("keeps changed, ambiguous, unfinished and unknown replies unbound", () => {
