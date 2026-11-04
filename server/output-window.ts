@@ -98,14 +98,6 @@ export class OutputWindow {
    */
   check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
-    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
-    // one cannot be acknowledged before it has crossed, whenever it was queued; the frame's own deadline
-    // (connections.ts `expire`) answers for a client that stops reading, and the clock starts once it is gone.
-    if (large > 0) {
-      this.stalledSince = undefined;
-      this.pausingSince = undefined;
-      return "flow";
-    }
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
       this.stalledSince = undefined;
       this.pausingSince = undefined;
@@ -120,6 +112,14 @@ export class OutputWindow {
       this.joinUntil = undefined;
     }
     this.pausingSince ??= now;
+    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
+    // one cannot be acknowledged before it has crossed, whenever it was queued, so the stall clock starts once
+    // it is gone; the frame's own deadline (connections.ts `expire`) answers for a client that stops reading.
+    // The pane is still paused, and for no longer than any client may hold the shared pty paused.
+    if (large > 0) {
+      this.stalledSince = undefined;
+      return now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+    }
     const oldest = this.inFlight[this.head];
     const deadline = OUTPUT_STALL_MS + (oldest ? Math.min(OUTPUT_JOIN_MAX_MS - OUTPUT_STALL_MS, crossingMs(oldest.wire)) : 0);
     return now - this.stalledSince >= deadline || now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";

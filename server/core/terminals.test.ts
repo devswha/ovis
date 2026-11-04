@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
-import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
@@ -44,9 +44,10 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
   return frames;
 }
 
-it("keeps a pane whose output waits behind a large frame queued after its attach, and starts its stall clock once that frame has crossed (#2573)", async () => {
+it("pauses a pane whose output waits behind a large frame queued after its attach, and starts its stall clock once that frame has crossed (#2573)", async () => {
   let buffered = 0;
   const ended: string[] = [];
+  const flow: string[] = [];
   const client = {
     data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
     getBufferedAmount: () => buffered, send: (text: string) => { buffered += Buffer.byteLength(text); return -1; },
@@ -55,7 +56,7 @@ it("keeps a pane whose output waits behind a large frame queued after its attach
   // a pane that has written nothing yet: no replay
   attachment = {
     kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
-    process: { exited: Promise.resolve(), pause() {}, resume() {}, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
+    process: { exited: Promise.resolve(), pause() { flow.push("pause"); }, resume() { flow.push("resume"); }, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
   };
   const registry = createTerminalRegistry({
     options: {}, clients: new Set([client]), stopped: () => false, terminalAttach: async () => true,
@@ -68,18 +69,19 @@ it("keeps a pane whose output waits behind a large frame queued after its attach
     await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
     expect(send(client, { type: "error", code: "x", message: "x".repeat(OUTPUT_HARD_BYTES) })).toBe(-1);
     const snapshot = buffered;
-    // the pane's first output queues behind it on a slow link
-    const output = "y".repeat(OUTPUT_HIGH_BYTES);
-    client.data.output.get("p")!.write(OUTPUT_HIGH_BYTES, wireBytes(output));
-    buffered += wireBytes(output);
-    for (let at = 0; at <= 40_000; at += 1000) { setSystemTime(start + at); registry.reconcileOutput("p"); }
+    // the pane's output queues behind it in small frames, up to the high-water mark
+    client.data.output.get("p")!.write(OUTPUT_HIGH_BYTES, 10);
+    buffered += OUTPUT_HIGH_BYTES;
+    for (let at = 0; at < 5000; at += 500) { setSystemTime(start + at); registry.reconcileOutput("p"); }
+    // still paused, so the backlog behind the snapshot grows no further, and not closed
+    expect(flow.at(-1)).toBe("pause");
     expect(ended).toEqual([]);
-    // the snapshot crossed: the output behind it gets the usual deadline from now, with its own crossing time
+    // the snapshot crossed: the output behind it gets the usual deadline from now
     buffered -= snapshot;
-    const crossed = start + 41_000;
-    const deadline = OUTPUT_STALL_MS + Math.ceil(wireBytes(output) * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
+    const crossed = start + 5000;
+    const deadline = OUTPUT_STALL_MS + Math.ceil(10 * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
     setSystemTime(crossed); registry.reconcileOutput("p");
-    setSystemTime(crossed + deadline - 100); registry.reconcileOutput("p");
+    setSystemTime(crossed + deadline - 1); registry.reconcileOutput("p");
     expect(ended).toEqual([]);
     setSystemTime(crossed + deadline); registry.reconcileOutput("p");
     expect(ended).toEqual(["stalled"]);
