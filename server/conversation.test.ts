@@ -12,7 +12,8 @@ import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
 import { continuesHistory } from "../src/lib/chatRows.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
-import { agyToolOutput, parseAgyTranscript } from "./agy.ts";
+import { agyCatalog, agyToolOutput, parseAgyTranscript } from "./agy.ts";
+import * as filePool from "./file-pool.ts";
 import { agyStoreFromLocks } from "./agy-store.ts";
 import * as agyStore from "./agy-store.ts";
 import * as herdr from "./herdr/client.ts";
@@ -2892,6 +2893,41 @@ describe("Agy native ledger through shared paging", () => {
     // Alias a parent of presence, preserving the native held-path shape.
     const link = join(root, "linked-root"); symlinkSync(root, link);
     expect(agyStoreFromLocks([join(link, "presence", one.split("/").at(-1)!)])?.path).toBe(path);
+  });
+  /** Runs `during` while the read's `call`th catalog read (1: before the page, 2: after it) is under way. */
+  const duringCatalog = (call: number, during: () => void) => {
+    let calls = 0;
+    return spyOn(filePool, "fileTask").mockImplementation(async (task) => {
+      if (task.op !== "agy-catalog") throw new Error(`unexpected ${task.op}`);
+      calls += 1;
+      if (calls === call) during();
+      return [...agyCatalog(task.path)] as never;
+    });
+  };
+  it("keeps output refs when the ledger's state is forgotten while its catalog is read", async () => {
+    add(0, "USER_INPUT", "one"); add(1, "GENERIC", "x".repeat(5000));
+    const spy = duringCatalog(1, () => forgetTranscriptState());
+    try {
+      const tool = (await page()).turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+      if (tool?.kind !== "tool") throw new Error("missing tool");
+      expect(await agyToolOutput(path, tool.output_ref!)).toBe("x".repeat(5000));
+    } finally { spy.mockRestore(); }
+  });
+  it("passes busy file threads through to both Agy routes, so they answer 503 and not a missing output", async () => {
+    add(0, "USER_INPUT", "one"); add(1, "GENERIC", "x".repeat(5000));
+    const tool = (await page()).turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool");
+    if (tool?.kind !== "tool") throw new Error("missing tool");
+    const spy = spyOn(filePool, "fileTask").mockRejectedValue(new filePool.FileBusyError("every file thread is busy"));
+    try {
+      expect(await page().catch((error: unknown) => error)).toBeInstanceOf(filePool.FileBusyError);
+      expect(await agyToolOutput(path, tool.output_ref!).catch((error: unknown) => error)).toBeInstanceOf(filePool.FileBusyError);
+    } finally { spy.mockRestore(); }
+  });
+  it("rejects a page whose ledger is cut while its catalog is read again", async () => {
+    add(0, "USER_INPUT", "one");
+    const spy = duringCatalog(2, () => writeFileSync(path, ""));
+    try { expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable); }
+    finally { spy.mockRestore(); }
   });
   it("distinguishes unreadable database from verified empty history", async () => {
     add(0, "USER_INPUT", "one");

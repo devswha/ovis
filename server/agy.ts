@@ -269,10 +269,17 @@ async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection,
     if (realpathSync(path) !== path) throw new AgyUnavailable();
     const before = fstatSync(fd);
     const index = agyScan(path, fd);
-    const projection = agyReduce(index, await agyCatalogOffThread(path));
+    const catalog = await agyCatalogOffThread(path);
+    // forgotten or evicted while the catalog was read: parsing and output refs look it up by path
+    if (indexes.get(path) !== index) {
+      indexes.delete(path); indexes.set(path, index);
+      if (indexes.size > 16) indexes.delete(indexes.keys().next().value!);
+    }
+    const projection = agyReduce(index, catalog);
     const result = read(projection, fd);
-    const after = statSync(path), pinned = fstatSync(fd);
     const current = await agyCatalogOffThread(path);
+    // after the wait, so a ledger cut or replaced during it is seen
+    const after = statSync(path), pinned = fstatSync(fd);
     if (before.dev !== after.dev || before.ino !== after.ino || pinned.size < before.size
       || (pinned.size === before.size && (pinned.mtimeMs !== before.mtimeMs || pinned.ctimeMs !== before.ctimeMs))
       || projection.indices.some((index) => !current.has(index))) throw new AgyUnavailable();
@@ -345,5 +352,9 @@ export async function agyToolOutput(path: string, ref: string): Promise<string |
       }
       return null;
     });
-  } catch { return null; }
+  } catch (error) {
+    // every file thread busy: worth another try soon (http.ts answers 503), not a missing output
+    if (error instanceof FileBusyError) throw error;
+    return null;
+  }
 }
