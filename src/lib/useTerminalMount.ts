@@ -1114,7 +1114,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const startResume = (pane: string, early = false): void => {
         failResume();
-        resumeInput = { pane, items: [], since: performance.now(), early, screen: early && socket.sawOutput(pane) };
+        resumeInput = { pane, items: [], since: performance.now(), early, screen: early && socket.sawOutput(pane) && recoveringPane !== pane };
         resumeTimer = window.setTimeout(() => { resumeTimer = null; failResume(); }, RESUME_INPUT_WAIT_MS);
       };
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
@@ -1208,6 +1208,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // held as typing offline is, and never goes by itself when a later attach takes input
         if (resumeInput !== null && (message.type === "pty-exit" || message.type === "error")
           && (message.pane_id === undefined || message.pane_id === resumeInput.pane)) failResume();
+        // the attach took input and lost it before the keys went (a restart): what waited is an interruption's now, held
+        if (resumeInput !== null && message.type === "input-ready" && message.ready === false && message.pane_id === resumeInput.pane) failResume();
         if (message.type === "input-ready" || message.type === "output-recovering") {
           // output-recovering: this client joined after the stream ended, so the replay is the screen from before
           if (message.type === "output-recovering" || message.ready === false) {
@@ -1275,7 +1277,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
           });
           // the screen of the attach early keys wait for has come (queued above): they may go once it is parsed
-          if (resumeInput !== null && resumeInput.pane === owner) {
+          // (a replay marked as the screen from before a restart is not the screen the keys will meet)
+          if (resumeInput !== null && resumeInput.pane === owner && !(message.replay === true && recoveringPane === owner)) {
             resumeInput.screen = true;
             if (socket.canInput(owner)) flushResume();
           }
