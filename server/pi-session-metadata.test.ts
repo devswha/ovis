@@ -457,6 +457,28 @@ describe("Pi stat-keyed streaming reader", () => {
     expect(Math.max(...reads)).toBeLessThanOrEqual(3);
   });
 
+  it("review regression: labelled rows do not spend the reserve ahead of an unfinished one", async () => {
+    jest.useFakeTimers();
+    let now = 0;
+    spyOn(performance, "now").mockImplementation(() => now);
+    const f = fixture();
+    writeFileSync(f.file, header("unfinished") + filler(2 * PI_CHUNK_BYTES) + name("Eventually named"));
+    utimesSync(f.file, 1, 1);
+    const named = join(f.folder, "named.jsonl");
+    writeFileSync(named, header("named") + name("Already named"));
+    utimesSync(named, 2, 2);
+    const original = f.reader.read.bind(f.reader);
+    // A slow disk: the header pass outlasts the listing deadline, and each label scan's
+    // open costs more than half of the reserved quarter.
+    spyOn(f.reader, "read").mockImplementation((...args) => {
+      now += args[3] === "header" ? PI_READ_DEADLINE_MS : PI_READ_DEADLINE_MS * 0.15;
+      return original(...args);
+    });
+    const titles: Array<Array<string | null>> = [];
+    for (let open = 0; open < 3; open++) titles.push((await f.list()).map((row) => row.title));
+    expect(titles.at(-1)).toEqual(["Already named", "Eventually named"]);
+  });
+
   it("review regression: Windows header eligibility spends the last identity checks only once", async () => {
     jest.useFakeTimers();
     spyOn(performance, "now").mockReturnValue(0);
@@ -1011,9 +1033,8 @@ describe("Pi stat-keyed streaming reader", () => {
       // Both files fit in a chunk, so their EOF-checked labels need no second scan.
       expect(await f.list()).toMatchObject([{ id: "newer", title: "first row" }, { id: "older", title: "second row" }]);
       expect(reads).toBe(2);
-      // The header pass spent 1.5 deadlines, so the label scans get only their reserved quarter.
-      const reserved = 2 * PI_READ_DEADLINE_MS * 0.75 + PI_READ_DEADLINE_MS / 4;
-      expect(deadlines).toEqual([PI_HEADER_DEADLINE_MS, PI_HEADER_DEADLINE_MS, reserved, reserved]);
+      // Both rows are labelled by their header reads, so no label scan is requested at all.
+      expect(deadlines).toEqual([PI_HEADER_DEADLINE_MS, PI_HEADER_DEADLINE_MS]);
       expect(f.reader.size()).toEqual({ active: 0, waiting: 0 });
       expect(await f.list()).toMatchObject([{ id: "newer", title: "first row" }, { id: "older", title: "second row" }]);
       expect(reads).toBe(2);
