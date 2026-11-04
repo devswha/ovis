@@ -552,11 +552,19 @@ export function observePaneSessions(machines: readonly { id: string; snapshot: {
 
 /**
  * What a pane's slash commands are read for now: its session and folder as the roster last named them
- * (empty before it names the pane), or its PC's moving token until the roster after a session change
- * names them. The same pane running its agent in another project lists other skills.
+ * (empty before it names the pane). The same pane running its agent in another project lists other skills.
  */
 export function paneCommandScope(paneId: string, machineId: string): string {
-  return movingSessions.get(machineId)?.token ?? paneCommandScopes.get(paneKey(paneId, machineId)) ?? "";
+  return paneCommandScopes.get(paneKey(paneId, machineId)) ?? "";
+}
+
+/**
+ * The PC's token from its last event that panes changed, until the roster after it names them; undefined
+ * otherwise. A commands read in that gap may be of a session not named yet: it joins no read begun before
+ * and is not kept, while the lists already kept stay drawn.
+ */
+export function paneScopesMoving(machineId: string): string | undefined {
+  return movingSessions.get(machineId)?.token;
 }
 
 /**

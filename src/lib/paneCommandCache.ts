@@ -1,6 +1,6 @@
 import { paneStorageId } from "../../shared/machines.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
-import { paneCommandScope } from "./api.ts";
+import { paneCommandScope, paneScopesMoving } from "./api.ts";
 
 const COMMAND_CACHE_MS = 60_000;
 const cache = new Map<string, { loadedAt: number; commands: SlashCommand[] }>();
@@ -29,13 +29,15 @@ export async function cachedPaneCommands(paneId: string, machineId: string, agen
   const cached = cache.get(key);
   if (cached && Date.now() - cached.loadedAt < COMMAND_CACHE_MS) return cached.commands;
   const generation = generations.get(pane) ?? 0;
-  const flight = `${key}\0${generation}`;
+  const moving = paneScopesMoving(machineId);
+  const flight = `${key}\0${generation}\0${moving ?? ""}`;
   const shared = reading.get(flight);
   if (shared) return shared;
   const read = fetchCommands(paneId).then((commands) => {
     // invalidated while on its way: answered but never kept, so the read begun after it is what the pane keeps
     // or read for a session or folder the pane has left since: answered, but the pane keeps the list of the one it is on
-    if ((generations.get(pane) ?? 0) === generation && paneCommandScope(paneId, machineId) === scope) {
+    // or begun or answered while the PC's panes were changing (paneScopesMoving): of a session the roster has not named
+    if ((generations.get(pane) ?? 0) === generation && paneCommandScope(paneId, machineId) === scope && moving === undefined && paneScopesMoving(machineId) === undefined) {
       // the list of a session or folder the pane has left is not drawn again
       for (const other of cache.keys()) if (other.startsWith(list) && other !== key) cache.delete(other);
       cache.set(key, { loadedAt: Date.now(), commands });

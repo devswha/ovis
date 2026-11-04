@@ -139,18 +139,35 @@ describe("cachedPaneCommands", () => {
       // the same session read from another folder is another list too
       roster("b", "/repo/c");
       expect(paneCommandsNow("w6:p1", "local", "claude")).toBeNull();
-      void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      const inC = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
       expect(resolvers.length).toBe(3);
-      resolvers[2]!([]);
+      const rowsC: SlashCommand[] = [{ name: "skill-of-c", description: "", source: "skill" }];
+      resolvers[2]!(rowsC);
+      expect(await inC).toBe(rowsC);
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsC);
       // the server lists the foreground folder's commands: a change of it alone is another list
       roster("b", "/repo/c", "/repo/d");
       void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
       expect(resolvers.length).toBe(4);
-      // herdr said the panes changed: until the roster names them, no read joins one begun before
+      const rowsD: SlashCommand[] = [{ name: "skill-of-d", description: "", source: "skill" }];
+      resolvers[3]!(rowsD);
+      expect(await cachedPaneCommands("w6:p1", "local", "claude", fetchCommands)).toBe(rowsD);
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsD);
+      // herdr said a pane of the PC changed: the kept list stays drawn, but until the roster names the
+      // sessions a read joins none begun before and is not kept
       paneSessionsMoving("local");
-      void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
-      expect(resolvers.length).toBe(5);
-      resolvers[3]!([]); resolvers[4]!([]);
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsD);
+      roster("b", "/repo/c", "/repo/e");
+      const before = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      paneSessionsMoving("local");
+      const during = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      expect(resolvers.length).toBe(6);
+      resolvers[4]!(rowsA); resolvers[5]!(rowsB);
+      expect(await before).toBe(rowsA);
+      expect(await during).toBe(rowsB);
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBeNull();
+      roster("b", "/repo/c", "/repo/d");
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsD);
     } finally {
       observePaneSessions([{ id: "local", snapshot: { panes: [] } }], paneSessionEvents());
     }
