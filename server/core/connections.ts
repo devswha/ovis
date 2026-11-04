@@ -177,8 +177,8 @@ export function send(client: Client, message: ServerMessage, overflow?: () => vo
  * The socket a remote PC's frames are relayed to (machine-relay.ts), held to the same budget as this PC's own
  * frames: a remote session's snapshot past it is excused while it drains as well (#2573).
  */
-export function relayClient(client: Client): { send(raw: string): number; getBufferedAmount(): number; close(code?: number, reason?: string): void } {
-  return { send: (raw) => sendEncoded(client, raw), getBufferedAmount: () => backlog(client), close: (code, reason) => client.close(code, reason) };
+export function relayClient(client: Client): { send(raw: string): number; getBufferedAmount(): number; large(): number; close(code?: number, reason?: string): void } {
+  return { send: (raw) => sendEncoded(client, raw), getBufferedAmount: () => backlog(client), large: () => excusedBytes(client), close: (code, reason) => client.close(code, reason) };
 }
 
 function sendEncoded(client: Client, encoded: string, overflow?: () => void): number {

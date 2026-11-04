@@ -8,11 +8,12 @@ import { LARGE_REPLY_BYTES } from "./herdr/client.ts";
 /**
  * The browser's socket as the core hands it over (connections.ts `relayClient`): `send` holds it to this PC's
  * transport budget and closes it past that, and `getBufferedAmount` is what counts against it, without what is
- * left of a large frame still draining (#2573).
+ * left of a large frame still draining (#2573), which `large` tells.
  */
 interface RelayClient {
   send(data: string): number;
   getBufferedAmount(): number;
+  large?(): number;
   close(code?: number, reason?: string): void;
 }
 
@@ -101,7 +102,9 @@ export class MachineRelay {
   /** One stall-clock sample of both sockets' queues; the 100 ms timer calls it, and tests inject `now`. */
   tick(now = Date.now()): void {
     if (this.closed) return;
-    const buffered = Math.max(this.client?.getBufferedAmount() ?? 0, this.upstream.bufferedAmount);
+    // what queues behind a large frame still draining cannot move before it: that frame's own deadline answers for it
+    const client = this.client?.large?.() ? 0 : this.client?.getBufferedAmount() ?? 0;
+    const buffered = Math.max(client, this.upstream.bufferedAmount);
     const code = this.stall.sample(buffered, now);
     if (code) this.close(code, "terminal transport stalled");
   }

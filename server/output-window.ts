@@ -96,8 +96,16 @@ export class OutputWindow {
    * the time the oldest unacknowledged frame needs to cross a slow link: its ACK cannot come
    * before then.
    */
-  check(buffered: number, now = Date.now()): OutputVerdict {
+  check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
+    // `large`: frames past the budget still queued on the socket, a session's snapshot (#2573). Output behind
+    // one cannot be acknowledged before it has crossed, whenever it was queued; the frame's own deadline
+    // (connections.ts `expire`) answers for a client that stops reading, and the clock starts once it is gone.
+    if (large > 0) {
+      this.stalledSince = undefined;
+      this.pausingSince = undefined;
+      return "flow";
+    }
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
       this.stalledSince = undefined;
       this.pausingSince = undefined;

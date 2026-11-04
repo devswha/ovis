@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, it, jest, mock, spyOn } from "bun:test";
-import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
+import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
@@ -44,15 +44,14 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
   return frames;
 }
 
-it("gives a pane attached without a replay the time a large frame queued ahead of its output takes to cross (#2573)", async () => {
-  // a reconnect on a slow link: the session's snapshot, past the transport budget, is still queued
+it("keeps a pane whose output waits behind a large frame queued after its attach, and starts its stall clock once that frame has crossed (#2573)", async () => {
   let buffered = 0;
+  const ended: string[] = [];
   const client = {
     data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
     getBufferedAmount: () => buffered, send: (text: string) => { buffered += Buffer.byteLength(text); return -1; },
     close() {},
   };
-  expect(send(client, { type: "error", code: "x", message: "x".repeat(OUTPUT_HARD_BYTES) })).toBe(-1);
   // a pane that has written nothing yet: no replay
   attachment = {
     kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
@@ -61,17 +60,31 @@ it("gives a pane attached without a replay the time a large frame queued ahead o
   const registry = createTerminalRegistry({
     options: {}, clients: new Set([client]), stopped: () => false, terminalAttach: async () => true,
     holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
-    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end: (_client, reason) => { ended.push(reason); },
   });
+  const start = Date.now();
   try {
+    // a reconnect: the browser attaches on open, and the session's snapshot, past the transport budget, queues after that
     await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
-    // its first output queues behind the snapshot, so no ACK can come before the snapshot has crossed
-    const window = client.data.output.get("p")!;
-    window.write(OUTPUT_HIGH_BYTES, 10);
-    const now = Date.now() + 1000;
-    expect(window.check(0, now)).toBe("flow");
-    expect(window.check(0, now + OUTPUT_STALL_MS + 5000)).toBe("flow");
+    expect(send(client, { type: "error", code: "x", message: "x".repeat(OUTPUT_HARD_BYTES) })).toBe(-1);
+    const snapshot = buffered;
+    // the pane's first output queues behind it on a slow link
+    const output = "y".repeat(OUTPUT_HIGH_BYTES);
+    client.data.output.get("p")!.write(OUTPUT_HIGH_BYTES, wireBytes(output));
+    buffered += wireBytes(output);
+    for (let at = 0; at <= 40_000; at += 1000) { setSystemTime(start + at); registry.reconcileOutput("p"); }
+    expect(ended).toEqual([]);
+    // the snapshot crossed: the output behind it gets the usual deadline from now, with its own crossing time
+    buffered -= snapshot;
+    const crossed = start + 41_000;
+    const deadline = OUTPUT_STALL_MS + Math.ceil(wireBytes(output) * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
+    setSystemTime(crossed); registry.reconcileOutput("p");
+    setSystemTime(crossed + deadline - 100); registry.reconcileOutput("p");
+    expect(ended).toEqual([]);
+    setSystemTime(crossed + deadline); registry.reconcileOutput("p");
+    expect(ended).toEqual(["stalled"]);
   } finally {
+    setSystemTime();
     registry.closeAttachment("p");
     registry.conversations.stop();
   }
