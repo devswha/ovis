@@ -29,6 +29,8 @@ mac:
   artifactName: Ovis-${version}-${arch}.${ext}
 win:
   target: nsis
+  # made by scripts/build.ts from ../assets/icon-only.png
+  icon: .cache/icon.ico
   artifactName: Ovis-Setup-${version}-${arch}.${ext}
 nsis:
   # per user, no administrator prompt: the core and the server run as the user anyway

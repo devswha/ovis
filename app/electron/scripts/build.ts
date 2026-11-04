@@ -132,7 +132,37 @@ async function bundle(): Promise<void> {
   writeFileSync(join(here, "out", "THIRD_PARTY_LICENSES.txt"), texts.join("\n" + "-".repeat(72) + "\n\n"));
 }
 
+/**
+ * The Windows icon, as an .ico of PNG entries (16 to 256 pixels) from the app's icon. electron-builder
+ * makes one itself from a PNG, but its icon tool spins for minutes on the 1024-pixel icon under
+ * Bun's node (live-seen in the Windows VM, 10 minutes and still going).
+ */
+async function windowsIcon(): Promise<void> {
+  const sizes = [16, 24, 32, 48, 64, 128, 256];
+  const source = join(here, "..", "assets", "icon-only.png");
+  const images = await Promise.all(sizes.map(async (size) => new Uint8Array(await Bun.file(source).image().resize(size, size).png().bytes())));
+  const header = Buffer.alloc(6 + 16 * sizes.length);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(sizes.length, 4);
+  let offset = header.length;
+  sizes.forEach((size, index) => {
+    const entry = 6 + 16 * index;
+    // 0 stands for 256 in an ICONDIRENTRY's one-byte width and height
+    header.writeUInt8(size % 256, entry);
+    header.writeUInt8(size % 256, entry + 1);
+    header.writeUInt16LE(1, entry + 4);
+    header.writeUInt16LE(32, entry + 6);
+    header.writeUInt32LE(images[index]!.length, entry + 8);
+    header.writeUInt32LE(offset, entry + 12);
+    offset += images[index]!.length;
+  });
+  mkdirSync(join(here, ".cache"), { recursive: true });
+  writeFileSync(join(here, ".cache", "icon.ico"), Buffer.concat([header, ...images]));
+}
+
 async function dist(): Promise<void> {
+  if (windows) await windowsIcon();
   const version = (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version;
   const [os, arch] = target.split("-") as [string, string];
   const args = [join(here, "node_modules", ".bin", `electron-builder${windows ? ".exe" : ""}`), os === "darwin" ? "--mac" : windows ? "--win" : "--linux", `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`];
