@@ -261,13 +261,21 @@ try {
             getSelection()!.addRange(range);
           }));
           const pinned = (await pre.textContent())!;
+          await view.evaluate((node) => { node.scrollTop = node.scrollHeight; });
           await page.evaluate(() => window.chatQa.refresh());
           await page.locator(".chat-terminal-snapshot[data-newer-read]").waitFor();
           assert.equal(await page.evaluate(() => getSelection()!.toString()), selected, "a newer read keeps the selection");
           assert.equal(await pre.textContent(), pinned, "the newer read waits while the snapshot is selected");
           await page.evaluate(() => getSelection()!.removeAllRanges());
-          await page.locator(".chat-terminal-snapshot:not([data-newer-read])").waitFor();
-          assert.ok((await pre.textContent())!.length > pinned.length, "the newer read shows once the selection lets go");
+          // measured in the frame the newer read is drawn: a later poll's own follow must not hide a missed one
+          const released = await (await page.waitForFunction(() => {
+            const snapshot = document.querySelector(".chat-terminal-snapshot");
+            if (snapshot === null || snapshot.hasAttribute("data-newer-read")) return null;
+            const node = document.querySelector<HTMLElement>(".chat-view")!;
+            return { length: snapshot.querySelector("pre")!.textContent!.length, gap: node.scrollHeight - node.scrollTop - node.clientHeight };
+          }, undefined, { polling: "raf" })).jsonValue() as { length: number; gap: number };
+          assert.ok(released.length > pinned.length, "the newer read shows once the selection lets go");
+          assert.ok(released.gap <= 2, `the chat at its end follows the read drawn when the selection lets go: ${JSON.stringify(released)}`);
         } finally { growing = false; }
         await context.close();
         console.log(`PASS ${width}: terminal snapshot wraps, copies verbatim and keeps composer clearance`);

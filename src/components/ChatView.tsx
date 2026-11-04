@@ -903,7 +903,7 @@ function OutcomeChip({ outcome, actions, snapshot }: { outcome: CommandOutcome; 
   return <div className="chat-outcome" data-outcome-state={chip.state}>
     <div className="chat-outcome-row">
       <span className="chat-outcome-state" role="status"><Icon aria-hidden="true" />{outcomeLabel(t, chip)}</span>
-      {command !== "" && <span className="chat-outcome-command">{command}</span>}
+      {command !== "" && <span className="chat-outcome-command" title={outcome.text}>{command}</span>}
       {action !== null && <button type="button" className="chat-outcome-action" onClick={action}>{chip.action === "answer" ? t("Answer") : t("Open Terminal")}</button>}
     </div>
     {/* why it went as plain text, read with the state it explains */}
@@ -1194,17 +1194,29 @@ function TerminalSnapshot({ text }: { text: string }) {
   // text on screen is pinned and the newer read waits; otherwise each read renders at once, so the chat's
   // follow of its end measures the new height in the same commit
   const [pinned, setPinned] = useState<string | null>(null);
+  // a chat at its end when the pin lets go follows the newer read it then draws, as it follows any read
+  const followOnRelease = useRef(false);
   useEffect(() => {
     const update = () => {
       const selection = document.getSelection();
       const node = section.current;
       const held = selection !== null && !selection.isCollapsed && node !== null && selection.containsNode(node, true);
+      if (!held) {
+        const view = node?.closest<HTMLElement>(".chat-view");
+        followOnRelease.current = view != null && view.scrollHeight - view.scrollTop - view.clientHeight <= 2;
+      }
       setPinned((current) => held ? current ?? node?.querySelector("pre")?.textContent ?? null : null);
     };
     document.addEventListener("selectionchange", update);
     return () => document.removeEventListener("selectionchange", update);
   }, []);
   const shown = pinned ?? text;
+  useLayoutEffect(() => {
+    if (pinned !== null || !followOnRelease.current) return;
+    followOnRelease.current = false;
+    const view = section.current?.closest<HTMLElement>(".chat-view");
+    if (view) view.scrollTop = view.scrollHeight;
+  }, [pinned]);
   return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={shown !== text ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
       <CopyButton className="chat-meta-btn" text={shown} label={t("Copy as plain text")} onResult={(ok) => setCopyFailed(!ok)}><span>{t("Copy")}</span></CopyButton>

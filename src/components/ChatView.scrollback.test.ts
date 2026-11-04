@@ -40,7 +40,7 @@ describe("terminal scrollback snapshot", () => {
     const html = render(raw, [outcome]);
     expect(html).toContain('data-outcome-state="accepted"');
     expect(html).not.toContain("chat-turn-sent");
-    expect(html).toContain('<span class="chat-outcome-command">Thought TPS Todo are my words</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="Thought TPS Todo are my words">Thought TPS Todo are my words</span>');
   });
 
   it("names each chip's command, so two sends shown in the snapshot stay apart", () => {
@@ -48,22 +48,22 @@ describe("terminal scrollback snapshot", () => {
       { ...outcome, id: "ls", text: "ls" },
       { ...outcome, id: "pwd", text: "pwd", state: "unknown" },
     ]);
-    expect(html).toContain('<span class="chat-outcome-command">ls</span>');
-    expect(html).toContain('<span class="chat-outcome-command">pwd</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="ls">ls</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="pwd">pwd</span>');
   });
 
   it("labels an unmatched send's status with its command, without adding a provisional bubble", () => {
     const html = render(raw, [{ ...outcome, text: "an unmatched command", state: "unknown" }]);
     expect(html).toContain('data-outcome-state="unknown"');
     expect(html).not.toContain("chat-turn-sent");
-    expect(html).toContain('<span class="chat-outcome-command">an unmatched command</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="an unmatched command">an unmatched command</span>');
   });
 
   it("does not take a short result as shown from a word inside another line", () => {
     const html = render("$ make tools\nbuild ok, 3 warnings\n", [
       { ...outcome, id: "ls", text: "ls", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "ok" },
     ]);
-    expect(html).toContain('<span class="chat-outcome-command">ls</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="ls">ls</span>');
     expect(html).toContain("chat-outcome-result");
   });
 
