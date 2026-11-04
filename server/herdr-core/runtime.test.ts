@@ -1,5 +1,5 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findHc } from "./discovery.ts";
@@ -165,6 +165,9 @@ it.skipIf(platform !== "win32")("serves herdr-core on Windows through a named pi
     expect(socketAddress(adapter.socketPath)).toBe(adapter.socketPath);
     // a second server on the same state folder is refused while this one listens
     await expect(startRuntime(join(dir, "state"), standIn)).rejects.toThrow(/Another Ovis owns this state directory/);
+    // and through a junction to the same folder, which names the same pipe
+    symlinkSync(join(dir, "state"), join(dir, "alias"), "junction");
+    await expect(startRuntime(join(dir, "alias"), standIn)).rejects.toThrow(/Another Ovis owns this state directory/);
   } finally {
     adapter.stop();
   }

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
 import { SeenMarker } from "./seen-label.ts";
@@ -124,7 +124,8 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
   if (unix && statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   if (unix) chmodSync(stateDir, 0o700);
   const hc = coreConnection();
-  const adapter = await startHerdrCoreAdapter(hc, adapterAddress(stateDir, platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels));
+  // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
+  const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels));
   if (unix) chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
   serving = true;
