@@ -251,6 +251,29 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
   });
 
+  for (const side of ["the Herdr app", "Ovis"] as const) {
+    it(`keeps an unpin made in ${side} while the other was away, when the terminal comes back a shell and runs an agent again`, async () => {
+      const dir = stateDir();
+      const terminals: Held[] = [{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }];
+      const first = fakeCore(terminals);
+      const earlier = bridge(first, store(dir, ["local:t1"]), dir);
+      await first.opened();
+      await earlier.idle();
+      earlier.stop();
+      terminals[0]!.status = null;
+      const preferences = new PreferenceStore(dir);
+      if (side === "Ovis") preferences.set({ settings: {}, pins: [] });
+      else delete terminals[0]!.labels["herdr.pinned"];
+      const core = fakeCore(terminals);
+      const pins = bridge(core, preferences, dir);
+      await core.opened();
+      core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+      await pins.idle();
+      expect(preferences.get().pins).toEqual([]);
+      expect(terminals[0]!.labels["herdr.pinned"]).toBeUndefined();
+    });
+  }
+
   it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {
     const dir = stateDir();
     const preferences = store(dir, []);

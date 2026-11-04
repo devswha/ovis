@@ -155,7 +155,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
    * Whether a terminal runs an agent, as the Agents list draws it (an agent its status names). One
    * that stops being one leaves the sync and what was agreed of it, so the list pruning its row
    * unpins nothing, and an agent back in it meets the list anew. One first seen without an agent
-   * (a snapshot after a reconnect or a restart) leaves what was agreed of it too.
+   * (a snapshot after a reconnect or a restart) leaves it too, once what each side changed while
+   * the other was away is settled: an unpin in the Herdr app leaves the list, and a change made in
+   * Ovis stays agreed against until an agent runs there.
    */
   const agents = new Set<string>();
   const agentIs = (address: string, status: unknown) => {
@@ -168,6 +170,12 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     }
     agents.delete(address);
     refused.delete(address);
+    const base = agreed.get(agreedKey(address));
+    if (base !== undefined && live.has(address) && store.get().pins !== undefined) {
+      const labelPinned = live.get(address)!;
+      if (labelPinned === base && listed(address) !== base) return;
+      if (labelPinned !== base && !labelPinned) list(address, false);
+    }
     if (agreed.delete(agreedKey(address))) saveAgreed();
   };
   const record = (value: unknown) => {
