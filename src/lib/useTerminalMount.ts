@@ -995,9 +995,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       });
       // Every query xterm answers while parsing (device attributes and status, DECRQM, window reports,
       // DECRQSS, color reports) is taken here while a view is parsed, so its answer is never typed into the pane.
-      // Nor while the pane's attach is still opening: the pane cannot take the answer then, and the keys typed
-      // meanwhile wait for it (resumeInput), where an answer to a moment gone would be typed after them.
-      const unanswered = (): boolean => parsingView || (paneRef.current !== null && socket.awaitsInput(paneRef.current));
+      // Nor while the pane cannot take input (an attach still opening, a disconnect): the answer could not be sent
+      // then, and it would only be told as a key not sent (retainTyped).
+      const unanswered = (): boolean => parsingView || (paneRef.current !== null && !socket.canInput(paneRef.current));
       const queryReplies = [
         ...([{ final: "c" }, { prefix: ">", final: "c" }, { prefix: "=", final: "c" }, { final: "n" }, { prefix: "?", final: "n" },
           { intermediates: "$", final: "p" }, { prefix: "?", intermediates: "$", final: "p" }, { final: "t" }] as const)
@@ -1065,56 +1065,32 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // else ends it as typing offline ends (failResume, retainTyped): an error or the end of the pane, a dropped
       // connection, the wait running out, or the attach given up (cancelLeave: let go of again, cached, another
       // pane). Nothing of it goes by itself after that; a masked prompt on screen keeps it out of the draft too.
-      // `early`: typed while the pane's first attach opened (awaitsInput), which goes only once that attach's screen
-      // reached this tab (`screen`): a fresh attach is ready before herdr's first screen of it, which may be a prompt
-      type ResumeInput = { pane: string; items: Typed[]; since: number; early: boolean; screen: boolean };
-      let resumeInput: ResumeInput | null = null;
+      let resumeInput: { pane: string; items: Typed[]; since: number } | null = null;
       let resumeTimer: number | null = null;
-      const takeResume = (): ResumeInput | null => {
+      const takeResume = (): { pane: string; items: Typed[]; since: number } | null => {
         const resumed = resumeInput;
         resumeInput = null;
         if (resumeTimer !== null) window.clearTimeout(resumeTimer);
         resumeTimer = null;
-        if (resumed === null || resumed.pane === paneRef.current) return resumed;
-        // another pane is shown now: its draft is not where these keys belong, so they are told as not sent, never lost in
-        // silence. Told after the switch commits: the new pane's attach clears the notice it finds.
-        if (resumed.items.length > 0) queueMicrotask(() => { if (!disposed) setInputError(tRef.current("Not sent: the terminal is not ready for keys.")); });
-        return null;
-      };
-      // what waited and will not go by itself: text to the draft, and a key the draft cannot hold (Escape, Enter, an arrow) told, never lost in silence
-      const retainResumed = (pane: string, items: Typed[]): void => {
-        const secretNow = secretRef.current !== null;
-        for (const typed of items) retainTyped(pane, typed, secretNow);
-        if (!secretNow && items.some((typed) => !typed.chord && !typed.secret && applyToDraft(EMPTY_DRAFT, typed.input) === EMPTY_DRAFT)) {
-          setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
-        }
+        return resumed !== null && resumed.pane === paneRef.current ? resumed : null;
       };
       const failResume = (): void => {
         const resumed = takeResume();
         if (resumed === null) return;
-        retainResumed(resumed.pane, resumed.items);
+        for (const typed of resumed.items) retainTyped(resumed.pane, typed, secretRef.current !== null);
       };
-      // The keys go once the output that came before the readiness is on screen: an empty frame queued behind it runs
-      // its callback after theirs, so a masked prompt in that output has been read by then. Until then later keys join
-      // the wait (in order); a frame dropped by a switch or reconnect leaves it to the wait's own end.
-      let flushing: object | null = null;
       const flushResume = (): void => {
-        const waiting = resumeInput;
-        if (waiting === null || flushing === waiting || (waiting.early && !waiting.screen)) return;
-        flushing = waiting;
-        writeOutput("", false, () => {
-          if (flushing === waiting) flushing = null;
-          if (resumeInput !== waiting || !socket.canInput(waiting.pane)) return;
-          const resumed = takeResume();
-          if (resumed === null) return;
-          // a masked prompt that appeared while the keys waited is never typed into by them
-          if (performance.now() - resumed.since > RESUME_INPUT_WAIT_MS || secretRef.current !== null) retainResumed(resumed.pane, resumed.items);
-          else for (const typed of resumed.items) sendTyped(resumed.pane, typed);
-        });
+        const resumed = takeResume();
+        if (resumed === null) return;
+        const late = performance.now() - resumed.since > RESUME_INPUT_WAIT_MS;
+        for (const typed of resumed.items) {
+          if (late) retainTyped(resumed.pane, typed, secretRef.current !== null);
+          else sendTyped(resumed.pane, typed);
+        }
       };
-      const startResume = (pane: string, early = false): void => {
+      const startResume = (pane: string): void => {
         failResume();
-        resumeInput = { pane, items: [], since: performance.now(), early, screen: early && socket.sawOutput(pane) && recoveringPane !== pane };
+        resumeInput = { pane, items: [], since: performance.now() };
         resumeTimer = window.setTimeout(() => { resumeTimer = null; failResume(); }, RESUME_INPUT_WAIT_MS);
       };
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
@@ -1208,8 +1184,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // held as typing offline is, and never goes by itself when a later attach takes input
         if (resumeInput !== null && (message.type === "pty-exit" || message.type === "error")
           && (message.pane_id === undefined || message.pane_id === resumeInput.pane)) failResume();
-        // the attach took input and lost it before the keys went (a restart): what waited is an interruption's now, held
-        if (resumeInput !== null && message.type === "input-ready" && message.ready === false && message.pane_id === resumeInput.pane) failResume();
         if (message.type === "input-ready" || message.type === "output-recovering") {
           // output-recovering: this client joined after the stream ended, so the replay is the screen from before
           if (message.type === "output-recovering" || message.ready === false) {
@@ -1276,12 +1250,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
           });
-          // the screen of the attach early keys wait for has come (queued above): they may go once it is parsed
-          // (a replay marked as the screen from before a restart is not the screen the keys will meet)
-          if (resumeInput !== null && resumeInput.pane === owner && !(message.replay === true && recoveringPane === owner)) {
-            resumeInput.screen = true;
-            if (socket.canInput(owner)) flushResume();
-          }
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
@@ -1325,8 +1293,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // text still pending in the editor was composed without the role: it is committed while
           // observing still refuses it, so the next accepted key cannot carry it into the pane
           if (observeRef.current && !nowObserving) commitPendingText();
-          // keys waiting for an attach were typed with the role this connection no longer has: held, never sent later
-          if (nowObserving) failResume();
           observeRef.current = nowObserving;
           // no fit runs while observing: a font shrunk for this client's own grid would stay
           if (nowObserving) {
@@ -1548,6 +1514,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         setDraft((prev) => applyToDraft(prev, typed.input));
         if (!draftIsEmpty(applyToDraft(EMPTY_DRAFT, typed.input))) draftHeldForRef.current = current;
+        // A key the draft cannot hold (Escape, Enter, an arrow, typed right as the terminal opens, say) is told, never
+        // lost in silence. Not Backspace, which edits the draft, nor xterm's own focus and mouse reports, which no one typed.
+        else if (!/^([\x7f\b]+|\x1b\[([IO]|<|M)[\s\S]*)$/.test(typed.input)) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
       };
       const onData = term.onData((data) => {
         // a key from the key bar or the Stop, or a dropped file's paths, ends the swipe before it
@@ -1621,15 +1590,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret };
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
-        // typed while the pane's attach is still opening on a live connection (a key pressed right as the terminal
-        // opens): it waits for that attach to take input as the keys taking an idle pane back do, never dropped
-        // a focus report tells of a moment gone by the time the keys go (xterm's answers to queries are not made then: unanswered)
-        const reply = /^\x1b\[[IO]$/.test(input);
-        if (resumeInput === null && !secret && !reply && socket.awaitsInput(current)) startResume(current, true);
         // a mouse report is for the grid it was pressed on: the attach redraws the pane at another, so it is not kept
-        if (resumeInput !== null && (reply || /^\x1b\[(<|M)/.test(input))) return;
-        // a connection that is not plainly open (a liveness probe, a reconnect) holds typing for review: what waited is held with it
-        if (resumeInput !== null && socket.state !== "open") failResume();
+        if (resumeInput !== null && /^\x1b\[(<|M)/.test(input)) return;
         if (resumeInput !== null && !secret) {
           resumeInput.items.push(typed);
           return;

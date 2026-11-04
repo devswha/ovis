@@ -1,8 +1,9 @@
 /**
  * Keys typed into a terminal whose attach is still opening (connected, the bridge has not yet said
- * the pane takes input) are neither dropped nor held: they go to the pane once, in order, when the
- * bridge says input is ready. Real client and xterm on the demo's transport, whose `input-ready`
- * this test holds back until the keys are typed.
+ * the pane takes input) are never lost in silence: text is held in the draft for review, and a key the
+ * draft cannot hold (Escape) says it was not sent. None of it goes by itself once the pane takes input:
+ * it was typed blind, and what the screen shows then may be a password or a y/n prompt. Real client and
+ * xterm on the demo's transport, whose `input-ready` this test holds back until the keys are typed.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,15 +18,12 @@ interface Fixture {
   /** while set, the transport's `input-ready` frames wait here instead of reaching the client */
   holdReady: boolean;
   heldReady: Array<() => void>;
-  /** while set, the transport's own output is dropped: a fresh attach's screen comes only after its readiness */
-  dropOutput: boolean;
-  sockets: Array<{ push(frame: Record<string, unknown>): void }>;
 }
 declare global { interface Window { earlyKeys: Fixture } }
 
 /** Installed after the demo's transport: records what the client sends, and holds input-ready back. */
 function installEarlyKeysFixture(): void {
-  const state: Fixture = { sent: [], holdReady: true, heldReady: [], dropOutput: false, sockets: [] };
+  const state: Fixture = { sent: [], holdReady: true, heldReady: [] };
   window.earlyKeys = state;
   const Demo = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
@@ -35,11 +33,10 @@ function installEarlyKeysFixture(): void {
       state.sent.push(JSON.parse(String(raw)));
       send(raw);
     };
-    state.sockets.push(socket);
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (state.holdReady && frame.type === "input-ready") state.heldReady.push(() => push(frame));
-      else if (!(state.dropOutput && frame.type === "pty-data")) push(frame);
+      else push(frame);
     };
     return socket;
   };
@@ -94,57 +91,22 @@ try {
     await page.keyboard.press("x");
     await page.keyboard.press("y");
     await page.keyboard.press("Escape");
-    assert.deepEqual(await typedOf(pane), [], "nothing is sent before the pane takes input");
-    // the bridge says the pane takes input: the keys go, in the order typed
+    // Escape, which the draft cannot hold, is told; the text waits in the draft
+    await frame.getByText("Not sent: the terminal is not ready for keys.").first().waitFor({ state: "attached", timeout: 10_000 })
+      .catch(async () => assert.fail(`an Escape typed before input-ready was dropped without a word: ${JSON.stringify(await typedOf(pane))}`));
+    await frame.getByRole("button", { name: "Discard held input" }).first().waitFor({ state: "attached", timeout: 10_000 });
+    assert.equal(await frame.locator("code", { hasText: /^xy$/ }).count() > 0, true, "the text typed before input-ready is held in the draft");
+    // the bridge says the pane takes input: nothing typed before goes by itself
     await page.evaluate(() => {
       window.earlyKeys.holdReady = false;
       for (const release of window.earlyKeys.heldReady.splice(0)) release();
     });
-    await page.waitForFunction((pane) => window.earlyKeys.sent.filter((sent) => sent.type === "input" && sent.pane_id === pane).length >= 3, pane, { timeout: 10_000 })
-      .catch(async () => assert.fail(`the keys typed before input-ready were not sent: ${JSON.stringify(await typedOf(pane))}`));
-    assert.deepEqual(await typedOf(pane), ["x", "y", "\x1b"], "the keys typed before input-ready go once, in order");
-    assert.equal(await frame.locator(".terminal-banner-draft").count(), 0, "nothing is held as a draft");
-    console.log("PASS keys typed before the terminal took input are sent in order once it does");
-
-    // A running attach that stops taking input and takes it again (a restart): what was typed in between is
-    // an interruption's, held for review as before, never sent when the input comes back
-    await page.evaluate((pane) => {
-      for (const socket of window.earlyKeys.sockets) socket.push({ type: "input-ready", pane_id: pane, ready: false });
-    }, pane);
-    await page.keyboard.press("r");
-    await page.evaluate((pane) => {
-      for (const socket of window.earlyKeys.sockets) socket.push({ type: "input-ready", pane_id: pane });
-    }, pane);
-    // Escape still reaches the program beside the held draft: once it is sent, anything the readiness flushed went before it
+    // an Escape typed now reaches the program beside the held draft: once it is sent, anything flushed went before it
     await page.keyboard.press("Escape");
-    await page.waitForFunction((pane) => window.earlyKeys.sent.filter((sent) => sent.type === "input" && sent.pane_id === pane).length >= 4, pane, { timeout: 10_000 })
-      .catch(async () => assert.fail(`the Escape after the restart was not sent: ${JSON.stringify(await typedOf(pane))}`));
-    assert.deepEqual(await typedOf(pane), ["x", "y", "\x1b", "\x1b"], "a key typed while a running attach restarted is held, not sent when input returns");
-    const discard = frame.getByRole("button", { name: "Discard held input" }).first();
-    await discard.waitFor({ state: "attached", timeout: 10_000 });
-    console.log("PASS keys typed while a ready terminal restarts are held for review, not sent when it takes input again");
-
-    // A fresh attach as the server makes one: input-ready first, then herdr's first screen of it, here a password
-    // prompt. The keys that waited are never typed into it.
-    await discard.click();
-    await discard.waitFor({ state: "detached", timeout: 10_000 });
-    await page.reload();
-    await page.evaluate(() => { window.earlyKeys.dropOutput = true; });
-    await page.waitForFunction((pane) => window.earlyKeys.sent.some((sent) => sent.type === "attach" && sent.pane_id === pane)
-      && window.earlyKeys.heldReady.length > 0, pane, { timeout: 10_000 });
-    await frame.locator(".xterm-helper-textarea").focus();
-    await page.keyboard.press("s");
-    await page.keyboard.press("e");
-    await page.evaluate((pane) => {
-      window.earlyKeys.holdReady = false;
-      window.earlyKeys.dropOutput = false;
-      for (const release of window.earlyKeys.heldReady.splice(0)) release();
-      for (const socket of window.earlyKeys.sockets) socket.push({ type: "pty-data", pane_id: pane, data: "\x1b[2J\x1b[H[sudo] password for me: " });
-    }, pane);
-    await frame.getByText("Not sent: the terminal is not ready, and a password is never held for later.").waitFor({ state: "attached", timeout: 10_000 });
-    assert.deepEqual(await typedOf(pane), [], "keys that waited are never typed into the password prompt the attach's first screen shows");
+    await page.waitForFunction((pane) => window.earlyKeys.sent.some((sent) => sent.type === "input" && sent.pane_id === pane), pane, { timeout: 10_000 });
+    assert.deepEqual(await typedOf(pane), ["\x1b"], "nothing typed before input-ready is sent by itself; the key typed after it is");
     assert.deepEqual(errors, [], "no browser errors");
-    console.log("PASS keys that waited are kept out of a password prompt the attach's first screen shows");
+    console.log("PASS keys typed before the terminal took input are held or told, and never sent by themselves");
   } finally { await context.close(); }
 } finally {
   await browser?.close();
