@@ -366,9 +366,13 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // is the screen from before in a frame of its own, as an early negative receipt would pass for
       // the attach-complete barrier queued input waits on
       if (!alreadyAttached && attachment.recovering) send(client, { type: "output-recovering", pane_id: message.pane_id });
-      if (!alreadyAttached && replay) {
+      if (!alreadyAttached) {
+        // a large frame queued ahead (a session's snapshot, #2573) delays the pane's first ACK even with no replay
         const ahead = backlog(client);
-        client.data.output.get(message.pane_id)?.join(replay, ahead, Date.now(), client.getBufferedAmount() - ahead);
+        const large = client.getBufferedAmount() - ahead;
+        if (replay || large > 0) client.data.output.get(message.pane_id)?.join(replay, ahead, Date.now(), large);
+      }
+      if (!alreadyAttached && replay) {
         // marked as the screen from before: the client draws it but takes no new clipboard write from it
         sendOutput(client, message.pane_id, replay, true);
         // a tail that lost the stream's start may miss what was drawn once: herdr draws it again

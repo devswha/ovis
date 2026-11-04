@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, jest, mock, spyOn } from "bun:test";
-import { ReplayBuffer } from "../output-window.ts";
-import { connectionData } from "./connections.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
+import { connectionData, send } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
 import * as pty from "../pty/session.ts";
@@ -43,6 +43,39 @@ async function join({ readOnly = false, ready, recovering, times = 1, receiptRes
   registry.conversations.stop();
   return frames;
 }
+
+it("gives a pane attached without a replay the time a large frame queued ahead of its output takes to cross (#2573)", async () => {
+  // a reconnect on a slow link: the session's snapshot, past the transport budget, is still queued
+  let buffered = 0;
+  const client = {
+    data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+    getBufferedAmount: () => buffered, send: (text: string) => { buffered += Buffer.byteLength(text); return -1; },
+    close() {},
+  };
+  expect(send(client, { type: "error", code: "x", message: "x".repeat(OUTPUT_HARD_BYTES) })).toBe(-1);
+  // a pane that has written nothing yet: no replay
+  attachment = {
+    kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
+    process: { exited: Promise.resolve(), pause() {}, resume() {}, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
+  };
+  const registry = createTerminalRegistry({
+    options: {}, clients: new Set([client]), stopped: () => false, terminalAttach: async () => true,
+    holdFor: 0, heldRetry: 0, retryFor: 0, relookupFor: 0,
+    holdPending() {}, holdPendingPane() {}, attached() {}, inputReady() {}, end() {},
+  });
+  try {
+    await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true, flow_control: "ack" });
+    // its first output queues behind the snapshot, so no ACK can come before the snapshot has crossed
+    const window = client.data.output.get("p")!;
+    window.write(OUTPUT_HIGH_BYTES, 10);
+    const now = Date.now() + 1000;
+    expect(window.check(0, now)).toBe("flow");
+    expect(window.check(0, now + OUTPUT_STALL_MS + 5000)).toBe("flow");
+  } finally {
+    registry.closeAttachment("p");
+    registry.conversations.stop();
+  }
+});
 
 it("retains only a bounded opaque resume ID on an attach claim", async () => {
   const valid = crypto.randomUUID();
