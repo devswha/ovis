@@ -548,9 +548,12 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
     }
   }
   if (rows.length === 0 && incomplete) throw new PiMetadataBusy();
+  // A slow header pass must not starve labels on every open: keep a quarter of the listing
+  // deadline for label reads, so each listing still makes bounded progress.
+  const labelDeadline = Math.max(deadline, performance.now() + reader.listingDeadlineMs / 4);
   for (const [index, { file, header: checked }] of selected.entries()) {
     try {
-      const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline, { path: file.real, scope });
+      const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), labelDeadline, { path: file.real, scope });
       const header = label?.header;
       // The header pass already proved eligibility, even if it spent the last identity checks.
       // A changed identity must not replace that established row during this listing.
