@@ -152,6 +152,14 @@ export class ComposerDraftStore {
     this.notify();
     return true;
   }
+  /**
+   * begin, for a draft that still holds `sent` as storage has it now: another tab may have sent it and
+   * settled it since this tab drew it, before its storage event arrived here (#2369).
+   */
+  claim(key: string, sent: string): boolean {
+    this.refresh(key);
+    return this.read(key).text === sent && this.begin(key, sent);
+  }
   /** The send this tab began on the draft: its settle and end name it (lib/paneLifetime.ts, #1608). */
   sendOf(key: string): number | undefined { return this.sends.get(key)?.id; }
   /** `send`: the one sendOf named; a send another herdr's pane outlived ends nothing here */
@@ -220,6 +228,20 @@ export class ComposerDraftStore {
   }
 }
 export const composerDrafts = new ComposerDraftStore();
+/**
+ * Runs `section` as the one cross-tab critical section of the draft `key`'s sends (#2369): a send's
+ * claim (reading what goes, its lease, its payload) and its acknowledgement, and a pane move that
+ * rekeys the draft, see no other tab's in between. localStorage has no compare-and-swap, so a
+ * lease read and then written leaves two tabs a window to both send. Web Locks exist only in a
+ * secure context: on plain HTTP (a LAN or Tailscale address) `section` runs at once, the lease
+ * alone guarding as before. What `section` returned when it ran at once, else true (queued).
+ */
+export function underSendLock(key: string, section: () => boolean | void): boolean {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!locks) return section() !== false;
+  void locks.request(`ovis-send:${key}`, () => { section(); });
+  return true;
+}
 paneLifetimes.onRetire((machineId) => composerDrafts.forget(machineId));
 /**
  * The draft a `storage` event from another tab concerns, or null. A send is begun and ended as

@@ -19,7 +19,7 @@ import "./Composer.css";
 import type { AgentStatus, ClientRole, ConversationMetadata, PlanSummary, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
-import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
+import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { onQuoted } from "../lib/chatQuote.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
@@ -859,24 +859,34 @@ export function Composer({
       for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
-    if (!composerDrafts.begin(draftKey, sent)) return false;
-    sendId = composerDrafts.sendOf(draftKey);
-    // the comments it carries are reserved for it until it settles, wherever a pane move takes them (#511)
-    replyComments.reserve(sentComments);
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
-    // a polish landing before the acknowledgement would count as an edit and keep the sent message here
-    dictation.forget();
-    try {
-      // a message with comments goes only to an agent: a shell would read `> quote` as a redirect
-      const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
-      const result = agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
-      if (!(result instanceof Promise)) { settle(result); ended(); return true; }
-      void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(ended);
-    } catch {
-      ended();
-      if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again."));
-    }
-    return true;
+    // what goes is read again inside the pane's cross-tab lock: another tab may have sent this draft or
+    // its comments since this one drew them (#2369)
+    return underSendLock(draftKey, () => {
+      const waiting = new Set(replyComments.read(commentsKey).map((item) => item.id));
+      if (!sentComments.every((item) => waiting.has(item.id)) || !composerDrafts.claim(draftKey, sent)) return false;
+      sendId = composerDrafts.sendOf(draftKey);
+      // the comments it carries are reserved for it until it settles, wherever a pane move takes them (#511)
+      replyComments.reserve(sentComments);
+      // a polish landing before the acknowledgement would count as an edit and keep the sent message here
+      dictation.forget();
+      try {
+        // a message with comments goes only to an agent: a shell would read `> quote` as a redirect
+        const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
+        const result = agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
+        if (!(result instanceof Promise)) { settle(result); ended(); return true; }
+        // the acknowledgement settles the draft inside the lock too: a claim never reads it half settled
+        const unconfirmed = (): void => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); };
+        void result.then(
+          (answer) => underSendLock(draftKey, () => { try { settle(answer); } catch { unconfirmed(); } finally { ended(); } }),
+          () => underSendLock(draftKey, () => { unconfirmed(); ended(); }),
+        );
+      } catch {
+        ended();
+        if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again."));
+      }
+      return true;
+    });
   }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, onOpenHistory, onSend, role, roomless, sending, t, terminalTyped, text, uploading]);
   const sendRef = useRef(send);
   sendRef.current = send;
@@ -960,16 +970,19 @@ export function Composer({
       const note = t("Not confirmed. Check the terminal before sending again.");
       if (mounted.current) setNote(draft === undefined ? note : draftSendNote(note, draft));
     };
-    if (!composerDrafts.begin(draftKey)) return;
-    const sendId = composerDrafts.sendOf(draftKey);
-    try {
-      const result = deliver();
-      if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey, sendId); return; }
-      void result.then(settle).catch(unconfirmed).finally(() => composerDrafts.end(draftKey, sendId));
-    } catch {
-      composerDrafts.end(draftKey, sendId);
-      unconfirmed();
-    }
+    // its lease is claimed in the pane's cross-tab lock, as Send's is (#2369)
+    underSendLock(draftKey, () => {
+      if (!composerDrafts.begin(draftKey)) return;
+      const sendId = composerDrafts.sendOf(draftKey);
+      try {
+        const result = deliver();
+        if (!(result instanceof Promise)) { settle(result); composerDrafts.end(draftKey, sendId); return; }
+        void result.then(settle).catch(unconfirmed).finally(() => composerDrafts.end(draftKey, sendId));
+      } catch {
+        composerDrafts.end(draftKey, sendId);
+        unconfirmed();
+      }
+    });
   }, [connected, draftKey, sending]);
   const sendQuick = useCallback((reply: string) => sendBeside(() => onSend(reply)), [onSend, sendBeside]);
   /** Send it: the terminal draft a DraftRefusal named goes as it is, as Clear it and send with the draft for the message. */
