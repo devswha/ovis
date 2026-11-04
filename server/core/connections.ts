@@ -9,7 +9,7 @@ import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import type { DeviceStore } from "../devices.ts";
 import { HerdrError, herdrSocketPath } from "../herdr/client.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS, type OutputWindow } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES, type OutputWindow } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import { PaneWatch } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
@@ -41,8 +41,6 @@ export interface SocketData {
 interface ConnectionState {
   closing: boolean;
   stopMachineEvents?: () => void;
-  /** until when machine events queued on this socket may still be crossing the link ahead of terminal output */
-  sideTrafficUntil?: number;
   revoked: boolean;
   /** the connection's authority: observe connections cannot type or resize */
   mode: ClientRole;
@@ -82,9 +80,9 @@ export function connectionOf(client: Client): Readonly<Pick<ConnectionState, "cl
 
 /**
  * Idempotent subscription, with the same authorized document as SSE. Machine events never close
- * the terminal (4008) nor sit in front of its output long enough to pause it: one that would put
- * more than OUTPUT_LOW_BYTES on a socket that already has a backlog ends the subscription instead,
- * and the page takes machine events over SSE until its next connection. The ending notice is a
+ * the terminal (4008) nor sit in front of its output long enough to stall it: one that would put
+ * more than OUTPUT_LOW_BYTES on the socket, counting what is queued already, ends the subscription
+ * instead, and the page takes machine events over SSE until its next connection. The ending notice is a
  * few bytes sent past the budget, so the page always learns of it.
  */
 export function setMachineEvents(client: Client, enabled: boolean): void {
@@ -106,16 +104,6 @@ export function setMachineEvents(client: Client, enabled: boolean): void {
   if (state.closing) stop();
   else if (overflowed) end();
   else state.stopMachineEvents = stop;
-}
-
-/**
- * Whether a stalled-looking client may still be waiting on machine events queued in front of its
- * terminal output: it is paused rather than stopped until they could have crossed the slowest
- * link a budget allows for, as a joiner's replay is (OutputWindow.join).
- */
-export function machineEventsAhead(client: Client, now = Date.now()): boolean {
-  const until = stateOf(client).sideTrafficUntil;
-  return until !== undefined && now < until;
 }
 
 /** A `presence` frame's answer, or null for any other frame. A relayed frame is only parsed when it can be one. */
@@ -162,8 +150,8 @@ export function backlog(client: Client): number {
 
 /**
  * `overflow` marks a side-channel frame (machine events): it is called, and the frame not sent,
- * instead of closing the connection when the frame would overrun the budget, or would put more
- * than OUTPUT_LOW_BYTES on a socket that already has a backlog.
+ * when the frame would put more than OUTPUT_LOW_BYTES on the socket, counting what is queued
+ * already, or when the socket refuses it; such a frame never closes the connection.
  */
 export function send(client: Client, message: ServerMessage, overflow?: () => void): number {
   const state = stateOf(client);
@@ -174,29 +162,22 @@ export function send(client: Client, message: ServerMessage, overflow?: () => vo
     // A frame larger than the whole budget is sent while the backlog is within it, and excused
     // while it drains; only one at a time, so a client holds at most one such frame past it.
     const queued = backlog(client);
-    if (overflow && queued > 0 && queued + bytes > OUTPUT_LOW_BYTES) { overflow(); return 0; }
+    if (overflow && queued + bytes > OUTPUT_LOW_BYTES) { overflow(); return 0; }
     const oversized = bytes > OUTPUT_HARD_BYTES && queued <= OUTPUT_HARD_BYTES && !state.excused;
     // Include JSON escaping in the transport budget, before Bun could drop a
     // frame at its own cap. An overload close is explicit and never auto-replayed.
     if (queued + (oversized ? 0 : bytes) > OUTPUT_HARD_BYTES) {
-      if (overflow) { overflow(); return 0; }
       client.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output transport stalled");
       return 0;
     }
     // -1 means ALREADY queued. Never retry that frame, or terminal bytes repeat.
     const result = client.send(encoded);
-    if (result === 0) client.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
+    if (result === 0) { if (overflow) overflow(); else client.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed"); }
     else {
       const after = client.getBufferedAmount();
       // a frame sent after the excused one queues behind it: only its own bytes are new
       if (oversized) state.excused = after > 0 ? { ahead: after, frame: Math.min(bytes, after), last: after } : undefined;
       else if (state.excused) state.excused.last = after;
-      // terminal output queued behind a machine event cannot be acknowledged before the event has crossed.
-      // One grant at a time, a stall's length apart: a stream of machine events never holds off a stall stop for good.
-      const now = Date.now(), until = state.sideTrafficUntil;
-      if (overflow && after > 0 && (until === undefined || now >= until + OUTPUT_STALL_MS)) {
-        state.sideTrafficUntil = now + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(after));
-      }
     }
     return result;
   } catch {

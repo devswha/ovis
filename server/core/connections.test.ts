@@ -1,16 +1,16 @@
-import { expect, it, setSystemTime } from "bun:test";
+import { expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { DeviceStore } from "../devices.ts";
 import type { MachineRelay } from "../machine-relay.ts";
-import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS } from "../output-window.ts";
+import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_LOW_BYTES } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import type { MachineEventDocument } from "../machine-events.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import type { SharedPreferences } from "../../shared/preferences.ts";
-import { backlog, type Client, connectionData, connectionOf, createConnections, machineEventsAhead, send, setMachineEvents } from "./connections.ts";
+import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
 
 function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; machineEvents?: MachineEventDocument } = {}) {
   const log: string[] = [];
@@ -95,7 +95,7 @@ it("closes a client whose backlog of ordinary frames would pass the transport bu
   expect(log).toEqual([`closed ${OUTPUT_STALLED_CLOSE_CODE} terminal output transport stalled`]);
 });
 
-it("ends the machine-event subscription, never the terminal connection, rather than queue machine events in front of terminal output", () => {
+it("ends the machine-event subscription, never the terminal connection, rather than put more than OUTPUT_LOW_BYTES of machine events on the socket", () => {
   const listeners = new Set<(preferences: SharedPreferences) => void>();
   const preferences = (bytes: number) => ({ revision: 1, settings: { note: "x".repeat(bytes) } }) as unknown as SharedPreferences;
   let initial = 200;
@@ -109,7 +109,7 @@ it("ends the machine-event subscription, never the terminal connection, rather t
     const sent: string[] = [];
     Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { sent.push((JSON.parse(raw) as ServerMessage).type); buffered += Buffer.byteLength(raw); return -1; } });
     setMachineEvents(client, true);
-    return { log, sent, queue: (bytes: number) => { buffered = bytes; } };
+    return { client, log, sent, queue: (bytes: number) => { buffered = bytes; } };
   };
   // a backlog with no room left even for the ending notice: still told, and the terminal kept
   for (const queued of [OUTPUT_HARD_BYTES - 10, OUTPUT_LOW_BYTES - 100]) {
@@ -118,59 +118,39 @@ it("ends the machine-event subscription, never the terminal connection, rather t
     expect(sent).toEqual(["machine-events-ended"]);
     expect(listeners.size).toBe(0);
   }
-  // an empty queue takes a document larger than the low watermark
-  initial = OUTPUT_LOW_BYTES * 2;
-  const empty = subscribe(0);
-  expect(empty.sent).toEqual(["machine-event"]);
+  // a small document on an empty queue goes out; a live event that would pass the cap ends it
+  const small = subscribe(0);
+  expect(small.sent).toEqual(["machine-event"]);
   expect(listeners.size).toBe(1);
-  // a live event behind a backlog ends the subscription
-  empty.queue(OUTPUT_LOW_BYTES - 100);
+  small.queue(OUTPUT_LOW_BYTES - 100);
   for (const listener of [...listeners]) listener(preferences(200));
-  expect(empty.log).toEqual([]);
-  expect(empty.sent).toEqual(["machine-event", "machine-events-ended"]);
+  expect(small.log).toEqual([]);
+  expect(small.sent).toEqual(["machine-event", "machine-events-ended"]);
   expect(listeners.size).toBe(0);
+  // a roster of 768 KiB-1 MiB on an empty queue never rides the socket: the page moves to SSE, and
+  // the 256 KiB of terminal output that follows is sent with nothing of it in front
+  initial = 900 * 1024;
+  const large = subscribe(0);
+  expect(large.sent).toEqual(["machine-events-ended"]);
+  expect(listeners.size).toBe(0);
+  const output = "x".repeat(256 * 1024);
+  expect(send(large.client, { type: "pty-data", pane_id: "w1:p1", data: output } as unknown as ServerMessage)).toBe(-1);
+  expect(backlog(large.client)).toBeLessThan(OUTPUT_HIGH_BYTES + 1024);
+  expect(large.log).toEqual([]);
+  expect(large.sent).toEqual(["machine-events-ended", "pty-data"]);
 });
 
-it("holds off a stall stop while a machine event queued ahead of terminal output may still be crossing the link", () => {
-  const { client } = harness();
-  let buffered = 0;
-  Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { buffered += Buffer.byteLength(raw); return -1; } });
-  // terminal frames grant nothing
-  send(client, { type: "error", code: "x", message: "x".repeat(100) });
-  expect(machineEventsAhead(client)).toBe(false);
-  const before = Date.now();
-  // a roster carrying every PC's snapshot, sent onto an empty queue
-  buffered = 0;
-  send(client, { type: "error", code: "x", message: "x".repeat(200 * 1024) }, () => { throw new Error("not an overflow"); });
-  const grace = OUTPUT_STALL_MS + crossingMs(buffered);
-  expect(grace).toBeLessThan(OUTPUT_JOIN_MAX_MS);
-  expect(machineEventsAhead(client, before + grace - 50)).toBe(true);
-  expect(machineEventsAhead(client, Date.now() + grace + 1)).toBe(false);
-});
-
-it("never holds off a stall stop for good with a stream of small machine events", () => {
-  const { client } = harness();
-  let buffered = 0;
-  let drained = true;
-  Object.assign(client, { getBufferedAmount: () => buffered, send: (raw: string) => { if (!drained) buffered += Buffer.byteLength(raw); return -1; } });
-  const start = Date.now();
-  try {
-    // an event that leaves nothing queued grants nothing
-    setSystemTime(new Date(start));
-    send(client, { type: "error", code: "x", message: "x" }, () => {});
-    expect(machineEventsAhead(client, start)).toBe(false);
-    drained = false;
-    // a small event every 1.5 s for a minute, each leaving a little queued: the client is open to a stop at least every 10 s
-    buffered = 10;
-    let lastOpen = start;
-    for (let t = 0; t <= 60_000; t += 100) {
-      const now = start + t;
-      setSystemTime(new Date(now));
-      if (t % 1_500 === 0) send(client, { type: "error", code: "x", message: "x" }, () => {});
-      if (!machineEventsAhead(client, now)) lastOpen = now;
-      expect(now - lastOpen).toBeLessThan(10_000);
-    }
-  } finally { setSystemTime(); }
+it("ends the machine-event subscription, never the terminal connection, when the socket refuses a machine event", () => {
+  const machineEvents: MachineEventDocument = {
+    manager: { subscribe: () => () => {} },
+    preferences: { get: () => ({ revision: 1, settings: {} }) as unknown as SharedPreferences, subscribe: () => () => {} },
+  };
+  const { client, log } = harness({ machineEvents });
+  const sent: string[] = [];
+  Object.assign(client, { send: (raw: string) => { const type = (JSON.parse(raw) as ServerMessage).type; sent.push(type); return type === "machine-event" ? 0 : 1; } });
+  setMachineEvents(client, true);
+  expect(log).toEqual([]);
+  expect(sent).toEqual(["machine-event", "machine-events-ended"]);
 });
 
 it("a revoke ends the connection with 1008 and leaves its pending input to the socket's close", () => {

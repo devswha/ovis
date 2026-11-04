@@ -119,7 +119,7 @@ export class OutputWindow {
 }
 
 /** how long `wire` bytes take on the slowest link a budget allows for */
-export function crossingMs(wire: number): number {
+function crossingMs(wire: number): number {
   return Math.ceil(wire * 1000 / OUTPUT_JOIN_BYTES_PER_SECOND);
 }
 
