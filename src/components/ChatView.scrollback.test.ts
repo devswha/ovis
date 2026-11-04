@@ -49,6 +49,14 @@ describe("terminal scrollback snapshot", () => {
     expect(html).toContain('<span class="chat-outcome-command">an unmatched command</span>');
   });
 
+  it("does not take a short command or result as shown from a word inside another line", () => {
+    const html = render("$ make tools\nbuild ok, 3 warnings\n", [
+      { ...outcome, id: "ls", text: "ls", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "ok" },
+    ]);
+    expect(html).toContain('<span class="chat-outcome-command">ls</span>');
+    expect(html).toContain("chat-outcome-result");
+  });
+
   it("shows a recorded result the snapshot does not hold", () => {
     const html = render("another screen", [
       { ...outcome, id: "result", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "result scrolled away" },

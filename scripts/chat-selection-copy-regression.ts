@@ -13,6 +13,8 @@ const reply = "Outside **selection** and [docs](https://example.com).\n\n- First
 const snapshot = "❯ Thought TPS Todo are my words\n\nThought: 1s\n\nTPS 12\n\nTodo\n[ ] task\nContext 20%\n──────\n  spaces preserved  \n" + "long-path-".repeat(100) + "\n";
 const safari = process.env.COPY_WEBKIT === "1";
 let snapshotMode = false;
+let snapshotReads = 0;
+let growing = false;
 
 async function readClipboard(page: Page): Promise<string> {
   const copied = safari ? null : await page.evaluate(() => navigator.clipboard.readText());
@@ -39,7 +41,10 @@ try {
     if (path.endsWith("/pane/conversation")) return Response.json(snapshotMode
       ? { source: "scrollback", turns: [] }
       : { source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
-    if (path.endsWith("/pane/read")) return Response.json({ read: { text: snapshot, truncated: false } });
+    if (path.endsWith("/pane/read")) {
+      snapshotReads++;
+      return Response.json({ read: { text: growing ? `${snapshot}progress ${snapshotReads}\n` : snapshot, truncated: false } });
+    }
     if (path === "/") return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><p id="outside">Before the chat</p><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, path.slice(1))));
   } });
@@ -228,6 +233,28 @@ try {
         });
         assert.ok(layout.bodyWidth <= layout.viewport && layout.preWidth <= layout.preClient, `snapshot overflows at ${width}: ${JSON.stringify(layout)}`);
         assert.ok(layout.padding >= 150, `composer clearance is missing at ${width}: ${JSON.stringify(layout)}`);
+        // output that keeps coming must not take away a selection made in the snapshot
+        growing = true;
+        try {
+          const pre = terminal.locator("pre");
+          const selected = await pre.evaluate((node) => {
+            const text = node.firstChild!;
+            const at = text.textContent!.indexOf("spaces preserved");
+            const range = document.createRange();
+            range.setStart(text, at);
+            range.setEnd(text, at + "spaces preserved".length);
+            getSelection()!.removeAllRanges();
+            getSelection()!.addRange(range);
+            window.chatQa.refresh();
+            return getSelection()!.toString();
+          });
+          await page.locator(".chat-terminal-snapshot[data-newer-read]").waitFor();
+          assert.equal(await page.evaluate(() => getSelection()!.toString()), selected, "a newer read keeps the selection");
+          assert.equal(await pre.textContent(), snapshot, "the newer read waits while the snapshot is selected");
+          await page.evaluate(() => getSelection()!.removeAllRanges());
+          await page.locator(".chat-terminal-snapshot:not([data-newer-read])").waitFor();
+          assert.match((await pre.textContent())!, /progress \d+\n$/, "the newer read shows once the selection lets go");
+        } finally { growing = false; }
         await context.close();
         console.log(`PASS ${width}: terminal snapshot wraps, copies verbatim and keeps composer clearance`);
       }

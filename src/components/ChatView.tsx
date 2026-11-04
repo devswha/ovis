@@ -890,12 +890,17 @@ function OutcomeChip({ outcome, actions, snapshot }: { outcome: CommandOutcome; 
   const action = chip.action === "answer" ? actions?.answer ?? null : chip.action === "terminal" && terminal !== null ? () => terminal(outcome.text) : null;
   // a recognized result shows what the agent printed; the unconfirmed preview of the same screen goes
   // beside a raw terminal snapshot the screen is already shown: only what it lacks is repeated
-  const shown = (text: string) => snapshot !== undefined && text !== "" && snapshot.includes(text);
+  // whole lines only, so a short command or result is not taken as shown by a word that happens to match
+  const lines = snapshot === undefined ? null : `\n${snapshot.replace(/[ \t]+$/gmu, "")}\n`;
+  const resultShown = (text: string) => lines !== null && lines.includes(`\n${text.trim()}\n`);
+  const sent = outcome.text.trim();
+  const commandShown = lines !== null && sent !== "" && !sent.includes("\n")
+    && lines.split("\n").some((line) => line === sent || line.endsWith(` ${sent}`));
   const preview = snapshot !== undefined || outcome.result_text ? "" : outcome.preview ?? "";
   const [dismissed, setDismissed] = useChatRowToggle(`outcome-result:${outcome.id}`, false);
   const recorded = outcomeResultText(outcome, dismissed === true);
-  const result = recorded !== null && shown(recorded) ? null : recorded;
-  const command = snapshot !== undefined && !shown(outcome.text) ? outcomeCommand(outcome.text) : "";
+  const result = recorded !== null && resultShown(recorded) ? null : recorded;
+  const command = snapshot !== undefined && !commandShown ? outcomeCommand(outcome.text) : "";
   const note = outcomeNote(t, outcome);
   return <div className="chat-outcome" data-outcome-state={chip.state}>
     <div className="chat-outcome-row">
@@ -1186,11 +1191,25 @@ export function ChatFallback({ paneId, agent, visible, messages, scrollback, out
 function TerminalSnapshot({ text }: { text: string }) {
   const t = useT();
   const [copyFailed, setCopyFailed] = useState(false);
-  return <section className="chat-terminal-snapshot" aria-label={t("Terminal")}>
+  const section = useRef<HTMLElement>(null);
+  // a new read replaces the whole text and would drop a selection in it: the read shown waits until the selection lets go
+  const [shown, setShown] = useState(text);
+  useEffect(() => {
+    if (text === shown) return;
+    const held = () => {
+      const selection = document.getSelection();
+      return selection !== null && !selection.isCollapsed && section.current !== null && selection.containsNode(section.current, true);
+    };
+    if (!held()) { setShown(text); return; }
+    const release = () => { if (!held()) setShown(text); };
+    document.addEventListener("selectionchange", release);
+    return () => document.removeEventListener("selectionchange", release);
+  }, [text, shown]);
+  return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={text !== shown ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
-      <CopyButton className="chat-meta-btn" text={text} label={t("Copy as plain text")} onResult={(ok) => setCopyFailed(!ok)}><span>{t("Copy")}</span></CopyButton>
+      <CopyButton className="chat-meta-btn" text={shown} label={t("Copy as plain text")} onResult={(ok) => setCopyFailed(!ok)}><span>{t("Copy")}</span></CopyButton>
     </div>
-    <pre>{text}</pre>
+    <pre>{shown}</pre>
     {copyFailed && <p className="chat-copy-error" role="alert">{t("Couldn't copy. Select the text and copy it manually.")}</p>}
   </section>;
 }
