@@ -255,8 +255,6 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const stored = useRef(loadSharedPins());
   const base = useRef<Baseline>({ settings: sharedSettings(settings), pins: stored.current?.pins ?? null, muted: null, tabLabels: {} });
   const revision = useRef(0);
-  // the server's state folder this browser last knew (SharedPreferences.state_id)
-  const stateId = useRef(stored.current?.stateId);
   // a document has arrived (the GET, or the event stream's opening): sending begins then
   const loadedRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
@@ -326,9 +324,9 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     // the page's first document without pins comes from a server that holds none (a fresh state
     // folder): the pins this browser kept knowing are not its, and its own go with its next change
     base.current = !loadedRef.current && remote.pins === undefined ? { ...taken.base, pins: null } : taken.base;
-    // a document without the id (a server rolled back to a release that names none) leaves the one known
-    if (remote.state_id !== undefined) stateId.current = remote.state_id;
-    saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(stateId.current === undefined ? {} : { stateId: stateId.current }) });
+    // the id goes with the baseline it came with: a document without one (a release that names no folder)
+    // leaves none, and the next page goes by the revision, since that baseline may be another folder's
+    saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(remote.state_id === undefined ? {} : { stateId: remote.state_id }) });
     // a second document in the same tick compares against what this one set, not the last render
     latest.current = { settings: sanitizeSettings({ ...latest.current.settings, ...taken.patch }), pins: taken.pins ?? latest.current.pins, muted: taken.muted === undefined ? latest.current.muted : taken.muted, tabLabels: taken.tabLabels ?? latest.current.tabLabels };
     if (Object.keys(taken.patch).length > 0) update(taken.patch);

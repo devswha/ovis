@@ -66,7 +66,7 @@ export class PreferenceStore {
     this.stateDir = stateDir;
     try {
       this.stateId = readStateId(stateDir);
-      if (this.stateId === null) console.error(`${join(stateDir, STATE_ID_FILE)} is not a state folder id; none is sent until it is repaired or removed`);
+      if (this.stateId === null) console.error(`${join(stateDir, STATE_ID_FILE)} is not a state folder id; none is sent until it is repaired or removed and the server restarts`);
     } catch (error) {
       this.stateId = null;
       console.error(`Cannot read ${join(stateDir, STATE_ID_FILE)} (${(error as NodeJS.ErrnoException).code ?? "error"}); no state folder id is sent`);

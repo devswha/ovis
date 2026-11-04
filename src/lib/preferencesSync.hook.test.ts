@@ -563,7 +563,7 @@ describe("preferences sync real send path", () => {
     expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
   });
 
-  it("a page that opened on the server rolled back to a release without the id still tells a server started over since", async () => {
+  it("a page that took a baseline from a release naming no folder does not bring back a pin removed after the upgrade", async () => {
     store.set({ settings: {}, pins: [] });
     await open();
     await windows();
@@ -571,24 +571,28 @@ describe("preferences sync real send path", () => {
     await send();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
-    // the same browser opens on the server rolled back to a release that names no folder
+    // the server starts over with a fresh state folder on a release that names none, and holds the pin at revision 3
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    for (let index = 0; index < 3; index += 1) store.set({ settings: {}, pins: ["local:t1"] });
+    rmSync(join(dir, "preferences-id.json"));
+    store = new PreferenceStore(dir);
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
     oldServer = true;
+    // the same browser opens there and takes its document as what the server holds
     await open(DEFAULT_SETTINGS, true);
     await windows();
     await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
     clients.length = 0;
+    // the server is upgraded, and another device removes the pin: that save names the folder
     oldServer = false;
-    // then the server starts over with a fresh state folder, and catches up with the revision kept
-    rmSync(dir, { recursive: true, force: true });
-    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
-    store = new PreferenceStore(dir);
-    for (let index = 0; index < 2; index += 1) store.set({ settings: {}, pins: ["local:t2"] });
-    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    store.set({ settings: {}, pins: [] });
     const client = await open(DEFAULT_SETTINGS, true);
     await windows();
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await send();
-    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+    expect(store.get().pins).toEqual([]);
   });
 
   it("mute survives restart and another browser", async () => {
