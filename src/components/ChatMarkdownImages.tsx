@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
-import { markdownImagePreview, type MarkdownImagePreview } from "../lib/markdownImages.ts";
+import { markdownImagePreview } from "../lib/markdownImages.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
-import { MarkdownImageContext, MarkdownImageOpenContext, MarkdownImageRetryContext, type MarkdownImageResolver } from "./Markdown.tsx";
+import { MarkdownImageContext, MarkdownImageOpenContext, MarkdownImageRetryContext, type ImageSize, type MarkdownImageResolver } from "./Markdown.tsx";
 
-/** Images a chat resolved, per PC, pane and source: a reopened chat draws them before it stats them again. */
-const resolved = new Map<string, MarkdownImagePreview>();
-const REMEMBERED_PREVIEWS = 500;
+/** The size each image decoded at, per PC, pane and source: a reopened chat holds that box while it stats and loads the image again. */
+const sizes = new Map<string, ImageSize>();
+const REMEMBERED_SIZES = 500;
 
 /** Resolve on the pane's PC; the viewer stays with ChatView when an image's row scrolls away. */
 export function ChatMarkdownImages({ paneId, cwd, connected, onOpen, children }: {
@@ -25,18 +25,15 @@ export function ChatMarkdownImages({ paneId, cwd, connected, onOpen, children }:
   }, [connected, cwd, paneId, fetchFileInfo]);
   const resolve = useMemo(() => {
     const key = (src: string) => `${machineId}\0${paneId}\0${src}`;
-    const resolver: MarkdownImageResolver = async (src) => {
-      // The server prefers foreground_cwd over pane.cwd and returns the canonical byte path.
-      const preview = await markdownImagePreview(src, null,
-        (path) => fetchFileInfo(path, paneId), (path, download) => fileUrl(path, paneId, download));
-      resolved.delete(key(src));
-      if (preview?.kind === "inline") {
-        resolved.set(key(src), preview);
-        if (resolved.size > REMEMBERED_PREVIEWS) resolved.delete(resolved.keys().next().value!);
-      }
-      return preview;
+    // The server prefers foreground_cwd over pane.cwd and returns the canonical byte path.
+    const resolver: MarkdownImageResolver = (src) => markdownImagePreview(src, null,
+      (path) => fetchFileInfo(path, paneId), (path, download) => fileUrl(path, paneId, download));
+    resolver.size = (src) => sizes.get(key(src));
+    resolver.remember = (src, size) => {
+      sizes.delete(key(src));
+      sizes.set(key(src), size);
+      if (sizes.size > REMEMBERED_SIZES) sizes.delete(sizes.keys().next().value!);
     };
-    resolver.peek = (src) => resolved.get(key(src));
     return resolver;
   }, [machineId, paneId, fetchFileInfo, fileUrl]);
   return <MarkdownImageContext.Provider value={resolve}>

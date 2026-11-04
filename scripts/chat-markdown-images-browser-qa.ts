@@ -96,7 +96,8 @@ try {
 
   // A reopened chat draws a known image at its final height from the first frame (#2548).
   await page.evaluate(() => window.imageQa.update("Answer\n\n![Diagram](./out/diagram.svg)\n\nAfter the image."));
-  await decoded();
+  // `complete` is true a task before `load` fires; the slot gives its box up only on `load`
+  await page.waitForFunction(() => document.querySelector("img.markdown-image")?.closest(".image-slot:not(.is-loading)") != null);
   const statsBefore = stats.length;
   const hold = Promise.withResolvers<void>();
   held = { promise: hold.promise, release: hold.resolve };
@@ -112,6 +113,8 @@ try {
       // the stat and the bytes answer only after five frames of the new mount, as a slow PC or link would
       if (seen.length === 5) void fetch("/release-stat");
       // ten more frames after the bytes are in, so a late move is seen too
+      // a regression that never settles fails on what it showed, not on CI's timeout
+      if (seen.length > 600) { done(seen); return; }
       if (remounted && image?.complete && image.naturalWidth === 240 && document.querySelector(".image-slot.is-loading") === null) {
         if (seen.length > 10 && seen.slice(-10).every((value) => value === seen.at(-1))) { done(seen); return; }
       }
