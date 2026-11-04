@@ -432,7 +432,9 @@ blocks of `src/styles.css`.
   size in the header's meta line becomes `256 KB of 1.3 MB`, always beside a warning icon so the
   color is not the only sign. It is a warning yellow, at least 4.5:1 on
   `--bg`, `--bg-panel` and `--bg-elevated` (see `--notice` in the generated table). Charcoal and Catppuccin
-  (its yellow) set theirs in their blocks of `src/styles.css`.
+  (its yellow) set theirs in their blocks of `src/styles.css`. Tokyo Night Day, Gruvbox Light, One Light, both Solarized,
+  Kanagawa Lotus and Rosé Pine Dawn keep their palette yellow's hue and move only its lightness to
+  get there (`scripts/herdr-theme-overrides.ts`); `src/lib/themes.contrast.test.ts` holds every theme to it.
 - The header's meta line (size, folder) is `--fs-xs`. A file that cannot be previewed says so in
   one sentence ("This file can't be previewed here. Download it to open it.") over its type and
   size as a dim mono `--fs-xs` line; "Opening…" is a `role="status"` note that is in the document from
@@ -3274,6 +3276,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sign-in status with an existing status-token dot, without badge pills. Within-provider reorder
   and visibility controls stay in fixed columns; hidden rows remain listed but fade. Empty lists
   show one dim sentence.
+- Local account rows also offer **Remove**, with the existing confirmation dialog (Cancel focused).
+  This keeps the Codex-app-inspired connected-item list above: account identity and status lead,
+  sign-in is the primary action, and removal stays beside the account rather than in another settings
+  page. The confirmation distinguishes removing an Ovis list entry from signing the CLI out.
+  Removed keys live in the server's own `usage-removed.json` (`{ "accounts": ["provider:key"] }`),
+  apart from credentials and preferences so an older version cannot rewrite them away. The file
+  is additive state: older versions ignore it; no credential files or keychain entries are moved
+  or deleted. A removed account this PC still lists waits under **Removed from Ovis** at the foot of
+  its provider's accounts, each with **Restore** (`POST /api/usage/accounts`), so one tap never
+  loses an account for good and every provider has a way back, not only the two with a browser
+  sign-in. This follows the Codex app's connected-item list, where a disconnected item stays listed
+  with its way back beside it. A successful browser sign-in also restores only its own account. A
+  `usage-removed.json` that is not the list is set aside as `.corrupt-<time>` and every account is
+  listed again, rather than failing the usage report. The eye still only hides a meter, and reorder
+  still uses the existing shared preferences and fixed arrow columns.
 - An expired Claude or Codex sign-in on this PC gets one **Sign in again** button: under the row's status in
   Settings, and under **Sign-in expired.** in the usage popover (whose note then drops "Open X to
   renew it"). It runs Add account's terminal-tab sign-in, but in that account's own credential home
@@ -3661,8 +3678,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the agent asks for its own when it first starts. On a first run, plan usage turns on by itself for
   accounts already signed in; the guide opened again from Settings changes no setting (nor says it
   will).
-- "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them:
-  a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
+- "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them.
+  Where the Ovis relay can lead (offered here, nothing blocks it, not a watching device or a Portal
+  visitor), the box leads with it (off until the user turns it on, then a QR code): one line on what it does, the device-gate note when turning
+  it on closes the gate, and "Turn on the Ovis relay" as the primary button (the tap is the consent).
+  A browser in only because nothing is paired yet pairs itself first, as the relay closes the gate.
+  Then the relay's state while it connects, a failed start with Try again, and once online the same
+  pairing QR code Settings shows (`RelayPairing`), which gives way to Paired and New code once a
+  new device is listed, since its code is single-use. A quiet "Use Tailscale or Wi-Fi instead" link under
+  it, and the whole box where the relay cannot lead, shows the other way: a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
   code. The code is asked for when the box opens and never renewed behind the user's back (it would
   replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again.
   A browser in only because nothing is paired yet pairs itself first, as Settings → Phone's Pair this
