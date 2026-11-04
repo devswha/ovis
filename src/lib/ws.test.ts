@@ -1472,6 +1472,65 @@ it("holds typing the socket took when its connection ends before the server conf
   }
 });
 
+it("keeps typing sent before the bridge said what it takes, and fences it once it says so", () => {
+  const start = () => {
+    const client = new HerdrSocket("ws://test/ws");
+    // a features frame naming another herdr is not trusted: what the bridge takes waits for the snapshot
+    client.trustFeatures(() => false);
+    client.attach("w1:p1", 80, 24);
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    socket.receive({ type: "features", features: ["input-ready", "ping"], connection: "c1", herdr_lifetime: "replaced" });
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(client.sendInput("w1:p1", "echo early")).toBe(true);
+    return { client, socket };
+  };
+  const dropped = start();
+  try {
+    dropped.socket.disconnect();
+    expect(dropped.client.takeUnconfirmedInput("w1:p1")).toEqual(["echo early"]);
+  } finally { dropped.client.close(); }
+  const fenced = start();
+  try {
+    expect(pings(fenced.socket)).toEqual([]);
+    fenced.socket.receive(snapshot(["input-ready", "ping"]));
+    expect(pings(fenced.socket)).toEqual([{ type: "ping", id: 1 }]);
+    fenced.socket.receive({ type: "pong", id: 1 });
+    fenced.socket.disconnect();
+    expect(fenced.client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally { fenced.client.close(); }
+  // an older bridge answers no ping: its snapshot releases the typing, trusted as before
+  const older = start();
+  try {
+    older.socket.receive(snapshot(["input-ready"]));
+    expect(pings(older.socket)).toEqual([]);
+    older.socket.disconnect();
+    expect(older.client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally { older.client.close(); }
+});
+
+it("keeps a pane's unconfirmed typing across a second drop until its terminal takes it", () => {
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    expect(client.sendInput("w1:p1", "echo a")).toBe(true);
+    // no terminal of the pane is mounted to take it: the reconnect drops before one is
+    socket.disconnect();
+    client.wake();
+    const again = FakeSocket.last;
+    expect(again).not.toBe(socket);
+    again.open();
+    again.receive(snapshot(["input-ready", "submit", "ping"]));
+    again.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(client.sendInput("w1:p1", " b")).toBe(true);
+    again.disconnect();
+    // older typing stays ahead of newer
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual(["echo a", " b"]);
+  } finally {
+    client.close();
+  }
+});
+
 it("holds nothing the server confirmed, a probe's pong included, nor anything typed to an older bridge", () => {
   jest.useFakeTimers();
   const live = liveClient(["submit", "ping"]);

@@ -408,6 +408,9 @@ export class HerdrSocket {
         // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
         // its connection is trusted as before rather than dropped at the deadline or left paused
         if (!this.pingKnown && this.probing) this.endProbe();
+        // typing sent before this was kept unfenced: fenced now, or trusted as before by a bridge that answers no ping
+        if (this.features.has("ping")) this.fenceInput();
+        else { this.unconfirmed.clear(); this.inputFence = null; }
         if (!this.features.has("input-ready")) for (const pane of this.outputSeen) if (this.attached.has(pane)) this.inputReady.add(pane);
         // Capabilities arrive after open's role/attach replay. Restore only current interest,
         // never send an unknown frame to an older bridge or replay a hidden/detached chat.
@@ -524,7 +527,8 @@ export class HerdrSocket {
     this.clearConnectTimer();
     this.clearLiveness();
     // typing no pong confirmed may never have reached the server: the panes' terminals hold it for review
-    this.lostInput = new Map([...this.unconfirmed].map(([paneId, typed]) => [paneId, typed.map((entry) => entry.text)]));
+    // added to what an earlier end left that no terminal took yet (one unmounted since), older typing first
+    for (const [paneId, typed] of this.unconfirmed) this.lostInput.set(paneId, [...(this.lostInput.get(paneId) ?? []), ...typed.map((entry) => entry.text)]);
     this.unconfirmed.clear();
     this.inputFence = null;
     for (const handler of this.disconnectHandlers) handler();
@@ -962,14 +966,15 @@ export class HerdrSocket {
    * writes the frame, and a socket can go half-open just after a send (#2587). The server reads a
    * connection's frames in order, so the pong of a ping sent after the typing proves it was read;
    * until then it is kept, and a connection that ends first leaves it to the pane's terminal, which
-   * holds it for review (takeUnconfirmedInput). An older bridge, which answers no ping, is trusted as before.
+   * holds it for review (takeUnconfirmedInput). Typing sent before the bridge said what it takes is kept
+   * unfenced until it does; an older bridge, which answers no ping, is then trusted as before.
    */
   private awaitReceipt(paneId: string, text: string): void {
-    if (!this.features.has("ping")) return;
+    if (this.featuresKnown && !this.features.has("ping")) return;
     const typed = this.unconfirmed.get(paneId) ?? [];
     typed.push({ text, fence: this.nextPing });
     this.unconfirmed.set(paneId, typed);
-    this.fenceInput();
+    if (this.featuresKnown) this.fenceInput();
   }
 
   /** Pings after the typing still unconfirmed, unless a fence is already on its way: one at a time, however fast the typing. */
