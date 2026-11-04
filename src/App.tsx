@@ -392,13 +392,20 @@ export function App() {
   // App asks the server for the agents' friends (lib/friends.ts); the sidebar and the tabs read them
   useAgentFriends(machines);
   const tabTitle = selectedPane ? tabPaneTitle(selectedPane) : null;
+  const screenName = screenMachineId !== null ? machineName(screenMachineId) : null;
   useEffect(() => {
-    // the PC's host and the pane close the title, for the desktop's scripts (zed-here, screen-here, a Touch Bar)
+    // the PC's host and the pane close the title, for the desktop's scripts (zed-here, screen-here, a Touch Bar).
+    // While the Computer view shows, the title opens with "Screen · ": Hyprland on omarchy switches to a
+    // pass-through keymap (every shortcut goes to the remote PC) on that prefix, and screen-here treats
+    // such a window as a remote view and goes back to the previous window
     const host = selectedMachine?.kind === "local" ? selectedMachine.name : selectedMachine?.target?.destination;
-    document.title = tabTitle
-      ? `${tabTitle} · ${selectedMachine?.name ?? selectedMachineId} · Ovis${host && selectedPaneId ? ` [${host} ${selectedPaneId}]` : ""}`
-      : APP_TITLE;
-  }, [tabTitle, selectedMachine, selectedMachineId, selectedPaneId]);
+    const suffix = host && selectedPaneId ? ` [${host} ${selectedPaneId}]` : "";
+    document.title = screenName !== null
+      ? `Screen · ${screenName} · Ovis${suffix}`
+      : tabTitle
+        ? `${tabTitle} · ${selectedMachine?.name ?? selectedMachineId} · Ovis${suffix}`
+        : APP_TITLE;
+  }, [tabTitle, screenName, selectedMachine, selectedMachineId, selectedPaneId]);
 
   // A new tab's workspace: the named one, else the selected pane's. Its folder is the workspace's:
   // a worktree's checkout, else where the pane in front (the selected one, else the one herdr has
