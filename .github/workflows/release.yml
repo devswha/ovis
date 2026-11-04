@@ -277,6 +277,15 @@ jobs:
       tag: v${{ inputs.version }}
     permissions:
       contents: write
+  # the desktop app (app/electron): AppImages, dmg and zip, and the feed files it updates from
+  desktop:
+    needs: publish
+    uses: ./.github/workflows/desktop.yml
+    with:
+      tag: v${{ inputs.version }}
+    secrets: inherit
+    permissions:
+      contents: write
   mac-dmg:
     needs: publish
     uses: ./.github/workflows/mac-dmg.yml
