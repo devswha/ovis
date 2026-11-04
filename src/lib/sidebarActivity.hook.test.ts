@@ -613,7 +613,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "held"], [4, "held"], [5, "new"], [6, "new"]]);
   });
 
-  it("tells a return made while a held share is in flight once that share answers", async () => {
+  it("tells a return made while a held share is in flight as a look right away, once", async () => {
     // Given finish 2 of pane a shared as held, its request still unanswered.
     const told: [number, string | undefined][] = [];
     const pending = Promise.withResolvers<void>();
@@ -627,10 +627,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     // When the person goes away and comes back before it answers.
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    expect(told).toEqual([[1, "new"], [2, "held"]]);
-    await act(async () => { pending.resolve(); await pending.promise; });
 
-    // Then the return is told as a look once it answers, and not again.
+    // Then the return is told as a look then, not when the held share answers, and not again.
+    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
+    await act(async () => { pending.resolve(); await pending.promise; });
     expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
@@ -655,6 +655,32 @@ describe("sidebar finish acknowledgement through React effects", () => {
     await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
 
     // Then the return tells nothing more: the finish was already told as a look.
+    expect(told).toEqual([[1, "new", false], [1, "held", true]]);
+  });
+
+  it("keeps a look still in flight when its answer upgrade answers first", async () => {
+    // Given finish 1 of a shared as new, its request still unanswered.
+    const told: [number, string | undefined, boolean][] = [];
+    const pending = Promise.withResolvers<void>();
+    const share = (finish: SeenFinish, presented?: SeenPresentation) => {
+      told.push([finish.id, presented, finish.answer !== undefined]);
+      return finish.answer === undefined ? pending.promise : Promise.resolve();
+    };
+    const pane = "proof-upgrade-in-flight";
+    const client = await open(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane, false, share);
+
+    // When its answer upgrade is shared and answers, and the person goes away and back before the look answers.
+    expect(conversationFinishEvidence.accept(seenKey("local", "server-a", pane), 1, {
+      source: "pi-transcript", history_id: "session",
+      turns: [{ role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:01Z",
+        parts: [{ kind: "text", text: "Finished", phase: "final_answer" }] }],
+    })).toBe(true);
+    await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
+    await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), "b");
+    await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
+    await act(async () => { pending.resolve(); await pending.promise; });
+
+    // Then the look is not told a second time.
     expect(told).toEqual([[1, "new", false], [1, "held", true]]);
   });
 
