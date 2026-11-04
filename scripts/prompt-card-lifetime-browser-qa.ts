@@ -126,6 +126,10 @@ try {
     try {
       await card(page).getByText("Which remote?").waitFor();
       await card(page).locator(".prompt-card-custom input").fill("upstream please");
+      // back from the Terminal lens with the question still asked: the card shows what was typed
+      await setChat(page, { mounted: false });
+      await setChat(page, { mounted: true });
+      assert.equal(await card(page).locator(".prompt-card-custom input").inputValue(), "upstream please", "the card drawn again keeps the typed text");
       await setChat(page, { mounted: false });
       answer = { prompt: null };
       const read = nextRead();

@@ -1292,6 +1292,26 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // what the user typed into the card's own answer field, and for which prompt
   const sessionRef = useRef(agentSession);
   sessionRef.current = agentSession;
+  const promptNow = useRef(prompt);
+  promptNow.current = prompt;
+  // the herdr the card is drawn under, and what was typed into this pane's card before it was drawn again
+  const cardLifetime = paneLifetimes.generation(machineId);
+  const heldCardText = cardTexts.get(paneStorageId(machineId, paneId));
+  /** The card's answer field changed, or an answer refused gave its text back (also after the card went). */
+  const trackCardText = (promptId: string, lifetime: string | null | undefined, text: string): void => {
+    const key = paneStorageId(machineId, paneId);
+    // typed for a herdr that has gone since: recovery offers it, the pane that took its ID never gets it
+    if (paneLifetimes.generation(machineId) !== lifetime) {
+      if (text.trim() !== "") paneLifetimes.keep(machineId, paneId, "message", text);
+      return;
+    }
+    // for a question no longer shown: it joins the draft now, and leaves the shown card's text alone
+    if (promptNow.current?.id !== promptId) {
+      if (text.trim() !== "") composerDrafts.restorePending(composerDraftKey(key), text);
+      return;
+    }
+    cardTexts.set(key, { machineId, paneId, promptId, text });
+  };
   // Each prompt that appears is an occurrence of its own, and gets a card of its own. The prompt's
   // id is a hash of what it says, so the same question asked twice shares it. Navigation metadata
   // can change within an occurrence; only another id or a disappearance starts a new card.
@@ -1816,10 +1836,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
-          setPrompt((current) => polledPrompt(current, next.prompt));
-          // a read begun under a herdr that has gone since answers for nothing kept for the new one
+          // a read begun under a herdr that has gone since draws no card and keeps nothing for the new one
           if (paneLifetimes.generation(machineId) === lifetime) {
             keepCardText(next.prompt?.id ?? null);
+            setPrompt((current) => polledPrompt(current, next.prompt));
             if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
           }
           if (next.prompt === null && quickReads > 0) { quickReads -= 1; quick = true; } else quickReads = 0;
@@ -2485,7 +2505,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       input card, where PaneTerminal keeps its place. The prompt itself (its poll, the answer, the
       re-read) stays here. */}
   {prompt !== null && promptDock !== null && createPortal(
-    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} onTextChange={(text) => { cardTexts.set(paneStorageId(machineId, paneId), { machineId, paneId, promptId: prompt.id, text }); }} onAnswered={(toMessageBox) => {
+    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} initialText={heldCardText?.promptId === prompt.id ? heldCardText.text : undefined} onTextChange={(text) => trackCardText(prompt.id, cardLifetime, text)} onAnswered={(toMessageBox) => {
       // the card reports only while it is the one shown; still, only its own prompt is cleared
       onPromptAnswered?.(toMessageBox);
       // the card stays, waiting, until the read below shows what the screen asks next: it never goes

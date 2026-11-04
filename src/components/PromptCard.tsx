@@ -26,6 +26,8 @@ export interface PromptCardProps {
   onPromptChanged(): void;
   /** the user edited the card's own answer: its owner keeps the text if the question goes unanswered here */
   onTextChange?(text: string): void;
+  /** what the user typed into this question's card before it was drawn again, and has not sent */
+  initialText?: string;
   /** the answer went out; `toMessageBox`: the keyboard's focus was in the card, which is about to go, nothing else has taken it since, and the press was a key or a mouse, not a tap */
   onAnswered(toMessageBox: boolean): void;
   /** its answer went out: the card waits, as while sending, until the next read of the screen replaces it or takes it away */
@@ -39,7 +41,7 @@ export interface PromptCardProps {
   screenWords?: string | null;
 }
 
-export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
+export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, initialText, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
   const t = useT();
   const { answerPanePrompt } = useMachineApi();
   const [selected, setSelected] = useState<Set<number>>(() => {
@@ -51,7 +53,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, onAn
     }
     return new Set();
   });
-  const [custom, setCustom] = useState(() => prompt.default_custom_text ?? "");
+  const [custom, setCustom] = useState(() => initialText ? initialText : prompt.default_custom_text ?? "");
   const [sending, setPending] = useState(false);
   const pending = sending || answered;
   const [error, setError] = useState<UserError | null>(null);
