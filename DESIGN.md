@@ -2009,6 +2009,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the PC and split half the header shows, by the half that reported it: a recovery on one PC or half
   is not said once another is shown, and a pane's first connection is not a reconnect. A stalled
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
+- Beside the chip, always shown, one quiet mark says how this device reaches Ovis (`.conn-route`,
+  `lib/connectionRoute.ts`): a 14px glyph and one short `--text-dim` word, **relay** (the hosted
+  shell), **Tailscale** (a MagicDNS name or tailnet address), **LAN** (a private address or local
+  name), **direct** (any other address) or **on this PC** (loopback), with the full sentence as its
+  title and accessible text. It is read from what the page owns (the relay transport, the address
+  the browser loaded), never guessed from the server. It is not a button and never wraps: the phone
+  header keeps one line, the title giving it room. It follows Paseo's app, which says beside a host
+  whether it is reached directly or through its relay.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single

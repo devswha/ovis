@@ -2042,6 +2042,23 @@ button {
   font-size: var(--fs-xs);
 }
 
+/* how this device reaches Ovis (App.tsx ConnectionRouteMark): a quiet glyph and a short word, always
+   there on every width, never a button and never wrapped */
+.conn-route {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.conn-route svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
 /* one chip for the connection, drawn only while the bridge is not live; the herdr version lives
    in its tooltip and in Settings */
 .conn {
