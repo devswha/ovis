@@ -196,6 +196,18 @@ describe("loginIdentity", () => {
       expect(s.reads()).toBe(3);
     } finally { s.restore(); }
   });
+
+  it("reads the new login on a login request after the daemon restarts under another account", async () => {
+    const s = source([tailnet([42, undefined]), booting, tailnet([43, undefined])]);
+    try {
+      expect((await s.identities.loginIdentity()).owner).toBe("user42@example.com");
+      s.later(6 * 60_000);
+      await s.identities.freshIdentity(HOST);
+      s.later(2_000);
+      expect((await s.identities.loginIdentity()).owner).toBe("user43@example.com");
+      expect(s.reads()).toBe(3);
+    } finally { s.restore(); }
+  });
 });
 
 describe("parseTailscaleIp", () => {
