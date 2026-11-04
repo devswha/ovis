@@ -136,7 +136,12 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       // pty write only queues the ESC in the sidecar, so it goes the message's own way (send_text)
       // in the pane's turn. Plain typing, a terminal ESC included, keeps the pty's FIFO order.
       const stop = message.stop === true && message.text === "\u001b";
-      if (paneQueues.has(message.pane_id) || stop) {
+      // the viewer's terminal answering a query (a herdr-core attach's own, or the program's) is no one
+      // typing: it goes to the attach it answers, which takes out what was its own; typed through herdr
+      // behind queued input, the program would read those answers as keystrokes. Tagged by a client, so
+      // only what a reply looks like: escape sequences with no line break.
+      const reply = !stop && message.automatic === true && /^\x1b[^\r\n]+$/.test(message.text);
+      if ((paneQueues.has(message.pane_id) && !reply) || stop) {
         const text = message.text;
         // a click or a wheel (a click replayed behind a held arrow) is the attach's own mouse:
         // herdr encodes it for the program's mouse mode, send_text would type its bytes (#667)
