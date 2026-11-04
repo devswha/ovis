@@ -892,13 +892,14 @@ function OutcomeChip({ outcome, actions, snapshot }: { outcome: CommandOutcome; 
   // beside a raw terminal snapshot the screen is already shown: only what it lacks is repeated
   // whole lines only, so a short result is not taken as shown by a word that happens to match
   const lines = snapshot === undefined ? null : `\n${snapshot.replace(/[ \t]+$/gmu, "")}\n`;
-  const resultShown = (text: string) => lines !== null && lines.includes(`\n${text.trim()}\n`);
+  const resultShown = (text: string) => lines !== null && lines.includes(`\n${text.replace(/[ \t]+$/gmu, "").trim()}\n`);
   const preview = snapshot !== undefined || outcome.result_text ? "" : outcome.preview ?? "";
   const [dismissed, setDismissed] = useChatRowToggle(`outcome-result:${outcome.id}`, false);
   const recorded = outcomeResultText(outcome, dismissed === true);
   const result = recorded !== null && resultShown(recorded) ? null : recorded;
   // the chips sit together under the snapshot, not by their commands: each names the command it is for
-  const command = snapshot !== undefined ? outcomeCommand(outcome.text) : "";
+  // a shell's command is its whole first line: a path or variable in it is an argument, not the command
+  const command = snapshot !== undefined ? outcome.text.trim().split("\n", 1)[0] ?? "" : "";
   const note = outcomeNote(t, outcome);
   return <div className="chat-outcome" data-outcome-state={chip.state}>
     <div className="chat-outcome-row">

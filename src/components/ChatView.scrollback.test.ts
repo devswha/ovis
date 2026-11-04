@@ -59,6 +59,24 @@ describe("terminal scrollback snapshot", () => {
     expect(html).toContain('<span class="chat-outcome-command" title="an unmatched command">an unmatched command</span>');
   });
 
+  it("names a shell command by its line, not by a path or variable in it", () => {
+    const html = render("$ pwd\n/home/me\n", [
+      { ...outcome, id: "cd", text: "cd /var/log" },
+      { ...outcome, id: "ls", text: "ls /var/log" },
+      { ...outcome, id: "echo", text: "echo $HOME" },
+    ]);
+    expect(html).toContain('<span class="chat-outcome-command" title="cd /var/log">cd /var/log</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="ls /var/log">ls /var/log</span>');
+    expect(html).toContain('<span class="chat-outcome-command" title="echo $HOME">echo $HOME</span>');
+  });
+
+  it("takes a multi-line result as shown despite trailing spaces", () => {
+    const html = render("$ run\nfirst\nsecond\n", [
+      { ...outcome, id: "run", text: "run", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "first  \nsecond" },
+    ]);
+    expect(html).not.toContain("chat-outcome-result");
+  });
+
   it("does not take a short result as shown from a word inside another line", () => {
     const html = render("$ make tools\nbuild ok, 3 warnings\n", [
       { ...outcome, id: "ls", text: "ls", state: "result-observed", evidence: [{ kind: "recognized-result", at: outcome.created_at }], result_text: "ok" },
