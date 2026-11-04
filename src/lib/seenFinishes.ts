@@ -317,6 +317,32 @@ export function saveSeen(pc: string, epoch: string, pane: string, id: number, an
   return saved.id;
 }
 
+/**
+ * herdr moved the pane under a new ID (#1503), and the server counts its finishes on there: what was read under
+ * the old ID is read under the new one. Returns the records made, for the server to tell every browser.
+ */
+export function moveSeen(pc: string, from: string, to: string): SeenFinish[] {
+  hydrate();
+  if (from === to) return [];
+  const storage = storageNow();
+  const moved: SeenFinish[] = [];
+  const changes: SeenChange[] = [];
+  for (const entry of [...records.values()]) {
+    if (entry.pc !== pc || entry.pane !== from) continue;
+    records.delete(entry.key);
+    scopeRecords.delete(recordScope(entry.pc, entry.epoch));
+    if (entry.stored) {
+      try { storage?.removeItem(entry.key); } catch { /* blocked storage: the old ID's record stays there */ }
+    }
+    changes.push({ pc, epoch: entry.epoch });
+    const saved = write(pc, entry.epoch, to, entry.id, entry.answer);
+    changes.push(...saved.changes);
+    moved.push({ pc, epoch: entry.epoch, pane: to, id: entry.id, ...(entry.answer === undefined ? {} : { answer: entry.answer }) });
+  }
+  notify(changes);
+  return moved;
+}
+
 /** Subscribe to targeted same-page and cross-tab changes; one storage listener serves all consumers. */
 export function subscribeSeen(listener: SeenListener): () => void {
   storageNow();

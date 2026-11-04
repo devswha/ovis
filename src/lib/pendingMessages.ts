@@ -233,6 +233,36 @@ export class PendingMessageStore {
     }
     this.notify();
   }
+  /**
+   * herdr moved the pane under a new ID (#1503): its rows go there as they are (the server holds its own for an
+   * explicit send and lists them under the new ID), with the proof of the connection that has them. A row whose
+   * send this page has on its way stays, as its answer looks for it under the old ID.
+   */
+  move(from: string, to: string): void {
+    if (from === to) return;
+    this.refresh(from);
+    this.refresh(to);
+    const moving = this.read(from).filter((message) => !this.isBusy(from, message.id));
+    if (moving.length === 0) return;
+    const target = this.read(to);
+    const have = new Set(target.map((message) => message.id));
+    const carried = moving.filter((message) => !have.has(message.id));
+    const fromProofs = this.scopes.get(from), toProofs = this.scopes.get(to) ?? new Map<string, string>();
+    for (const message of moving) {
+      const proof = fromProofs?.get(message.id);
+      fromProofs?.delete(message.id);
+      if (proof !== undefined && !toProofs.has(message.id)) toProofs.set(message.id, proof);
+      const kept = this.recovery.get(`${from}\0${message.id}`);
+      if (kept === undefined) continue;
+      this.recovery.delete(`${from}\0${message.id}`);
+      if (have.has(message.id)) this.lifetimes.discard(kept); else this.recovery.set(`${to}\0${message.id}`, kept);
+    }
+    if (fromProofs?.size === 0) this.scopes.delete(from);
+    if (toProofs.size > 0) this.scopes.set(to, toProofs);
+    const stays = new Set(moving.map((message) => message.id));
+    this.write(to, [...target, ...carried]);
+    this.write(from, this.read(from).filter((message) => !stays.has(message.id)));
+  }
   suspendScope(scope: string): void { for (const owner of this.rows.keys()) this.suspend(owner, scope); }
   begin(owner: string, id: string): boolean {
     if (this.isBusy(owner, id) || !this.read(owner).some((message) => message.id === id)) return false;

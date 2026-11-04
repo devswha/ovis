@@ -137,3 +137,16 @@ it("recognizes a replaced socket file and Windows marker incarnation, never just
     expect(finishHerdrIdentity(join(dir, "missing"), "linux")).toBeNull();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("keeps a moved pane's finish count under its new ID, so a finish read before the move stays read (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  finishes.status("w1:p1", "working");
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(1);
+  finishes.moved("w1:p1", "w2:p1");
+  // the same finish, told again under the new ID, is not a new one
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(1);
+  finishes.status("w2:p1", "working");
+  expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
+  // herdr reusing the old ID later goes on from its count, as for any ended pane
+  expect(finishes.status("w1:p1", "done").finish_id).toBe(2);
+});

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
-import { loadSeen, receiveSeen, saveSeen, seenKey, subscribeSeen } from "./seenFinishes.ts";
+import { loadSeen, moveSeen, receiveSeen, saveSeen, seenKey, subscribeSeen } from "./seenFinishes.ts";
 
 // A finish this page acknowledged must reach storage again once another tab removed it while no
 // subscriber here listened for storage events (#1539); a subscriber's listener keeps the cache true.
@@ -78,4 +78,16 @@ it("walks the index once for a PC with no finishes, and sees the first finish wr
   expect(loadSeen("empty", "e1")).toEqual({ a: 2 });
   receiveSeen([{ pc: "empty", epoch: "e1", pane: "b", id: 1 }]);
   expect(loadSeen("empty", "e1")).toEqual({ a: 2, b: 1 });
+});
+
+it("carries a moved pane's read finishes to its new ID on its own PC, and says which to share (#1503)", () => {
+  saveSeen("pc", "e1", "w1:p1", 3, "answer");
+  saveSeen("pc", "e1", "w1:p2", 1);
+  saveSeen("other", "e1", "w1:p1", 2);
+  expect(moveSeen("pc", "w1:p1", "w2:p1")).toEqual([{ pc: "pc", epoch: "e1", pane: "w2:p1", id: 3, answer: "answer" }]);
+  expect(loadSeen("pc", "e1")).toEqual({ "w1:p2": 1, "w2:p1": 3 });
+  expect(data.has(seenKey("pc", "e1", "w1:p1"))).toBe(false);
+  expect(loadSeen("other", "e1")).toEqual({ "w1:p1": 2 });
+  // nothing left to carry the second time
+  expect(moveSeen("pc", "w1:p1", "w2:p1")).toEqual([]);
 });

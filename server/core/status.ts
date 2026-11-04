@@ -574,6 +574,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // told first, so a client remaps the pane before the pty-exit and pending lists of the old ID reach it,
     // and before the structure change's roster no longer has that ID (#1503)
     onPaneMoved: (from, to) => {
+      // its finishes keep their numbers: a browser carries the read marks it had for them (src/lib/paneMove.ts)
+      finishes.moved(from, to);
       broadcastAll({ type: "pane-moved", from, to });
       paneMoved?.(from, to);
     },

@@ -320,3 +320,33 @@ it("keeps a saved row's agent_only across a reload", () => {
   first.accept("p", message("plain", "held"), null);
   expect(new PendingMessageStore(() => port).read("p").map((row) => [row.id, row.agent_only])).toEqual([["only", true], ["plain", undefined]]);
 });
+
+describe("a pane moved under a new ID (#1503)", () => {
+  it("moves its rows to the new ID once, held as they were, with the live connection's proof", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("remote:pc:w1%3Ap1", message("live", "held"), "scope");
+    port.setItem("ovis:pending:remote:pc:w1%3Ap1", JSON.stringify({ messages: [message("live", "held"), message("saved", "held", "saved copy")] }));
+    store.refresh("remote:pc:w1%3Ap1");
+    // the server's list under the new ID came first
+    store.publish("remote:pc:w2%3Ap1", [message("live", "held")], [], "scope");
+    store.move("remote:pc:w1%3Ap1", "remote:pc:w2%3Ap1");
+    expect(store.read("remote:pc:w1%3Ap1")).toEqual([]);
+    expect(port.getItem("ovis:pending:remote:pc:w1%3Ap1")).toBeNull();
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => [row.id, row.state])).toEqual([["live", "held"], ["saved", "held"]]);
+    // its receipt under the new ID settles the live row
+    store.publish("remote:pc:w2%3Ap1", [], [{ id: "live", outcome: "sent" }], "scope");
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);
+    // moving again (another tab's word, the moving tab's own) changes nothing
+    store.move("remote:pc:w1%3Ap1", "remote:pc:w2%3Ap1");
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);
+  });
+
+  it("leaves a row whose send this page has on its way where its answer looks for it", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("w1:p1", message("going", "held"), "scope");
+    expect(store.begin("w1:p1", "going")).toBe(true);
+    store.move("w1:p1", "w2:p1");
+    expect(store.read("w1:p1").map((row) => row.id)).toEqual(["going"]);
+    expect(store.read("w2:p1")).toEqual([]);
+  });
+});

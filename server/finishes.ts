@@ -84,6 +84,18 @@ export class Finishes {
     }
   }
 
+  /**
+   * herdr moved the pane under a new ID: its finishes go on counting there, so a finish a browser read
+   * under the old ID keeps its number and stays read (#1503). The old ID keeps its count, as an ended pane's.
+   */
+  moved(from: string, to: string): void {
+    const before = this.panes.get(from);
+    if (!before || from === to) return;
+    const after = this.panes.get(to);
+    this.panes.set(to, after === undefined || after.id < before.id ? { ...before } : after);
+    this.ended(from);
+  }
+
   /** Keep the counter if herdr reuses an ended pane's ID within this epoch. */
   ended(paneId: string): void {
     const before = this.panes.get(paneId);
