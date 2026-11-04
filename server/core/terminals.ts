@@ -179,6 +179,30 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     attachment.process.kill();
   }
 
+  /**
+   * herdr moved the pane under a new ID: the attach made as `from` ends for its clients (`pty-exit`), and the
+   * first attach as `to` waits for that process to exit, as it holds herdr's one attach slot until then (#1503).
+   */
+  function paneMoved(from: string, to: string): void {
+    if (from === to) return;
+    const retire = (): void => {
+      if (!attachments.has(from)) return;
+      broadcast(from, { type: "pty-exit", pane_id: from, code: null });
+      closeAttachment(from);
+      const exited = retiringAttachments.get(from);
+      if (!exited) return;
+      const earlier = retiringAttachments.get(to);
+      const waited: Promise<void> = Promise.all([earlier, exited]).then(() => undefined).finally(() => {
+        if (retiringAttachments.get(to) === waited) retiringAttachments.delete(to);
+      });
+      retiringAttachments.set(to, waited);
+    };
+    // one still being created ends once it is
+    const creating = pendingAttachments.get(from);
+    if (creating) void creating.then(retire, () => undefined);
+    else retire();
+  }
+
   /** An interact client's terminal sizes the pty: the grid is remembered as this client's, and it drives. */
   function drivePty(paneId: string, client: Client, cols: number, rows: number): void {
     const attachment = attachments.get(paneId);
@@ -494,5 +518,5 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   // the same live records, read through their grid and held state only: the server outside reaches a
   // pane's terminal through `sight`, `poke` and the frames
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  return { attachments: views, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
 }

@@ -323,6 +323,28 @@ export class PendingInputs<Owner, Lease> {
     for (const owner of new Set([...this.records.values()].filter((item) => item.paneId === paneId).map((item) => item.owner))) this.hold(owner, paneId, fault);
   }
 
+  /**
+   * herdr moved the pane under a new ID: its messages, their outcomes and held-copy sends follow it, each
+   * held for an explicit send (one on its way, uncertain), and every owner is told both IDs' lists.
+   */
+  move(from: string, to: string, fault: Fault): void {
+    if (from === to) return;
+    this.holdPane(from, fault);
+    const owners = new Set<Owner>();
+    for (const item of this.records.values()) if (item.paneId === from) { item.paneId = to; owners.add(item.owner); }
+    for (const receipt of this.removed.values()) if (receipt.paneId === from) receipt.paneId = to;
+    for (const [key, entry] of [...this.resends]) {
+      if (entry.paneId !== from) continue;
+      const [, id, generation] = JSON.parse(key) as [string, string, number];
+      entry.paneId = to;
+      this.resends.delete(key);
+      this.resends.set(JSON.stringify([to, id, generation]), entry);
+    }
+    // its status and turn come again under the new ID; a gate the old one opened guards nothing there
+    this.forget(from);
+    for (const owner of owners) { this.publish(owner, from); this.publish(owner, to); }
+  }
+
   close(owner: Owner): void { this.hold(owner); this.closed.set(owner, this.now()); }
 
   expire(): void {
