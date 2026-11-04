@@ -550,6 +550,12 @@ describe("managed source updates with real Git repositories and builds", () => {
     const edited = make(false);
     expect((await edited.initialize())?.directory).toBe(plugin);
     edited.stop();
+    rmSync(join(plugin, "user-draft.txt"));
+    // a clean named branch is not a herdr plugin checkout either: the source checkout runs
+    await git(plugin, "checkout", "-q", "-b", "feature");
+    const branched = make(false);
+    expect((await branched.initialize())?.directory).toBe(plugin);
+    branched.stop();
   });
 
   it("follows only plain vX.Y.Z tags: untagged commits, bundle tags and pre-releases stay put", async () => {
