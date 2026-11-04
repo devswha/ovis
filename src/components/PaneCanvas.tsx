@@ -477,7 +477,11 @@ function RenameDialog({ title, field, initial, maxLength, required, onClose, onS
   const [error, setError] = useState<UserError | null>(null);
   usePhoneSheetBack(() => { if (busy) return false; onClose(); });
   useEffect(() => {
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) onClose(); } };
+    // an IME's Escape is the composition's, not the dialog's
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault(); event.stopPropagation(); if (!busy) onClose();
+    };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
   }, [busy, onClose]);

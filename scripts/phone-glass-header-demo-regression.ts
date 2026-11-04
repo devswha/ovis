@@ -117,6 +117,10 @@ try {
         await search.fill(">rename tab");
         await search.press("Enter");
         await tabName.waitFor();
+        // an Escape that ends an IME composition leaves the dialog open
+        await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true, cancelable: true })));
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await tabName.count(), 1, "a composing Escape does not close the Rename tab dialog");
         await page.keyboard.press("Escape");
         await tabName.waitFor({ state: "detached" });
         // Move to workspace\u2026 lists the other workspaces in a second menu (the move itself is the last step)
@@ -156,6 +160,18 @@ try {
         await openMore(page);
         assert.equal(await sheet.getByText("New terminal", { exact: true }).count(), 0, "upright, the header's menu does not repeat the row's");
         await closeMenu(page);
+        // the row's own name field, opened upright, stays while a keyboard shortens the screen past the cutoff
+        await page.locator(".tab-strip-menu").click();
+        await sheet.getByText("Rename tab", { exact: true }).click();
+        await tabName.fill("half typed");
+        await page.setViewportSize({ width: 390, height: 650 });
+        await page.waitForFunction(() => window.matchMedia("(max-width: 768px) and (max-height: 700px)").matches);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await page.locator(".tab-strip-rename").inputValue(), "half typed", "the row's name field keeps what was typed when the row would step out");
+        await page.locator(".tab-strip-rename").press("Escape");
+        await page.locator(".tab-strip").waitFor({ state: "detached" });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.locator(".tab-strip").waitFor();
 
         // the report's own moment: the message box focused and the keyboard up. Android shrinks the
         // layout viewport with it, under the 700px that drops a lone tab's row (TabStrip's cramped).

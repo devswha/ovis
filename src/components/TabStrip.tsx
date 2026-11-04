@@ -262,7 +262,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     onRenameHandled?.();
   }, [renameRequest]);
 
-  if (!shown || loneTabHidden(cramped, tabs.length)) return null;
+  // a name being typed keeps its row: a keyboard that shortens the screen past the cutoff leaves the field in place
+  if (!shown || (loneTabHidden(cramped, tabs.length) && editing === null)) return null;
 
   const panesOf = (tab: HerdrTab): PaneInfo[] => panes.filter((pane) => pane.tab_id === tab.tab_id);
   const paneFor = (tab: HerdrTab): PaneInfo | undefined => {
