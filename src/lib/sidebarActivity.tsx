@@ -31,7 +31,9 @@ interface ShareRecovery {
   running: boolean;
   wait: number;
 }
-const unobscured = () => true;
+/** whether the pane is in front of a person: `covered` by an overlay (closing it is a new look), or in view with its content still `loading` */
+export type PanePresence = "front" | "loading" | "covered";
+const unobscured = (): PanePresence => "front";
 
 function sameSeen(left: ReadonlyMap<string, MachineSeen>, right: ReadonlyMap<string, MachineSeen>): boolean {
   if (left.size !== right.size) return false;
@@ -42,7 +44,7 @@ function sameSeen(left: ReadonlyMap<string, MachineSeen>, right: ReadonlyMap<str
   return true;
 }
 
-export function useSidebarActivityState(machines: readonly Machine[], selectedMachineId: string, presentedPaneId: string | null, paneInFront: () => boolean = unobscured,
+export function useSidebarActivityState(machines: readonly Machine[], selectedMachineId: string, presentedPaneId: string | null, panePresence: () => PanePresence = unobscured,
   share?: (finish: SeenFinish, presented: SeenPresentation) => Promise<void>): SidebarActivity {
   const memories = useRef(new Map<string, { epoch: string | undefined; memory: SeqMemory }>());
   const seqsByMachine = useMemo(() => new Map(machines.map((machine) => {
@@ -62,9 +64,10 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
   const shared = useRef(new Map<string, SharedFinish>());
   const recovery = useRef<ShareRecovery>({ timer: undefined, unauthorized: false, running: false, wait: 1_000 });
   const shareRef = useRef(share); shareRef.current = share;
-  // the pane selected on a visible page at the last look ([pc, epoch, pane]), and the one brought into
-  // view since that has not been presented yet: a finish that arrives while its pane stays selected is
-  // `held`, even across an overlay, a reconnect or content still loading (shared/seen.ts SeenPresentation)
+  // the pane selected, uncovered, on a visible page at the last look ([pc, epoch, pane]), and the one
+  // brought into view since that has not been presented yet: a finish that arrives while its pane stays
+  // so is `held`, even across a reconnect or content still loading; closing an overlay brings it into
+  // view again (shared/seen.ts SeenPresentation)
   const front = useRef<string | null>(null);
   const arriving = useRef<string | null>(null);
   useEffect(() => {
@@ -154,8 +157,9 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
           }
         }
       }
-      const inView = machine.id === selectedMachineId && pageVisible && presentedPaneId !== null;
-      const pane = inView && machine.state === "connected" && paneInFront()
+      const view = machine.id === selectedMachineId && pageVisible && presentedPaneId !== null ? panePresence() : "covered";
+      const inView = view !== "covered";
+      const pane = view === "front" && machine.state === "connected"
         ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
       const frontKey = inView ? JSON.stringify([machine.id, epoch, presentedPaneId]) : null;
       if (frontKey !== null) {
@@ -224,7 +228,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
       if (epoch) next.set(machine.id, { epoch, record: loadSeen(machine.id, epoch) });
     }
     if (!sameSeen(seenRef.current, next)) setSeen(next);
-  }, [machines, selectedMachineId, presentedPaneId, paneInFront, pageVisible]);
+  }, [machines, selectedMachineId, presentedPaneId, panePresence, pageVisible]);
 
   return useMemo<SidebarActivity>(() => ({
     seqs: (machineId) => seqsByMachine.get(machineId) ?? NO_SEQS,

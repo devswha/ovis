@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
-import { useSidebarActivityState, type SidebarActivity } from "./sidebarActivity.tsx";
+import { type PanePresence, useSidebarActivityState, type SidebarActivity } from "./sidebarActivity.tsx";
 import { loadSeen, receiveSeen, saveSeen, seenKey, SEEN_LIMIT } from "./seenFinishes.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import { conversationFinishEvidence } from "./panePresentation.ts";
@@ -84,7 +84,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     function Probe({ machines, selected, covered }: { machines: Machine[]; selected: string | null; covered: boolean }) {
       // Keep callback identity stable between the hook's own renders.
       renders++;
-      activity = useSidebarActivityState(machines, "local", selected, inFronts[Number(covered)]!, share);
+      activity = useSidebarActivityState(machines, "local", selected, covered ? coveredView : loading.current ? loadingView : frontView, share);
       return null;
     }
     let renderer: ReactTestRenderer | undefined;
@@ -115,7 +115,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
       get renders() { return renders; },
     };
   }
-  const inFronts = [() => true, () => false];
+  // stable identities, as App's memoized callback; content still loading: in view, not yet drawn
+  const frontView = (): PanePresence => "front", coveredView = (): PanePresence => "covered", loadingView = (): PanePresence => "loading";
+  const loading = { current: false };
 
   for (const state of ["connecting", "reconnecting", "disconnected"] as const) {
     it(`keeps cached read finishes ready while ${state}, without marking an unseen selected pane`, async () => {
@@ -593,8 +595,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     // once told as a look, coming back to it tells nothing more
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // an overlay (or content still loading) and a reconnect are no look: the pane stayed selected
-    await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a", true);
+    // content still loading and a reconnect are no look: the pane stayed in view
+    loading.current = true;
+    await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a");
+    loading.current = false;
     await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a");
     const away = roster({ a: 4, b: 1 }, { b: "working" });
     away[0]!.state = "reconnecting";
@@ -603,7 +607,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     // a pane selected while covered is new once it is first presented
     await client.update(roster({ a: 4, b: 5 }), "b", true);
     await client.update(roster({ a: 4, b: 5 }), "b");
-    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "held"], [4, "held"], [5, "new"]]);
+    // closing an overlay over it brings it into view again
+    await client.update(roster({ a: 4, b: 6 }), "b", true);
+    await client.update(roster({ a: 4, b: 6 }), "b");
+    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "held"], [4, "held"], [5, "new"], [6, "new"]]);
   });
 
   it("upgrades a shared finish when its same-ID answer fingerprint becomes available", async () => {
