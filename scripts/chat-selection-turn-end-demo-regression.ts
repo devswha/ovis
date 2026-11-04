@@ -215,9 +215,10 @@ try {
       // A reader who scrolls up while words stand selected, with no input this page sees (a screen
       // reader, find in page), has left the end: letting the selection go leaves them where they are.
       // In a few steps, a pixel at a time, and a pixel at a time after the transcript grew below the
-      // selection (an agent still writing), already far from its end.
-      for (const [step, steps, grown] of [[30, 3, 0], [1, 90, 0], [1, 20, 150]] as const) {
-        const label = `desktop-1280-reader-away-${step}px${grown ? `-grown-${grown}` : ""}`;
+      // selection (an agent still writing), already far from its end; and back up a pixel at a time
+      // after scrolling down into what grew, past where the chat last put the view.
+      for (const [step, steps, grown, down] of [[30, 3, 0, 0], [1, 90, 0, 0], [1, 20, 150, 0], [1, 100, 300, 200]] as const) {
+        const label = `desktop-1280-reader-away-${step}px${grown ? `-grown-${grown}` : ""}${down ? `-down-${down}` : ""}`;
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
         try {
           await context.addInitScript((id) => {
@@ -242,15 +243,31 @@ try {
             await frames(page);
             assert.equal(await gap(), grown, `${label}: what grew below the selection is not followed under it`);
           }
+          if (down) {
+            // the row above the words grows first: the hold puts the view back for it, so the chat has
+            // put the view somewhere since the selection began
+            const wordsTop = () => page.evaluate(() => (window as unknown as { wordsRange: Range }).wordsRange.getClientRects()[0]!.top);
+            const before = await wordsTop();
+            await page.evaluate(() => {
+              const rows = [...document.querySelectorAll<HTMLElement>("[data-chat-row]")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+              rows.at(-2)!.style.paddingBottom = "40px";
+            });
+            await frames(page);
+            await frames(page);
+            assert.ok(Math.abs(await wordsTop() - before) < 1, `${label}: a row growing above the words moves them not, under the selection`);
+            await page.evaluate((down) => { document.querySelector<HTMLElement>(".chat-view-virtual")!.scrollTop += down; }, down);
+            await frames(page);
+            assert.equal(await gap(), grown - down, `${label}: scrolled down into what grew`);
+          }
           for (let made = 0; made < steps; made++) {
             await page.evaluate((step) => { document.querySelector<HTMLElement>(".chat-view-virtual")!.scrollTop -= step; }, step);
             await frames(page);
           }
-          assert.equal(await gap(), grown + step * steps, `${label}: the scroll stands under the selection`);
+          assert.equal(await gap(), grown - down + step * steps, `${label}: the scroll stands under the selection`);
           await page.evaluate(() => getSelection()?.removeAllRanges());
           await frames(page);
           await frames(page);
-          assert.equal(await gap(), grown + step * steps, `${label}: still away from the end once the selection is gone`);
+          assert.equal(await gap(), grown - down + step * steps, `${label}: still away from the end once the selection is gone`);
           console.log(`PASS ${label}`);
         } finally {
           await context.close();

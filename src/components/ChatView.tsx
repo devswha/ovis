@@ -2028,9 +2028,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
     // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
     // browser can trim it a pixel from there as the transcript shrinks under it: without the
-    // reader's input, that pixel is the layout's. Any further from where the chat put it, the move is
-    // the reader's, as without a selection.
-    const trimmed = selecting.current && placedAt.current !== null && placedAt.current - node.scrollTop <= READER_ALLOWANCE_PX;
+    // reader's input, landing a pixel above where the chat put it is the layout's. Anywhere else (further
+    // up, or anywhere below it, where only the reader takes the view) the move is the reader's, as
+    // without a selection.
+    const below = placedAt.current === null ? null : placedAt.current - node.scrollTop;
+    const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX;
     const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
