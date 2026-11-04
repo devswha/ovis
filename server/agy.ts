@@ -22,11 +22,14 @@ interface Step { index: number; start: number; end: number; type: string; status
 interface Index { identity: string; size: number; changed: string; scanned: number; revision: string; steps: Step[]; visible: Step[]; retired: Set<number> }
 const indexes = new Map<string, Index>();
 /** The last snapshot read per catalog, keyed on the stats of the files it copied. */
-const catalogs = new Map<string, { key: string; rows: number[] }>();
+const catalogs = new Map<string, { key: string; rows: number[]; settled: boolean; copied: number }>();
 const MAX_CATALOGS = 32;
 // Timestamps tick coarsely, so a same-size rewrite just after a read can keep both of them. Only a
-// read this long after the files' last change may be reused (git's "racy" rule).
+// read this long after the files' last change may be reused indefinitely (git's "racy" rule).
 const CATALOG_SETTLED_MS = 2000;
+// The copy is synchronous, and during a turn the files change on every read: copy a catalog at most
+// this often. A lagging catalog only delays new steps, as a DB snapshot behind the ledger does.
+const CATALOG_REFRESH_MS = 2000;
 export function forgetAgyState(path?: string): void {
   if (path === undefined) { indexes.clear(); catalogs.clear(); } else { indexes.delete(path); catalogs.delete(agyDatabasePath(path)); }
 }
@@ -46,6 +49,7 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
   let snapshot: string | undefined;
   let catalogKey: string | undefined;
   let reused: number[] | undefined;
+  let settled = false;
   const began = Date.now();
   try {
     if (realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
@@ -81,9 +85,16 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
       const key = snapshotFiles.map(({ stat }) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join("|");
       const cached = catalogs.get(dbPath);
       // A reused catalog still passes the same final checks on every pinned file below.
-      if (cached?.key === key) { reused = cached.rows; catalogKey = key; }
-      else if (snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
-        && began - Number(stat.ctimeNs / 1_000_000n) >= CATALOG_SETTLED_MS)) catalogKey = key;
+      if (cached !== undefined && ((cached.key === key && cached.settled)
+        || (began >= cached.copied && began - cached.copied < CATALOG_REFRESH_MS))) {
+        reused = cached.rows;
+        catalogs.delete(dbPath);
+        catalogs.set(dbPath, cached);
+      } else {
+        catalogKey = key;
+        settled = snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
+          && began - Number(stat.ctimeNs / 1_000_000n) >= CATALOG_SETTLED_MS);
+      }
       // macOS: tmpdir() is under the /var symlink, which SQLITE_OPEN_NOFOLLOW refuses
       // (assigned before resolving, so a failed realpath still removes the directory)
       if (reused === undefined) {
@@ -129,7 +140,7 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
     const indices = rows.map((row) => row.idx);
     if (catalogKey !== undefined) {
       catalogs.delete(dbPath);
-      catalogs.set(dbPath, { key: catalogKey, rows: indices });
+      catalogs.set(dbPath, { key: catalogKey, rows: indices, settled, copied: began });
       if (catalogs.size > MAX_CATALOGS) catalogs.delete(catalogs.keys().next().value!);
     }
     return new Set(indices);
