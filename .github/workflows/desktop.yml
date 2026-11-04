@@ -161,8 +161,11 @@ jobs:
           bun app/electron/scripts/build.ts merge-feed "$out/latest-mac.yml" \
             "$RUNNER_TEMP/builds/ovis-desktop-darwin-arm64/latest-mac.yml" \
             "$RUNNER_TEMP/builds/ovis-desktop-darwin-x64/latest-mac.yml"
-          for feed in latest-linux.yml latest-linux-arm64.yml latest-mac.yml; do
-            test -s "$out/$feed" || { echo "::error::No $feed among the builds." >&2; exit 1; }
+          # every name a download page links and every feed, so a release never gets part of the app
+          for name in latest-linux.yml latest-linux-arm64.yml latest-mac.yml \
+            Ovis-linux-x64.deb Ovis-linux-arm64.deb Ovis-linux-x64.AppImage Ovis-linux-arm64.AppImage \
+            Ovis-mac-arm64.dmg Ovis-mac-x64.dmg Ovis-mac-arm64.zip Ovis-mac-x64.zip; do
+            test -s "$out/$name" || { echo "::error::No $name among the builds." >&2; exit 1; }
           done
           ls -l "$out"
       # not ovis-desktop-*: a rerun's download would take an earlier attempt's gathered files with the builds

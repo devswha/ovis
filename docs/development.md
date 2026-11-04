@@ -752,9 +752,12 @@ an installed app sees a version once it is GitHub's latest, the same moment `ovi
 installing the new one.
 The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
 variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
-`MAC_*` secrets as Ovis for Mac and fails if one is missing. A red `desktop` job leaves the release
-published: run **Actions → Desktop app** from `main` with its tag to build and attach it again
-(`--clobber`). Without a tag that workflow only builds, as on a pull request touching the app.
+`MAC_*` secrets as Ovis for Mac and fails if one is missing. The `mac-dmg` and `windows-app` jobs
+wait for `desktop`, so the release becomes latest only with the desktop files in it; a red `desktop`
+job leaves the release published but holds them back: **Re-run failed jobs** on the Release run
+builds and attaches it again (`--clobber`), then runs them. **Actions → Desktop app** from `main`
+with a tag does the same for one release alone; without a tag it only builds, as on a pull request
+touching the app.
 Do not push release tags by hand: installed updaters read Git tags directly, so a tag is
 visible to them even without a GitHub release. Existing tags cannot be reused; fix a
 published version with a new patch release. If publishing fails after a tag was created,

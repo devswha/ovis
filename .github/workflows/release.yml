@@ -270,8 +270,10 @@ jobs:
           cd "$RUNNER_TEMP/shell"
           echo "$EXPECTED_SHA256  dist-shell.tar.gz" | sha256sum --check --strict
           gh release upload "$RELEASE_TAG" dist-shell.tar.gz dist-shell.tar.gz.sha256 --clobber
+  # after desktop: either app job may make the release latest, and releases/latest/download must then
+  # hold the desktop installers and feeds too; a failed desktop job holds them back until it is rerun
   windows-app:
-    needs: publish
+    needs: [publish, desktop]
     uses: ./.github/workflows/windows-app.yml
     with:
       tag: v${{ inputs.version }}
@@ -287,7 +289,7 @@ jobs:
     permissions:
       contents: write
   mac-dmg:
-    needs: publish
+    needs: [publish, desktop]
     uses: ./.github/workflows/mac-dmg.yml
     with:
       tag: v${{ inputs.version }}
