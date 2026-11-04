@@ -332,7 +332,7 @@ export class DeviceStore {
   }
 
   /** The transport owns a fresh 32-byte nonce per session and consumes AUTH only once. */
-  async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string): Promise<DeviceMatch | null> {
+  async matchRelay(deviceId: string, nonce: Uint8Array, signature: string, serverId: string, now = Date.now()): Promise<DeviceMatch | null> {
     if (nonce.byteLength !== 32 || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return null;
     const signed = Buffer.from(signature, "base64url");
     if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
@@ -345,6 +345,7 @@ export class DeviceStore {
       // Authorization changes during WebCrypto invalidate the proof; a rename does not.
       const current = this.devices.find((d) => d.id === deviceId);
       if (!verified || !current || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
+      this.noteSeen(current, now);
       return { id: current.id, label: current.label, role: current.role };
     } catch (error) {
       if (error instanceof DOMException) return null;
@@ -376,18 +377,22 @@ export class DeviceStore {
     }
     for (const device of this.devices) {
       if (!same(digest, device.token_hash)) continue;
-      const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
-      if (now - seen >= LAST_SEEN_WRITE_MS) {
-        try {
-          const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
-          // devices.json is also the authorization registry: a torn write here would lock every device out
-          this.save(next);
-          this.devices = next;
-        } catch { /* last-seen telemetry must not deny an otherwise valid credential */ }
-      }
+      this.noteSeen(device, now);
       return { id: device.id, label: device.label, role: device.role };
     }
     return null;
+  }
+
+  /** Notes when a device was last seen, at most once a minute on disk. */
+  private noteSeen(device: StoredDevice, now: number): void {
+    const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
+    if (now - seen < LAST_SEEN_WRITE_MS) return;
+    try {
+      const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
+      // devices.json is also the authorization registry: a torn write here would lock every device out
+      this.save(next);
+      this.devices = next;
+    } catch { /* last-seen telemetry must not deny an otherwise valid credential */ }
   }
 
   update(id: string, patch: { label?: string; role?: DeviceRole }): PairedDevice | null {
