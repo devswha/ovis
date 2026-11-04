@@ -6,7 +6,7 @@ import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { useSidebarActivityState, type SidebarActivity } from "./sidebarActivity.tsx";
 import { loadSeen, receiveSeen, saveSeen, seenKey, SEEN_LIMIT } from "./seenFinishes.ts";
-import type { SeenFinish } from "../../shared/seen.ts";
+import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import { conversationFinishEvidence } from "./panePresentation.ts";
 import { shareSeen } from "./api.ts";
 
@@ -77,7 +77,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     });
   }
 
-  async function open(machines: Machine[], selected: string | null = null, covered = false, share?: (finish: SeenFinish) => Promise<void>) {
+  async function open(machines: Machine[], selected: string | null = null, covered = false, share?: (finish: SeenFinish, presented?: SeenPresentation) => Promise<void>) {
     let activity: SidebarActivity | undefined;
     let current = machines;
     let renders = 0;
@@ -345,7 +345,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
         expect(post.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
           ["/api/seen", "POST"], ["/api/seen", "POST"],
         ]);
-        expect(delivered).toEqual([{ pc: "local", epoch: "server-a", pane: "a", id: 1 }]);
+        expect(delivered).toEqual([{ pc: "local", epoch: "server-a", pane: "a", id: 1, presented: "new" }]);
       } finally { post.mockRestore(); }
     });
   }
@@ -577,6 +577,29 @@ describe("sidebar finish acknowledgement through React effects", () => {
       expect(health).toHaveBeenCalledTimes(1);
       expect(attempts).toBe(1);
     } finally { health.mockRestore(); }
+  });
+
+  it("says whether a shared finish's pane just came into view, and tells a held finish again when the pane is shown again", async () => {
+    const told: [number, string | undefined][] = [];
+    const share = async (finish: SeenFinish, presented?: SeenPresentation) => { told.push([finish.id, presented]); };
+    const client = await open(roster({ a: 1, b: 1 }, { b: "working" }), "a", false, share);
+    // a finish that arrives while the pane is in front (another client marked it unread)
+    await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
+    // away and back: the same finish, now shown again
+    await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
+    await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
+    // once told as shown, coming back to it tells nothing more
+    await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
+    await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
+    // under an overlay and back is shown again too, and a finish that arrived while away is new
+    await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a", true);
+    await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a");
+    // a reconnect is no look: the pane stayed on screen
+    const away = roster({ a: 4, b: 1 }, { b: "working" });
+    away[0]!.state = "reconnecting";
+    await client.update(away, "a");
+    await client.update(roster({ a: 4, b: 1 }, { b: "working" }), "a");
+    expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "new"], [4, "held"]]);
   });
 
   it("upgrades a shared finish when its same-ID answer fingerprint becomes available", async () => {

@@ -13,6 +13,7 @@ import { isLoopbackBind, lanExposed } from "./access.ts";
 import { DeviceStore } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { SeenStore } from "./seen.ts";
+import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
 import { SHELL_AGENTS, ShellAgentLocator } from "./shell-agent.ts";
 import { AgentDetector, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
@@ -300,14 +301,19 @@ export function createServer(
   // read finishes are kept until this server knows their herdr run ended
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
-  // pane's finish now, so a read told late never marks a turn that ended since as seen
+  // pane's finish now, so a read told late never marks a turn that ended since as seen. A pane brought
+  // into view writes it again (shared/seen.ts SeenPresentation); one left on screen does not
   const seenMarker = servingCore() ? new SeenMarker(coreConnection()) : null;
-  if (seenMarker) seen.subscribe((finish) => {
-    if (finish.pc !== LOCAL_MACHINE || machines?.finishEnded(finish.pc, finish.epoch) !== false) return;
+  const markSeen = (finish: SeenFinish, again: boolean) => {
+    if (!seenMarker || finish.pc !== LOCAL_MACHINE || machines?.finishEnded(finish.pc, finish.epoch) !== false) return;
     const pane = machines.list().find((machine) => machine.id === LOCAL_MACHINE)?.snapshot?.panes.find((candidate) => candidate.pane_id === finish.pane);
     if (pane?.agent_status !== "done" || pane.finish_id !== finish.id) return;
-    seenMarker.mark(finish.pane).catch((error: unknown) => console.warn(`herdr-core: could not mark ${finish.pane} seen:`, error));
-  });
+    seenMarker.mark(finish.pane, again).catch((error: unknown) => console.warn(`herdr-core: could not mark ${finish.pane} seen:`, error));
+  };
+  if (seenMarker) {
+    seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
+    seen.onPresented((finish) => markSeen(finish, true));
+  }
   // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);

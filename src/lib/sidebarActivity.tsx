@@ -2,7 +2,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
-import type { SeenFinish } from "../../shared/seen.ts";
+import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import { liveSeqs, newSeqMemory, shownStatus, type SeenRecord, type SeqMemory } from "./sidebarOrder.ts";
 import { cleanSeen, loadSeen, saveSeen, seenKey, SEEN_LIMIT, subscribeSeen } from "./seenFinishes.ts";
 import { conversationFinishEvidence } from "./panePresentation.ts";
@@ -19,6 +19,7 @@ export const useSidebarActivity = (): SidebarActivity => useContext(SidebarActiv
 
 interface MachineSeen { epoch: string; record: SeenRecord }
 interface SharedFinish extends SeenFinish {
+  presented: SeenPresentation;
   retry?: () => Promise<boolean>;
 }
 interface ShareRecovery {
@@ -39,7 +40,7 @@ function sameSeen(left: ReadonlyMap<string, MachineSeen>, right: ReadonlyMap<str
 }
 
 export function useSidebarActivityState(machines: readonly Machine[], selectedMachineId: string, presentedPaneId: string | null, paneInFront: () => boolean = unobscured,
-  share?: (finish: SeenFinish) => Promise<void>): SidebarActivity {
+  share?: (finish: SeenFinish, presented: SeenPresentation) => Promise<void>): SidebarActivity {
   const memories = useRef(new Map<string, { epoch: string | undefined; memory: SeqMemory }>());
   const seqsByMachine = useMemo(() => new Map(machines.map((machine) => {
     const epoch = machine.snapshot?.finish_epoch;
@@ -58,6 +59,9 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
   const shared = useRef(new Map<string, SharedFinish>());
   const recovery = useRef<ShareRecovery>({ timer: undefined, unauthorized: false, running: false, wait: 1_000 });
   const shareRef = useRef(share); shareRef.current = share;
+  // the pane in front of a person at the last look ([pc, epoch, pane]), to tell a pane just brought
+  // into view from one that stayed in front while its finish arrived
+  const front = useRef<string | null>(null);
   useEffect(() => {
     const onVisibility = () => setPageVisible(document.visibilityState === "visible");
     document.addEventListener("visibilitychange", onVisibility);
@@ -130,6 +134,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         schedule();
       }
     };
+    let nextFront: string | null = null;
     for (const machine of machines) {
       const epoch = machine.snapshot?.finish_epoch;
       if (!epoch) continue;
@@ -144,8 +149,12 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
           }
         }
       }
-      const pane = machine.state === "connected" && machine.id === selectedMachineId && pageVisible && paneInFront()
-        ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
+      const inView = machine.id === selectedMachineId && pageVisible && presentedPaneId !== null && paneInFront();
+      const pane = inView && machine.state === "connected" ? machine.snapshot?.panes.find((pane) => pane.pane_id === presentedPaneId) : undefined;
+      // a reconnect is not a look: the pane stayed on screen
+      const frontKey = inView ? JSON.stringify([machine.id, epoch, presentedPaneId]) : null;
+      if (frontKey) nextFront = frontKey;
+      const presented: SeenPresentation = frontKey !== null && front.current === frontKey ? "held" : "new";
       if (pane?.agent_status === "done" && !pane.background_wait && pane.finish_id !== undefined && pane.finish_id > 0) {
         const answer = conversationFinishEvidence.answer(seenKey(machine.id, epoch, pane.pane_id), pane.finish_id);
         saveSeen(machine.id, epoch, pane.pane_id, pane.finish_id, answer);
@@ -153,10 +162,12 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         const key = JSON.stringify([finish.pc, finish.epoch, finish.pane]);
         const previous = shared.current.get(key);
         const answerUpgrade = previous?.id === finish.id && previous.answer === undefined && answer !== undefined;
-        if (!previous || finish.id > previous.id || answerUpgrade) {
+        // a finish that arrived while the pane stayed in front, now brought into view again
+        const shownAgain = previous?.id === finish.id && previous.presented === "held" && presented === "new";
+        if (!previous || finish.id > previous.id || answerUpgrade || shownAgain) {
           const sender = shareRef.current;
           if (sender) {
-            const sent: SharedFinish = { ...finish };
+            const sent: SharedFinish = { ...finish, presented };
             shared.current.delete(key);
             shared.current.set(key, sent);
             while (shared.current.size > SEEN_LIMIT) {
@@ -167,7 +178,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
               if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
               if (gate.unauthorized) { sent.retry = send; return false; }
               try {
-                await sender(finish);
+                await sender(finish, presented);
               } catch (error) {
                 if (shared.current.get(key) !== sent || recovery.current !== gate) return true;
                 const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
@@ -189,6 +200,7 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         }
       }
     }
+    front.current = nextFront;
     schedule();
     // Read after every acknowledgement and epoch retirement: a later machine can evict an
     // earlier machine's oldest entry while enforcing the shared cap.
