@@ -79,6 +79,24 @@ it("proves nothing from a scan whose owners moved before they were confirmed", a
   expect(await windowsHeldPaths(4242, holders, () => ["A", "B", "C"])).not.toHaveLength(1);
 });
 
+it("backs off a pid whose lock keeps changing hands during every scan", async () => {
+  resetWindowsScanCacheForTest();
+  const realNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+  try {
+    const scans: number[] = [];
+    let bCalls = 0;
+    // A stays held; B answers held and then free, so every pass sees its owners move
+    const holders = (path: string) => {
+      if (path === "A") scans.push(now);
+      return path === "A" || (path === "B" && ++bCalls % 2 === 1) ? [4242] : [];
+    };
+    for (now = 0; now <= 120_000; now += 6_000) expect(await windowsHeldPaths(4242, holders, () => ["A", "B"])).toEqual([]);
+    expect(new Set(scans).size).toBeLessThan(15);
+  } finally { Date.now = realNow; }
+});
+
 it("proves nothing from a scan in which a holder query failed", async () => {
   resetWindowsScanCacheForTest();
   const failing: RestartManagerApi = {
@@ -172,12 +190,16 @@ it("reads only presence locks as candidates, never another file beside them", ()
   writeFileSync(join(root, "presence", lock), "");
   writeFileSync(join(root, "presence", "state.json"), "{}");
   writeFileSync(join(root, "presence", "notes.lock"), "");
-  expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([join(root, "presence", lock)]);
+  try {
+    expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([join(root, "presence", lock)]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it("names no candidate when the agent keeps no presence directory", () => {
   const root = mkdtempSync(join(tmpdir(), "agy-store-"));
-  expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([]);
+  try {
+    expect(windowsLockCandidates({ ANTIGRAVITY_APP_DATA_DIR: root }, root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it("recognizes the agent's process name as herdr reports it on this platform", () => {

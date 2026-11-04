@@ -37,6 +37,7 @@ export function agyStoreFromLocks(paths: readonly string[]): Pick<AgyStore, "roo
  */
 const RM_PROCESS_INFO_SIZE = 668; // RM_UNIQUE_PROCESS(12) + 256 WCHAR + 64 WCHAR + 4 x 4-byte fields
 const MAX_WINDOWS_CANDIDATES = 4096;
+const MAX_WINDOWS_HOLDERS = 4096;
 const WINDOWS_SCAN_TTL_MS = 5_000;
 
 /** Load rstrtmgr.dll via Bun FFI for querying file lock owners. */
@@ -93,7 +94,7 @@ export function windowsHolders(path: string, api?: RestartManagerApi): number[] 
     let allocatedSlots = 0;
     for (let retry = 0; retry < 4 && status === 234; retry += 1) {
       const total = needed.readUInt32LE(0);
-      if (total === 0 || total > MAX_WINDOWS_CANDIDATES) return null;
+      if (total === 0 || total > MAX_WINDOWS_HOLDERS) return null;
       list = Buffer.alloc(RM_PROCESS_INFO_SIZE * total);
       allocatedSlots = total;
       count.writeUInt32LE(total, 0);
@@ -111,13 +112,10 @@ export function windowsHolders(path: string, api?: RestartManagerApi): number[] 
 
 /** Agy keeps one lock per conversation under its data dir; presence mirrors the agent's own store. */
 export function windowsLockCandidates(env: Record<string, string | undefined> = process.env, home = homedir()): string[] {
-  const roots = new Set([env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli")]);
-  const candidates: string[] = [];
-  for (const root of roots) {
-    let names: string[];
-    try { names = readdirSync(join(root, "presence")); } catch { continue; }
-    for (const name of names) if (LOCK.test(name)) candidates.push(join(root, "presence", name));
-  }
+  const presence = join(env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli"), "presence");
+  let names: string[];
+  try { names = readdirSync(presence); } catch { return []; }
+  const candidates = names.filter((name) => LOCK.test(name)).map((name) => join(presence, name));
   return candidates.length > MAX_WINDOWS_CANDIDATES ? [] : candidates;
 }
 
@@ -227,12 +225,11 @@ export async function windowsHeldPaths(
   const scan = await windowsScanAll(getHolders, getCandidates);
   const scanned = scan.owners.get(pid) ?? [];
   const held = scanned.filter((path) => holds(getHolders, path, pid));
-  if (held.length !== scanned.length) {
-    // ownership moved during the pass: a lock it never saw may be held too, so nothing is proven
-    invalidateWindowsScan();
-    return [];
-  }
-  if (held.length === 1 && scan.complete) {
+  // ownership moved during the pass: a lock it never saw may be held too, so nothing is proven,
+  // and the pid backs off like any unresolved one instead of rescanning on every refresh
+  const moved = held.length !== scanned.length;
+  if (moved) invalidateWindowsScan();
+  else if (held.length === 1 && scan.complete) {
     windowsNegative.delete(pid);
     rememberHeld(pid, held[0]!, scan.at);
     return held;
@@ -243,7 +240,7 @@ export async function windowsHeldPaths(
     windowsNegative.set(pid, { listing: scan.candidates, scanAt: scan.at, delay, next: scan.at + delay });
     if (windowsNegative.size > 64) windowsNegative.delete(windowsNegative.keys().next().value!);
   }
-  return scan.complete ? held : [];
+  return scan.complete && !moved ? held : [];
 }
 
 /** Stable process birth identity; elapsed-time estimates drift between reads on macOS. */
