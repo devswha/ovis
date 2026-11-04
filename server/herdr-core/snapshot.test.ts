@@ -141,6 +141,25 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     expect(snapshot.panes.filter((p) => p.tab_id === "ovis-tc").map((p) => p.pane_id)).toEqual(["t3", "t4"]);
   });
 
+  it("leaves out another hc machine's terminals: no workspace, tab or pane of this PC's is made for them (#2768)", () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: block("t1") }] }] };
+    const snapshot = buildSnapshot([
+      terminal("t1"),
+      // started by the Herdr app on the core's machine `vps`: its space is in that machine's document, not this one's
+      terminal("vps/t14", { labels: { "herdr.space": "spc-vps", "herdr.tab": "tb-vps", where: "ubuntu / 1" } }),
+      // labeled with a space this PC has, or with none, it is still that machine's
+      terminal("vps/t15", { labels: { "herdr.space": "s1", "herdr.tab": "s1t1" } }),
+      terminal("vps/t16", { parent: "t1" }),
+      terminal("vps/t17"),
+    ], layout, "0.1.17");
+    expect(snapshot.workspaces.map((w) => [w.workspace_id, w.label])).toEqual([["s1", "api"]]);
+    expect(snapshot.tabs.map((t) => t.tab_id)).toEqual(["s1t1"]);
+    expect(snapshot.panes.map((p) => p.pane_id)).toEqual(["t1"]);
+    // even when this core's own document names it in a tab
+    const named = buildSnapshot([terminal("t1"), terminal("vps/t14")], { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), block("vps/t14")] } }] }] }, "0.1.17");
+    expect(named.panes.map((p) => p.pane_id)).toEqual(["t1"]);
+  });
+
   it("never makes one tab of two: a labeled id the app uses elsewhere gets an id of its own", () => {
     const layout = { spaces: [
       { id: "s1", name: "a", tabs: [{ id: "T", name: "", root: block("t1") }] },

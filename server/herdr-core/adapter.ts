@@ -5,7 +5,7 @@ import { AGENT_LABELS } from "../agents-routes.ts";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
 import { SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { type HcConnection, HcError } from "./connection.ts";
-import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, OTHER_WORKSPACE_ID, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onThisMachine, OTHER_WORKSPACE_ID, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.generated.ts";
 
 /**
@@ -288,6 +288,8 @@ function herdrCode(error: HcError, missing: string): string {
 
 function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void): (request: Request) => Promise<Reply> {
   const terminal = async (address: string, missing = "pane_not_found"): Promise<HcTerminal> => {
+    // another hc machine's terminal is no pane of this PC's, as the snapshot leaves it out
+    if (!onThisMachine(address)) throw new AdapterError(missing, `terminal ${address} is on another machine`);
     const found = await hc.call("terminal.get", { terminal: address }).catch((error: unknown) => {
       throw error instanceof HcError ? new AdapterError(herdrCode(error, missing), error.message) : error;
     });
@@ -501,6 +503,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     },
     async "pane.send_keys"(params) {
       const paneId = paneIdOf(params);
+      // hc's terminal.keys reaches another machine's terminal too: none is a pane of this PC's
+      if (!onThisMachine(paneId)) throw new AdapterError("pane_not_found", `terminal ${paneId} is on another machine`);
       const keys = Array.isArray(params["keys"]) ? params["keys"].filter((key): key is string => typeof key === "string") : [];
       await inTurn(paneId, async () => {
         // in order: a run of printable characters typed at once, a run of named keys and chords
@@ -651,7 +655,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
   const known = new Map<string, { status: HcStatus | null; turn: number; first: number; labels: Record<string, string>; shown: AgentStatus }>();
   let early: HcEvent[] | null = [];
   const remember = (record: unknown) => {
-    if (!isRecord(record) || typeof record["address"] !== "string") return;
+    if (!isRecord(record) || typeof record["address"] !== "string" || !onThisMachine(record["address"])) return;
     const status = statusOf(record["status"]);
     const turn = typeof record["turn"] === "number" ? record["turn"] : 0;
     const labels = labelsOf(record["labels"]);
@@ -675,6 +679,8 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
   const onEvent = (event: HcEvent) => {
     if (early) { early.push(event); return; }
     const paneId = event.terminal;
+    // another hc machine's terminal is no pane of this PC's: the snapshot leaves it out, and so do its events
+    if (paneId !== undefined && !onThisMachine(paneId)) return;
     switch (event.type) {
       case "status": {
         if (!paneId) return;
@@ -761,7 +767,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     const { result, channel } = await hc.open("events.subscribe", {}, { onData: read, onClose: end });
     // what each terminal reported as the stream starts: a first event that drops a message or progress is a change
     for (const terminal of Array.isArray(result.terminals) ? result.terminals : []) {
-      if (!isRecord(terminal) || typeof terminal["address"] !== "string" || reported.has(terminal["address"])) continue;
+      if (!isRecord(terminal) || typeof terminal["address"] !== "string" || !onThisMachine(terminal["address"]) || reported.has(terminal["address"])) continue;
       reported.set(terminal["address"], shownFacts(terminal["status"]));
     }
     for (const record of result.terminals ?? []) remember(record);

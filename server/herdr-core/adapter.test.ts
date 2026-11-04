@@ -270,6 +270,49 @@ describe("herdr-core adapter", () => {
     expect(await failure(paneSendText("t9", "x", socket))).toBe("pane_not_found");
   });
 
+  it("leaves another hc machine's terminals out of the snapshot, the panes it answers for and the events it streams (#2768)", async () => {
+    let channel = 0;
+    const remote = terminal("vps/t14", { labels: { "herdr.space": "spc-vps", "herdr.tab": "tb-vps", where: "ubuntu / 1" }, status: { app: "codex", state: "working" } });
+    const { socket, cores } = await setup([terminal("t1"), remote], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [terminal("t1"), { ...remote, status: { app: "codex", state: "blocked", msg: "Allow bash?", kind: "permission" } }] };
+      },
+    });
+    const snapshot = await sessionSnapshot(socket);
+    expect(snapshot.workspaces.map((w) => w.label)).toEqual(["api"]);
+    expect(snapshot.panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
+    const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(await failure(paneGet("vps/t14", socket))).toBe("pane_not_found");
+    expect(await failure(paneSendText("vps/t14", "x", socket))).toBe("pane_not_found");
+    expect(await failure(paneSendKeys("vps/t14", ["c-c"], socket))).toBe("pane_not_found");
+    expect(cores.flatMap((core) => core.calls).filter((call) => call.params["terminal"] === "vps/t14")).toEqual([]);
+
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.created" }, { type: "pane.updated" }, { type: "pane.agent_status_changed", pane_id: "vps/t14" }], {
+      onEvent: (frame) => frames.push(frame),
+      onStarted: () => started.resolve(),
+      onClose: () => ended.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores.at(-1)!;
+    core.notify(channel, "event", { seq: 2, type: "created", terminal: "vps/t15", data: terminal("vps/t15") });
+    core.notify(channel, "event", { seq: 3, type: "status", terminal: "vps/t14", data: { status: { app: "codex", state: "working" } } });
+    core.notify(channel, "event", { seq: 4, type: "turn", terminal: "vps/t14", data: { turn: 2 } });
+    core.notify(channel, "event", { seq: 5, type: "labels", terminal: "vps/t14", data: { labels: { "herdr.seen": "2" } } });
+    core.notify(channel, "event", { seq: 6, type: "lost", terminal: "vps/t14" });
+    core.notify(channel, "event", { seq: 7, type: "finished", terminal: "vps/t14", data: { reason: "exited", exit_code: 0 } });
+    core.notify(channel, "event", { seq: 8, type: "removed", terminal: "vps/t14" });
+    // this PC's own terminal is still told
+    core.notify(channel, "event", { seq: 9, type: "created", terminal: "t2", data: terminal("t2") });
+    core.notify(channel, "missed", { seq: 10, terminals: [] });
+    await ended.promise;
+    expect(frames).toEqual([{ event: "pane.created", data: { type: "pane_created", pane_id: "t2" } }]);
+  });
+
   it("streams status for the subscribed panes only, a finish as herdr's exit and close (a kill as a close alone), and ends on hc's missed", async () => {
     let channel = 0;
     const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {

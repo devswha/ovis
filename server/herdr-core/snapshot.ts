@@ -47,6 +47,16 @@ export type HcTerminal = Pick<Terminal, "address" | "cols" | "rows" | "cwd" | "s
   Partial<Pick<Terminal, "argv" | "pid" | "name" | "title" | "labels" | "turn" | "parent">> &
   { status?: HcStatus | null; foreground?: HcForeground | null };
 
+/**
+ * Whether a terminal address is this core's own (`t7`) and not one of another hc machine the core
+ * holds (`vps/t7`, which `terminal.list` and `events.subscribe` list after this machine's own).
+ * Another machine's terminal belongs to that machine, not this PC: until hc machines show as PCs of
+ * their own, the snapshot and events leave them out rather than place them in a workspace here.
+ */
+export function onThisMachine(address: string): boolean {
+  return !address.includes("/");
+}
+
 /** The one object guard of server/herdr-core/: hc's records and the app's document come from outside. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -161,7 +171,7 @@ interface Group { id: string; label: string; folder?: string; tabs: { id: string
  * with no live terminal stays a place for a labeled terminal and shows only once it holds one.
  */
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
-  const live = new Map(terminals.filter((terminal) => terminal.state === "live").map((terminal) => [terminal.address, terminal]));
+  const live = new Map(terminals.filter((terminal) => terminal.state === "live" && onThisMachine(terminal.address)).map((terminal) => [terminal.address, terminal]));
   const placed = new Set<string>();
   const take = (address: string): HcTerminal | null => {
     const terminal = live.get(address);
