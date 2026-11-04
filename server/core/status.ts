@@ -577,7 +577,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // and before the structure change's roster no longer has that ID (#1503)
     onPaneMoved: (from, to) => {
       // its finishes go on counting under the new ID, and what was read of them is read there (server/seen.ts)
-      options.seenMoved?.(from, to, finishes.moved(from, to));
+      const renumber = finishes.moved(from, to);
+      // a read record that cannot be written costs that record, never the rest of the move
+      try { options.seenMoved?.(from, to, renumber); }
+      catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
       broadcastAll({ type: "pane-moved", from, to });
       paneMoved?.(from, to);
     },

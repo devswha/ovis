@@ -307,7 +307,9 @@ export function createServer(
   // a pane another PC's herdr moved under a new ID: what was read under the old ID is read under the new one (#1503;
   // this PC's own moves are told with their numbering above)
   machines?.subscribe((event) => {
-    if (event.type === "machine-message" && event.machine_id !== LOCAL_MACHINE && event.message.type === "pane-moved") seen.moved(event.machine_id, event.message.from, event.message.to);
+    if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
+    try { seen.moved(event.machine_id, event.message.from, event.message.to); }
+    catch (error) { console.warn(`seen: could not carry the reads of ${event.message.from} to ${event.message.to}:`, error); }
   });
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
   // pane's finish now, so a read told late never marks a turn that ended since as seen. A pane brought

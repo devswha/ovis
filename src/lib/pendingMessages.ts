@@ -249,16 +249,26 @@ export class PendingMessageStore {
     this.refresh(from);
     this.refresh(to);
     const rows = this.read(from).filter((message) => only === undefined || message.id === only);
+    // rows still waiting on a send under an earlier ID that moved here go on to the new one
+    for (const [key, next] of this.afterSend) if (next === from) this.afterSend.set(key, to);
     for (const message of rows) if (this.isBusy(from, message.id)) this.afterSend.set(`${from}\0${message.id}`, to);
     const moving = rows.filter((message) => !this.isBusy(from, message.id));
     if (moving.length === 0) return;
     const target = this.read(to);
     const have = new Set(target.map((message) => message.id));
-    const settled = (id: string): boolean => this.settledResumed.get(to)?.has(id) === true || (this.removed.get(to)?.get(id)?.size ?? 0) > 0;
+    const fromProofs = this.scopes.get(from), toProofs = this.scopes.get(to) ?? new Map<string, string>();
+    // settled there as publish settles a row: an exact resumed receipt, or a receipt of the connection that proves it
+    const settled = (id: string): boolean => {
+      const proof = fromProofs?.get(id);
+      return this.settledResumed.get(to)?.has(id) === true || (proof !== undefined && this.removed.get(to)?.get(id)?.has(proof) === true);
+    };
     const carried = moving.filter((message) => !have.has(message.id) && !settled(message.id));
     const carriedIds = new Set(carried.map((message) => message.id));
-    const fromProofs = this.scopes.get(from), toProofs = this.scopes.get(to) ?? new Map<string, string>();
     const away = this.movedAway.get(from) ?? new Set<string>();
+    // moved back to an ID it left before: the server's lists there count for it again
+    const back = this.movedAway.get(to);
+    for (const message of moving) back?.delete(message.id);
+    if (back?.size === 0) this.movedAway.delete(to);
     for (const message of moving) {
       // the server's lists under the old ID, told before or as it moved the row, bring none back here
       away.add(message.id);

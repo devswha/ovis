@@ -176,3 +176,13 @@ it("counts a new finish under a moved pane's new ID when its work was still told
   finishes.status("w1:p1", "working");
   expect(finishes.status("w2:p1", "done").finish_id).toBe(2);
 });
+
+it("counts a late old-ID status for the pane's newest ID after two moves (#1503)", () => {
+  const finishes = new Finishes(() => "daemon-a");
+  finishes.status("a", "working");
+  expect(finishes.status("a", "done").finish_id).toBe(1);
+  finishes.moved("a", "b");
+  finishes.moved("b", "c");
+  finishes.status("a", "working");
+  expect(finishes.status("c", "done").finish_id).toBe(2);
+});

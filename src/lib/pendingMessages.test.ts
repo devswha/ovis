@@ -379,3 +379,35 @@ describe("a pane moved under a new ID (#1503)", () => {
     expect(store.read("w2:p1")).toEqual([]);
   });
 });
+
+describe("a pane moved again (#1503)", () => {
+  it("takes a row whose send was on its way across two moves to the last ID", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("going", "held"), "scope");
+    expect(store.begin("a", "going")).toBe(true);
+    store.move("a", "b");
+    store.move("b", "c");
+    store.end("a", "going");
+    expect(store.read("a")).toEqual([]);
+    expect(store.read("b")).toEqual([]);
+    expect(store.read("c").map((row) => row.id)).toEqual(["going"]);
+  });
+
+  it("hears the server's lists again under an ID the pane moved back to", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("row", "held"), "one");
+    store.move("a", "b");
+    store.move("b", "a");
+    store.accept("a", message("row", "queued"), "two");
+    expect(store.read("a").map((row) => [row.id, row.state])).toEqual([["row", "queued"]]);
+    expect(store.isOwned("a", "row", "two")).toBe(true);
+  });
+
+  it("carries a row another connection's receipt under the new ID does not prove settled", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("a", message("row", "held"), "one");
+    store.publish("b", [], [{ id: "row", outcome: "sent" }], "two");
+    store.move("a", "b");
+    expect(store.read("b").map((row) => row.id)).toEqual(["row"]);
+  });
+});

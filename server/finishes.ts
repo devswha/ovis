@@ -102,6 +102,8 @@ export class Finishes {
     if (!before || from === to) return (id) => id;
     const after = this.panes.get(to);
     this.ended(from);
+    // a pane moved again: what still spoke for it under an earlier ID speaks for the newest one
+    for (const [earlier, next] of this.movedTo) if (next === from) this.movedTo.set(earlier, to);
     this.movedTo.set(from, to);
     if (after === undefined || after.id < before.id) {
       this.panes.set(to, { ...before });
