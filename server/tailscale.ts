@@ -194,6 +194,8 @@ export interface TailnetIdentity {
 }
 
 const OWNER_TTL_MS = 5 * 60_000;
+/** how soon a request stating a login may read the status again while this PC's own login is unknown */
+const LOGIN_RETRY_MS = 2_000;
 
 const cliStatus = async (): Promise<string | null> => {
   const binary = tailscaleBinary();
@@ -235,14 +237,17 @@ export class TailnetIdentitySource {
         dnsName: this.cache?.dnsName ?? null,
         tailnetIp: this.cache?.tailnetIp ?? null,
         settled: false,
-        ownerKnown: false,
+        ownerKnown: this.cache?.ownerKnown ?? false,
         at: Date.now(),
       };
       return;
     }
     const sole = readSoleLogin(status);
-    const owner = parseTailscaleOwner(status);
-    const tagged = isTaggedNode(status);
+    // a daemon that is not Running says nothing about whose PC this is: keep the login a Running one named
+    const running = parseStatus(status)?.BackendState === "Running";
+    const kept = !running && this.cache?.ownerKnown === true ? this.cache : null;
+    const owner = kept ? kept.owner : parseTailscaleOwner(status);
+    const tagged = kept ? kept.tagged : isTaggedNode(status);
     this.cache = {
       owner,
       tagged,
@@ -250,7 +255,7 @@ export class TailnetIdentitySource {
       dnsName: parseNodeName(status),
       tailnetIp: parseTailscaleIp(status),
       settled: sole.settled,
-      ownerKnown: parseStatus(status)?.BackendState === "Running" && (owner !== null || tagged),
+      ownerKnown: kept !== null || (running && (owner !== null || tagged)),
       at: Date.now(),
     };
   }
@@ -277,24 +282,26 @@ export class TailnetIdentitySource {
   }
 
   /**
+   * `identity` for a request that states a Tailscale login. Until a read has named this PC's own
+   * login (or found its node tagged), this waits for a read, shared and bounded like
+   * `freshIdentity`: a server started at boot asks before tailscaled has logged in, and that
+   * answer must not stand for five minutes against the owner's own devices. A new read starts at
+   * most every `LOGIN_RETRY_MS`, so requests cannot keep the tailscale CLI spawning.
+   */
+  async loginIdentity(): Promise<TailnetIdentity> {
+    if (this.cache !== null && this.cache.ownerKnown) return this.identity();
+    if (this.reading === null && this.cache !== null && Date.now() - this.cache.at < LOGIN_RETRY_MS) return this.identity();
+    await this.refresh();
+    return this.identity();
+  }
+
+  /**
    * `identity` for a request the owner's sole-login proof would admit. A cache that already says
    * a node is tagged, that the tailnet is not one login's, or that this Host is not this PC's name
    * answers at once and grants nothing. Otherwise this waits for one status read, shared with any
    * read in flight and bounded by the read's own timeout, so the grant never rests on a warm cache.
    * A read that fails, or leaves the question open, grants nothing and is read again next request.
    */
-  /**
-   * `identity` for a request that states a Tailscale login. Until a read has named this PC's own
-   * login (or found its node tagged), this waits for one read, shared and bounded like
-   * `freshIdentity`: a server started at boot asks before tailscaled has logged in, and that
-   * answer must not stand for five minutes against the owner's own devices.
-   */
-  async loginIdentity(): Promise<TailnetIdentity> {
-    if (this.cache !== null && this.cache.ownerKnown) return this.identity();
-    await this.refresh();
-    return this.identity();
-  }
-
   async freshIdentity(host: string | null): Promise<TailnetIdentity> {
     const cached = this.identity();
     if (this.cache !== null && this.cache.settled && (this.cache.soleLogin === null || !addressesNode({ host, dnsName: this.cache.dnsName, tailnetIp: this.cache.tailnetIp }))) return cached;

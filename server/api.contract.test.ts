@@ -4224,6 +4224,9 @@ describe("pairing and identity", () => {
     await tailnet.freshIdentity(null);
     const booted = createServer({ port: 0, stateDir: state, tailnet });
     const at = async (headers: Record<string, string>) => ((await (await fetch(`http://127.0.0.1:${booted.port}/api/health?scope=bridge`, { headers })).json()) as { auth: HealthAuth }).auth;
+    // the owner's phone asks a few seconds after the boot read, once tailscaled is up
+    const start = Date.now();
+    const clock = spyOn(Date, "now").mockImplementation(() => start + 3_000);
     try {
       expect(await at(proxied(OWNER))).toMatchObject({ authenticated: true, via: "tailscale" });
       // once the login is known it is kept for the cache's life: later polls read nothing
@@ -4234,6 +4237,7 @@ describe("pairing and identity", () => {
       expect(await at(proxied("someone@example.com"))).toMatchObject({ authenticated: false, reason: "other_user" });
       expect(await at(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
     } finally {
+      clock.mockRestore();
       booted.stop();
       if (savedOwner === undefined) delete process.env["OVIS_TAILSCALE_OWNER"]; else process.env["OVIS_TAILSCALE_OWNER"] = savedOwner;
       rmSync(state, { recursive: true, force: true });
