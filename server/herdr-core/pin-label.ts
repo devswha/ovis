@@ -48,6 +48,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
    * is written for it meanwhile, and it is tried again once the list changes
    */
   const refused = new Set<string>();
+  /** pinned in the app but past a full list the bridge started: not unpinned for not being listed */
+  const leftOut = new Set<string>();
   /** the agreed pins on disk are behind memory: the next agreement writes them, even an unchanged one */
   let unsaved = false;
   let core = "";
@@ -81,19 +83,24 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     const key = keyOf(address);
     if ((pins ?? []).includes(key) === pinned) return true;
     let next: string[];
+    let over: string[] = [];
     if (!pinned) next = (pins ?? []).filter((pin) => pin !== key);
     else if (pins) {
       if (pins.length >= MAX_PINS) return false;
       next = [...pins, key];
     } else {
       // a list started here holds every agent pinned in the app, so none is then taken for an unpin
-      next = [...live].filter(([other, on]) => agents.has(other) && (on || other === address)).map(([other]) => keyOf(other)).slice(0, MAX_PINS);
+      const all = [...live].filter(([other, on]) => agents.has(other) && (on || other === address)).map(([other]) => other);
+      over = all.slice(MAX_PINS);
+      next = all.slice(0, MAX_PINS).map(keyOf);
       if (!next.includes(key)) return false;
     }
+    for (const other of over) leftOut.add(other);
     try {
       store.set({ settings: {}, pins: next });
       return true;
     } catch (error) {
+      for (const other of over) leftOut.delete(other);
       console.warn("herdr-core: could not keep a pin from the Herdr app:", error);
       return false;
     }
@@ -102,7 +109,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   /** Each terminal's label writes in order, each one the pin wanted when its turn comes. */
   const writes = new Map<string, Promise<void>>();
   /** per terminal, the pins our label writes set, whose labels events have not come back yet */
-  const echoes = new Map<string, { pinned: boolean; heard: boolean }[]>();
+  const echoes = new Map<string, { pinned: boolean; heard: boolean; answered: boolean }[]>();
   /** a write hc refused is tried again, waiting longer each time */
   const retries = new Map<string, { timer: ReturnType<typeof setTimeout>; wait: number }>();
   const retry = (address: string) => {
@@ -118,11 +125,12 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       if (live.get(address) === pinned) { setAgreed(address, pinned); return; }
       // hc tells every label write back as a labels event, in order: that one is ours, not the app's
       const queued = echoes.get(address) ?? [];
-      const echo = { pinned, heard: false };
+      const echo = { pinned, heard: false, answered: false };
       queued.push(echo);
       echoes.set(address, queued);
       try {
         await hc.call("terminal.label", { terminal: address, labels: { [PINNED_LABEL]: pinned ? "1" : "" } });
+        echo.answered = true;
         // once its event came, that event and any after it (the app's) already say what the label is
         if (!echo.heard) {
           live.set(address, pinned);
@@ -151,8 +159,10 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     if (queued && queued.length > 0) {
       if (queued[0]!.pinned === labelPinned) {
         // our write landed: both sides held this pin then, so an app change after it is the app's
-        queued.shift()!.heard = true;
-        if (agents.has(address)) setAgreed(address, labelPinned);
+        const echo = queued.shift()!;
+        echo.heard = true;
+        // an answered write already agreed, and a later write of ours may have agreed past it since
+        if (!echo.answered && agents.has(address)) setAgreed(address, labelPinned);
         return;
       }
       // a label neither of our writes set: the app's, and what we sent no longer tells its order
@@ -163,7 +173,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     refused.delete(address);
     const base = agreed.get(agreedKey(address));
     const ovis = listed(address);
-    const wanted = base === undefined ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
+    if (ovis || !labelPinned) leftOut.delete(address);
+    const wanted = base === undefined || leftOut.has(address) ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
     if (ovis !== wanted && !list(address, wanted)) {
       refused.add(address);
       return;
@@ -188,6 +199,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     } else {
       agents.delete(address);
       refused.delete(address);
+      leftOut.delete(address);
       if (agreed.delete(agreedKey(address))) saveAgreed();
     }
   };
@@ -203,16 +215,17 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     echoes.delete(address);
     agents.delete(address);
     refused.delete(address);
+    leftOut.delete(address);
     clearTimeout(retries.get(address)?.timer);
     retries.delete(address);
     if (agreed.delete(agreedKey(address))) saveAgreed();
   };
 
   const unsubscribe = store.subscribe((preferences) => {
+    // a change a full or unsaved list left out gets another look, even one that would start the list
+    for (const address of [...refused]) heard(address, live.get(address) ?? false);
     // no browser has shared its pins yet: that is no unpin
     if (preferences.pins === undefined) return;
-    // a pin a full list left out gets another look once the list changes
-    for (const address of [...refused]) heard(address, live.get(address) ?? false);
     for (const address of live.keys()) writeLabel(address);
   });
 
@@ -262,6 +275,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       echoes.clear();
       agents.clear();
       refused.clear();
+      leftOut.clear();
       const shown = new Set(result.terminals.filter((terminal) => terminal.state === "live").map((terminal) => agreedKey(terminal.address)));
       let pruned = false;
       for (const key of agreed.keys()) if (key.startsWith(`${core}/`) && !shown.has(key)) { agreed.delete(key); pruned = true; }

@@ -370,6 +370,84 @@ describe("bridgePins", () => {
     expect(preferences.get().pins).toEqual(["local:t1", "local:t2"]);
   });
 
+  it("takes a late labels event of an answered write for no newer agreement", async () => {
+    const dir = stateDir();
+    const terminals: Held[] = [{ address: "t1", state: "live", labels: {} }];
+    const core = fakeCore(terminals);
+    const first = bridge(core, store(dir, []), dir);
+    await core.opened();
+    await first.idle();
+    // a quick pin and unpin in Ovis, both answered; only the pin's event comes, late
+    core.state.held = [];
+    const preferences = new PreferenceStore(dir);
+    first.stop();
+    const again = fakeCore(terminals);
+    const pins = bridge(again, preferences, dir);
+    await again.opened();
+    again.state.held = [];
+    preferences.set({ settings: {}, pins: ["local:t1"] });
+    await pins.idle();
+    preferences.set({ settings: {}, pins: [] });
+    await pins.idle();
+    const held = again.state.held!;
+    again.state.held = null;
+    again.tell(held[0]!);
+    pins.stop();
+    // Ovis stopped; the Herdr app pins t1
+    terminals[0]!.labels = { "herdr.pinned": "1" };
+    const last = fakeCore(terminals);
+    const third = bridge(last, new PreferenceStore(dir), dir);
+    await last.opened();
+    await third.idle();
+    expect(last.written).toEqual([]);
+    expect(new PreferenceStore(dir).get().pins).toEqual(["local:t1"]);
+  });
+
+  it("unpins no agreed pin a list started past its limit leaves out", async () => {
+    const dir = stateDir();
+    const last = `t${MAX_PINS}`;
+    const first = fakeCore([{ address: last, state: "live", labels: { "herdr.pinned": "1" } }]);
+    const earlier = bridge(first, store(dir, []), dir);
+    await first.opened();
+    await earlier.idle();
+    earlier.stop();
+    rmSync(join(dir, "preferences.json"), { force: true });
+    const preferences = new PreferenceStore(dir);
+    const core = fakeCore(Array.from({ length: MAX_PINS + 1 }, (_, index) => ({ address: `t${index}`, state: "live", labels: { "herdr.pinned": "1" } })));
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    expect(core.written).toEqual([]);
+    expect(preferences.get().pins).toHaveLength(MAX_PINS);
+    preferences.set({ settings: { theme: "dark" } });
+    await pins.idle();
+    expect(core.written).toEqual([]);
+  });
+
+  it("takes a first pin from the Herdr app that the list could not save once it can", async () => {
+    const dir = stateDir();
+    const preferences = store(dir);
+    const failing = { on: true };
+    const flaky = {
+      get: () => preferences.get(),
+      set: (change: Parameters<PreferenceStore["set"]>[0]) => {
+        if (failing.on && change.pins) throw new Error("disk full");
+        return preferences.set(change);
+      },
+      subscribe: (listener: Parameters<PreferenceStore["subscribe"]>[0]) => preferences.subscribe(listener),
+    };
+    const core = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }]);
+    const pins = bridgePins(core.hc, flaky, "local", dir, 0);
+    cleanups.push(pins.stop);
+    await core.opened();
+    expect(preferences.get().pins).toBeUndefined();
+    failing.on = false;
+    preferences.set({ settings: { theme: "dark" } });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual(["local:t1"]);
+    expect(core.written).toEqual([]);
+  });
+
   it("unpins nothing while no browser has shared its pins", async () => {
     const dir = stateDir();
     const preferences = store(dir);
