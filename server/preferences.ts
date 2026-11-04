@@ -169,10 +169,14 @@ export class PreferenceStore {
     }
     if (this.stateId === undefined) {
       // the folder's first save names it, before anything else is written: a save whose id cannot be
-      // kept fails, so no document goes out that a browser could take for a folder's without one
-      const id = randomUUID().replaceAll("-", "");
-      writeStateId(this.stateDir, id);
-      this.stateId = id;
+      // kept fails, so no document goes out that a browser could take for a folder's without one. An id
+      // another server on this folder wrote since this one started is taken, never written over
+      this.stateId = readStateId(this.stateDir);
+      if (this.stateId === undefined) {
+        const id = randomUUID().replaceAll("-", "");
+        writeStateId(this.stateDir, id);
+        this.stateId = id;
+      }
     }
     const stateId = this.stateId ?? undefined;
     change = normalizeThemeChange(base.settings, change);

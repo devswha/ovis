@@ -47,6 +47,17 @@ describe("shared preferences", () => {
     expect(await (await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).json()).toEqual(named({ revision: 1, settings: {}, pins: ["local:t1"], muted_panes: [] }));
   });
 
+  it("takes the id another server on its folder wrote since it started, rather than writing over it", async () => {
+    const dir = root();
+    const first = new PreferenceStore(dir);
+    const second = new PreferenceStore(dir);
+    first.set({ settings: {}, pins: ["local:t1"] });
+    const id = first.get().state_id;
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+    expect(second.set({ settings: {}, pins: ["local:t2"] }).state_id).toBe(id);
+    expect(new PreferenceStore(dir).get().state_id).toBe(id);
+  });
+
   it("names its state folder from the first save on, across restarts, and a fresh folder anew", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
