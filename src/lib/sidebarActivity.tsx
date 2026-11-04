@@ -21,11 +21,13 @@ interface MachineSeen { epoch: string; record: SeenRecord }
 interface SharedFinish extends SeenFinish {
   /** how the next send tells it: `held` once put off or retried, a look made earlier (shared/seen.ts SeenPresentation) */
   presented: SeenPresentation;
-  /** how the server was told it, once it answered; an answer upgrade keeps a `new` told or in flight */
+  /** how the server was told it, once it answered; an answer upgrade keeps a `new` told of the share it replaced */
   told?: SeenPresentation;
   retry?: () => Promise<boolean>;
   /** how a send still waiting for its answer tells it */
   sending?: SeenPresentation;
+  /** the share it upgraded is still being sent as `new`: that send's answer says whether the look was told */
+  looking?: boolean;
 }
 interface ShareRecovery {
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -179,13 +181,14 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
         const answerUpgrade = previous?.id === finish.id && previous.answer === undefined && answer !== undefined;
         // a finish told (or being told) as `held`, its pane now brought into view: someone looked again
         const shownAgain = previous?.id === finish.id && presented === "new"
-          && previous.told !== "new" && (previous.told === "held" || previous.sending === "held");
+          && previous.told !== "new" && !previous.looking && (previous.told === "held" || previous.sending === "held");
         if (!previous || finish.id > previous.id || answerUpgrade || shownAgain) {
           const sender = shareRef.current;
           if (sender) {
             // an answer upgrade of the same finish keeps a look told of it, or still in flight
-            const looked = answerUpgrade && (previous.told === "new" || previous.sending === "new");
-            const sent: SharedFinish = { ...finish, presented, ...(looked ? { told: "new" as const } : {}) };
+            const sent: SharedFinish = { ...finish, presented,
+              ...(answerUpgrade && previous.told === "new" ? { told: "new" as const } : {}),
+              ...(answerUpgrade && previous.sending === "new" ? { looking: true } : {}) };
             shared.current.delete(key);
             shared.current.set(key, sent);
             while (shared.current.size > SEEN_LIMIT) {
@@ -201,7 +204,16 @@ export function useSidebarActivityState(machines: readonly Machine[], selectedMa
                 const how = sent.presented;
                 sent.presented = "held";
                 sent.sending = how;
-                try { await sender(finish, how); } finally { delete sent.sending; }
+                let answered = false;
+                try { await sender(finish, how); answered = true; } finally {
+                  delete sent.sending;
+                  // an answer upgrade made while this look was in flight: told as a look only if this answered
+                  const current = shared.current.get(key);
+                  if (how === "new" && current !== sent && current?.id === sent.id && current.looking) {
+                    delete current.looking;
+                    if (answered) current.told = "new";
+                  }
+                }
                 if (sent.told !== "new") sent.told = how;
               } catch (error) {
                 if (shared.current.get(key) !== sent || recovery.current !== gate) return true;

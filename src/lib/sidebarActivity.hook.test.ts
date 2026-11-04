@@ -684,6 +684,38 @@ describe("sidebar finish acknowledgement through React effects", () => {
     expect(told).toEqual([[1, "new", false], [1, "held", true]]);
   });
 
+  it("tells a return as a look when the look in flight at its answer upgrade failed", async () => {
+    // Given finish 1 of a shared as new, its request still unanswered, and its answer upgrade shared.
+    const told: [number, string | undefined, boolean][] = [];
+    const pending = Promise.withResolvers<void>();
+    const share = (finish: SeenFinish, presented?: SeenPresentation) => {
+      told.push([finish.id, presented, finish.answer !== undefined]);
+      return finish.answer === undefined ? pending.promise : Promise.resolve();
+    };
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      const pane = "proof-upgrade-lost-look";
+      const client = await open(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane, false, share);
+      expect(conversationFinishEvidence.accept(seenKey("local", "server-a", pane), 1, {
+        source: "pi-transcript", history_id: "session",
+        turns: [{ role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:01Z",
+          parts: [{ kind: "text", text: "Finished", phase: "final_answer" }] }],
+      })).toBe(true);
+      await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
+
+      // When the look fails, and the person goes away and back.
+      await act(async () => { pending.reject(new TypeError("offline")); await pending.promise.catch(() => undefined); });
+      await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), "b");
+      await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
+
+      // Then the return is told as a look.
+      expect(told).toEqual([[1, "new", false], [1, "held", true], [1, "new", true]]);
+    } finally {
+      console.warn = warn;
+    }
+  });
+
   it("upgrades a shared finish when its same-ID answer fingerprint becomes available", async () => {
     const told: SeenFinish[] = [];
     const share = async (finish: SeenFinish) => { told.push(finish); };
