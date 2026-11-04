@@ -329,7 +329,7 @@ export function App() {
   // what this browser keeps under the moved pane's ID goes to its new ID (lib/paneMove.ts), and wherever the old ID is
   // shown, in either half, the view goes with it (#1503). Nothing is sent: held text waits for its Send or Discard
   const followPaneMove = (machineId: string, from: string, to: string): void => {
-    for (const finish of carryMovedPane(machineId, from, to)) void shareSeen(finish).catch(() => undefined);
+    carryMovedPane(machineId, from, to);
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);

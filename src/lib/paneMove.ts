@@ -6,10 +6,8 @@
  * move made elsewhere (herdr's TUI), are not seen here.
  */
 import { paneStorageId } from "../../shared/machines.ts";
-import type { SeenFinish } from "../../shared/seen.ts";
 import { moveChatPosition } from "./chatScrollMemory.ts";
 import { pendingMessages } from "./pendingMessages.ts";
-import { moveSeen } from "./seenFinishes.ts";
 import { currentSidebarPins, movedSidebarPins, setSidebarPins } from "./sidebarPins.ts";
 import { composerDrafts, sendLease, underSendLock, type ComposerDraftStore } from "./composerDraft.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
@@ -66,18 +64,17 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
 /**
  * Everything this browser keeps under a pane's ID, carried when herdr moved the pane under a new one, wherever
  * the move was made (the server's `pane-moved`, #1503): what carryPaneState carries, the pane's pending-message
- * rows (held as they were: nothing is sent), its place in the chat, its sidebar pin and the finishes read on it.
- * Safe to run again for the same move (each tab hears it, the moving one also from its own request): what was
- * carried is not under the old ID any more. Returns the read finishes now under the new ID, for every browser.
+ * rows (held as they were: nothing is sent), its place in the chat and its sidebar pin. The finishes read on it
+ * move on the server, which tells every browser (server/seen.ts moved). Safe to run again for the same move (each
+ * tab hears it, the moving one also from its own request): what was carried is not under the old ID any more.
  */
-export function carryMovedPane(machineId: string, from: string, to: string): SeenFinish[] {
-  if (from === to) return [];
+export function carryMovedPane(machineId: string, from: string, to: string): void {
+  if (from === to) return;
   carryPaneState(machineId, from, to);
   const before = paneStorageId(machineId, from), after = paneStorageId(machineId, to);
   pendingMessages.move(before, after);
   moveChatPosition(before, after);
   setSidebarPins(movedSidebarPins(currentSidebarPins(), machineId, from, to));
-  return moveSeen(machineId, from, to);
 }
 
 type PaneTarget = { machineId: string; paneId: string };

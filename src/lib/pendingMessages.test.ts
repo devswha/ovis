@@ -341,12 +341,41 @@ describe("a pane moved under a new ID (#1503)", () => {
     expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);
   });
 
-  it("leaves a row whose send this page has on its way where its answer looks for it", () => {
+  it("leaves a row whose send this page has on its way where its answer looks for it, then moves it", () => {
     const port = storage(), store = new PendingMessageStore(() => port);
     store.accept("w1:p1", message("going", "held"), "scope");
     expect(store.begin("w1:p1", "going")).toBe(true);
     store.move("w1:p1", "w2:p1");
     expect(store.read("w1:p1").map((row) => row.id)).toEqual(["going"]);
+    expect(store.read("w2:p1")).toEqual([]);
+    store.fail("w1:p1", "going", { code: "submit_changed", message: "Check the terminal" }, true);
+    store.end("w1:p1", "going");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1").map((row) => [row.id, row.state])).toEqual([["going", "uncertain"]]);
+  });
+
+  it("keeps a moved row off the old ID when the server's lists for it come after the move", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    store.accept("w1:p1", message("queued", "queued"), "scope");
+    // pane-moved first, then the server holds the row under the old ID, empties that list and lists the new one
+    store.move("w1:p1", "w2:p1");
+    store.publish("w1:p1", [message("queued", "held")], [], "scope");
+    store.publish("w1:p1", [], [], "scope");
+    store.publish("w2:p1", [message("queued", "held")], [], "scope");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1").map((row) => [row.id, row.state])).toEqual([["queued", "held"]]);
+    store.publish("w2:p1", [], [{ id: "queued", outcome: "discarded" }], "scope");
+    expect(store.read("w1:p1")).toEqual([]);
+    expect(store.read("w2:p1")).toEqual([]);
+  });
+
+  it("brings no row settled under the new ID back with the move", () => {
+    const port = storage(), store = new PendingMessageStore(() => port);
+    port.setItem("ovis:pending:w1:p1", JSON.stringify({ messages: [message("sent-copy", "held")] }));
+    // the new ID's resumed receipt came first: the copy went out
+    store.publish("w2:p1", [], [{ id: "sent-copy", outcome: "sent", resumed: true }], "scope");
+    store.move("w1:p1", "w2:p1");
+    expect(store.read("w1:p1")).toEqual([]);
     expect(store.read("w2:p1")).toEqual([]);
   });
 });

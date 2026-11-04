@@ -31,6 +31,8 @@ export class Finishes {
   private generation = crypto.randomUUID();
   private identity: string | null;
   private readonly panes = new Map<string, { status: AgentStatus; id: number }>();
+  /** moved panes' old IDs, with the new ID, until the new one is heard of itself (moved) */
+  private readonly movedTo = new Map<string, string>();
 
   constructor(private readonly herdr: () => string | null = finishHerdrIdentity) {
     this.identity = herdr();
@@ -57,6 +59,13 @@ export class Finishes {
   }
 
   private observe(paneId: string, status: AgentStatus): number {
+    // the new ID speaks for itself now
+    for (const [from, to] of this.movedTo) if (to === paneId) this.movedTo.delete(from);
+    // a status the old ID still reports after its move (a late event) is the moved pane's: work begun there ends a
+    // finish under the new ID, so its next one is counted as new
+    const moved = this.movedTo.get(paneId);
+    const target = moved === undefined ? undefined : this.panes.get(moved);
+    if (moved !== undefined && target !== undefined && status !== "done") this.panes.set(moved, { ...target, status });
     const before = this.panes.get(paneId);
     const finish_id = (before?.id ?? 0) + (status === "done" && before?.status !== "done" ? 1 : 0);
     this.panes.set(paneId, { status, id: finish_id });
@@ -88,12 +97,21 @@ export class Finishes {
    * herdr moved the pane under a new ID: its finishes go on counting there, so a finish a browser read
    * under the old ID keeps its number and stays read (#1503). The old ID keeps its count, as an ended pane's.
    */
-  moved(from: string, to: string): void {
+  moved(from: string, to: string): (id: number) => number {
     const before = this.panes.get(from);
-    if (!before || from === to) return;
+    if (!before || from === to) return (id) => id;
     const after = this.panes.get(to);
-    this.panes.set(to, after === undefined || after.id < before.id ? { ...before } : after);
     this.ended(from);
+    this.movedTo.set(from, to);
+    if (after === undefined || after.id < before.id) {
+      this.panes.set(to, { ...before });
+      return (id) => id;
+    }
+    // herdr reused the new ID within this epoch: its count goes on above every finish read there before, and
+    // the moved pane's latest finish takes the next number; a read of it is a read of that number
+    const latest = after.id + 1;
+    this.panes.set(to, { status: before.status, id: latest });
+    return (id) => id >= before.id ? latest : id;
   }
 
   /** Keep the counter if herdr reuses an ended pane's ID within this epoch. */
