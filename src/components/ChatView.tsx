@@ -237,6 +237,7 @@ interface ChatState {
   conversationSource?: ConversationResponse["source"];
   turns: ConversationTurn[];
   messages: TranscriptMessage[];
+  scrollback?: string;
   truncated: boolean;
 }
 
@@ -881,20 +882,25 @@ const OUTCOME_ICONS: Record<OutcomeState, ComponentType<LucideProps>> = {
  * words with the card or the terminal to go to, and a changed screen folded under it as an
  * unconfirmed preview. The words are a live region: a chip that moves on is announced.
  */
-function OutcomeChip({ outcome, actions }: { outcome: CommandOutcome; actions: OutcomeActions | null }) {
+function OutcomeChip({ outcome, actions, snapshot }: { outcome: CommandOutcome; actions: OutcomeActions | null; snapshot?: string }) {
   const t = useT();
   const chip = outcomeChip(outcome);
   const Icon = OUTCOME_ICONS[chip.state];
   const terminal = actions?.terminal ?? null;
   const action = chip.action === "answer" ? actions?.answer ?? null : chip.action === "terminal" && terminal !== null ? () => terminal(outcome.text) : null;
   // a recognized result shows what the agent printed; the unconfirmed preview of the same screen goes
-  const preview = outcome.result_text ? "" : outcome.preview ?? "";
+  // beside a raw terminal snapshot the screen is already shown: only what it lacks is repeated
+  const shown = (text: string) => snapshot !== undefined && text !== "" && snapshot.includes(text);
+  const preview = snapshot !== undefined || outcome.result_text ? "" : outcome.preview ?? "";
   const [dismissed, setDismissed] = useChatRowToggle(`outcome-result:${outcome.id}`, false);
-  const result = outcomeResultText(outcome, dismissed === true);
+  const recorded = outcomeResultText(outcome, dismissed === true);
+  const result = recorded !== null && shown(recorded) ? null : recorded;
+  const command = snapshot !== undefined && !shown(outcome.text) ? outcomeCommand(outcome.text) : "";
   const note = outcomeNote(t, outcome);
   return <div className="chat-outcome" data-outcome-state={chip.state}>
     <div className="chat-outcome-row">
       <span className="chat-outcome-state" role="status"><Icon aria-hidden="true" />{outcomeLabel(t, chip)}</span>
+      {command !== "" && <span className="chat-outcome-command">{command}</span>}
       {action !== null && <button type="button" className="chat-outcome-action" onClick={action}>{chip.action === "answer" ? t("Answer") : t("Open Terminal")}</button>}
     </div>
     {/* why it went as plain text, read with the state it explains */}
@@ -1154,21 +1160,39 @@ function fallbackTurn(message: TranscriptMessage): ConversationTurn {
 /**
  * The transcript shown without a native conversation: herdr's scrollback as turns (a pane with no
  * agent), or the terminal output on request (an agent whose conversation could not be read). The
- * commands sent from here keep their outcomes as in the native timeline: a chip on the scrollback
- * turn that records one, a provisional sent row for one no turn records.
+ * commands sent from here keep their outcomes: the raw snapshot shows chips without duplicating
+ * its text, while the agent fallback uses the native timeline's provisional sent rows.
  */
-export function ChatFallback({ paneId, agent, visible, messages, outcomes, restored, actions, skills }: {
+export function ChatFallback({ paneId, agent, visible, messages, scrollback, outcomes, restored, actions, skills }: {
   paneId: string; agent: string | null; visible: boolean; messages: readonly TranscriptMessage[]; outcomes: readonly CommandOutcome[];
+  scrollback?: string;
   restored: string | null; actions: OutcomeActions | null; skills: SkillMatcher | null;
 }) {
   const turns = useMemo(() => messages.filter((message) => message.role !== "status").map(fallbackTurn), [messages]);
   const rows = useMemo(() => outcomeRows(turns, outcomes, { restored }), [turns, outcomes, restored]);
+  if (agent === null && scrollback !== undefined) return <>
+    {scrollback.trim() !== "" && <TerminalSnapshot text={scrollback} />}
+    {rows.map((row) => row.outcome !== null && <OutcomeChip key={`outcome:${row.outcome.id}`} outcome={row.outcome} actions={actions} snapshot={scrollback} />)}
+  </>;
   return <>
     {agent !== null && <TerminalFallback key={paneId} paneId={paneId} visible={visible} />}
     {rows.map((row) => row.kind === "sent"
       ? <OutcomeRow key={`outcome:${row.outcome.id}`} outcome={row.outcome} actions={actions} skills={skills} />
       : <Turn key={row.index} paneId={paneId} turn={turns[row.index]!} rowKey={`fallback:${row.index}`} live={false} waiting={false} showThinking={false} outcome={row.outcome} outcomeActions={actions} />)}
   </>;
+}
+
+/** A terminal read is a snapshot, not a collection of attributed chat messages. */
+function TerminalSnapshot({ text }: { text: string }) {
+  const t = useT();
+  const [copyFailed, setCopyFailed] = useState(false);
+  return <section className="chat-terminal-snapshot" aria-label={t("Terminal")}>
+    <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
+      <CopyButton className="chat-meta-btn" text={text} label={t("Copy as plain text")} onResult={(ok) => setCopyFailed(!ok)}><span>{t("Copy")}</span></CopyButton>
+    </div>
+    <pre>{text}</pre>
+    {copyFailed && <p className="chat-copy-error" role="alert">{t("Couldn't copy. Select the text and copy it manually.")}</p>}
+  </section>;
 }
 
 /** Optional terminal output must never hold initial display or transcript polling. */
@@ -1187,7 +1211,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
       try {
         const result = await fetchPaneTranscript(paneId, TRANSCRIPT_LINES);
         if (cancelled) return;
-        setText(toTranscriptMessages(result.text).filter((message) => message.role !== "status").map((message) => message.text).join("\n\n"));
+        setText(result.text);
         setError(null);
       } catch (cause) {
         if (!cancelled) setError(userFailure(cause));
@@ -1200,7 +1224,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
   }, [paneId, open, visible, fetchPaneTranscript, retryKey]);
   return <details className="chat-terminal-fallback" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary>{t("Conversation unavailable — show terminal output")}</summary>
-    {text !== null && <pre>{text}</pre>}
+    {text !== null && <TerminalSnapshot text={text} />}
     {text === null && error === null && <p className="chat-inline-state" role="status">{t("Loading…")}</p>}
     {error !== null && <FailureLine action={t("Couldn't load the terminal output")} failure={error} onRetry={() => setRetryKey((key) => key + 1)} />}
   </details>;
@@ -1623,7 +1647,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           }
           const result = await fetchPaneTranscript(paneId, TRANSCRIPT_LINES, signal);
           if (cancelled || generation !== olderGeneration.current) return;
-          next = { source: "scrollback", turns: [], messages: toTranscriptMessages(result.text).filter((message) => message.role !== "status"), truncated: result.truncated === true };
+          next = { source: "scrollback", turns: [], messages: toTranscriptMessages(result.text).filter((message) => message.role !== "status"), scrollback: result.text, truncated: result.truncated === true };
         }
         showAnswer(conversation, next, moved);
         setReadPresentation(proved ? readKey : undefined);
@@ -2194,7 +2218,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // selecting or reading, as the chat is laid out the same from the answer's first frame
   const activityReserved = afterAnswer && !answerLagOut;
   const activityClass = activityReserved ? "chat-activity-reserved" : "chat-activity";
-  const empty = state.source === "conversation" ? turns.length === 0 : agent === null && state.messages.length === 0;
+  const empty = state.source === "conversation" ? turns.length === 0 : agent === null && (state.scrollback ?? "").trim() === "";
   const blank = !ended && chatIsBlank({ loaded, failed: error !== null, transcript: state.source === "conversation", turns: turns.length, older: typeof olderCursor === "string", abandoned: abandoned?.count ?? 0, prompt: prompt !== null, agent });
   // the scrollback standing in says nothing of the conversation: it has no history to compare
   const known = loaded && error === null && !ended && state.source === "conversation";
@@ -2424,7 +2448,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       renderRow={renderTurn}
     /> : <div className="chat-view" ref={scroller} onScroll={onScroll} role="log" aria-live="polite" aria-label={logLabel}>
       <div className="chat-transcript" data-conversation-source={state.conversationSource}>
-        <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher} />
+        <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} scrollback={state.scrollback} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher} />
         {footer}
       </div>
     </div>}
