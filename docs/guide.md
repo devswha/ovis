@@ -820,9 +820,20 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   meet, a pin on either side is kept; after that, a pin or unpin made on one side while Ovis was
   stopped or herdr-core away is kept too. Pinned workspaces stay Ovis's own. A pin made in the app
   joins Ovis only while its list has room (500 pins); until then it stays the app's alone.
+- **Read finishes:** Ovis and the Herdr app agree on which finishes someone has looked at,
+  through herdr-core's `herdr.seen` terminal label. A finish you read in Ovis is no longer
+  **done** in the Herdr app, and one you looked at in the app is no longer **done** in Ovis; one
+  marked unread elsewhere is **done** again (Ovis does not read it for you again while it stays on
+  your screen). A terminal no client has labeled yet shows a turn that ended since Ovis started as
+  **done**, until someone reads it. A remote PC's finishes are not shared this way.
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
-  it or resized it: the app's window, or your phone once you type or open it there.
+  it or resized it: the app's window, or your phone once you type or open it there. herdr-core
+  keeps no view of its own to scroll, so the browser keeps the scrollback, as a desktop terminal
+  does: each attach starts with the terminal's last 2,000 lines of history, and the wheel, a
+  swipe or the scrollbar scrolls back through them while the program does not read the mouse. A
+  full-screen program (an editor, `htop`) has no history; its wheel goes to the program as on
+  herdr.
 - **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
   not kept current behind your back. A recent tab you switch away from keeps its last screen until
   you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
@@ -832,8 +843,8 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   as typed text, and a send waits for you to confirm it.
 - **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
   splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
-  those actions on such a PC. Search and scrollback selection in a pane, plugins and worktrees
-  are not available either. Remote PCs keep running herdr's TUI server.
+  those actions on such a PC. Search in a pane, scrolling or selecting the history through the
+  scroll buttons beside it, plugins and worktrees are not available either. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 
