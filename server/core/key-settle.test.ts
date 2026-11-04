@@ -86,7 +86,9 @@ it("keeps text a client tags automatic but that is no terminal reply in the pane
   const { events, keys, reply } = lane();
   const sent = keys(["left"]);
   reply("ls\r");
+  // escape sequences around text: a paste, not one answer
+  reply("\x1b[200~ls\x1b[201~");
   await sent;
   await keys(["right"]);
-  expect(events.map((e) => e.what)).toEqual(["keys left", "text \"ls\\r\"", "keys right"]);
+  expect(events.map((e) => e.what)).toEqual(["keys left", "text \"ls\\r\"", "text \"\\u001b[200~ls\\u001b[201~\"", "keys right"]);
 });
