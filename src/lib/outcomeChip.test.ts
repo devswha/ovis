@@ -85,8 +85,8 @@ describe("afterMove", () => {
   const compact = sent("compact", "/compact", 1), clear = sent("clear", "/clear", 3), after = sent("after", "/context", 4);
   const ids = (outcomes: readonly CommandOutcome[]) => outcomes.map((shown) => shown.id);
   /** what ChatView shows for each list polled after the move: the first send found to make it is kept */
-  const shown = (lists: readonly (readonly CommandOutcome[])[], held: readonly CommandOutcome[], options: { entered?: string[]; turns?: ConversationTurn[] } = {}) => {
-    const move = { held, entered: new Set(options.entered ?? []) };
+  const shown = (lists: readonly (readonly CommandOutcome[])[], held: readonly CommandOutcome[], options: { entered?: string[]; turns?: ConversationTurn[]; seenAt?: string } = {}) => {
+    const move = { held, entered: new Set(options.entered ?? []), seenAt: Date.parse(options.seenAt ?? "2026-10-20T10:00:05.000Z") };
     let made: CommandOutcome | null = null;
     return [held, ...lists].map((outcomes) => {
       made ??= moveCommand(outcomes, move);
@@ -111,6 +111,12 @@ describe("afterMove", () => {
     expect(shown([[done], [done, clear]], [compact]).at(-1)).toEqual(["clear"]);
   });
 
+  test("does not take a session change sent after the chat saw the move for the move", () => {
+    // a /clear typed in the terminal, then /btw and a /resume (its picker cancelled) sent from Chat
+    const btw = sent("btw", "/btw hello", 6), resume = sent("resume", "/resume", 8);
+    expect(shown([[btw], [btw, resume]], [after])).toEqual([[], ["btw"], ["btw", "resume"]]);
+  });
+
   test("with no move listed (a /clear typed in the terminal), keeps a later list whole: a send to the new conversation shows", () => {
     const later = [{ ...after, state: "result-observed" as const }];
     expect(shown([later], [after])).toEqual([[], ["after"]]);
@@ -123,9 +129,17 @@ describe("afterMove", () => {
   test("after a /resume back, keeps the earlier sends whose turns are in the conversation it returned to", () => {
     const context = sent("context", "/context", 1), resume = sent("resume", "/resume", 20);
     const turns = [user("/context", "2026-10-20T10:00:01.000Z")];
-    expect(shown([[context, resume]], [clear], { turns }).at(-1)).toEqual(["context", "resume"]);
+    // the /clear that brought the chat to B is the move it already made
+    expect(shown([[context, resume]], [clear], { turns, entered: ["clear"], seenAt: "2026-10-20T10:00:21.000Z" }).at(-1)).toEqual(["context", "resume"]);
+    // also when the chat held both at the move
+    expect(shown([], [context, resume], { turns })).toEqual([["context", "resume"]]);
     // a send to the conversation left, listed first after the move, has no turn here
     expect(shown([[compact, clear]], [], { turns: [] }).at(-1)).toEqual(["clear"]);
+  });
+
+  test("after a /clear, a later identical command typed in the new conversation does not take an old send's chip", () => {
+    const typed = [user("/compact", "2026-10-20T10:00:05.000Z")];
+    expect(shown([[compact, clear]], [], { turns: typed }).at(-1)).toEqual(["clear"]);
   });
 });
 

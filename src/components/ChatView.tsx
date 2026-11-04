@@ -1339,6 +1339,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const moveMade = useRef<CommandOutcome | null>(null);
   /** the session changes that made no move out of the history shown: listed in the pane's first poll, or a move already made; null until that poll */
   const enteredMoves = useRef<Set<string> | null>(null);
+  /** when this pane was shown: a session change sent after it did not bring the chat here */
+  const shownAt = useRef(0);
   const onOutcomesRef = useRef(onOutcomes);
   onOutcomesRef.current = onOutcomes;
   /** the outcomes whose catalog change this chat has already answered with a fresh command read */
@@ -1489,7 +1491,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     shownPane.current = paneId;
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
-    history.current = undefined; setHistoryId(undefined); enteredMoves.current = null;
+    history.current = undefined; setHistoryId(undefined); enteredMoves.current = null; shownAt.current = Date.now();
     pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
@@ -1634,7 +1636,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
               // the sends to the history left behind are no receipts of this one: the last prompt poll holds them,
               // and the server lists them until herdr names the new session, which can be a poll after this read
               moveMade.current = null;
-              setHistoryMove({ history: conversation.history_id, held: outcomesNow.current, entered: new Set(enteredMoves.current) });
+              setHistoryMove({ history: conversation.history_id, held: outcomesNow.current, entered: new Set(enteredMoves.current), seenAt: Date.now() });
             }
             dropOlder();
           }
@@ -1851,7 +1853,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           setAnsweredPrompt(null);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
-          enteredMoves.current ??= new Set(next.outcomes.filter(isSessionChange).map((outcome) => outcome.id));
+          enteredMoves.current ??= new Set(next.outcomes.filter((outcome) => isSessionChange(outcome)
+            && Date.parse(outcome.created_at) < shownAt.current).map((outcome) => outcome.id));
           onOutcomesRef.current?.(paneId, next.outcomes.map((outcome) => outcome.id));
           noteCatalogChanges(next.outcomes, catalogNoted.current, () => invalidatePaneCommands(paneId, machineId));
           if (sentKeyRef.current === sent) {
