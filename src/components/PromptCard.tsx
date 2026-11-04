@@ -24,6 +24,8 @@ export interface PromptCardProps {
   paneId: string;
   prompt: InteractivePrompt;
   onPromptChanged(): void;
+  /** the user edited the card's own answer: its owner keeps the text if the question goes unanswered here */
+  onTextChange?(text: string): void;
   /** the answer went out; `toMessageBox`: the keyboard's focus was in the card, which is about to go, nothing else has taken it since, and the press was a key or a mouse, not a tap */
   onAnswered(toMessageBox: boolean): void;
   /** its answer went out: the card waits, as while sending, until the next read of the screen replaces it or takes it away */
@@ -37,7 +39,7 @@ export interface PromptCardProps {
   screenWords?: string | null;
 }
 
-export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
+export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, onAnswered, answered = false, typedAnswer = null, onTypedAnswerDone, stale = false, screenWords = null }: PromptCardProps) {
   const t = useT();
   const { answerPanePrompt } = useMachineApi();
   const [selected, setSelected] = useState<Set<number>>(() => {
@@ -325,7 +327,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onAnswered, answer
         <div className="prompt-card-custom">
           {hasChoices && <span className="prompt-card-custom-label" id={customLabelId}>{sendsChecksWithText(prompt) ? t("Custom answer") : t("Or type your own answer")}</span>}
           <div className="prompt-card-custom-row">
-            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => setCustom(event.currentTarget.value)} onKeyDown={(event) => {
+            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => { setCustom(event.currentTarget.value); onTextChange?.(event.currentTarget.value); }} onKeyDown={(event) => {
               // an IME's Enter commits the candidate; WebKit can send it after compositionend, as key code 229
               if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && custom.trim().length > 0) void answer({ custom_text: custom.trim() });
             }} />

@@ -96,6 +96,8 @@ const ImageViewerContext = createContext<(images: GalleryImage[], index: number)
 const ToolPathRootContext = createContext<string | null>(null);
 import type { TypedAnswer } from "../lib/promptAnswer.ts";
 import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
+import { paneLifetimes } from "../lib/paneLifetime.ts";
+import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, PendingMessage, SlashCommand } from "../../shared/protocol.ts";
 import { chatIsBlank, type ChatRead } from "../lib/greeting.ts";
 import { TurnTime } from "./TurnTime.tsx";
@@ -132,6 +134,12 @@ function FailureLine({ action, failure, onRetry }: { action: string; failure: Us
 const TRANSCRIPT_LINES = 400;
 const PROMPT_POLL_MS = 2000;
 /**
+ * herdr can say blocked before the agent has drawn its question: while the pane waits and no read
+ * has found the question yet, the next reads come this soon, this many times, before the poll's 2 s.
+ */
+const BLOCKED_PROMPT_READ_MS = 250;
+const BLOCKED_PROMPT_READS = 6;
+/**
  * How long herdr's status may still say working after a turn's final answer is drawn: it trailed the
  * transcript by 100–400 ms at the Claude Code turn ends measured. Twice the longest, and still short
  * enough that a turn the agent begins by itself shows its Working head within a second.
@@ -141,8 +149,15 @@ const ANSWER_STATUS_LAG_MS = 800;
 const PROMPT_STALE_READS = 2;
 /** The prompt each pane's chat last read (by paneStorageId): a chat drawn again (back from the
  * Terminal lens) shows its card before paint, as it shows its turns, while its first read revalidates
- * it. Only while herdr still says the pane waits: one answered in the terminal is not drawn again. */
-const lastPrompts = new Map<string, InteractivePrompt>();
+ * it. Only while herdr still says the pane waits, and for the session it was read in: one answered in
+ * the terminal, or asked by the pane's session before, is not drawn again. Another herdr's pane IDs
+ * forget it (lib/paneLifetime.ts). */
+const lastPrompts = new Map<string, { machineId: string; session: string | null; prompt: InteractivePrompt }>();
+paneLifetimes.onRetire((machineId) => {
+  for (const [key, kept] of lastPrompts) if (kept.machineId === machineId) lastPrompts.delete(key);
+});
+const keptPrompt = (kept: { session: string | null; prompt: InteractivePrompt } | undefined, session: string | null): InteractivePrompt | null =>
+  kept !== undefined && kept.session === session ? kept.prompt : null;
 /** Scrolling this close to the top asks for the page before it. */
 const LOAD_OLDER_PX = 400;
 
@@ -1265,6 +1280,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [prompt, setPrompt] = useState<InteractivePrompt | null>(null);
   // the prompt whose answer went out, by its id: its card waits for the next read of the screen
   const [answeredPrompt, setAnsweredPrompt] = useState<string | null>(null);
+  // what the user typed into the card's own answer field, and for which prompt
+  const cardText = useRef<{ promptId: string; text: string } | null>(null);
+  const sessionRef = useRef(agentSession);
+  sessionRef.current = agentSession;
   // Each prompt that appears is an occurrence of its own, and gets a card of its own. The prompt's
   // id is a hash of what it says, so the same question asked twice shares it. Navigation metadata
   // can change within an occurrence; only another id or a disappearance starts a new card.
@@ -1439,7 +1458,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
     history.current = undefined; setHistoryId(undefined);
-    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? lastPrompts.get(paneStorageId(machineId, paneId)) ?? null : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); cardText.current = null; setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1759,23 +1778,37 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const blocked = agentStatus === "blocked";
   useEffect(() => {
     const promptKey = paneStorageId(machineId, paneId);
+    // text typed into a card whose question is gone (answered in the terminal, often while offline)
+    // is not lost: it joins the composer's draft, as other input typed offline waits there
+    const keepCardText = (shown: string | null): void => {
+      const typed = cardText.current;
+      if (typed === null || typed.promptId === shown) return;
+      cardText.current = null;
+      if (typed.text.trim() !== "") composerDrafts.restorePending(composerDraftKey(promptKey), typed.text);
+    };
     // a dropped connection says nothing about the screen either: the card stays until a read answers
-    if (promptGone) { lastPrompts.delete(promptKey); setPrompt(null); }
+    if (promptGone) { lastPrompts.delete(promptKey); keepCardText(null); setPrompt(null); }
     if (!pollPrompt) { setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
     if (!visible) return;
     let cancelled = false;
     let timer = 0;
+    // while herdr says the pane waits and no read has found its question yet (BLOCKED_PROMPT_READ_MS)
+    let quickReads = blocked ? BLOCKED_PROMPT_READS : 0;
     // a restart (the page shown again, a refused answer) keeps the notice and the count of failed reads: only a read that answers clears them
     const readPrompt = async (): Promise<void> => {
       // Keep unchanged prompts stable, but refresh navigation without replacing the card's edits.
       const sent = sentKeyRef.current;
+      const session = sessionRef.current;
+      let quick = false;
       try {
         const next = await fetchPanePromptState(paneId);
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
+          keepCardText(next.prompt?.id ?? null);
           setPrompt((current) => polledPrompt(current, next.prompt));
-          if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, next.prompt);
+          if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
+          if (next.prompt === null && quickReads > 0) { quickReads -= 1; quick = true; } else quickReads = 0;
           setAnsweredPrompt(null);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
@@ -1793,7 +1826,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // keep failing let the card say so (#1335): answering stays safe, the server re-reads first
       // a read the restart cancelled counts for neither side: the new poll's count is its own
       catch { if (!cancelled) { failedPromptReads.current += 1; if (failedPromptReads.current >= PROMPT_STALE_READS) setPromptStale(true); } }
-      finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), PROMPT_POLL_MS); }
+      finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), quick ? BLOCKED_PROMPT_READ_MS : PROMPT_POLL_MS); }
     };
     void readPrompt();
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -2438,12 +2471,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       input card, where PaneTerminal keeps its place. The prompt itself (its poll, the answer, the
       re-read) stays here. */}
   {prompt !== null && promptDock !== null && createPortal(
-    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} onAnswered={(toMessageBox) => {
+    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} onTextChange={(text) => { cardText.current = { promptId: prompt.id, text }; }} onAnswered={(toMessageBox) => {
       // the card reports only while it is the one shown; still, only its own prompt is cleared
       onPromptAnswered?.(toMessageBox);
       // the card stays, waiting, until the read below shows what the screen asks next: it never goes
       // and comes back between two questions of one form
       setAnsweredPrompt(prompt.id);
+      cardText.current = null;
       // and is not drawn again as open if the chat mounts again before that read (lastPrompts)
       lastPrompts.delete(paneStorageId(machineId, paneId));
       // a form of several questions goes on to its next one: read it now, not at the next poll
