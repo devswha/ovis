@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { CHECKOUT_CHANGED_REASON, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
+import { CHECKOUT_CHANGED_REASON, noInstalledNotes, readUpdateChannel, type UpdateChannel, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
 import { releaseIn } from "./update-state.ts";
 
@@ -13,6 +13,12 @@ export interface Release {
    * Absent from a release installed by a supervisor older than these fields.
    */
   previous_version?: string | null; installed_at?: string;
+  /**
+   * The version of the tag it was installed from, without the v, where that says more than its
+   * package.json: a beta build (`0.4.23-beta.7`) still carries the version main had. Absent from
+   * a release installed by a supervisor older than the field.
+   */
+  version?: string;
 }
 /** A release's files are read whole: one larger than this is not notes (the bound `runCommand` puts on what Git prints). */
 export const NOTES_FILE_LIMIT = 2_000_000;
@@ -56,6 +62,42 @@ export function isReleaseFolder(directory: string): boolean {
 }
 /** A release is a plain `vX.Y.Z` tag: `remote-v*` bundle tags and pre-releases never qualify. */
 const RELEASE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+/** A beta build CI tagged on green main (.github/workflows/beta.yml): taken only on the beta channel. */
+const BETA_TAG = /^v(\d+)\.(\d+)\.(\d+)-beta\.(\d+)$/;
+
+/**
+ * The newest tag the channel takes, by version: `v0.4.23` outranks every `v0.4.23-beta.N`, and
+ * `beta.10` outranks `beta.9`. On `stable` no beta is ever a candidate. Git's own version sort puts
+ * `v0.4.23-beta.1` after `v0.4.23`, so the order is worked out here.
+ */
+export function latestTag(tags: string[], channel: UpdateChannel): string | undefined {
+  let best: { tag: string; key: number[] } | undefined;
+  for (const tag of tags) {
+    const release = RELEASE_TAG.exec(tag);
+    const match = release ?? (channel === "beta" ? BETA_TAG.exec(tag) : null);
+    if (!match) continue;
+    // a release sorts after every beta of its version
+    const key = [Number(match[1]), Number(match[2]), Number(match[3]), release ? Infinity : Number(match[4])];
+    const i = best ? key.findIndex((part, j) => part !== best!.key[j]) : 0;
+    if (!best || (i !== -1 && key[i]! > best.key[i]!)) best = { tag, key };
+  }
+  return best?.tag;
+}
+
+/** The name of the setting file in the app's state dir that opts a PC into the beta channel. */
+export const UPDATE_CHANNEL_FILE = "update-channel";
+
+/**
+ * The channel this PC updates on: `OVIS_UPDATE_CHANNEL` when it names one, else the
+ * `update-channel` file in the app's state dir (`beta`), else `stable`. Read at every check, so
+ * writing the file takes effect without a restart.
+ */
+export function updateChannel(env: Record<string, string | undefined>, appStateDir: string): UpdateChannel {
+  const set = readUpdateChannel(env["OVIS_UPDATE_CHANNEL"]);
+  if (set) return set;
+  try { return readUpdateChannel(readFileSync(join(appStateDir, UPDATE_CHANNEL_FILE), "utf8")) ?? "stable"; }
+  catch { return "stable"; }
+}
 
 function packageVersion(directory: string): string | null {
   try {
@@ -191,7 +233,14 @@ export class Updater {
     notice?: string;
     activate: (release: Release, commit: () => void) => Promise<void>;
     publish: (status: UpdateStatus) => void;
-  }) { this.status.auto_update = options.autoUpdate; this.status.error = options.notice ?? null; }
+    /** The channel to update on, asked at every check (updateChannel); `stable` when not given. */
+    channel?: () => UpdateChannel;
+  }) {
+    this.status.auto_update = options.autoUpdate; this.status.error = options.notice ?? null;
+    this.status.channel = this.channel();
+  }
+
+  private channel(): UpdateChannel { return this.options.channel?.() ?? "stable"; }
 
   /** One git command in the source checkout; a test stands in here for a fetch that fails
    * without git ending it itself (#1252). */
@@ -218,11 +267,14 @@ export class Updater {
           // Only directories created by this updater may be resumed, under this state dir's name for them.
           const directory = saved.source_revision === this.sourceRevision && SHA.test(saved.revision)
             ? releaseIn(this.options.stateDir, saved.directory) : null;
-          if (directory !== null && await runCommand(directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = { ...saved, directory };
+          if (directory !== null && await runCommand(directory, ["git", "rev-parse", "HEAD"]) === saved.revision) {
+            const { version, ...release } = saved;
+            this.release = { ...release, directory, ...(typeof version === "string" ? { version } : {}) };
+          }
         } catch { /* missing/stale release: use the source checkout */ }
       }
       this.installed = this.brought(this.release);
-      this.patch({ current_revision: this.release.revision, current_version: packageVersion(this.release.directory), blocked_reason: reason });
+      this.patch({ current_revision: this.release.revision, current_version: this.release.version ?? packageVersion(this.release.directory), blocked_reason: reason });
     } catch {
       this.patch({ managed: false, blocked_reason: "Updates require a Git checkout on the main branch." });
     }
@@ -292,15 +344,16 @@ export class Updater {
   }
 
   private async discover(byUser = false) {
-    this.patch({ phase: "checking", error: this.options.notice ?? null, error_code: null, available: false, blocked_reason: null });
+    const channel = this.channel();
+    this.patch({ phase: "checking", error: this.options.notice ?? null, error_code: null, available: false, blocked_reason: null, channel });
     const reason = await this.sourceBlock();
     if (reason) { this.patch({ blocked_reason: reason, checked_at: new Date().toISOString() }); return; }
-    // Only published releases update installs: commits pushed to main without a tag stay put.
+    // Only published releases update installs: commits pushed to main without a tag stay put. The
+    // beta channel also takes the beta tags CI makes on green main.
     await this.fetchInto(() => this.git("fetch", "--no-tags", "origin", "+refs/tags/v*:refs/tags/v*"));
-    const tags = (await this.git("for-each-ref", "--sort=-v:refname", "--format=%(refname:short)", "refs/tags/v*"))
-      .split("\n").filter((tag) => RELEASE_TAG.test(tag));
+    const tags = (await this.git("for-each-ref", "--format=%(refname:short)", "refs/tags/v*")).split("\n");
     const checked_at = new Date().toISOString();
-    const latest = tags[0];
+    const latest = latestTag(tags, channel);
     if (!latest) {
       this.notes = noUpdateNotes();
       this.patch({ latest_revision: null, latest_version: null, checked_at, blocked_reason: null, available: false });
@@ -443,7 +496,8 @@ export class Updater {
         const previous = this.release;
         // what it replaces, on record for the supervisor the release starts: that one was not here for the install
         const next: Release = { directory: stage, revision, source_revision: this.sourceRevision,
-          previous_version: previous ? packageVersion(previous.directory) : null, installed_at: new Date().toISOString() };
+          previous_version: previous ? previous.version ?? packageVersion(previous.directory) : null, installed_at: new Date().toISOString(),
+          ...(this.status.latest_version ? { version: this.status.latest_version } : {}) };
         this.patch({ phase: "restarting", step: "restart" });
         await this.options.activate(next, () => {
           const file = join(this.options.stateDir, "current.json");
@@ -455,7 +509,7 @@ export class Updater {
         this.notes = noUpdateNotes();
         // a supervisor that stays (one run directly, without the launcher) tells it from here on
         this.installed = this.brought(next);
-        this.patch({ current_revision: revision, current_version: packageVersion(next.directory), available: false });
+        this.patch({ current_revision: revision, current_version: next.version ?? packageVersion(next.directory), available: false });
         this.failedRevision = null;
         rmSync(join(this.options.stateDir, "failed.json"), { force: true });
         // every release held here is named under this state dir (initialize names a resumed one so), so a
