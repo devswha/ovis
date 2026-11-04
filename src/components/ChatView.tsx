@@ -1984,8 +1984,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
-    // Upward input moves the view before its scroll event comes: a follow the list queued before
-    // it (a long chat's first open) would land first and take the reader back to the end (#2594).
+    // A wheel or a drag up the transcript moves the view before its scroll event comes: a follow the
+    // list queued before it (a long chat's first open) would land first and take the reader back to
+    // the end (#2594). A key may not scroll the transcript at all (focus on a button), so it drops
+    // nothing: its scroll event decides.
     const readingUp = (): void => {
       scrollInputAt.current = performance.now();
       dropPendingListScroll(timeline.current);
@@ -1995,7 +1997,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       if (event instanceof KeyboardEvent) {
         if (!active || event.isComposing || event.keyCode === 229) return;
         if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
-        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) readingUp();
+        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) scrollInputAt.current = performance.now();
         return;
       }
       if (event instanceof PointerEvent && (event.type === "pointerup" || event.type === "pointercancel")) {
@@ -2370,7 +2372,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
   }, [navigationRef]);
   // the rail scrolls the chat from outside it, where the input listeners do not see the wheel
-  const minimapWheel = useCallback((deltaY: number) => { if (deltaY < 0) scrollInputAt.current = performance.now(); }, []);
+  const minimapWheel = useCallback((deltaY: number) => {
+    if (deltaY < 0) { scrollInputAt.current = performance.now(); dropPendingListScroll(timeline.current); }
+  }, []);
   // a chip's action: the card's first control (the card is drawn into the dock, outside the
   // transcript), or the terminal lens where the command's screen is
   const focusPrompt = useCallback(() => {

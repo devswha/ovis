@@ -293,6 +293,8 @@ try {
       requestAnimationFrame(sample);
     }));
     assert.ok(gap >= 100, `a wheel up during a long chat's first-open jump to the end is kept: the view settled ${gap}px from the end`);
+    // the reader left the end: the next update does not take them back there
+    assert.ok(await page.getByRole("button", { name: "Jump to latest" }).isVisible(), "a reader who wheeled up during the first-open jump is no longer following the end");
     console.log(`PASS a wheel up during a long chat's first-open jump keeps the reader ${gap}px from the end`);
     await context.close();
   }
