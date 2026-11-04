@@ -51,7 +51,7 @@ export const t = (min: number, sec = 0) => `2026-09-25T09:${String(min).padStart
 
 /** The flags each agent resumes a session by, as server/session-history.ts cites them. */
 const RESUME_FLAGS: Record<SessionHistoryAgent, string[]> = {
-  claude: ["--resume"], codex: ["resume"], pi: ["--session"], omp: ["--resume"], gjc: ["--resume"], cmd: ["--session"],
+  claude: ["--resume"], codex: ["resume"], pi: ["--session"], omp: ["--resume"], gjc: ["--resume"], jcode: ["--resume"], cmd: ["--session"],
   omo: ["--session-id"], opencode: ["--session"], hermes: ["--resume"], grok: ["--resume"], agy: ["--conversation"], devin: ["--resume"],
 };
 export const SESSION_HISTORY_AGENTS = Object.keys(RESUME_FLAGS) as SessionHistoryAgent[];

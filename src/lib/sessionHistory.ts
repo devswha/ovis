@@ -19,7 +19,7 @@ import { formatChatTimestamp } from "./chatTimestamp.ts";
 import type { Translate } from "./i18n.ts";
 
 /** The agents whose own stores the route reads, as server/session-history.ts lists them. */
-export const SESSION_HISTORY_AGENTS: readonly SessionHistoryAgent[] = ["claude", "codex", "pi", "omp", "gjc", "cmd", "omo", "opencode", "hermes", "grok", "agy", "devin"];
+export const SESSION_HISTORY_AGENTS: readonly SessionHistoryAgent[] = ["claude", "codex", "pi", "omp", "gjc", "jcode", "cmd", "omo", "opencode", "hermes", "grok", "agy", "devin"];
 
 /**
  * The agent whose sessions a request lists. A pane's request (its chat's /resume) lists that pane's

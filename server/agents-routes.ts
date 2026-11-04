@@ -14,6 +14,7 @@ export const AGENT_LABELS: Record<string, string> = {
   omp: "Oh My Pi",
   omo: "OmO",
   gjc: "Gajae Code",
+  jcode: "Jcode",
   pi: "pi",
   gemini: "Gemini CLI",
   cursor: "Cursor",

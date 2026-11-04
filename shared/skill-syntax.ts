@@ -20,6 +20,8 @@ export const SKILL_SYNTAX: Readonly<Record<string, SkillSyntax>> = {
   pi: { skillTriggers: ["/"], inline: [], namespaced: true, chipForms: [] },
   omp: { skillTriggers: ["/"], inline: ["/"], namespaced: true, chipForms: [] },
   gjc: { skillTriggers: ["/"], inline: [], namespaced: true, chipForms: [] },
+  // jcode's own skill menu opens on a leading `/` and lists flat skill ids (no namespace)
+  jcode: { skillTriggers: ["/"], inline: ["/"], namespaced: false, chipForms: [] },
   devin: { skillTriggers: ["/"], inline: [], namespaced: true, chipForms: [] },
   cmd: { skillTriggers: ["/"], inline: [], namespaced: true, chipForms: [] },
   hermes: { skillTriggers: ["/"], inline: [], namespaced: true, chipForms: [] },

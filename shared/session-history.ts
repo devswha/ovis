@@ -1,5 +1,5 @@
 /** The agents whose own stores GET /api/sessions/history reads. */
-export type SessionHistoryAgent = "claude" | "codex" | "pi" | "omp" | "gjc" | "cmd" | "omo" | "opencode" | "hermes" | "grok" | "agy" | "devin";
+export type SessionHistoryAgent = "claude" | "codex" | "pi" | "omp" | "gjc" | "jcode" | "cmd" | "omo" | "opencode" | "hermes" | "grok" | "agy" | "devin";
 
 /**
  * Where a Claude row was listed from: the pane whose Claude's store was read, and that store's key

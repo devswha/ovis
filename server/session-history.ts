@@ -64,7 +64,7 @@ const TITLE_CHARS = 200;
 const MESSAGE_CHARS = 2000;
 const BUSY_TIMEOUT_MS = 250;
 
-export const SESSION_HISTORY_AGENTS = ["claude", "codex", "pi", "omp", "gjc", "cmd", "omo", "opencode", "hermes", "grok", "agy", "devin"] as const satisfies readonly SessionHistoryAgent[];
+export const SESSION_HISTORY_AGENTS = ["claude", "codex", "pi", "omp", "gjc", "jcode", "cmd", "omo", "opencode", "hermes", "grok", "agy", "devin"] as const satisfies readonly SessionHistoryAgent[];
 
 export function isSessionHistoryAgent(value: string): value is SessionHistoryAgent {
   return (SESSION_HISTORY_AGENTS as readonly string[]).includes(value);
@@ -125,6 +125,9 @@ const RESUME: Record<SessionHistoryAgent, (id: string) => string[]> = {
   // gajae-code (https://github.com/Yeachan-Heo/gajae-code), its docs embedded in the gjc build of
   // 2026-10-18: "### `--resume <value>`", and its exit banner prints `gjc --resume <id>`
   gjc: (id) => ["gjc", "--resume", id],
+  // `jcode --help` (checked on v0.99.899-dev): "--resume [<RESUME>]  Resume a session by ID, or list
+  // sessions if no ID provided"; crates/jcode-base/src/recent_session_index.rs names each row it lists
+  jcode: (id) => ["jcode", "--resume", id],
   // https://commandcode.ai/docs/reference/cli: "`--session <path|id>` Resume a session by transcript
   // path (`.jsonl`) or a unique session-id prefix"
   cmd: (id) => ["cmd", "--session", id],
@@ -1039,6 +1042,44 @@ function hermesSessions(cwds: readonly string[], hermesHome: string, budget: Bud
   }) ?? [];
 }
 
+/**
+ * Jcode: `~/.jcode/session-metadata-v1.sqlite3` (or $JCODE_HOME's) `recent_sessions` is the index
+ * its own `--resume` picker lists from (crates/jcode-base/src/recent_session_index.rs), keyed by the
+ * working folder a session ran in. A row's title is Jcode's own: `custom_title`, then a saved
+ * bookmark's `save_label`, then `todo_title`, then the generated one
+ * (RecentSessionMetadata::display_title). The transcripts beside it (`sessions/<id>.json`) are not
+ * read: the index names the session and `jcode --resume <id>` reopens it, and they are too large to
+ * read inside the bound. The index carries no prompt text, so a row has no first message.
+ */
+function jcodeSessions(cwds: readonly string[], dbPath: string, budget: Budget): Row[] {
+  return withDatabase(budget, dirname(dbPath), dbPath, (db) => {
+    if (!tableExists(db, "recent_sessions")) return [];
+    // `saved`, `save_label` and the title columns arrive with migrations (recent_session_index.rs), so
+    // a store from before one of them is still read rather than refused
+    const columns = columnsOf(db, "recent_sessions");
+    const value = (name: string) => columns.has(name) ? `nullif(trim(coalesce(${name}, '')), '')` : "NULL";
+    const titled = [
+      value("custom_title"),
+      columns.has("saved") && columns.has("save_label") ? `CASE WHEN saved != 0 THEN ${value("save_label")} END` : "NULL",
+      value("todo_title"),
+      value("generated_title"),
+    ];
+    const title = `coalesce(${titled.join(", ")})`;
+    const spellings = spellingsOf(cwds);
+    const updated = columns.has("last_active_at_ms") ? "coalesce(nullif(last_active_at_ms, 0), updated_at_ms)" : "updated_at_ms";
+    return db.query<{ id: string; title: string | null; updated: number | null }, string[]>(
+      `SELECT session_id AS id, substr(${title}, 1, ${TITLE_CHARS * 4}) AS title, ${updated} AS updated
+       FROM recent_sessions WHERE working_dir IN (${placeholders(spellings)})
+       ORDER BY updated DESC LIMIT ${MAX_ROWS}`,
+    ).all(...spellings).map((session) => row("jcode", session.id, {
+      title: session.title,
+      // the index keeps no creation time: only when the session last ran
+      startedAt: null,
+      updatedAt: iso(session.updated) ?? new Date(0).toISOString(),
+    }));
+  }) ?? [];
+}
+
 function devinSessions(cwds: readonly string[], dbPath: string, budget: Budget): Row[] {
   return withDatabase(budget, dirname(dbPath), dbPath, (db) => {
     if (!tableExists(db, "sessions")) return [];
@@ -1145,6 +1186,7 @@ export function listSessions(agent: SessionHistoryAgent, cwd: string, options: S
       }
       case "omp": return piFamily("omp", join(home, ".omp", "agent", "sessions"), ompFolders(), cwds, budget, read);
       case "gjc": return piFamily("gjc", join(env["GJC_CODING_AGENT_DIR"] || join(home, ".gjc", "agent"), "sessions"), ompFolders(), cwds, budget, read);
+      case "jcode": return jcodeSessions(cwds, join(env["JCODE_HOME"] || join(home, ".jcode"), "session-metadata-v1.sqlite3"), budget);
       case "cmd": return piFamily("cmd", join(home, ".commandcode", "projects"), keys(cmdSlug), cwds, budget, read, true);
       case "opencode": {
         // a database the user named (OPENCODE_DB, the server's option) is its own store; else OpenCode's data dir

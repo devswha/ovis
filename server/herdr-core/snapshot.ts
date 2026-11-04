@@ -1,6 +1,7 @@
 import type { AgentInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
+import { SUPPORTED_AGENT_KINDS } from "../../shared/supported-agents.ts";
 
 /**
  * How herdr-core's terminals look to the rest of the server: herdr's session snapshot, built from
@@ -101,8 +102,23 @@ export function agentOfStatus(status: HcStatus | null | undefined): string | nul
   return Object.hasOwn(HERDR_AGENT_NAMES, app) ? HERDR_AGENT_NAMES[app]! : app;
 }
 
+/**
+ * The agent a program is, when no status named one: herdr has manifests for the agents it starts itself,
+ * and a program it has never heard of (jcode, omo, gjc, dsh-tui) reports nothing at all, so its pane
+ * would read as a shell that the agent happened to be typed into. Only the kinds this app offers are
+ * taken, so a stray binary of some other name never claims a pane the server cannot talk to.
+ */
+export function agentOfProgram(name: string | null | undefined): string | null {
+  const program = (name ?? "").replace(/\\/g, "/").split("/").pop()!.replace(/\.(?:exe|cmd|js|mjs|cjs)$/i, "");
+  if (!SUPPORTED_AGENT_KINDS.has(program)) return null;
+  return Object.hasOwn(HERDR_AGENT_NAMES, program) ? HERDR_AGENT_NAMES[program]! : program;
+}
+
+/** A pane's agent: what its program reported, else the agent its foreground program is. */
 export function agentOf(terminal: HcTerminal): string | null {
-  return agentOfStatus(terminal.status);
+  return agentOfStatus(terminal.status)
+    ?? agentOfProgram(terminal.foreground?.name)
+    ?? agentOfProgram(terminal.foreground?.argv?.[0]);
 }
 
 const STATUS_RANK: Record<string, number> = { blocked: 4, working: 3, done: 2, idle: 1 };

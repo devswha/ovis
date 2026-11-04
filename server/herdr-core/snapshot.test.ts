@@ -98,6 +98,29 @@ describe("buildSnapshot", () => {
     expect(snapshot.agents.map((a) => [a.pane_id, a.agent])).toEqual([["t1", "claude"], ["t2", "codex"], ["t3", "omp"], ["t5", "claude"], ["t6", "agy"]]);
   });
 
+  it("takes a pane's agent from its foreground program when its program reported none, and what it reported first", () => {
+    const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), block("t2"), block("t3"), block("t4"), block("t5")] } }] }] };
+    const snapshot = buildSnapshot([
+      // jcode never reports a status: hc has no manifest for it, and its pane still runs an agent
+      terminal("t1", { foreground: { pid: 11, name: "jcode" } }),
+      terminal("t2", { foreground: { pid: 12, name: "bash" } }),
+      terminal("t3", { foreground: { pid: 13, name: "omo", argv: ["/home/u/.local/bin/omo", "--continue"] } }),
+      terminal("t4", { foreground: { pid: 14, name: "aider" } }),
+      // a report is the program's own word and outranks its process name
+      terminal("t5", { status: { app: "codex", state: "idle" }, foreground: { pid: 15, name: "jcode" } }),
+    ], layout, "0.1.14");
+    expect(snapshot.panes.map((p) => [p.agent, p.agent_status])).toEqual([["jcode", "unknown"], [null, "unknown"], ["omo", "unknown"], [null, "unknown"], ["codex", "idle"]]);
+  });
+
+  it("names a program by its path's last part, without a Windows or script extension", () => {
+    const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), block("t2")] } }] }] };
+    const snapshot = buildSnapshot([
+      terminal("t1", { foreground: { pid: 21, name: "", argv: ["C:\\Users\\u\\.local\\bin\\jcode.cmd"] } }),
+      terminal("t2", { foreground: { pid: 22, name: "codex" } }),
+    ], layout, "0.1.14");
+    expect(snapshot.panes.map((p) => p.agent)).toEqual(["jcode", "codex"]);
+  });
+
   it("gives each pane its terminal's own grid at its place in the tab's splits, so no two panes overlap", () => {
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [block("t1"), { type: "column", id: "c", children: [block("t2"), block("t3")] }] } }] }] };
     const snapshot = buildSnapshot([terminal("t1", { cols: 80, rows: 49 }), terminal("t2", { cols: 60, rows: 24 }), terminal("t3", { cols: 60, rows: 24 })], layout, "0.1.14");

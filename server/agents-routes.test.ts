@@ -61,8 +61,8 @@ describe("GET /api/agents", () => {
         { kind: "someagent", label: "someagent", installed: false },
       ],
     });
-    // dsh-tui is on the locator's PATH, but dsh, which it needs to run, is nowhere: not offered, and not looked for
-    expect(located.sort()).toEqual(["gjc", "omo"]);
+    // the detector looks up every catalog agent; dsh-tui is on the locator's PATH, but dsh, which it needs to run, is nowhere: not offered
+    expect(located.sort()).toEqual(["gjc", "jcode", "omo"]);
   });
 
   it("offers DeepSeek Harness as dsh-tui, by its label, once dsh, which it needs, is found too", async () => {

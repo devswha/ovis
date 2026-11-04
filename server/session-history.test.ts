@@ -25,7 +25,7 @@ const FOLDERS: Partial<Record<SessionHistoryAgent, string>> = WINDOWS
   : { claude: "-work-project", pi: "--work-project--", omo: "--work-project--", omp: "--work-project--", gjc: "--work-project--", cmd: "work-project", grok: "%2Fwork%2Fproject" };
 const EXPECTED: Record<SessionHistoryAgent, [string, string]> = {
   claude: [ID(2), ID(1)], codex: [ID(2), ID(1)], pi: [ID(2), ID(1)], omp: [ID(2), ID(1)], gjc: [ID(2), ID(1)], cmd: [ID(2), ID(1)],
-  omo: [ID(2), ID(1)], grok: [ID(2), ID(1)], agy: [ID(2), ID(1)],
+  omo: [ID(2), ID(1)], grok: [ID(2), ID(1)], agy: [ID(2), ID(1)], jcode: [ID(2), ID(1)],
   opencode: ["ses_fixture0002", "ses_fixture0001"],
   hermes: ["20261002_090000_fx0002", "20261001_090000_fx0001"],
   devin: ["fixture-0002", "fixture-0001"],
@@ -49,7 +49,8 @@ function install(agent: SessionHistoryAgent, home: string): void {
     mkdirSync(dirname(target), { recursive: true });
     const text = readFileSync(file, "utf8").replaceAll('"{{CWD}}"', JSON.stringify(CWD));
     if (target.endsWith(".sql")) {
-      const db = new Database(target.replace(/\.sql$/, ".db"), { create: true });
+      // a store whose real file ends in .sqlite3 (jcode's) keeps that name; the others take .db
+      const db = new Database(target.replace(/\.sql$/, target.endsWith(".sqlite3.sql") ? "" : ".db"), { create: true });
       // one transaction: a statement each would sync the disk each time, seconds on a loaded machine
       db.transaction(() => db.exec(text.replaceAll(":cwd", sql(CWD)).replaceAll(":uris", sql(JSON.stringify([pathToFileURL(CWD).href])))))();
       db.close();
@@ -76,7 +77,8 @@ const piStore = (home: string) => join(home, ".pi", "agent", "sessions", FOLDERS
 describe("listSessions", () => {
   for (const agent of SESSION_HISTORY_AGENTS) {
     // Command Code's slug keeps a Windows drive's colon, which no Windows folder name may hold
-    it.skipIf(agent === "cmd" && WINDOWS)(`lists ${agent}'s own sessions of the folder, newest first, with its resume command`, async () => {
+    // Jcode's index carries no prompt text and no creation time, so its own block below states the row
+    it.skipIf((agent === "cmd" && WINDOWS) || agent === "jcode")(`lists ${agent}'s own sessions of the folder, newest first, with its resume command`, async () => {
       const home = newHome();
       install(agent, home);
       const rows = await listSessions(agent, CWD, { home, env: {} });
@@ -1643,5 +1645,52 @@ describe("GET /api/sessions/history", () => {
     expect(await codes("workspace_id=w1&agent=bash")).toEqual([400, "invalid_agent"]);
     expect(await codes("agent=codex")).toEqual([400, "missing_workspace_id"]);
     expect(await codes("workspace_id=w9&agent=codex")).toEqual([404, "workspace_not_found"]);
+  });
+});
+
+describe("jcode sessions", () => {
+  // recent_sessions is the index jcode's own --resume picker lists (recent_session_index.rs): a row
+  // per session of the folder, titled by custom_title, a saved bookmark, todo_title, or the
+  // generated one, with the last time it ran and no prompt text at all.
+  const store = (home: string) => new Database(join(home, ".jcode", "session-metadata-v1.sqlite3"), { create: false });
+
+  it("lists the folder's rows with jcode's own title precedence and no first message", async () => {
+    const home = newHome();
+    install("jcode", home);
+    const db = store(home);
+    const insert = db.query("INSERT INTO recent_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    insert.run(ID(3), CWD, "Generated three", "Custom three", "Todo three", 1790000005000, 1790000005000, 0, null);
+    insert.run(ID(4), CWD, "Generated four", null, null, 1790000006000, 1790000006000, 1, "Saved four");
+    insert.run(ID(5), CWD, "Generated five", null, null, 1790000007000, 0, 1, "Not saved five");
+    insert.run(ID(6), CWD, "Generated six", null, "Todo six", 1790000008000, null, 0, null);
+    // another folder's session is not this folder's list
+    insert.run(ID(7), "/work/elsewhere", "Elsewhere", null, null, 1790000009000, 1790000009000, 0, null);
+    db.close();
+    const rows = await listSessions("jcode", CWD, { home, env: {} });
+    expect(rows.map((row) => [row.id, row.title])).toEqual([
+      [ID(6), "Todo six"], [ID(5), "Not saved five"], [ID(4), "Saved four"], [ID(3), "Custom three"], [ID(2), "Fixture jcode prompt 2"], [ID(1), "Fixture jcode prompt 1"],
+    ]);
+    for (const row of rows) {
+      expect(row.firstMessage).toBeNull();
+      expect(row.startedAt).toBeNull();
+      expect(row.resume?.argv).toEqual(["jcode", "--resume", row.id]);
+      expect(Number.isNaN(Date.parse(row.updatedAt))).toBe(false);
+    }
+  });
+
+  it("keeps a row's index time when only its last run names one, and reads $JCODE_HOME's store", async () => {
+    const home = newHome(), elsewhere = join(home, "store");
+    mkdirSync(join(elsewhere, "skills"), { recursive: true });
+    const db = new Database(join(elsewhere, "session-metadata-v1.sqlite3"), { create: true });
+    db.exec("CREATE TABLE recent_sessions (session_id TEXT PRIMARY KEY NOT NULL, working_dir TEXT, generated_title TEXT, updated_at_ms INTEGER NOT NULL, last_active_at_ms INTEGER)");
+    db.query("INSERT INTO recent_sessions VALUES (?, ?, ?, ?, ?)").run(ID(1), CWD, "Index time", 1790000001000, 0);
+    db.query("INSERT INTO recent_sessions VALUES (?, ?, ?, ?, ?)").run(ID(2), CWD, "Run time", 1790000001000, 1790000004000);
+    db.close();
+    const rows = await listSessions("jcode", CWD, { home, env: { JCODE_HOME: elsewhere } });
+    expect(rows.map((row) => [row.id, row.title, row.updatedAt])).toEqual([
+      [ID(2), "Run time", new Date(1790000004000).toISOString()],
+      [ID(1), "Index time", new Date(1790000001000).toISOString()],
+    ]);
+    expect(await listSessions("jcode", CWD, { home, env: {} })).toEqual([]);
   });
 });
