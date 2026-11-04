@@ -45,6 +45,7 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
   const sideFds: number[] = [];
   let snapshot: string | undefined;
   let catalogKey: string | undefined;
+  let reused: number[] | undefined;
   const began = Date.now();
   try {
     if (realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
@@ -79,45 +80,44 @@ export function agyCatalog(path: string, beforeOpen?: () => void): Set<number> {
       // Unchanged pinned files hold the bytes the last validated copy read.
       const key = snapshotFiles.map(({ stat }) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`).join("|");
       const cached = catalogs.get(dbPath);
-      if (cached?.key === key) {
-        for (const file of snapshotFiles) {
-          const now = statSync(file.path, { bigint: true });
-          if (now.dev !== file.stat.dev || now.ino !== file.stat.ino || realpathSync(file.path) !== file.path) throw new AgyUnavailable();
-        }
-        catalogs.delete(dbPath);
-        catalogs.set(dbPath, cached);
-        return new Set(cached.rows);
-      }
-      if (snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
+      // A reused catalog still passes the same final checks on every pinned file below.
+      if (cached?.key === key) { reused = cached.rows; catalogKey = key; }
+      else if (snapshotFiles.every(({ stat }) => began - Number(stat.mtimeNs / 1_000_000n) >= CATALOG_SETTLED_MS
         && began - Number(stat.ctimeNs / 1_000_000n) >= CATALOG_SETTLED_MS)) catalogKey = key;
       // macOS: tmpdir() is under the /var symlink, which SQLITE_OPEN_NOFOLLOW refuses
       // (assigned before resolving, so a failed realpath still removes the directory)
-      snapshot = mkdtempSync(join(tmpdir(), "ovis-agy-catalog-"));
-      snapshot = realpathSync(snapshot);
-      name = join(snapshot, "catalog.db");
-      for (const [index, file] of snapshotFiles.entries()) {
-        const target = openSync(index === 0 ? name : `${name}-wal`, "wx", 0o600);
-        try {
-          const bytes = Buffer.alloc(64 * 1024);
-          const size = Number(file.stat.size);
-          let offset = 0;
-          while (offset < size) {
-            const read = readSync(file.fd, bytes, 0, Math.min(bytes.length, size - offset), offset);
-            if (!read) throw new AgyUnavailable();
-            writeFileSync(target, bytes.subarray(0, read));
-            offset += read;
-          }
-        } finally { closeSync(target); }
+      if (reused === undefined) {
+        snapshot = mkdtempSync(join(tmpdir(), "ovis-agy-catalog-"));
+        snapshot = realpathSync(snapshot);
+        name = join(snapshot, "catalog.db");
+        for (const [index, file] of snapshotFiles.entries()) {
+          const target = openSync(index === 0 ? name : `${name}-wal`, "wx", 0o600);
+          try {
+            const bytes = Buffer.alloc(64 * 1024);
+            const size = Number(file.stat.size);
+            let offset = 0;
+            while (offset < size) {
+              const read = readSync(file.fd, bytes, 0, Math.min(bytes.length, size - offset), offset);
+              if (!read) throw new AgyUnavailable();
+              writeFileSync(target, bytes.subarray(0, read));
+              offset += read;
+            }
+          } finally { closeSync(target); }
+        }
       }
       immutable = false;
     }
-    const flags = sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI;
-    db = new Database(immutable ? `${pathToFileURL(name).href}?immutable=1` : name,
-      descriptor === null || snapshot !== undefined ? flags | sqliteConstants.SQLITE_OPEN_NOFOLLOW : flags);
-    const opened = statSync(dbPath, { bigint: true });
-    if (opened.dev !== before.dev || opened.ino !== before.ino || realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
-    db.exec("PRAGMA busy_timeout = 100");
-    const rows = db.query<{ idx: number }, []>(`SELECT idx FROM steps ORDER BY idx LIMIT ${MAX_ENTRIES + 1}`).all();
+    let rows: { idx: number }[];
+    if (reused !== undefined) rows = reused.map((idx) => ({ idx }));
+    else {
+      const flags = sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI;
+      db = new Database(immutable ? `${pathToFileURL(name).href}?immutable=1` : name,
+        descriptor === null || snapshot !== undefined ? flags | sqliteConstants.SQLITE_OPEN_NOFOLLOW : flags);
+      const opened = statSync(dbPath, { bigint: true });
+      if (opened.dev !== before.dev || opened.ino !== before.ino || realpathSync(dbPath) !== dbPath) throw new AgyUnavailable();
+      db.exec("PRAGMA busy_timeout = 100");
+      rows = db.query<{ idx: number }, []>(`SELECT idx FROM steps ORDER BY idx LIMIT ${MAX_ENTRIES + 1}`).all();
+    }
     for (const file of files) {
       const after = statSync(file.path, { bigint: true }), pinned = fstatSync(file.fd, { bigint: true });
       if (after.dev !== file.stat.dev || after.ino !== file.stat.ino || realpathSync(file.path) !== file.path

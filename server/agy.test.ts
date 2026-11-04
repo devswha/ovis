@@ -152,6 +152,11 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
           fs.copyFileSync(`${dbPath}.old`, dbPath);
         })).toThrow(AgyUnavailable);
         expect(writes).not.toHaveBeenCalled();
+        // ...and unchanged pinned files through the read, as a fresh copy does.
+        expect(agyCatalog(transcript).size).toBe(35);
+        writes.mockClear();
+        expect(() => agyCatalog(transcript, () => fs.truncateSync(dbPath, 0))).toThrow(AgyUnavailable);
+        expect(writes).not.toHaveBeenCalled();
       } finally { clock.mockRestore(); }
     } finally { writes.mockRestore(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
