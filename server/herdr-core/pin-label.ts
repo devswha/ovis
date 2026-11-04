@@ -152,7 +152,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // pending while Ovis's list differs from what was agreed (a newer change may have taken it back),
         // never for a write that landed
         const key = agreedKey(address);
-        const differs = agreed.has(key) && listed(address) !== agreed.get(key);
+        // a shell's row the list may have pruned tells nothing of Ovis's change
+        const differs = agreed.has(key) && agents.has(address) && listed(address) !== agreed.get(key);
         // saved again while an earlier save failed, so a restart still finds the mark
         if (!echo.heard && (differs !== pending.has(key) || unsaved)) {
           if (differs) pending.add(key);
@@ -252,6 +253,13 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     for (const address of [...refused]) heard(address, live.get(address) ?? false);
     // no browser has shared its pins yet: that is no unpin
     if (preferences.pins === undefined) return;
+    // a change in Ovis's list taken back before its label was written leaves nothing pending
+    let undone = false;
+    for (const address of live.keys()) {
+      const key = agreedKey(address);
+      if (agents.has(address) && pending.has(key) && listed(address) === agreed.get(key)) undone = pending.delete(key);
+    }
+    if (undone) saveAgreed();
     for (const address of live.keys()) writeLabel(address);
   });
 
