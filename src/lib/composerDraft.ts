@@ -178,6 +178,9 @@ export class ComposerDraftStore {
    * holds a draft already keeps its own.
    */
   move(from: string, to: string): void {
+    // as storage has them now: another tab may have sent the draft since this one read it (#2369)
+    this.refresh(from);
+    this.refresh(to);
     const text = this.read(from).text;
     if (text === "" || this.own.has(from) || this.inFlight(from) !== null || this.read(to).text !== "") return;
     if (this.isAgentOnly(from)) this.markAgentOnly(to);

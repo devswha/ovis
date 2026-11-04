@@ -70,12 +70,16 @@ afterEach(() => {
 });
 
 /** This tab's composer with `draft` in its box: the messages it sends, and its Send button. */
-async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void> }> {
+async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void>; disconnect: () => Promise<void> }> {
   const sent: string[] = [];
   composerDrafts.set(draftKey, draft);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (message) => { sent.push(message); return onSend(message); }, onAbort() {}, onUploadImage: async () => "" };
   await act(async () => { renderer = create(<Composer {...props} />); });
-  return { sent, press: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Send message" }).props.onClick(); }) };
+  return {
+    sent,
+    press: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Send message" }).props.onClick(); }),
+    disconnect: () => act(async () => { renderer!.update(<Composer {...props} connected={false} />); }),
+  };
 }
 
 it("does not send a draft another tab sent while it held the pane's send lock", async () => {
@@ -115,6 +119,19 @@ it("settles an acknowledged send only once the pane's send lock is free", async 
   await act(async () => { release(); await other; });
   expect(data.has(draftKey)).toBe(false);
   expect(composerDrafts.read(draftKey).sending).toBe(false);
+});
+
+it("does not send a claim that waited for the lock once the terminal disconnected", async () => {
+  const lockManager = locks();
+  setGlobals(lockManager);
+  const tab = await tabWith("deploy");
+  let release = (): void => {};
+  const other = lockManager.request(lockName, () => new Promise<void>((resolve) => { release = resolve; }));
+  await tab.press();
+  await tab.disconnect();
+  await act(async () => { release(); await other; });
+  expect(tab.sent).toEqual([]);
+  expect(data.get(draftKey)).toBe("deploy");
 });
 
 it("sends a draft no other tab sent, once (control)", async () => {

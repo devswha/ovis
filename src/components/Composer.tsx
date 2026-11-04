@@ -300,6 +300,8 @@ export function Composer({
   const fileRequest = useRef(0);
   const draftKey = composerDraftKey(paneStorageId(machineId, paneId));
   const { text, sending } = useSyncExternalStore(composerDrafts.subscribe, () => composerDrafts.read(draftKey));
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
   const setText = useCallback((value: string | ((previous: string) => string)) => composerDrafts.set(draftKey, value), [draftKey]);
   // comments on the agent's replies (#511) go first in the next message, unless it is a slash command or an answer
   const commentsKey = replyCommentsKey(paneStorageId(machineId, paneId));
@@ -863,6 +865,8 @@ export function Composer({
     // what goes is read again inside the pane's cross-tab lock: another tab may have sent this draft or
     // its comments since this one drew them (#2369)
     return underSendLock(draftKey, () => {
+      // a claim that waited for the lock goes only where and while it was pressed
+      if (!mounted.current || !connectedRef.current || draftKeyRef.current !== draftKey) return false;
       const waiting = new Set(replyComments.read(commentsKey).map((item) => item.id));
       if (!sentComments.every((item) => waiting.has(item.id)) || !composerDrafts.claim(draftKey, sent)) return false;
       sendId = composerDrafts.sendOf(draftKey);
