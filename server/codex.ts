@@ -1333,7 +1333,9 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
   // another conversation may have recorded the answer another way that Codex renders as this text, and its
   // turn may be unfinished or its finish cut from the read and still be the one on screen. Telling such
   // renderings apart is not attempted: a same-prompt screen is left to the guarded matches below. A prompt
-  // asked only in an earlier turn does not count: that conversation's screen shows its later turn.
+  // asked only before its latest turn does not count once that turn is read finished (its own prompt recorded
+  // last): that conversation's screen shows the later turn. While it may still be running, or its finish
+  // has no turn of its own, the screen may have been read before it began, and every prompt counts.
   // `unread`: a read that shows no prompt at all counts as asked too, as it may have cut the one asked
   const askedElsewhere = (unread: boolean) => owner !== null && candidates.some((candidate, index) => {
     if (candidate.path === owner.path) return false;
@@ -1350,8 +1352,9 @@ export function matchCodexTranscript(screen: string, candidates: { path: string;
       const found = answerAnchor(answer);
       return found === null || displays.some((display) => display.includes(found.anchor)) || completedAnswerMatches(answer, footed!.text);
     });
-    // its latest prompt only; one sent as several messages reads as its parts' run
-    return prompts.length > 0 && alnum(prompts.at(-1)!).endsWith(shownPrompt) || users.length > 0 && users.join("").endsWith(shownPrompt);
+    // a prompt sent as several messages reads as its parts' run
+    if (last !== null && prompts.at(-1) === last.asked) return users.length > 0 && users.join("").endsWith(shownPrompt);
+    return prompts.some((asked) => alnum(asked).endsWith(shownPrompt)) || users.some((_, at) => users.slice(0, at + 1).join("").endsWith(shownPrompt));
   });
   // the same text binds while no other candidate records the prompt shown; a rendering only while no other's read may have cut it either
   const footedOwner = owner !== null && ownerLast?.asked != null && collapsed(ownerLast.asked) === footed!.prompt && !askedElsewhere(false)

@@ -126,6 +126,16 @@ test("matches an exact reply while another conversation asked the prompt only be
   // asked again as its latest turn, finished or not, it still counts
   const again = { path: "other", text: [...later.text.split("\n"), event({ type: "item_completed", turn_id: "c", item: { type: "UserMessage", content: [{ text: prompt }] } })].join("\n") };
   expect(matchCodexTranscript(screen, [candidate("own"), again], new Set(), new Map(), false, owners)).toBeNull();
+  // a later turn not read finished may have begun after the screen was read, which may show the earlier one: a
+  // new prompt after the shown turn, or a finish with no turn of its own, keeps every prompt counting
+  const literal2 = `${text} Read report for details.`;
+  const reference = `${text} Read [report][ref] for details.\n\n[ref]: https://example.com/a-long-reference-target-not-on-screen`;
+  const begun = { path: "other", text: [...turn("a", prompt, reference), event({ type: "item_completed", turn_id: "b", item: { type: "UserMessage", content: [{ text: "Summarize the release notes." }] } })].join("\n") };
+  const idless = { path: "other", text: [event({ type: "user_message", message: prompt }), turn("a", prompt, reference)[1]!,
+    event({ type: "task_complete", last_agent_message: reference }), event({ type: "user_message", message: "Summarize the release notes." })].join("\n") };
+  for (const other of [begun, idless]) {
+    expect(matchCodexTranscript(shownAs(literal2), [candidate("own", literal2), other], new Set(), new Map(), false, owners)).toBeNull();
+  }
 });
 
 test("keeps changed, ambiguous, unfinished and unknown replies unbound", () => {
