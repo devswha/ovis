@@ -1004,7 +1004,8 @@ export class HerdrSocket {
    * `secret`: typed at a masked prompt. Neither is kept to be held when its connection ends unconfirmed */
   sendInput(paneId: string, text: string, stop = false, automatic = false, secret = false): boolean {
     if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
-    const id = !secret && !automatic && this.featuresKnown && this.features.has("input-receipt") ? this.nextInput++ : undefined;
+    // an id before the bridge said what it takes too: an older bridge ignores it, and the typing is fenced by a ping then
+    const id = !secret && !automatic && (!this.featuresKnown || this.features.has("input-receipt")) ? this.nextInput++ : undefined;
     try { this.rawSend({ type: "input", pane_id: paneId, text, ...(stop ? { stop: true } : {}), ...(automatic ? { automatic: true } : {}), ...(id !== undefined ? { id } : {}) }); } catch { return false; }
     if (!secret && !automatic) this.awaitReceipt(paneId, text, id);
     return true;
