@@ -40,7 +40,7 @@ describe("tab labels from the first message", () => {
     // a folder whose name holds " @" or " ~" is still the upload's path
     for (const folder of ["Company @ Work", "Company ~ Work"]) expect(shortTabLabel(`@/Users/me/${folder}/.ovis/paste-20261104-101500-0a1b2c3d.png Fix footer`)).toBe("Fix footer");
     // an OVIS_PASTE_DIR with spaces too, and the words before another mention stay
-    for (const upload of ["@/My Uploads/paste-20261104-101500-0a1b2c3d.png", "@C:\\My Uploads\\paste-20261104-101500-0a1b2c3d.png"]) expect(shortTabLabel(`${upload} Fix footer`)).toBe("Fix footer");
+    for (const upload of ["@/My Uploads/paste-20261104-101500-0a1b2c3d.png", "@C:\\My Uploads\\paste-20261104-101500-0a1b2c3d.png", "@/Users/me/John.Doe Files/paste-20261104-101500-0a1b2c3d.png", "@/tmp/v1.2 build/paste-20261104-101500-0a1b2c3d.png"]) expect(shortTabLabel(`${upload} Fix footer`)).toBe("Fix footer");
     expect(shortTabLabel("@/tmp/a.png check @other docs/.ovis/paste-20261104-101500-0a1b2c3d.png now")).toBe("check @other\u2026");
   });
 

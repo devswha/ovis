@@ -23,9 +23,9 @@ export function userGalleryImages(machineId: string, paneId: string, parts: read
   // <HHMMSS>-<8 hex>.<ext>`), so prose after another @mention never reads as a file; it stops at a
   // line break, the next mention or path (a folder's " @" followed by a space is part of it), as
   // lib/tabLabels.ts reads it, and is bounded so a long line stays quick to scan. Only an upload in its
-  // folder `.ovis` may run past a word ending in a file's extension (#2682). It is tried first, so a
+  // folder `.ovis` may run past a word ending in an image's extension (#2682). It is tried first, so a
   // spaced folder named like an image never ends the upload's path early.
-  const mentioned = [...new Set([...text.matchAll(/(?:^|\s)@((?:\/|[a-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/]))[^\r\n\t]){0,1024}?[\\/]\.ovis[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/])|\.[a-z0-9]{1,10}\s)[^\r\n\t]){0,1024}?[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$))|\S+\.(?:png|jpe?g|gif|webp)(?=\s|$))/gi)].map((match) => match[1] ?? ""))];
+  const mentioned = [...new Set([...text.matchAll(/(?:^|\s)@((?:\/|[a-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/]))[^\r\n\t]){0,1024}?[\\/]\.ovis[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/])|\.(?:png|jpe?g|gif|webp)\s)[^\r\n\t]){0,1024}?[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$))|\S+\.(?:png|jpe?g|gif|webp)(?=\s|$))/gi)].map((match) => match[1] ?? ""))];
   return [
     ...pasted.map((part, index): GalleryImage => ({
       src: machinePath(machineId, `pane/conversation/image?${new URLSearchParams({ pane_id: paneId, ref: part.ref }).toString()}`),

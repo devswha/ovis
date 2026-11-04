@@ -60,7 +60,9 @@ describe("mentioned chat images", () => {
       expect(images(`@/tmp/a.png ${words}paste-20261103-065352-8f69b25b.png now`).map((image) => image.name)).toEqual(["/tmp/a.png"]);
     }
     // an upload folder set by OVIS_PASTE_DIR may hold spaces too
-    expect(images("@/My Uploads/paste-20261103-065352-8f69b25b.png Fix footer").map((image) => image.name)).toEqual(["/My Uploads/paste-20261103-065352-8f69b25b.png"]);
+    for (const path of ["/My Uploads/paste-20261103-065352-8f69b25b.png", "/Users/me/John.Doe Files/paste-20261103-065352-8f69b25b.png", "C:\\v1.2 build\\paste-20261103-065352-8f69b25b.png"]) {
+      expect(images(`@${path} Fix footer`).map((image) => image.name)).toEqual([path]);
+    }
     // and a folder whose name holds " @" is still the upload's path
     expect(images("@/Users/me/Company @ Work/.ovis/paste-20261103-065352-8f69b25b.png Fix footer").map((image) => image.name)).toEqual(["/Users/me/Company @ Work/.ovis/paste-20261103-065352-8f69b25b.png"]);
   });
