@@ -251,8 +251,8 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
   });
 
-  for (const side of ["the Herdr app", "Ovis"] as const) {
-    it(`keeps an unpin made in ${side} while the other was away, when the terminal comes back a shell and runs an agent again`, async () => {
+  for (const when of ["while Ovis was stopped", "after Ovis came back"] as const) {
+    it(`keeps an unpin made in the Herdr app ${when}, of a terminal that came back a shell, once an agent runs there again`, async () => {
       const dir = stateDir();
       const terminals: Held[] = [{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }];
       const first = fakeCore(terminals);
@@ -261,18 +261,38 @@ describe("bridgePins", () => {
       await earlier.idle();
       earlier.stop();
       terminals[0]!.status = null;
+      if (when === "while Ovis was stopped") delete terminals[0]!.labels["herdr.pinned"];
       const preferences = new PreferenceStore(dir);
-      if (side === "Ovis") preferences.set({ settings: {}, pins: [] });
-      else delete terminals[0]!.labels["herdr.pinned"];
       const core = fakeCore(terminals);
       const pins = bridge(core, preferences, dir);
       await core.opened();
+      if (when === "after Ovis came back") core.tell({ type: "labels", terminal: "t1", data: { labels: {} } });
       core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
       await pins.idle();
       expect(preferences.get().pins).toEqual([]);
-      expect(terminals[0]!.labels["herdr.pinned"]).toBeUndefined();
+      expect(core.written).toEqual([]);
     });
   }
+
+  it("keeps the Herdr app's pin of a terminal whose agent quit while its events were cut off, once an agent runs there again", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const terminals: Held[] = [{ address: "t1", state: "live", labels: {} }, { address: "t2", state: "live", labels: {} }];
+    const core = fakeCore(terminals);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    preferences.set({ settings: {}, pins: ["local:t1"] });
+    await pins.idle();
+    // the stream drops while t1's agent quits; then the Agents list drops the shell's pin as t2 is pinned
+    terminals[0]!.status = null;
+    await core.drop();
+    preferences.set({ settings: {}, pins: ["local:t2"] });
+    await pins.idle();
+    core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual(["local:t2", "local:t1"]);
+    expect(core.written).toEqual([{ terminal: "t1", labels: { "herdr.pinned": "1" } }, { terminal: "t2", labels: { "herdr.pinned": "1" } }]);
+  });
 
   it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {
     const dir = stateDir();

@@ -142,7 +142,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     refused.delete(address);
     const base = agreed.get(agreedKey(address));
     const ovis = listed(address);
-    const wanted = base === undefined ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
+    // back from a shell, Ovis's list may have pruned the row: only a pin there tells Ovis's side
+    const wanted = base === undefined || (shells.has(address) && labelPinned === base) ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
     if (ovis !== wanted && !list(address, wanted)) {
       if (wanted) refused.add(address);
       return;
@@ -153,30 +154,25 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   const pinnedIn = (labels: unknown) => isRecord(labels) && typeof labels[PINNED_LABEL] === "string" && labels[PINNED_LABEL] !== "";
   /**
    * Whether a terminal runs an agent, as the Agents list draws it (an agent its status names). One
-   * that stops being one leaves the sync and what was agreed of it, so the list pruning its row
-   * unpins nothing, and an agent back in it meets the list anew. One first seen without an agent
-   * (a snapshot after a reconnect or a restart) leaves it too, once what each side changed while
-   * the other was away is settled: an unpin in the Herdr app leaves the list, and a change made in
-   * Ovis stays agreed against until an agent runs there.
+   * that is not one, however first seen (a snapshot after a restart or a reconnect included), leaves
+   * the sync but keeps what was agreed of it: once an agent runs there again, a label changed since
+   * still wins, while a pin missing from Ovis's list is no unpin, as the list prunes a shell's row.
    */
   const agents = new Set<string>();
+  /** terminals seen without an agent since their agreement, until an agent runs there again */
+  const shells = new Set<string>();
   const agentIs = (address: string, status: unknown) => {
     const agent = isRecord(status) && typeof status["app"] === "string" && status["app"] !== "";
     if (agent) {
       if (agents.has(address)) return;
       agents.add(address);
       if (live.has(address)) heard(address, live.get(address)!);
+      shells.delete(address);
       return;
     }
     agents.delete(address);
     refused.delete(address);
-    const base = agreed.get(agreedKey(address));
-    if (base !== undefined && live.has(address) && store.get().pins !== undefined) {
-      const labelPinned = live.get(address)!;
-      if (labelPinned === base && listed(address) !== base) return;
-      if (labelPinned !== base && !labelPinned) list(address, false);
-    }
-    if (agreed.delete(agreedKey(address))) saveAgreed();
+    shells.add(address);
   };
   const record = (value: unknown) => {
     if (!isRecord(value) || typeof value["address"] !== "string" || value["state"] !== "live") return;
@@ -189,6 +185,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     live.delete(address);
     echoes.delete(address);
     agents.delete(address);
+    shells.delete(address);
     refused.delete(address);
     clearTimeout(retries.get(address)?.timer);
     retries.delete(address);
