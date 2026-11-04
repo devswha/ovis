@@ -645,11 +645,16 @@ try {
     // A reopened chat's list has not measured all of its transcript yet (its footer, rows drawn taller
     // than estimated): its own scroll to the end aims short of the end the browser shows, and while
     // that scroll is on its way it holds the view there. Neither may leave a reader who follows the
-    // end short of it, or take them for one who scrolled away. A footer margin the list never measures
-    // makes its end lag by more than the layout allowance; a view a pixel shorter has the chat follow
-    // its end and the list scroll to its own.
+    // end short of it, or take them for one who scrolled away. A box drawn after the footer, which the
+    // list never measures, makes its end lag by more than the layout allowance; a view a pixel shorter
+    // has the chat follow its end and the list scroll to its own.
     const chatHeight = width === 390 ? 844 : 900;
-    await page.locator(".chat-virtual-footer").evaluate((footer) => { footer.style.marginBottom = "100px"; });
+    await page.locator(".chat-transcript-virtual").evaluate((content) => {
+      const unmeasured = document.createElement("div");
+      unmeasured.className = "qa-unmeasured";
+      unmeasured.style.height = "100px";
+      content.append(unmeasured);
+    });
     await page.evaluate((height) => window.chatQa.resize(height - 1), chatHeight);
     const lagging = await page.evaluate(() => new Promise<{ gaps: number[]; away: boolean }>((resolve) => {
       const node = document.querySelector<HTMLElement>(".chat-view")!;
@@ -664,7 +669,7 @@ try {
       requestAnimationFrame(frame);
     }));
     assert.ok(!lagging.away && lagging.gaps.at(-1)! <= 1, `a scroll to the end the list measured short still ends at the transcript's end, following: ${JSON.stringify(lagging)}`);
-    await page.locator(".chat-virtual-footer").evaluate((footer) => { footer.style.marginBottom = ""; });
+    await page.locator(".qa-unmeasured").evaluate((unmeasured) => unmeasured.remove());
     await page.evaluate((height) => window.chatQa.resize(height), chatHeight);
     await settleBottom(page);
     console.log(`PASS ${width} ${theme}: a reopened chat whose list measured its end short lands at the end, following`);
