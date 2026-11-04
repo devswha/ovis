@@ -1503,7 +1503,10 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
   const home = userHome();
-  const route = process.platform === "win32" ? null : await ompPaneRoute(paneId, known);
+  let route = process.platform === "win32" ? null : await ompPaneRoute(paneId, known);
+  // the caller's read named no omp (none in front, only the shell, or one gone since): an omp started after it may
+  // keep another store than the session herdr still reports, so the pane is asked again
+  if (route === null && known != null && process.platform !== "win32") route = await ompPaneRoute(paneId);
   // an omp whose store nothing proves, or two keeping different ones
   if (route === "unproved") throw new ConversationUnavailable("no_session_path");
   const store = route === null ? ompSessionStore(path, home) : path === null ? null : ompRouteStore(route, path);
