@@ -154,20 +154,21 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   /**
    * Whether a terminal runs an agent, as the Agents list draws it (an agent its status names). One
    * that stops being one leaves the sync and what was agreed of it, so the list pruning its row
-   * unpins nothing, and an agent back in it meets the list anew.
+   * unpins nothing, and an agent back in it meets the list anew. One first seen without an agent
+   * (a snapshot after a reconnect or a restart) leaves what was agreed of it too.
    */
   const agents = new Set<string>();
   const agentIs = (address: string, status: unknown) => {
     const agent = isRecord(status) && typeof status["app"] === "string" && status["app"] !== "";
-    if (agent === agents.has(address)) return;
     if (agent) {
+      if (agents.has(address)) return;
       agents.add(address);
       if (live.has(address)) heard(address, live.get(address)!);
-    } else {
-      agents.delete(address);
-      refused.delete(address);
-      if (agreed.delete(agreedKey(address))) saveAgreed();
+      return;
     }
+    agents.delete(address);
+    refused.delete(address);
+    if (agreed.delete(agreedKey(address))) saveAgreed();
   };
   const record = (value: unknown) => {
     if (!isRecord(value) || typeof value["address"] !== "string" || value["state"] !== "live") return;
