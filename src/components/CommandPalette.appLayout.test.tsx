@@ -12,7 +12,7 @@ import { CommandPalette } from "./CommandPalette.tsx";
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
 const APP_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core" });
-const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true } });
+const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: false, move: true } });
 const workspace = (id: string, tabs: number): WorkspaceInfo =>
   ({ workspace_id: id, label: id, active_tab_id: `${id}:t1`, number: 1, tab_count: tabs, pane_count: tabs, focused: false, agent_status: "idle", worktree: null });
 const pane = (id: string, workspaceId: string, tabId: string): PaneInfo =>
@@ -90,10 +90,10 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(APP_CORE, "p3", ">move tab")).toEqual([]);
   });
 
-  it("lists a core PC's rename, split and move rows where Ovis keeps its layout, but no zoom", async () => {
+  it("lists a core PC's rename and move rows where Ovis keeps its layout, but no split or zoom", async () => {
     const listed = await rows(OVIS_CORE, "p1", ">");
-    for (const row of LAYOUT_ROWS.filter((row) => row !== "Zoom pane")) expect(listed).toContain(row);
-    expect(listed).not.toContain("Zoom pane");
+    expect(listed).toContain("Rename tab");
+    for (const row of LAYOUT_ROWS.filter((row) => row !== "Rename tab")) expect(listed).not.toContain(row);
     expect(await rows(OVIS_CORE, "p3", ">move tab")).toEqual(["Move tab to w1"]);
   });
 });

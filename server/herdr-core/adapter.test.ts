@@ -167,7 +167,7 @@ describe("herdr-core adapter", () => {
 
   it("offers Ovis's own layout calls only on a core whose Herdr app document was never written", async () => {
     const { socket } = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }) });
-    expect((await ping(socket)).layout).toEqual({ rename: true, split: true, move: true });
+    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true });
   });
 
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
@@ -573,6 +573,12 @@ describe("herdr-core adapter, new and closed terminals", () => {
   it("refuses to move a helper to Other terminals, where its parent's tab would still show it", async () => {
     const { socket } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }), terminal("t2", { parent: "t1" }), terminal("t3")], NO_DOC);
     await expect(paneMoveToNewTab("t2", "hc-other", null, socket)).rejects.toMatchObject({ code: "unsupported" });
+  });
+
+  it("splits no pane, even where Ovis keeps the layout: its panes would size each other down", async () => {
+    const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } })], NO_DOC);
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(runs).toEqual([]);
   });
 
   it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {

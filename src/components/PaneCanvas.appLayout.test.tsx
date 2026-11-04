@@ -8,10 +8,9 @@ import { SettingsProvider } from "../lib/settings.ts";
 import type { RowMenuItem } from "./RowMenu.tsx";
 import { PaneCanvas } from "./PaneCanvas.tsx";
 
-/** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
+/** herdr's TUI server, and a herdr-core PC, whose panes it never names, splits, swaps or zooms (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
 const APP_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core" });
-const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true } });
 
 const pane = (id: string, label?: string): HerdrPane =>
   ({ pane_id: id, workspace_id: "w1", tab_id: "t1", terminal_id: `${id}:term`, revision: 1, focused: id === "p1", agent_status: "idle", label }) as HerdrPane;
@@ -78,13 +77,6 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     const itemsOf = await draw(APP_CORE);
     expect(itemsOf(snapshot.panes[0] as HerdrPane)).toEqual(["close"]);
     expect(itemsOf(snapshot.panes[1] as HerdrPane)).toEqual(["close"]);
-    expect(dividers()).toBe(0);
-  });
-
-  it("offers a core PC's panes a split where Ovis keeps its layout, and no name, swap, zoom or divider", async () => {
-    const itemsOf = await draw(OVIS_CORE);
-    expect(itemsOf(snapshot.panes[0] as HerdrPane)).toEqual(["split-right", "split-down", "close"]);
-    expect(itemsOf(snapshot.panes[1] as HerdrPane)).toEqual(["split-right", "split-down", "close"]);
     expect(dividers()).toBe(0);
   });
 });

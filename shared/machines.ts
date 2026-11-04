@@ -96,8 +96,9 @@ export interface HerdrIdentity {
 /**
  * What a herdr-core PC lets Ovis do with its workspaces, tabs and splits. On a core no Herdr app
  * arranges (its `herdr-app` document was never written, as on the desktop app's own core) Ovis keeps
- * them in terminal labels: it renames workspaces and tabs, splits a pane and moves a one-pane tab to
- * another workspace. Where the Herdr app arranges them, they are the app's, and none is offered.
+ * them in terminal labels: it renames workspaces and tabs and moves a one-pane tab to another
+ * workspace. It splits no pane yet (`split` stays false). Where the Herdr app arranges them, they are
+ * the app's, and none is offered.
  */
 export interface HerdrCoreLayout {
   rename: boolean;

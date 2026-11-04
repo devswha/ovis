@@ -10,8 +10,8 @@ import { useShortcuts } from "./shortcuts.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 const selection = { current: { machineId: "local", paneId: "p1", generation: 0 } satisfies SelectionMark };
-/** herdr's TUI server, a herdr-core PC whose layout Ovis keeps, and one the Herdr app lays out (lib/machineContext.tsx) */
-const OFFERS = { tui: { split: true, arrange: true }, ovis: { split: true, arrange: false }, app: { split: false, arrange: false } };
+/** herdr's TUI server, and a herdr-core PC, which splits and zooms no pane (lib/machineContext.tsx) */
+const OFFERS = { tui: { split: true, arrange: true }, core: { split: false, arrange: false } };
 const layout = (pc: keyof typeof OFFERS, selectedPaneId: string | null = "p1") =>
   layoutActions({ selectedPaneId, offer: OFFERS[pc], selection, load: () => undefined, selectPane: () => {}, layoutRefused: () => {} });
 const chord = (key: string) => Object.assign(new Event("keydown", { cancelable: true }), { key, code: `Key${key.toUpperCase()}`, ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, repeat: false });
@@ -23,15 +23,9 @@ describe("layoutActions", () => {
     expect(typeof offered.zoomPane).toBe("function");
   });
 
-  it("gives a herdr-core PC whose layout Ovis keeps the split, but no zoom", () => {
-    const offered = layout("ovis");
-    expect(typeof offered.splitPane).toBe("function");
-    expect(offered.zoomPane).toBeNull();
-  });
-
   it("gives neither without a pane, nor on a PC the Herdr app lays out", () => {
     expect(layout("tui", null)).toEqual({ splitPane: null, zoomPane: null });
-    expect(layout("app")).toEqual({ splitPane: null, zoomPane: null });
+    expect(layout("core")).toEqual({ splitPane: null, zoomPane: null });
   });
 });
 
@@ -90,7 +84,7 @@ describe("the split shortcut", () => {
   });
 
   it("does nothing on a PC the Herdr app lays out", async () => {
-    await press("app");
+    await press("core");
     expect(requested).toEqual([]);
   });
 });
