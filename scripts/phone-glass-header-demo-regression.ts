@@ -132,6 +132,20 @@ try {
         await closeDialog.waitFor();
         await page.keyboard.press("Escape");
         await closeDialog.waitFor({ state: "detached" });
+        // a landscape phone (wider than the sheet's breakpoint) draws the workspaces as a popover at the
+        // header's More, all on screen, and Escape gives the focus back to that button
+        await page.setViewportSize({ width: 667, height: 375 });
+        await page.locator(".tab-strip").waitFor({ state: "detached" });
+        await openMore(page);
+        await sheet.getByText("Move to workspace\u2026", { exact: true }).click();
+        const destinations = page.getByRole("menu", { name: "Move Duo tab to" });
+        await destinations.waitFor();
+        const box = await destinations.boundingBox();
+        assert.ok(box && box.y >= 0 && box.y + box.height <= 375, `the workspaces menu is on screen (${JSON.stringify(box)})`);
+        await page.keyboard.press("Escape");
+        await destinations.waitFor({ state: "detached" });
+        assert.ok(await page.locator(".header-more-button").evaluate((node) => node === document.activeElement), "Escape gives the focus back to the header's More");
+        await page.setViewportSize({ width: 466, height: 678 });
 
         await page.setViewportSize({ width: 390, height: 844 });
         await page.locator(".tab-strip").waitFor();

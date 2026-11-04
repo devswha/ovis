@@ -231,10 +231,15 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             if (alive.current && latest.current.tabId === tabId) setError({ message: t("New terminal failed: {reason}", { reason: userErrorMessage(reason).message }), detail: null });
           });
         } }] : []),
-        // herdr moves a tab to another workspace only as its one pane; the workspaces are picked in a
-        // second menu, as the row's menu lists them in place (TabStrip)
-        ...(onMoveToWorkspace && !appLayout && tab && own.length === 1 && snapshot?.workspaces.some((entry) => entry.workspace_id !== target.workspace_id)
-          ? [{ id: "move-workspace", label: t("Move to workspace…"), icon: FolderInput, run: () => { if (canvas.current) setMovingTab({ tab, anchor: canvas.current }); } }] : []),
+        // herdr moves a tab to another workspace only as its one pane, a DAG viewer the roster hides
+        // counted too; the workspaces are picked in a second menu at the header's More, which this
+        // menu opened from, as the row's menu lists them in place (TabStrip)
+        ...(onMoveToWorkspace && !appLayout && tab && (snapshot?.panes.filter((item) => item.tab_id === target.tab_id).length ?? 0) === 1
+          && snapshot?.workspaces.some((entry) => entry.workspace_id !== target.workspace_id)
+          ? [{ id: "move-workspace", label: t("Move to workspace…"), icon: FolderInput, run: () => {
+            const anchor = document.querySelector<HTMLElement>(".header-more-button") ?? canvas.current;
+            if (anchor) setMovingTab({ tab, anchor });
+          } }] : []),
         ...(onNewTab ? [{ id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, run: onNewTab }] : []),
         // the row's inline name field is gone with it: the tab is named in a dialog, as a pane is
         ...(appLayout || !tab ? [] : [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, run: () => setRenamingTab(tab) }]),
@@ -450,7 +455,12 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     {closingTab && <ConfirmDialog title={t("Close tab {name}?", { name: tabLabel(closingTab, t, 1) })}
       body={t("It is the last tab of {workspace}: the workspace closes with it, and the agents and shells in it stop.", { workspace: snapshot?.workspaces.find((entry) => entry.workspace_id === closingTab.workspace_id)?.label ?? "" })}
       confirmLabel={t("Close tab")} onClose={() => setClosingTab(null)}
-      onConfirm={async () => { await api.closeTab(closingTab.tab_id); setClosingTab(null); onChanged(); focusWorkspaceListToggle(); }} />}
+      onConfirm={async () => {
+        await api.closeTab(closingTab.tab_id); setClosingTab(null); onChanged();
+        // the workspace went with its last tab: its focus goes where a closed row's does, unless the user has moved it meanwhile
+        const active = document.activeElement;
+        if (!active || active === document.body || canvas.current?.contains(active) || active.closest(".confirm-dialog")) focusWorkspaceListToggle();
+      }} />}
     {closing && <ConfirmDialog title={t("Close pane {name}?", { name: displayPaneTitle(closing) })}
       body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
       confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await api.closePane(closing.pane_id); setClosing(null); onChanged(); }} />}
