@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { PreferenceStore } from "../../server/preferences.ts";
+/** a document saved at least once, which names its state folder */
+const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 import { type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
 import { DEFAULT_SETTINGS, SettingsProvider, sanitizeSettings, useSettings, type Settings } from "./settings.ts";
 import { currentSidebarPins, setSidebarPins } from "./sidebarPins.ts";
@@ -212,7 +214,7 @@ describe("preferences sync real send path", () => {
     store.set({ settings: { palette: "catppuccin" } });
     store.set({ settings: { theme } });
     store = new PreferenceStore(dir);
-    expect(store.get()).toEqual({ revision: 2, settings: { palette: "catppuccin", theme }, muted_panes: [] });
+    expect(store.get()).toEqual(named({ revision: 2, settings: { palette: "catppuccin", theme }, muted_panes: [] }));
     revisions.length = 0;
     store.subscribe((doc) => {
       revisions.push(doc.revision);
@@ -529,6 +531,30 @@ describe("preferences sync real send path", () => {
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
     store.set({ settings: {}, pins: ["local:t2"] });
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  // the new server's saves from elsewhere reach the revision this browser kept (2), or pass it
+  for (const saves of [2, 3]) it(`a page opened again on a server started over whose saves reached revision ${saves} keeps its own pins too`, async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    expect(store.get().revision).toBe(2);
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder, and another device saves there meanwhile
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    for (let index = 0; index < saves; index += 1) store.set({ settings: {}, pins: ["local:t2"] });
+    expect(store.get().revision).toBe(saves);
     store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
     const client = await open(DEFAULT_SETTINGS, true);
     await windows();
