@@ -1,6 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 
 import type { SlashCommand } from "../../shared/protocol.ts";
+import { observePaneSessions } from "./api.ts";
 import { cachedPaneCommands, invalidatePaneCommands, onPaneCommandsInvalidated, paneCommandsNow } from "./paneCommandCache.ts";
 
 describe("cachedPaneCommands", () => {
@@ -111,6 +112,38 @@ describe("cachedPaneCommands", () => {
       expect(paneCommandsNow("w5:p1", "local", "claude")).toBeNull();
     } finally {
       setSystemTime();
+    }
+  });
+
+  test("the same pane's agent in another session or folder asks for its own list, not the one on its way (#2593)", async () => {
+    const roster = (session: string, cwd: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "w6:p1", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: session }, cwd }] } }]);
+    const resolvers: ((commands: SlashCommand[]) => void)[] = [];
+    const fetchCommands = (): Promise<SlashCommand[]> => new Promise((resolve) => { resolvers.push(resolve); });
+    try {
+      roster("a", "/repo/a");
+      const inA = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      // claude started again in project B while project A's read is on its way
+      roster("b", "/repo/b");
+      const inB = cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      expect(resolvers.length).toBe(2);
+      const rowsB: SlashCommand[] = [{ name: "skill-of-b", description: "", source: "skill" }];
+      const rowsA: SlashCommand[] = [{ name: "skill-of-a", description: "", source: "skill" }];
+      resolvers[1]!(rowsB);
+      expect(await inB).toBe(rowsB);
+      // A's answer comes last, but the pane is on B: it is not what the pane keeps
+      resolvers[0]!(rowsA);
+      expect(await inA).toBe(rowsA);
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBe(rowsB);
+      expect(await cachedPaneCommands("w6:p1", "local", "claude", fetchCommands)).toBe(rowsB);
+      expect(resolvers.length).toBe(2);
+      // the same session read from another folder is another list too
+      roster("b", "/repo/c");
+      expect(paneCommandsNow("w6:p1", "local", "claude")).toBeNull();
+      void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      expect(resolvers.length).toBe(3);
+      resolvers[2]!([]);
+    } finally {
+      observePaneSessions([{ id: "local", snapshot: { panes: [] } }]);
     }
   });
 });
