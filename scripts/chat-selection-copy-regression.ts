@@ -43,7 +43,9 @@ try {
       : { source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
     if (path.endsWith("/pane/read")) {
       snapshotReads++;
-      return Response.json({ read: { text: growing ? `${snapshot}progress ${snapshotReads}\n` : snapshot, truncated: false } });
+      // each read adds 30 lines, so a pane at its end has to follow a taller snapshot
+      const progress = Array.from({ length: snapshotReads * 30 }, (_, line) => `progress ${Math.floor(line / 30) + 1}.${line % 30 + 1}\n`).join("");
+      return Response.json({ read: { text: growing ? snapshot + progress : snapshot, truncated: false } });
     }
     if (path === "/") return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><p id="outside">Before the chat</p><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, path.slice(1))));
@@ -237,23 +239,35 @@ try {
         growing = true;
         try {
           const pre = terminal.locator("pre");
-          const selected = await pre.evaluate((node) => {
+          const view = page.locator(".chat-view");
+          // at the end, a growing read is followed in the same commit: nothing new stays below the fold
+          await view.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+          const before = (await pre.textContent())!;
+          await page.evaluate(() => window.chatQa.refresh());
+          await page.waitForFunction((previous) => {
+            const node = document.querySelector<HTMLElement>(".chat-view")!;
+            const text = document.querySelector(".chat-terminal-snapshot pre")!.textContent!;
+            return text !== previous && text.length > previous.length && node.scrollHeight - node.scrollTop - node.clientHeight <= 2;
+          }, before);
+          // a selection in the snapshot pins the text on screen; the newer read waits until it lets go
+          const selected = await pre.evaluate((node) => new Promise<string>((resolve) => {
             const text = node.firstChild!;
             const at = text.textContent!.indexOf("spaces preserved");
             const range = document.createRange();
             range.setStart(text, at);
             range.setEnd(text, at + "spaces preserved".length);
+            document.addEventListener("selectionchange", () => resolve(getSelection()!.toString()), { once: true });
             getSelection()!.removeAllRanges();
             getSelection()!.addRange(range);
-            window.chatQa.refresh();
-            return getSelection()!.toString();
-          });
+          }));
+          const pinned = (await pre.textContent())!;
+          await page.evaluate(() => window.chatQa.refresh());
           await page.locator(".chat-terminal-snapshot[data-newer-read]").waitFor();
           assert.equal(await page.evaluate(() => getSelection()!.toString()), selected, "a newer read keeps the selection");
-          assert.equal(await pre.textContent(), snapshot, "the newer read waits while the snapshot is selected");
+          assert.equal(await pre.textContent(), pinned, "the newer read waits while the snapshot is selected");
           await page.evaluate(() => getSelection()!.removeAllRanges());
           await page.locator(".chat-terminal-snapshot:not([data-newer-read])").waitFor();
-          assert.match((await pre.textContent())!, /progress \d+\n$/, "the newer read shows once the selection lets go");
+          assert.ok((await pre.textContent())!.length > pinned.length, "the newer read shows once the selection lets go");
         } finally { growing = false; }
         await context.close();
         console.log(`PASS ${width}: terminal snapshot wraps, copies verbatim and keeps composer clearance`);

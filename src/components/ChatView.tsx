@@ -1192,20 +1192,22 @@ function TerminalSnapshot({ text }: { text: string }) {
   const t = useT();
   const [copyFailed, setCopyFailed] = useState(false);
   const section = useRef<HTMLElement>(null);
-  // a new read replaces the whole text and would drop a selection in it: the read shown waits until the selection lets go
-  const [shown, setShown] = useState(text);
+  // a new read replaces the whole text and would drop a selection in it: while one touches the snapshot, the
+  // text on screen is pinned and the newer read waits; otherwise each read renders at once, so the chat's
+  // follow of its end measures the new height in the same commit
+  const [pinned, setPinned] = useState<string | null>(null);
   useEffect(() => {
-    if (text === shown) return;
-    const held = () => {
+    const update = () => {
       const selection = document.getSelection();
-      return selection !== null && !selection.isCollapsed && section.current !== null && selection.containsNode(section.current, true);
+      const node = section.current;
+      const held = selection !== null && !selection.isCollapsed && node !== null && selection.containsNode(node, true);
+      setPinned((current) => held ? current ?? node?.querySelector("pre")?.textContent ?? null : null);
     };
-    if (!held()) { setShown(text); return; }
-    const release = () => { if (!held()) setShown(text); };
-    document.addEventListener("selectionchange", release);
-    return () => document.removeEventListener("selectionchange", release);
-  }, [text, shown]);
-  return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={text !== shown ? "" : undefined}>
+    document.addEventListener("selectionchange", update);
+    return () => document.removeEventListener("selectionchange", update);
+  }, []);
+  const shown = pinned ?? text;
+  return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={shown !== text ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
       <CopyButton className="chat-meta-btn" text={shown} label={t("Copy as plain text")} onResult={(ok) => setCopyFailed(!ok)}><span>{t("Copy")}</span></CopyButton>
     </div>
