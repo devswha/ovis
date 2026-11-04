@@ -148,10 +148,16 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // a write hc refused sends no event back
         const index = queued.indexOf(echo);
         if (index >= 0) queued.splice(index, 1);
-        // Ovis's change stays Ovis's, even once the terminal is a shell whose row the list prunes;
-        // not a write that landed, nor one a newer change in Ovis's list took back
+        // Ovis's change stays Ovis's, even once the terminal is a shell whose row the list prunes:
+        // pending while Ovis's list differs from what was agreed (a newer change may have taken it back),
+        // never for a write that landed
         const key = agreedKey(address);
-        if (!echo.heard && listed(address) === pinned && agreed.has(key) && !pending.has(key)) { pending.add(key); saveAgreed(); }
+        const differs = agreed.has(key) && listed(address) !== agreed.get(key);
+        if (!echo.heard && differs !== pending.has(key)) {
+          if (differs) pending.add(key);
+          else pending.delete(key);
+          saveAgreed();
+        }
         retry(address);
       }
     });

@@ -441,6 +441,42 @@ describe("bridgePins", () => {
     expect(preferences.get().pins).toEqual(["local:t2", "local:t1"]);
   });
 
+  it("keeps a pin made again in Ovis while the retry of its failed unpin waited, once the retry fails too", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, ["local:t1"]);
+    const core = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }, { address: "t2", state: "live", labels: {} }]);
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const hc = core.hc as unknown as { call: (method: string, params: unknown) => Promise<unknown> };
+    const call = hc.call;
+    const mode = { now: "pass" as "pass" | "fail" | "hang" };
+    hc.call = async (method, params) => {
+      if (mode.now === "pass") return call(method, params);
+      if (mode.now === "hang") { reached.resolve(); await gate.promise; }
+      else mode.now = "hang";
+      throw new Error("hc is not answering");
+    };
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    // the unpin fails; its retry hangs while Ovis pins t1 again and t1's agent quits, then fails too
+    mode.now = "fail";
+    preferences.set({ settings: {}, pins: [] });
+    await reached.promise;
+    preferences.set({ settings: {}, pins: ["local:t1"] });
+    core.tell({ type: "status", terminal: "t1", data: { status: null } });
+    gate.resolve();
+    await pins.idle();
+    mode.now = "pass";
+    // the Agents list drops the shell's pin as t2 is pinned
+    preferences.set({ settings: {}, pins: ["local:t2"] });
+    await pins.idle();
+    core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual(["local:t2", "local:t1"]);
+    expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
+  });
+
   it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {
     const dir = stateDir();
     const preferences = store(dir, []);
