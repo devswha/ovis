@@ -270,8 +270,41 @@ try {
       assert.ok(late.length > 0, "the late-rested answer is drawn");
       assert.deepEqual(late.filter((frame) => frame.footer.length > 0).map((frame) => frame.footer), [],
         "no Working head stands under an answer while a status lag outlasts the wait");
-      assert.deepEqual(errors, []);
       console.log("PASS an answer drawn 1.5 s before the pane rests has no Working head under it");
+
+      // An approval answered: the turn's answer is drawn while herdr still says blocked, then working
+      // for longer than the head's wait, then the pane rests. Waiting on the user is no rest under the
+      // answer, so no head of a next turn shows under it.
+      const shelved: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Shelve the atlas." }] };
+      const shelvedBefore = [...atlasTurns, dusted, { role: "assistant" as const, ts: "2026-11-04T09:01:00.000Z", parts: [{ kind: "text" as const, text: "Shelf c is dusted.", phase: "final_answer" as const }] }];
+      await addTurns(page, panes.flaky, [...shelvedBefore, shelved]);
+      await status(page, panes.flaky, "working");
+      await flaky.getByText("Shelve the atlas.", { exact: true }).waitFor();
+      await page.evaluate((id) => (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id, "blocked"), panes.flaky);
+      await painted(page);
+      await record(page, panes.flaky);
+      await addTurns(page, panes.flaky, [...shelvedBefore, shelved,
+        { role: "assistant", ts: "2026-11-04T09:02:00.000Z", parts: [{ kind: "text", text: "The atlas is shelved.", phase: "final_answer" }] },
+      ]);
+      await flaky.getByText("The atlas is shelved.", { exact: true }).waitFor();
+      await painted(page);
+      await status(page, panes.flaky, "working");
+      const restedAfterBlock = page.evaluate((id) => new Promise<void>((done) => {
+        // fixed wait: a working status after the approval, longer than the head's 800 ms wait
+        setTimeout(() => {
+          (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id, "idle");
+          done();
+        }, 1500);
+      }), panes.flaky);
+      await restedAfterBlock;
+      await flaky.locator(".chat-activity").waitFor({ state: "detached" });
+      await painted(page);
+      const approved = (await stop(page)).filter((frame) => frame.lastRow.includes("The atlas is shelved."));
+      assert.ok(approved.length > 0, "the answer after the approval is drawn");
+      assert.deepEqual(approved.filter((frame) => frame.footer.length > 0).map((frame) => frame.footer), [],
+        "no Working head stands under an answer drawn while the pane was blocked");
+      assert.deepEqual(errors, []);
+      console.log("PASS an answer drawn while blocked has no Working head under it when the status catches up");
       await context.close();
     } finally { await browser.close(); }
   } finally { server.stop(); }

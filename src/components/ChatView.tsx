@@ -2256,10 +2256,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const answerOnlyLive = lastSplit !== null && !workBlockLive;
   // the last turn ended on its answer, named by its row (two turns can share a start time)
   const answeredRow = lastShownTurn?.role === "assistant" && endedOnAnswer(lastShownTurn) ? slots.current.rows[shownTurns.length - 1]?.key ?? null : null;
-  // the answered row the pane was last seen at rest under: working again after that, a turn began
+  // the answered row the pane was last seen at rest under: working again after that, a turn began.
+  // Blocked (waiting on the user) or an unknown status is no rest: the answer may still be trailed.
   const restedUnder = useRef<string | null>(null);
   useLayoutEffect(() => {
-    if (workStatus !== "working" && answeredRow !== null) restedUnder.current = answeredRow;
+    if ((workStatus === "idle" || workStatus === "done") && answeredRow !== null) restedUnder.current = answeredRow;
   }, [workStatus, answeredRow]);
   // working over a turn that ended on its answer: the status trailing that answer, or a turn the agent
   // began by itself with no row yet. A send from here has its turn on the way, and its head shows at once.
