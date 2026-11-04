@@ -3,12 +3,12 @@
  * temporary HOME with its own hc session, user data folder and PATH, so the PC's own herdr, hc
  * core and Ovis state are never touched.
  *
- *   bun scripts/e2e.ts dist/Ovis-<version>-<arch>.AppImage     Linux (starts its own Xvfb when there is no DISPLAY)
+ *   bun scripts/e2e.ts dist/Ovis-<version>-<arch>.AppImage     Linux (on an Xvfb display of its own)
  *   bun scripts/e2e.ts dist/mac-arm64/Ovis.app                  macOS (needs a logged-in desktop session)
  *   bun scripts/e2e.ts --update                                 Linux: packages two versions from stage/ and out/
  *                                                               and updates the older one from a local feed
  *
- * Options: --out <dir> (screenshots and results.json; default a temporary folder), --keep (leave
+ * Options: --out <dir> (screenshots and results.json; default a new temporary folder, kept), --keep (leave
  * the temporary HOME behind). Exit code 0 when every check passed.
  *
  * The app's main process is driven through its Node inspector (`--inspect-brk`): before the app's
@@ -16,7 +16,7 @@
  * tray's items and see what would open in the browser. Everything else is the app as built.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -39,8 +39,11 @@ if (updateMode && process.platform !== "linux") throw new Error("--update runs o
 
 // macOS's own temporary folder is too deep for hc's socket path (at most 103 bytes there)
 const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "ovis-e2e-"));
-const out = resolve(option("--out") ?? join(root, "out"));
+// outside the root, which the run removes
+const out = resolve(option("--out") ?? mkdtempSync(join(tmpdir(), "ovis-e2e-out-")));
 mkdirSync(out, { recursive: true });
+/** in the environment of every process the run starts, and inherited by theirs: what cleanup ends, and the inspector proves */
+const runId = randomUUID();
 const checks: Check[] = [];
 const owned: ChildProcess[] = [];
 const session = `e2e-${process.pid}`;
@@ -62,13 +65,20 @@ function log(message: string): void {
   console.log(`      ${message}`);
 }
 
-/** waits for `probe` to give a value other than null/false, at most `timeoutMs` */
+/** `promise`, or a rejection once `ms` have gone by */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)}s`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/** waits for `probe` to give a value other than null/false, at most `timeoutMs` (a probe that hangs counts against it) */
 async function until<T>(what: string, probe: () => Promise<T | null | false> | T | null | false, timeoutMs = 60_000, everyMs = 250): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let last: unknown = null;
   while (Date.now() < deadline) {
     try {
-      const value = await probe();
+      const value = await within(Promise.resolve(probe()), Math.max(deadline - Date.now(), 1), what);
       if (value !== null && value !== false) return value;
     } catch (error) {
       last = error;
@@ -120,19 +130,20 @@ for (const program of ["herdr", "hc", "herdr-core"]) {
   check(`no ${program} on the app's PATH`, Bun.which(program, { PATH }) === null, Bun.which(program, { PATH }) ?? "");
 }
 
+/** Linux: a display of the run's own, never the caller's (its X cookie stays in the caller's HOME) */
 async function startDisplay(): Promise<string | undefined> {
   if (process.platform !== "linux") return undefined;
-  if (process.env["DISPLAY"]) return process.env["DISPLAY"];
   const xvfb = spawn("Xvfb", ["-displayfd", "1", "-screen", "0", "1440x900x24", "-nolisten", "tcp"], { stdio: ["ignore", "pipe", "ignore"] });
   owned.push(xvfb);
   const number = await new Promise<string>((done, reject) => {
     xvfb.stdout!.once("data", (chunk: Buffer) => done(chunk.toString().trim()));
-    xvfb.once("exit", () => reject(new Error("Xvfb did not start (install xvfb, or run with DISPLAY set)")));
+    xvfb.once("error", () => reject(new Error("Xvfb did not start: install xvfb")));
+    xvfb.once("exit", () => reject(new Error("Xvfb did not start")));
   });
   return `:${number}`;
 }
 
-const display = await startDisplay();
+let display: string | undefined;
 /** an AppImage runs through FUSE 2; without libfuse.so.2 it is unpacked and run instead */
 const noFuse2 = process.platform === "linux" && !(await Bun.$`ldconfig -p`.nothrow().quiet().text()).includes("libfuse.so.2");
 
@@ -148,6 +159,7 @@ function appEnv(extra: Record<string, string> = {}): Record<string, string> {
     XDG_DATA_HOME: join(home, ".local", "share"),
     XDG_CACHE_HOME: join(home, ".cache"),
     HC_SESSION: session,
+    OVIS_E2E_RUN: runId,
     OVIS_UPDATES: "0",
     ...(display ? { DISPLAY: display } : {}),
     ...(noFuse2 ? { APPIMAGE_EXTRACT_AND_RUN: "1" } : {}),
@@ -224,7 +236,7 @@ const HOOK = `(() => {
   electron.shell.openExternal = async (url) => { e2e.opened.push(url); };
   e2e.window = () => electron.BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.getParentWindow() === null) ?? null;
   e2e.tray = () => (e2e.trayMenu ? e2e.trayMenu.items.map((item) => item.type === "separator" ? "-" : item.label + (item.enabled ? "" : " (off)")) : null);
-  e2e.press = (label) => { const item = e2e.trayMenu?.items.find((entry) => entry.label === label); if (!item) throw new Error("no tray item " + label); item.click(); return true; };
+  e2e.press = (label) => { const item = e2e.trayMenu?.items.find((entry) => entry.label === label); if (!item) throw new Error("no tray item " + label); if (!item.enabled) throw new Error("tray item " + label + " is off"); item.click(); return true; };
   return true;
 })()`;
 
@@ -239,10 +251,15 @@ function command(app: string): string {
   return app.endsWith(".app") ? join(app, "Contents", "MacOS", basename(app, ".app")) : app;
 }
 
-async function launch(app: string, userData: string, options: { env?: Record<string, string>; args?: string[]; label: string }): Promise<App> {
+/** Electron's own user data folder in the run's HOME, as an app started without --user-data-dir uses */
+const defaultUserData = () => process.platform === "darwin" ? join(home, "Library", "Application Support", "Ovis") : join(home, ".config", "Ovis");
+
+/** `userData` null: the app's default folder, as a user (or an update's relaunch) starts it */
+async function launch(app: string, userData: string | null, options: { env?: Record<string, string>; args?: string[]; label: string }): Promise<App> {
   const port = await freePort();
   const output = Bun.file(join(out, `${options.label}.log`)).writer();
-  const proc = spawn(command(app), [`--inspect-brk=127.0.0.1:${port}`, `--user-data-dir=${userData}`, "--lang=en-US", ...(options.args ?? [])], { env: appEnv(options.env), stdio: ["ignore", "pipe", "pipe"], cwd: join(root, "work") });
+  const dataArgs = userData === null ? [] : [`--user-data-dir=${userData}`];
+  const proc = spawn(command(app), [`--inspect-brk=127.0.0.1:${port}`, ...dataArgs, "--lang=en-US", ...(options.args ?? [])], { env: appEnv(options.env), stdio: ["ignore", "pipe", "pipe"], cwd: join(root, "work") });
   owned.push(proc);
   proc.stdout!.on("data", (chunk: Buffer) => output.write(chunk));
   proc.stderr!.on("data", (chunk: Buffer) => output.write(chunk));
@@ -252,13 +269,16 @@ async function launch(app: string, userData: string, options: { env?: Record<str
   await inspector.send("Debugger.enable");
   await inspector.send("Runtime.enable");
   await inspector.send("Runtime.runIfWaitingForDebugger");
-  const frame = (await paused).callFrames[0];
+  const frame = (await within(paused, 60_000, "the app's first pause")).callFrames[0];
+  // another program may have taken the port between the probe and the app: only this run's app is driven
+  const whose = await inspector.send("Debugger.evaluateOnCallFrame", { callFrameId: frame.callFrameId, expression: "process.env.OVIS_E2E_RUN ?? null", returnByValue: true });
+  if (whose.result?.value !== runId) throw new Error(`The inspector on port ${port} is not this run's app`);
   const hooked = await inspector.send("Debugger.evaluateOnCallFrame", { callFrameId: frame.callFrameId, expression: HOOK, returnByValue: true });
   if (hooked.exceptionDetails) throw new Error(`The hook failed: ${hooked.exceptionDetails.exception?.description ?? hooked.exceptionDetails.text}`);
   await inspector.send("Debugger.resume");
   await inspector.send("Debugger.disable");
   const mainPid = await inspector.eval<number>("process.pid");
-  return { proc, inspector, mainPid, userData };
+  return { proc, inspector, mainPid, userData: userData ?? defaultUserData() };
 }
 
 async function screenshot(app: App, name: string): Promise<void> {
@@ -296,6 +316,11 @@ function pageText(app: App): Promise<string> {
 /** presses the first button in the page whose text starts with `label`; false when there is none */
 function pressButton(app: App, label: string): Promise<boolean> {
   return app.inspector.eval<boolean>(`e2e.window().webContents.executeJavaScript(${JSON.stringify(`(() => { const button = [...document.querySelectorAll("button")].find((b) => b.innerText.trim().startsWith(${JSON.stringify(label)})); button?.click(); return !!button; })()`)})`);
+}
+
+/** the page's sidebar shows both workspaces this run made */
+function listsBoth(app: App): Promise<boolean> {
+  return until("the roster drawn", async () => { const text = await pageText(app); return (text.includes("e2e terminal") && text.includes("e2e agent")) || null; }, 30_000).catch(() => false);
 }
 
 async function api<T>(origin: string, path: string, body?: unknown): Promise<T> {
@@ -384,7 +409,7 @@ async function lifecycle(app: string): Promise<void> {
   log(`roster agent for ${agent.pane_id}: ${(await panes(origin)).find((pane) => pane.pane_id === agent.pane_id)?.agent ?? "none"}`);
   await first.inspector.eval("e2e.window()?.webContents.reload()");
   await ovisLoaded(first);
-  await until("the roster drawn", async () => (await pageText(first)).includes("e2e agent") || null, 20_000).catch(() => null);
+  check("the window lists the terminal and the agent", await listsBoth(first));
   await screenshot(first, "3-terminal-and-agent");
 
   // 3. quit: the server stops, the terminals keep running
@@ -402,7 +427,7 @@ async function lifecycle(app: string): Promise<void> {
   check("relaunch finds the terminal and the agent", found.includes(terminal.pane_id) && found.includes(agent.pane_id), found.join(", "));
   const kept = JSON.stringify(await api(origin2, `/api/pane/read?pane_id=${encodeURIComponent(terminal.pane_id)}&source=recent&lines=50`));
   check("the terminal kept its output", kept.includes(marker));
-  await until("the roster drawn", async () => (await pageText(second)).includes("e2e terminal") || null, 20_000).catch(() => null);
+  check("after relaunch the window lists the terminal and the agent", await listsBoth(second));
   await screenshot(second, "4-after-relaunch");
 
   // 5. the tray
@@ -493,8 +518,8 @@ async function update(): Promise<void> {
     mkdirSync(join(root, "Applications"));
     copyFileSync(join(builds, "old", oldImage), installed);
     chmodSync(installed, 0o755);
-    const userData = join(root, "update-user-data");
-    const app = await launch(installed, userData, {
+    // the app's default folder, as a user runs it: the relaunch after the update must find the same one
+    const app = await launch(installed, null, {
       label: "5-update",
       env: { OVIS_UPDATES: "1", OVIS_UPDATE_URL: `https://127.0.0.1:${feed.port}/` },
       args: ["--ignore-certificate-errors"],
@@ -513,48 +538,75 @@ async function update(): Promise<void> {
     app.inspector.close();
     check("Restart to Update quits the old build", await exited(app.proc, 60_000));
     check("Restart to Update stops the old server", !alive(server));
-    const replaced = await until("the AppImage to be replaced", () => existsSync(join(root, "Applications", newImage)) || (existsSync(installed) && sha(installed) === sha(join(feedDir, newImage))), 30_000).catch(() => false);
-    check("the AppImage on disk is the new version", replaced === true, readdirSync(join(root, "Applications")).join(", "));
-    // the app comes back up by itself after an update, as a user starts it (no --user-data-dir): in HOME's config folder
-    const relaunchedData = join(home, ".config", "Ovis", "desktop.json");
+    const want = sha(join(feedDir, newImage));
+    const replaced = await until("the new AppImage in place", () => readdirSync(join(root, "Applications")).find((name) => name.endsWith(".AppImage") && sha(join(root, "Applications", name)) === want) ?? null, 30_000).catch(() => null);
+    check("the AppImage on disk is the new version", replaced !== null && readdirSync(join(root, "Applications")).length === 1, readdirSync(join(root, "Applications")).join(", "));
+    // the app comes back up by itself, from the new file, with the same data (its saved port) and a new server
+    const port = saved(app).port;
     const relaunched = await until("the updated app to serve Ovis", async () => {
-      if (!existsSync(relaunchedData)) return null;
-      const port = (JSON.parse(readFileSync(relaunchedData, "utf8")) as Saved).port;
-      return port && (await fetch(`http://127.0.0.1:${port}/api/session`)).ok ? port : null;
+      const now = saved(app).server;
+      if (!now || now.pid === server || !(await fetch(`http://127.0.0.1:${port}/api/session`)).ok) return null;
+      const list = await Bun.$`ps -eo args=`.quiet().text();
+      return replaced && list.includes(join(root, "Applications", replaced)) ? now.pid : null;
     }, 120_000).catch(() => null);
-    check("Restart to Update starts the updated app again", relaunched !== null, relaunched ? `serving on port ${relaunched}` : "nothing started");
+    check("Restart to Update starts the updated app again, on its data", relaunched !== null, relaunched ? `server ${relaunched} on port ${port}` : "nothing started");
   } finally {
     feed.stop(true);
   }
 }
 
 
+/** the processes this run started, and theirs: every one whose environment carries the run's id */
+async function runProcesses(): Promise<number[]> {
+  const mark = `OVIS_E2E_RUN=${runId}`;
+  if (process.platform === "linux") {
+    return readdirSync("/proc").filter((name) => /^\d+$/.test(name)).filter((pid) => {
+      try { return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0").includes(mark); } catch { return false; }
+    }).map(Number);
+  }
+  // macOS: ps -E adds a process's environment to its line (for the caller's own processes)
+  const list = await Bun.$`ps -E -ww -A -o pid=,command=`.quiet().text();
+  return list.split("\n").filter((line) => line.split(/\s+/).includes(mark)).map((line) => Number(line.trim().split(/\s+/)[0]));
+}
+
+let cleaned = false;
 async function cleanUp(): Promise<void> {
-  // the app's own core (and any core an updated app started), then every process this run started
-  for (const userData of [join(root, "user-data"), join(root, "update-user-data"), join(home, ".config", "Ovis")]) {
-    if (existsSync(join(userData, "bin", "herdr-core"))) await hc(userData, "server", "stop").catch(() => {});
+  if (cleaned) return;
+  cleaned = true;
+  // the app's own core (and the one an updated app started), then every process this run started
+  for (const userData of [join(root, "user-data"), defaultUserData()]) {
+    if (existsSync(join(userData, "bin", "herdr-core"))) await within(hc(userData, "server", "stop"), 30_000, "hc server stop").catch(() => {});
   }
-  const list = await Bun.$`ps -eo pid=,args=`.quiet().text();
-  for (const line of list.split("\n")) {
-    const [pid, ...rest] = line.trim().split(/\s+/);
-    if (pid && rest.join(" ").includes(root) && Number(pid) !== process.pid) {
-      try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ }
+  // a server or app still up may start the core again while the others go: swept until none is left
+  const sweep = async () => {
+    const pids = (await runProcesses()).filter((pid) => pid !== process.pid);
+    for (const pid of pids) {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
     }
-  }
+    return pids.length === 0;
+  };
+  const deadline = Date.now() + 20_000;
+  while (!(await sweep()) && Date.now() < deadline) await Bun.sleep(200);
   for (const child of owned) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   if (!keep) rmSync(root, { recursive: true, force: true });
 }
 
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void cleanUp().finally(() => process.exit(130)));
+
 let crashed: unknown = null;
 try {
+  display = await startDisplay();
   if (updateMode) await update();
   else await lifecycle(resolve(appArg!));
 } catch (error) {
   crashed = error;
   check("the run finished", false, error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
-  writeFileSync(join(out, "results.json"), JSON.stringify({ platform: `${process.platform}-${process.arch}`, noFuse2, checks }, null, 2));
-  await cleanUp();
+  try {
+    writeFileSync(join(out, "results.json"), JSON.stringify({ platform: `${process.platform}-${process.arch}`, noFuse2, checks }, null, 2));
+  } finally {
+    await cleanUp();
+  }
 }
 const failed = checks.filter((entry) => !entry.ok && !entry.known);
 const known = checks.filter((entry) => !entry.ok && entry.known).length;
