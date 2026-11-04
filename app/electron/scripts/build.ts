@@ -1,9 +1,9 @@
 /**
- * Builds Ovis for the desktop on the machine it is for (Linux or macOS, x64 or arm64):
+ * Builds Ovis for the desktop on the machine it is for (Linux or macOS, x64 or arm64; Windows x64):
  *
  *   bun scripts/build.ts stage    pinned herdr-core and Bun, checked, plus the Ovis server, into stage/
  *   bun scripts/build.ts bundle   the main process and preload into out/
- *   bun scripts/build.ts          both, then the installers into dist/ (AppImage; dmg and zip)
+ *   bun scripts/build.ts          both, then the installers into dist/ (AppImage; dmg and zip; NSIS setup exe)
  *   bun scripts/build.ts package  the bundle and the installers from the stage/ already there
  *
  * OVIS_UPDATE_FEED=https://… builds the app to update itself from that generic feed.
@@ -15,6 +15,8 @@ import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sh
 const here = resolve(import.meta.dir, "..");
 const repo = resolve(here, "..", "..");
 const target = hostTarget();
+const windows = target === "win32-x64";
+const exe = windows ? ".exe" : "";
 const cache = join(here, ".cache", target);
 const stage = join(here, "stage");
 const step = process.argv[2] ?? "dist";
@@ -37,14 +39,21 @@ async function cached(name: string, pin: Pinned): Promise<string> {
 /** the checked archives, unpacked afresh into extracted/ on every build: nothing unpacked earlier is trusted */
 async function fetchRuntimes(): Promise<string> {
   mkdirSync(cache, { recursive: true });
-  const hc = await cached("hc.tar.gz", HC[target]);
+  const hc = await cached(windows ? "hc.zip" : "hc.tar.gz", HC[target]);
   const bun = await cached("bun.zip", BUN[target]);
   const license = await cached("bun-LICENSE.md", BUN_LICENSE);
   const out = join(cache, "extracted");
   rmSync(out, { recursive: true, force: true });
   mkdirSync(join(out, "hc"), { recursive: true });
-  await sh(["tar", "-xzf", hc, "-C", join(out, "hc"), "herdr-core", "LICENSE", "THIRD-PARTY-NOTICES"], out);
-  await sh(["unzip", "-q", bun, "-d", out], out);
+  if (windows) {
+    // Windows' own tar opens zips; Git Bash's GNU tar, often first on the PATH there, cannot
+    const tar = join(process.env["SystemRoot"] || "C:\\Windows", "System32", "tar.exe");
+    await sh([tar, "-xf", hc, "-C", join(out, "hc")], out);
+    await sh([tar, "-xf", bun, "-C", out], out);
+  } else {
+    await sh(["tar", "-xzf", hc, "-C", join(out, "hc"), "herdr-core", "LICENSE", "THIRD-PARTY-NOTICES"], out);
+    await sh(["unzip", "-q", bun, "-d", out], out);
+  }
   cpSync(license, join(out, "bun-LICENSE.md"));
   return out;
 }
@@ -58,13 +67,16 @@ async function stageAll(): Promise<void> {
   const runtimes = await fetchRuntimes();
   rmSync(stage, { recursive: true, force: true });
   for (const dir of ["bin", "licenses/herdr-core", "licenses/bun", "server/scripts"]) mkdirSync(join(stage, dir), { recursive: true });
-  copyExecutable(join(runtimes, "hc", "herdr-core"), join(stage, "bin", "herdr-core"));
-  copyExecutable(join(runtimes, BUN[target].folder, "bun"), join(stage, "bin", "bun"));
-  for (const name of ["LICENSE", "THIRD-PARTY-NOTICES"]) cpSync(join(runtimes, "hc", name), join(stage, "licenses", "herdr-core", name));
+  copyExecutable(join(runtimes, "hc", `herdr-core${exe}`), join(stage, "bin", `herdr-core${exe}`));
+  // hc on Windows runs its terminals on the ConPTY beside it (conpty\conpty.dll, conpty\x64\OpenConsole.exe)
+  if (windows) cpSync(join(runtimes, "hc", "conpty"), join(stage, "bin", "conpty"), { recursive: true });
+  copyExecutable(join(runtimes, BUN[target].folder, `bun${exe}`), join(stage, "bin", `bun${exe}`));
+  // THIRD-PARTY-NOTICES is a folder in the Windows zip, with ConPTY's license and notice in it
+  for (const name of ["LICENSE", "THIRD-PARTY-NOTICES"]) cpSync(join(runtimes, "hc", name), join(stage, "licenses", "herdr-core", name), { recursive: true });
   cpSync(join(runtimes, "bun-LICENSE.md"), join(stage, "licenses", "bun", "LICENSE.md"));
-  const hc = (await sh([join(stage, "bin", "herdr-core"), "--version"], stage)).trim();
+  const hc = (await sh([join(stage, "bin", `herdr-core${exe}`), "--version"], stage)).trim();
   if (hc !== `hc ${HC_VERSION}`) throw new Error(`The staged herdr-core says "${hc}", not hc ${HC_VERSION}`);
-  const bun = (await sh([join(stage, "bin", "bun"), "--version"], stage)).trim();
+  const bun = (await sh([join(stage, "bin", `bun${exe}`), "--version"], stage)).trim();
   if (bun !== BUN_VERSION) throw new Error(`The staged Bun says ${bun}, not ${BUN_VERSION}`);
 
   // the server as the installer and the remote bundles run it: its sources, the built client and its production packages
@@ -75,7 +87,7 @@ async function stageAll(): Promise<void> {
   }
   for (const file of ["package.json", "bun.lock"]) cpSync(join(repo, file), join(server, file));
   for (const script of ["install-gjc-integration.ts", "install-pi-integration.ts"]) cpSync(join(repo, "scripts", script), join(server, "scripts", script));
-  await sh([join(stage, "bin", "bun"), "install", "--production", "--frozen-lockfile", "--ignore-scripts"], server, { ...process.env, BUN_INSTALL_CACHE_DIR: join(here, ".cache", "bun-install") });
+  await sh([join(stage, "bin", `bun${exe}`), "install", "--production", "--frozen-lockfile", "--ignore-scripts"], server, { ...process.env, BUN_INSTALL_CACHE_DIR: join(here, ".cache", "bun-install") });
   // package-manager links: nothing runs them, and an installer need not carry symlinks
   rmSync(join(server, "node_modules", ".bin"), { recursive: true, force: true });
   // the release's Rust PTY host (checked against the release manifest), which a sign-in the server
@@ -123,7 +135,7 @@ async function bundle(): Promise<void> {
 async function dist(): Promise<void> {
   const version = (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version;
   const [os, arch] = target.split("-") as [string, string];
-  const args = [join(here, "node_modules", ".bin", "electron-builder"), os === "darwin" ? "--mac" : "--linux", `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`];
+  const args = [join(here, "node_modules", ".bin", `electron-builder${windows ? ".exe" : ""}`), os === "darwin" ? "--mac" : windows ? "--win" : "--linux", `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`];
   const feed = process.env["OVIS_UPDATE_FEED"]?.trim();
   if (feed) {
     if (new URL(feed).protocol !== "https:") throw new Error("OVIS_UPDATE_FEED must be an https address");
