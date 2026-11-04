@@ -187,6 +187,11 @@ describe("bridgePins", () => {
     preferences.set({ settings: { theme: "dark" } });
     await pins.idle();
     expect(core.written).toEqual([]);
+    // once the list has room, the pin joins it
+    preferences.set({ settings: {}, pins: full.slice(1) });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([...full.slice(1), "local:t1"]);
+    expect(core.written).toEqual([]);
   });
 
   it("leaves a shell's pin to the Herdr app, so the Agents list pruning it unpins nothing, and syncs it once an agent runs there", async () => {
@@ -203,6 +208,21 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
     core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
     expect(preferences.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  it("stops syncing a terminal told again without an agent, as a remote PC coming back tells it", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, []);
+    const core = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }, { address: "t2", state: "live", labels: {} }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    expect(preferences.get().pins).toEqual(["local:t1"]);
+    // back from a remote PC, t1 is a shell now; the Agents list then drops its pin when t2 is pinned
+    core.tell({ type: "created", terminal: "t1", data: { address: "t1", state: "live", status: null, labels: { "herdr.pinned": "1" } } });
+    preferences.set({ settings: {}, pins: ["local:t2"] });
+    await pins.idle();
+    expect(core.written).toEqual([{ terminal: "t2", labels: { "herdr.pinned": "1" } }]);
   });
 
   it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {

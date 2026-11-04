@@ -157,7 +157,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   const record = (value: unknown) => {
     if (!isRecord(value) || typeof value["address"] !== "string" || value["state"] !== "live") return;
     live.set(value["address"], pinnedIn(value["labels"]));
-    if (isRecord(value["status"]) && typeof value["status"]["app"] === "string" && value["status"]["app"] !== "") agents.add(value["address"]);
+    // a record told again (a remote PC back) may no longer run an agent
+    agentIs(value["address"], value["status"]);
     heard(value["address"], pinnedIn(value["labels"]));
   };
   const gone = (address: string) => {
@@ -172,6 +173,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   const unsubscribe = store.subscribe((preferences) => {
     // no browser has shared its pins yet: that is no unpin
     if (preferences.pins === undefined) return;
+    // a pin a full list left out gets another look once the list changes
+    for (const address of [...refused]) heard(address, live.get(address) ?? false);
     for (const address of live.keys()) writeLabel(address);
   });
 
