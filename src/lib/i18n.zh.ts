@@ -28,6 +28,8 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "移除",
+  "Remove {name}": "移除 {name}",
   "Save": "保存",
   "Goal": "目标",
   "Waiting for your answer": "等待你的回答",
@@ -282,6 +284,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "{n} 个后台任务",
   "{n} background tasks": "{n} 个后台任务",
   "Try again": "重试",
+  "The relay did not start: {message}": "中继未能启动：{message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
   "Rename tab": "重命名标签页",
@@ -335,6 +339,7 @@ const BASE: Record<string, string> = {
   "Weekly": "每周",
   "Open terminal": "打开终端",
   "Sign in to {agent}": "登录 {agent}",
+  "differs": "不同",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
