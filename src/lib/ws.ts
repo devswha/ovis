@@ -144,8 +144,13 @@ export class HerdrSocket {
   private readonly unconfirmed = new Map<string, { text: string; fence: number }[]>();
   /** the ping that fences typing, while its pong is on its way: typing sent meanwhile waits for the next one */
   private inputFence: number | null = null;
-  /** per pane, the typing the last connection ended with unconfirmed, until the pane's terminal takes it */
-  private lostInput = new Map<string, string[]>();
+  /**
+   * per pane, the typing connections ended with unconfirmed, until the pane's terminal takes it, with the herdr
+   * that pane belonged to (`lifetime`, null when unproven): pane IDs are given out again by a replaced herdr
+   */
+  private readonly lostInput = new Map<string, { lifetime: string | undefined | null; typed: string[] }>();
+  /** the herdr this connection proved by a trusted features frame or its snapshot (`herdr_lifetime`); null until then */
+  private lifetime: string | undefined | null = null;
   /** Panes whose mounted, visible chat asks for transcript invalidations. The server drops interest
    * with the attachment, so each attach of a pane listed here (a reconnect's, or a tab back in use
    * after letting go of it) asks again; only the chat taking its interest back removes it. */
@@ -329,6 +334,7 @@ export class HerdrSocket {
     this.inputReady.clear();
     this.outputSeen.clear();
     this.featuresKnown = false;
+    this.lifetime = null;
     this.terminalHistory = false;
     this.machineEventsOffered = null;
     this.featuresSeen = new Promise((resolve) => { this.markFeatures = resolve; });
@@ -414,6 +420,9 @@ export class HerdrSocket {
         const first = !this.featuresKnown;
         this.features = new Set(message.features ?? []);
         this.featuresKnown = true;
+        // typing lost on another herdr, or on one never proven, is not this herdr's pane's, whatever its ID
+        this.lifetime = message.type === "snapshot" ? message.snapshot.herdr_lifetime : message.herdr_lifetime;
+        for (const [paneId, lost] of this.lostInput) if (lost.lifetime !== this.lifetime) this.lostInput.delete(paneId);
         this.pingKnown = this.features.has("ping");
         // a probe sent before these features (running or paused), on ping support remembered from an
         // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
@@ -540,7 +549,11 @@ export class HerdrSocket {
     this.clearLiveness();
     // typing no pong confirmed may never have reached the server: the panes' terminals hold it for review
     // added to what an earlier end left that no terminal took yet (one unmounted since), older typing first
-    for (const [paneId, typed] of this.unconfirmed) this.lostInput.set(paneId, [...(this.lostInput.get(paneId) ?? []), ...typed.map((entry) => entry.text)]);
+    for (const [paneId, typed] of this.unconfirmed) {
+      const earlier = this.lostInput.get(paneId);
+      const kept = earlier !== undefined && earlier.lifetime === this.lifetime ? earlier.typed : [];
+      this.lostInput.set(paneId, { lifetime: this.lifetime, typed: [...kept, ...typed.map((entry) => entry.text)] });
+    }
     this.unconfirmed.clear();
     this.inputFence = null;
     for (const handler of this.disconnectHandlers) handler();
@@ -1024,9 +1037,11 @@ export class HerdrSocket {
 
   /** The typing for this pane that the last connection ended with before the server confirmed it, in the order sent; given once. */
   takeUnconfirmedInput(paneId: string): string[] {
-    const typed = this.lostInput.get(paneId) ?? [];
+    // a new connection that has not proved its herdr yet may be another herdr's: it waits for that proof
+    if (this.socket !== null && this.lifetime === null) return [];
+    const lost = this.lostInput.get(paneId);
     this.lostInput.delete(paneId);
-    return typed;
+    return lost?.typed ?? [];
   }
 
   /**

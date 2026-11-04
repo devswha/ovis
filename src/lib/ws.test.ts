@@ -1567,6 +1567,38 @@ it("keeps a pane's unconfirmed typing across a second drop until its terminal ta
   }
 });
 
+it("never offers typing lost on one herdr to a pane of another that reuses its ID", () => {
+  const proven = (socket: FakeSocket, lifetime: string) => socket.receive({ type: "snapshot", snapshot: { workspaces: [], panes: [], agents: [], layouts: [], herdr_lifetime: lifetime }, features: ["input-ready", "ping"] });
+  const lostOn = (lifetime: string) => {
+    const client = new HerdrSocket("ws://test/ws");
+    client.attach("w1:p1", 80, 24);
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    proven(socket, lifetime);
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(client.sendInput("w1:p1", "rm -rf build")).toBe(true);
+    // no terminal of the pane is mounted to take it, and the connection comes back
+    socket.disconnect();
+    client.wake();
+    const again = FakeSocket.last;
+    again.open();
+    // a new connection that has not said which herdr it reads keeps the typing back
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+    return { client, again };
+  };
+  const replaced = lostOn("herdr-a");
+  try {
+    proven(replaced.again, "herdr-b");
+    expect(replaced.client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  } finally { replaced.client.close(); }
+  const same = lostOn("herdr-a");
+  try {
+    proven(same.again, "herdr-a");
+    expect(same.client.takeUnconfirmedInput("w1:p1")).toEqual(["rm -rf build"]);
+  } finally { same.client.close(); }
+});
+
 it("holds nothing the server confirmed, a probe's pong included, nor anything typed to an older bridge", () => {
   jest.useFakeTimers();
   const live = liveClient(["submit", "ping"]);
