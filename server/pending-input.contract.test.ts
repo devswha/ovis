@@ -13,6 +13,9 @@ import { OmoStatus } from "./omo-status.ts";
 import * as claudeStore from "./claude-store.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
 import * as piModule from "./pi.ts";
+import { MachineManager } from "./machines.ts";
+import { DeviceStore } from "./devices.ts";
+import { DEVICE_COOKIE } from "./auth.ts";
 
 type PendingUpdate = Extract<ServerMessage, { type: "pending-messages" }>;
 
@@ -89,8 +92,8 @@ const codexSteering = (entry = "send this now") => `• Working (2s • esc to i
 class Socket {
   readonly seen: any[] = [];
   private readonly ws: WebSocket;
-  constructor(port: number) {
-    this.ws = new WebSocket(`ws://localhost:${port}/ws`);
+  constructor(port: number, path = "/ws", cookie?: string) {
+    this.ws = new WebSocket(`ws://localhost:${port}${path}`, (cookie ? { headers: { cookie } } : []) as unknown as string[]);
     this.ws.addEventListener("message", (event) => this.seen.push(JSON.parse(String((event as MessageEvent).data))));
   }
   async wait(predicate: (frame: any) => boolean, from = 0): Promise<any> {
@@ -217,6 +220,64 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
 }
 
 describe("resumable follow-up receipts (#2421)", () => {
+  it.each(["sent", "discarded"] as const)("recovers a relayed Codex %s receipt without typing again or sharing it with another device", async (outcome) => {
+    const f = await setup("remote-codex-resume", "codex", "› Message\n", { bridgeToken: "fixture-bridge-token", machines: false });
+    const endpoint = MachineManager.prototype.endpoint;
+    const remoteId = "receipt-test-remote";
+    const remote = spyOn(MachineManager.prototype, "endpoint").mockImplementation(function (this: MachineManager, id: string) {
+      return id === remoteId ? { url: `http://127.0.0.1:${f.port}`, token: "fixture-bridge-token" } : endpoint.call(this, id);
+    });
+    const stateDir = join(root, `remote-receipt-central-${outcome}`);
+    const devices = new DeviceStore(stateDir);
+    const pair = (role: "drive" | "watch") => {
+      const paired = devices.pair(devices.startPairing().code, "Receipt test device", role)!;
+      devices.match(paired.token);
+      return `${DEVICE_COOKIE}=${paired.token}`;
+    };
+    const owner = pair("drive"), other = pair("drive"), watcher = pair("watch");
+    const central = createServer({ port: 0, hostname: "127.0.0.1", token: "fixture-server-token", tailscaleOwner: null, stateDir });
+    const sockets: Socket[] = [];
+    const connect = async (resumeId: string, cookie = owner) => {
+      const socket = new Socket(central.port, `/ws?machine_id=${remoteId}`, cookie); sockets.push(socket);
+      await socket.attach(f.pane, true, resumeId);
+      return socket;
+    };
+    try {
+      await f.socket.disconnect();
+      const resumeId = crypto.randomUUID(), browser = await connect(resumeId);
+      browser.send({ type: "submit", id: 983, pane_id: f.pane, text: "remote follow-up", payload: "unused\r", delivery: "queue" });
+      const row = (await browser.result(983)).pending;
+      expect(row?.id).toBeString();
+      if (outcome === "discarded") {
+        browser.send({ type: "pending-action", id: 984, pane_id: f.pane, pending_id: row.id, action: "discard" });
+        expect((await browser.action(984)).ok).toBe(true);
+      } else {
+        await f.state("idle", browser);
+        await f.waitBytes(`${paste(row.text)}\r`);
+      }
+      const expected = outcome === "discarded" ? "discarded" : "sent";
+      await f.removed(row.id, expected, browser);
+      const bytes = f.bytes(), writes = herdrWrites.slice();
+      await browser.disconnect();
+      // A guessed browser UUID cannot recover another authenticated device's receipts.
+      for (const [id, cookie] of [[resumeId, other], [resumeId, watcher], [crypto.randomUUID(), owner]] as const) {
+        const stranger = await connect(id, cookie);
+        stranger.send({ type: "ping", id: 985 });
+        await stranger.wait((frame) => frame.type === "pong" && frame.id === 985);
+        expect(stranger.seen.some((frame) => frame.type === "pending-messages" && frame.removed?.some((item: { id: string }) => item.id === row.id))).toBe(false);
+        await stranger.disconnect();
+      }
+      const resumed = await connect(resumeId);
+      const replay = await f.removed(row.id, expected, resumed);
+      expect(replay.removed).toContainEqual({ id: row.id, outcome: expected, resumed: true });
+      expect(f.bytes()).toBe(bytes);
+      expect(herdrWrites).toEqual(writes);
+    } finally {
+      for (const socket of sockets) socket.close();
+      central.stop(); remote.mockRestore();
+    }
+  }, 25_000);
+
   it.each(["sent", "discarded"] as const)("replays a Codex follow-up's exact %s receipt to its returning browser without typing again", async (outcome) => {
     const f = await setup(`codex-resume-${outcome}`, "codex");
     const token = crypto.randomUUID(), from = f.socket.seen.length;
