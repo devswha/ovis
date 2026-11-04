@@ -265,11 +265,15 @@ describe("phoneBoxOpensFirst and phoneBoxStays", () => {
   });
 
   it("keeps a box that came open by itself only while the relay may lead; a tapped one always", () => {
-    expect(phoneBoxStays("first-run", "wait")).toBe(true);
-    expect(phoneBoxStays("first-run", "relay")).toBe(true);
+    expect(phoneBoxStays("first-run", "wait", false)).toBe(true);
+    expect(phoneBoxStays("first-run", "relay", false)).toBe(true);
     // never sent to Settings → Phone without a tap
-    expect(phoneBoxStays("first-run", "other")).toBe(false);
-    expect(phoneBoxStays("tap", "other")).toBe(true);
+    expect(phoneBoxStays("first-run", "other", false)).toBe(false);
+    expect(phoneBoxStays("tap", "other", false)).toBe(true);
+  });
+
+  it("keeps a box the relay led in, when the relay is blocked after Turn on", () => {
+    expect(phoneBoxStays("first-run", "other", true)).toBe(true);
   });
 });
 

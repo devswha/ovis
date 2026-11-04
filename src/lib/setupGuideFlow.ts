@@ -111,10 +111,12 @@ export function phoneBoxOpensFirst(state: GuideState, onThisPc: boolean): boolea
 
 /**
  * Whether the box stays open: one that came open by itself leads with the relay only, so where the
- * relay cannot lead it closes again rather than sending the page to Settings → Phone untapped.
+ * relay cannot lead it closes again rather than sending the page to Settings → Phone untapped. Once
+ * the relay led in it (`led`), the box is the user's, who may have tapped Turn on: a relay blocked
+ * since shows the other ways there, and never closes it.
  */
-export function phoneBoxStays(opening: PhoneBoxOpening, way: "wait" | "relay" | "other"): boolean {
-  return opening === "tap" || way !== "other";
+export function phoneBoxStays(opening: PhoneBoxOpening, way: "wait" | "relay" | "other", led: boolean): boolean {
+  return opening === "tap" || led || way !== "other";
 }
 
 /**
