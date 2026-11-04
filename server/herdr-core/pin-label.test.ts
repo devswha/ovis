@@ -244,6 +244,23 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([{ terminal: "t1", labels: { "herdr.pinned": "1" } }, { terminal: "t1", labels: { "herdr.pinned": "" } }]);
   });
 
+  it("writes no label from an old agreement while no browser has shared its pins", async () => {
+    const dir = stateDir();
+    // agreed pinned by an earlier run, then preferences.json was lost: no list is shared now
+    const first = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }]);
+    const earlier = bridge(first, store(dir, []), dir);
+    await first.opened();
+    await earlier.idle();
+    earlier.stop();
+    rmSync(join(dir, "preferences.json"), { force: true });
+    const preferences = new PreferenceStore(dir);
+    const core = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    expect(core.written).toEqual([]);
+  });
+
   it("unpins nothing while no browser has shared its pins", async () => {
     const dir = stateDir();
     const preferences = store(dir);

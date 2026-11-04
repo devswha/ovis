@@ -810,7 +810,8 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
   unpinned in the app is pinned or unpinned in Ovis, through herdr-core's `herdr.pinned`
   terminal label; a pin made in the app joins the end of the pinned list. When the two first
   meet, a pin on either side is kept; after that, a pin or unpin made on one side while Ovis was
-  stopped or herdr-core away is kept too. Pinned workspaces stay Ovis's own.
+  stopped or herdr-core away is kept too. Pinned workspaces stay Ovis's own. A pin made in the app
+  joins Ovis only while its list has room (500 pins); until then it stays the app's alone.
 - **Terminal:** the live view streams over the server's own connection to herdr-core, input and
   the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
   it or resized it: the app's window, or your phone once you type or open it there.

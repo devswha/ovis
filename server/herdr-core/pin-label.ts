@@ -98,7 +98,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   };
   const writeLabel = (address: string) => {
     const run = (writes.get(address) ?? Promise.resolve()).then(async () => {
-      if (stopped || !live.has(address) || refused.has(address) || !agents.has(address)) return;
+      // no browser has shared its pins yet: not being listed is no unpin
+      if (stopped || !live.has(address) || refused.has(address) || !agents.has(address) || store.get().pins === undefined) return;
       const pinned = listed(address);
       if (live.get(address) === pinned) { setAgreed(address, pinned); return; }
       try {
