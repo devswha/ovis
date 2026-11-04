@@ -175,14 +175,12 @@ describe("completion replay across a moved subscription key", () => {
 describe("a pane moved to another workspace outside this server (#1503)", () => {
   it("tells clients both IDs before the structure change, and a new-ID attach is not held by the old-ID one", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "ovis-test-moved-ids-"));
-    const source = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-source" });
-    // a second pane keeps the source workspace open after the move
-    await herdrRpc("pane.split", { target_pane_id: source.root_pane.pane_id, direction: "right", cwd: stateDir, focus: false });
-    const target = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-target" });
-    const app = createServer({ port: 0, stateDir });
+    let source: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
+    let target: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
+    let app: ReturnType<typeof createServer> | undefined;
     const sockets: WebSocket[] = [];
     const open = async (frames: ServerMessage[]): Promise<WebSocket> => {
-      const ws = new WebSocket(`ws://localhost:${app.port}/ws`);
+      const ws = new WebSocket(`ws://localhost:${app!.port}/ws`);
       sockets.push(ws);
       const snapshot = Promise.withResolvers<void>();
       ws.addEventListener("message", (event) => {
@@ -200,6 +198,11 @@ describe("a pane moved to another workspace outside this server (#1503)", () => 
       ws.addEventListener("message", check);
     });
     try {
+      source = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-source" });
+      // a second pane keeps the source workspace open after the move
+      await herdrRpc("pane.split", { target_pane_id: source.root_pane.pane_id, direction: "right", cwd: stateDir, focus: false });
+      target = await workspaceCreate({ cwd: stateDir, label: "ovis-test-moved-ids-target" });
+      app = createServer({ port: 0, stateDir });
       await app.statusReady;
       const from = source.root_pane.pane_id;
       const mover: ServerMessage[] = [], stayer: ServerMessage[] = [];
@@ -225,9 +228,9 @@ describe("a pane moved to another workspace outside this server (#1503)", () => 
       expect(mover.filter((frame) => frame.type === "error" && frame.code === "attach_held")).toEqual([]);
     } finally {
       for (const ws of sockets) ws.close();
-      app.stop();
-      await workspaceClose(target.workspace.workspace_id).catch(() => {});
-      await workspaceClose(source.workspace.workspace_id).catch(() => {});
+      app?.stop();
+      if (target) await workspaceClose(target.workspace.workspace_id).catch(() => {});
+      if (source) await workspaceClose(source.workspace.workspace_id).catch(() => {});
       rmSync(stateDir, { recursive: true, force: true });
     }
   }, 20000);
