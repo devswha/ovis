@@ -172,25 +172,22 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   return ends(/ctrl\+g to edit|shift\+tab to approve with this feedback/i) || claudePlanFooterEnds(shown);
 }
 
-/** Lines a narrow pane spreads Claude's plan footer over: a phone's pane takes four for a long plan path. */
-const CLAUDE_PLAN_FOOTER_LINES = 6;
-const CLAUDE_PLAN_FOOTER_RE = /^ctrl\+g to edit in [^·\n]+?[ \n]·[ \n]([^]+)$/i;
+const CLAUDE_PLAN_FOOTER_RE = /^ctrl\+g to edit in [^·]+?[ \n]·[ \n]([^]+)$/i;
 
 /**
  * Whether Claude's plan footer, `ctrl+g to edit in VS Code · ~/.claude/plans/x.md`, ends the screen. A narrow pane
  * wraps it with nothing marking the breaks: at a space before the path, or anywhere inside the path, even
  * between `.m` and `d`, and over as many lines as the path needs. So the path's lines are joined as one
- * word, and every line after the one the path starts on must be a piece of it, with no space: output under
- * an answered plan (`⏺ Updated README.md`) never completes the path. The plan's folder may hold a `·`
- * (`CLAUDE_CONFIG_DIR`), so only the first `·` after the editor's name separates the path.
+ * word, and only its last line may end it in `.md`: output under an answered plan (`⏺ Updated README.md`,
+ * a bare `README.md`) comes after a path already complete, so it never extends it. The plan's folder may
+ * hold a `·` (`CLAUDE_CONFIG_DIR`), so only the first `·` after the editor's name separates the path.
  */
 function claudePlanFooterEnds(shown: string[]): boolean {
   const at = findLastIndex(shown, (line) => /^ctrl\+g to edit\b/i.test(line));
-  if (at < 0 || shown.length - at > CLAUDE_PLAN_FOOTER_LINES) return false;
-  const path = CLAUDE_PLAN_FOOTER_RE.exec(shown.slice(at).join("\n"))?.[1];
+  const path = at < 0 ? undefined : CLAUDE_PLAN_FOOTER_RE.exec(shown.slice(at).join("\n"))?.[1];
   if (path === undefined) return false;
-  const [first, ...rest] = path.split("\n");
-  return rest.every((line) => !/\s/.test(line)) && `${first}${rest.join("")}`.endsWith(".md");
+  const lines = path.split("\n");
+  return lines.every((_line, index) => lines.slice(0, index + 1).join("").endsWith(".md") === (index === lines.length - 1));
 }
 /**
  * The same two hints told from the end of the window. A phone leaves pi a pane barely wide enough
