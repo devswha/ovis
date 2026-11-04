@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
@@ -57,6 +57,10 @@ it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", asyn
   // a herdr OVIS_HERDR_BIN names outside those places is the TUI Ovis runs
   touch(join(root, "opt", "herdr"));
   expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, OVIS_HERDR_BIN: join(root, "opt", "herdr") }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
+  // a bare name is found on PATH, as the spawn finds it
+  touch(join(root, "bin", "custom-herdr"));
+  chmodSync(join(root, "bin", "custom-herdr"), 0o755);
+  expect(await chooseRuntime({ stateDir: state, port: 7, env: { ...env, PATH: join(root, "bin"), OVIS_HERDR_BIN: "custom-herdr" }, home, platform: "linux", find })).toMatchObject({ runtime: "herdr", source: "detected" });
   expect(looked).toBe(0);
 });
 

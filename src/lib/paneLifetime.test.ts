@@ -409,6 +409,19 @@ describe("pane state per herdr lifetime", () => {
     expect(device.unsent().map(({ text }) => text)).toEqual(["for core"]);
   });
 
+  it("follows a switch back on another device when its roster comes before its health", () => {
+    const storage = new MemoryStorage();
+    const device = page(storage);
+    device.observe([pc("local", "herdr-tui")], title);
+    device.observe([pc("local", "herdr-core")], title);
+    device.paneStorage.setItem(DRAFT, "core draft");
+    // the TUI's snapshot first, taken for a stale read; then the health read names the TUI
+    device.observe([pc("local", "herdr-tui")], title);
+    device.runtimeChanged("local");
+    expect([device.generation("local"), device.paneStorage.getItem(DRAFT)]).toEqual(["herdr-tui", null]);
+    expect(device.unsent().map(({ text }) => text)).toEqual(["core draft"]);
+  });
+
   it("takes a read from a herdr the page already moved on from as stale, not as a herdr to go back to", () => {
     const storage = new MemoryStorage();
     const lifetimes = page(storage);

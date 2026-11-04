@@ -98,6 +98,8 @@ export class PaneLifetimes {
   private readonly proven = new Map<string, string>();
   /** lifetimes this page drew a PC under and then left: a replaced herdr never comes back */
   private readonly outlived = new Map<string, Set<string>>();
+  /** each PC's latest snapshot taken for a stale read: a runtime switch back may prove it the herdr to follow */
+  private readonly skipped = new Map<string, { machine: Pick<Machine, "id" | "snapshot">; title?: (pane: HerdrPane) => string }>();
   /** each PC's pane titles in its latest snapshot, for the text it leaves to recovery */
   private readonly titles = new Map<string, Map<string, string>>();
   /** the pane state of PCs this page keeps out of storage */
@@ -142,8 +144,19 @@ export class PaneLifetimes {
    * held goes to recovery as the next snapshot names the other, as for any herdr that replaced one.
    */
   runtimeSwitched(machineId: string): void {
-    this.outlived.delete(machineId);
     try { this.storage().removeItem(RETIRED_PREFIX + machineId); } catch { /* storage refused: a herdr it lists stays in this page */ }
+    this.release(machineId);
+  }
+
+  /** No herdr the PC left is a stale read any more; one already taken for it is observed again. */
+  private release(machineId: string): void {
+    this.outlived.delete(machineId);
+    // a snapshot of the runtime switched back to may already have come, and been taken for a stale read
+    const skipped = this.skipped.get(machineId);
+    if (skipped) {
+      this.skipped.delete(machineId);
+      this.observe([skipped.machine], skipped.title);
+    }
   }
 
   /** The PC serves another runtime than this page last read (a switch made on another device too): the herdr it left may come back. */
@@ -155,11 +168,11 @@ export class PaneLifetimes {
   private notify(): void { this.unsentCache = null; for (const listener of this.listeners) listener(); }
   storageChanged(key: string | null): void {
     // another page switched this PC's runtime (runtimeSwitched): the herdr it left may come back here too
-    if (key === null) this.outlived.clear();
+    if (key === null) for (const machineId of [...this.outlived.keys()]) this.release(machineId);
     else if (key.startsWith(RETIRED_PREFIX)) {
       let gone = false;
       try { gone = this.storage().getItem(key) === null; } catch { /* unreadable: the history stands */ }
-      if (gone) this.outlived.delete(key.slice(RETIRED_PREFIX.length));
+      if (gone) this.release(key.slice(RETIRED_PREFIX.length));
     }
     if (key === null || key.startsWith(UNSENT_PREFIX)) this.notify();
   }
@@ -182,7 +195,11 @@ export class PaneLifetimes {
       const titles = this.titles.get(machine.id) ?? new Map<string, string>();
       const named = machine.snapshot.herdr_lifetime;
       // a read from before the herdr this page already moved to (a roster the connection overtook)
-      if (named !== undefined && this.outlived.get(machine.id)?.has(named)) continue;
+      if (named !== undefined && this.outlived.get(machine.id)?.has(named)) {
+        this.skipped.set(machine.id, { machine, ...(title ? { title } : {}) });
+        continue;
+      }
+      this.skipped.delete(machine.id);
       const next = named ?? null;
       const proven = this.proven.get(machine.id);
       if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {

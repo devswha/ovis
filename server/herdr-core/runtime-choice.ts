@@ -48,7 +48,9 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
     .some((dir) => isFile(join(dir, `herdr${exe}`)));
   // OVIS_HERDR_BIN names the herdr Ovis runs, wherever it is
   const named = env["OVIS_HERDR_BIN"];
-  const tuiInstalled = herdrOnPath || (named !== undefined && named !== "" && isFile(named)) || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")));
+  // a bare name is looked up on PATH, as the spawn does (server/core/terminal-process.ts)
+  const namedFound = named !== undefined && named !== "" && (/[\\/]/.test(named) ? isFile(named) : Bun.which(named, { PATH: env["PATH"] ?? "" }) !== null);
+  const tuiInstalled = herdrOnPath || namedFound || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")));
   // the socket HERDR_SOCKET names and the default one are both traces: a stale variable hides no running TUI
   const tuiRunning = [env["HERDR_SOCKET"], ...herdrDirs.map((dir) => join(dir, "herdr.sock"))].some((socket) => socket !== undefined && socket !== "" && exists(socket));
   const systemApps = options.systemAppDirs ?? (platform === "darwin" ? ["/Applications"] : []);
