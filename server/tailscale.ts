@@ -208,8 +208,11 @@ const cliStatus = async (): Promise<string | null> => {
  * that waits for a read, shared with any read already in flight.
  */
 export class TailnetIdentitySource {
-  /** the last read's answer and when it landed; null until the first read lands */
-  private cache: (TailnetIdentity & { at: number; settled: boolean }) | null = null;
+  /**
+   * the last read's answer and when it landed; null until the first read lands. `ownerKnown`: a
+   * Running status named this PC's login, or that its node is tagged and has none
+   */
+  private cache: (TailnetIdentity & { at: number; settled: boolean; ownerKnown: boolean }) | null = null;
   /** the read in flight, so concurrent grants share one bounded read */
   private reading: Promise<void> | null = null;
 
@@ -232,18 +235,22 @@ export class TailnetIdentitySource {
         dnsName: this.cache?.dnsName ?? null,
         tailnetIp: this.cache?.tailnetIp ?? null,
         settled: false,
+        ownerKnown: false,
         at: Date.now(),
       };
       return;
     }
     const sole = readSoleLogin(status);
+    const owner = parseTailscaleOwner(status);
+    const tagged = isTaggedNode(status);
     this.cache = {
-      owner: parseTailscaleOwner(status),
-      tagged: isTaggedNode(status),
+      owner,
+      tagged,
       soleLogin: sole.login,
       dnsName: parseNodeName(status),
       tailnetIp: parseTailscaleIp(status),
       settled: sole.settled,
+      ownerKnown: parseStatus(status)?.BackendState === "Running" && (owner !== null || tagged),
       at: Date.now(),
     };
   }
@@ -276,6 +283,18 @@ export class TailnetIdentitySource {
    * read in flight and bounded by the read's own timeout, so the grant never rests on a warm cache.
    * A read that fails, or leaves the question open, grants nothing and is read again next request.
    */
+  /**
+   * `identity` for a request that states a Tailscale login. Until a read has named this PC's own
+   * login (or found its node tagged), this waits for one read, shared and bounded like
+   * `freshIdentity`: a server started at boot asks before tailscaled has logged in, and that
+   * answer must not stand for five minutes against the owner's own devices.
+   */
+  async loginIdentity(): Promise<TailnetIdentity> {
+    if (this.cache !== null && this.cache.ownerKnown) return this.identity();
+    await this.refresh();
+    return this.identity();
+  }
+
   async freshIdentity(host: string | null): Promise<TailnetIdentity> {
     const cached = this.identity();
     if (this.cache !== null && this.cache.settled && (this.cache.soleLogin === null || !addressesNode({ host, dnsName: this.cache.dnsName, tailnetIp: this.cache.tailnetIp }))) return cached;
