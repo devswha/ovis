@@ -211,6 +211,21 @@ describe("inline markdown", () => {
     }
   });
 
+  it("decodes a percent-encoded file link once, as a file URI is", () => {
+    expect(parseInline("[photo](/tmp/ovis%20test/%EC%82%AC%EC%A7%84.png)")).toMatchObject([{ type: "file", path: "/tmp/ovis test/사진.png" }]);
+    expect(parseInline("[x](src/a%20b.ts#L12) [y](a%2520b.md:3)")).toMatchObject([
+      { type: "file", path: "src/a b.ts#L12" },
+      { type: "text", value: " " },
+      { type: "file", path: "a%20b.md:3" },
+    ]);
+    // not valid encoding, or a control character once decoded: kept as written
+    expect(parseInline("[x](/tmp/100%.png) [y](/tmp/a%0Ab.md)")).toMatchObject([
+      { type: "file", path: "/tmp/100%.png" },
+      { type: "text", value: " " },
+      { type: "file", path: "/tmp/a%0Ab.md" },
+    ]);
+  });
+
   it("links an address written without its scheme, and leaves files and non-addresses alone", () => {
     expect(parseInline("[docs](www.example.com/x)")).toEqual([{ type: "link", href: "https://www.example.com/x", children: [{ type: "text", value: "docs" }] }]);
     expect(parseInline("[guide](docs.example.com/guide)")).toMatchObject([{ type: "link", href: "https://docs.example.com/guide" }]);

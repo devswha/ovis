@@ -97,7 +97,8 @@ export function webLikeHref(target: string): string | null {
  * The file a link names, when its target is a path rather than an address: agents link
  * files they wrote (`[report](/repo/out/REPORT.md)`, `[x](src/x.ts#L12)`, `[x](x.ts:12)`).
  * A line anchor (`#L12`, `:12`) stays for the viewer; other anchors are dropped. A line after a bare
- * word is a scheme's (`tel:123`), not a file's.
+ * word is a scheme's (`tel:123`), not a file's. The path is URL-encoded, as a `file:///` URI's is
+ * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding.
  */
 export function markdownFileTarget(href: string): string | null {
   const value = href.trim();
@@ -106,7 +107,11 @@ export function markdownFileTarget(href: string): string | null {
   const target = value.replace(/#(?!L\d+(?:-L?\d+)?$).*$/, "");
   const path = target.replace(/(?::\d+){1,2}$|#L\d+(?:-L?\d+)?$/, "");
   if (path === "" || /^[a-z][a-z0-9+.-]*:/i.test(path) || (path !== target && !/[./]/.test(path))) return null;
-  return target;
+  let decoded = path;
+  try { decoded = decodeURIComponent(path); } catch { /* `100%.png`: not encoding, a name */ }
+  // a control character belongs to no path
+  if (/[\u0000-\u001f\u007f]/.test(decoded)) decoded = path;
+  return decoded + target.slice(path.length);
 }
 
 /** A bare URL without the punctuation that closes the sentence around it (GFM's autolink rule). */
