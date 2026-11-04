@@ -24,12 +24,14 @@ import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
 import { coreConnection, hcBin, NoHerdrCoreError, servingCore, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
+import { bridgePins } from "./herdr-core/pin-label.ts";
 import { SeenMarker } from "./herdr-core/seen-label.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
 import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
 import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
+import { sweepSshDirs } from "./ssh.ts";
 import { OpenCodePromptState } from "./prompt.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
@@ -233,6 +235,8 @@ export function createServer(
   const merge = options.siblingStateDir ? mergeSiblingState(stateDir, options.siblingStateDir) : null;
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null);
   const preferences = new PreferenceStore(stateDir);
+  // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
+  const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
   try {
     rmSync(join(stateDir, "claude-rewinds.json"), { force: true });
@@ -259,9 +263,9 @@ export function createServer(
   /** a login named here is taken as it is: a tagged node has none of its own to read (OVIS_TAILSCALE_OWNER) */
   const namedOwner = options.tailscaleOwner !== undefined ? options.tailscaleOwner : process.env["OVIS_TAILSCALE_OWNER"]?.trim() || undefined;
   const tailnet = options.tailnet ?? new TailnetIdentitySource();
-  const identityOf = async (grantPath: boolean, host: string | null) => {
+  const identityOf = async (grantPath: boolean, host: string | null, loginPath = false) => {
     if (namedOwner !== undefined) return { ...(grantPath ? await tailnet.freshIdentity(host) : { soleLogin: null, dnsName: null, tailnetIp: null }), owner: namedOwner, tagged: false };
-    return grantPath ? tailnet.freshIdentity(host) : tailnet.identity();
+    return grantPath ? tailnet.freshIdentity(host) : loginPath ? tailnet.loginIdentity() : tailnet.identity();
   };
   const serveOnly = options.tailscaleServeOnly ?? process.env["OVIS_TAILSCALE_SERVE_ONLY"] === "1";
   /** what lets Portal open an address: this server's own values, never a request's */
@@ -427,6 +431,7 @@ export function createServer(
         releaseOpenCodeNative();
       });
       piReader.close();
+      stopPinBridge?.stop();
       // the followed sign-ins run in this server's own terminals: no dialog could reach them once it stops
       void usageLogin.stopAll();
       void shellAgents.stop();
@@ -442,6 +447,8 @@ export function createServer(
 
 if (import.meta.main) {
   moveLegacyStateDir();
+  // SSH connection folders an earlier server left in /tmp; here, not in createServer, so tests never touch them
+  void sweepSshDirs();
   // resolved once, for the same reason as in createServer
   const stateDir = defaultStateDir();
   // herdr-core's adapter is HERDR_SOCKET: it listens before anything below asks herdr
