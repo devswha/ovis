@@ -217,7 +217,7 @@ try {
       // In a few steps, a pixel at a time, and a pixel at a time after the transcript grew below the
       // selection (an agent still writing), already far from its end; and back up a pixel at a time
       // after scrolling down into what grew, past where the chat last put the view.
-      for (const [step, steps, grown, down] of [[30, 3, 0, 0], [1, 90, 0, 0], [1, 20, 150, 0], [1, 100, 300, 200]] as const) {
+      for (const [step, steps, grown, down] of [[30, 3, 0, 0], [1, 90, 0, 0], [1, 20, 150, 0], [1, 100, 300, 200], [151, 1, 300, 150]] as const) {
         const label = `desktop-1280-reader-away-${step}px${grown ? `-grown-${grown}` : ""}${down ? `-down-${down}` : ""}`;
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
         try {

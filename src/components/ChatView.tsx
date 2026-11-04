@@ -1990,6 +1990,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
+    const up = lastScrollTop.current - node.scrollTop;
     lastScrollTop.current = node.scrollTop;
     // A pointer press alone is not intent: a drag must also move the transcript up. A held scrollbar
     // thumb's move is decided when it is let go (the pointerup above): while it rests, the layout
@@ -2032,7 +2033,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // up, or anywhere below it, where only the reader takes the view) the move is the reader's, as
     // without a selection.
     const below = placedAt.current === null ? null : placedAt.current - node.scrollTop;
-    const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX;
+    const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX && up <= READER_ALLOWANCE_PX;
     const heldInPlace = scrollingUp && !byReader && (shrankUnderView || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
     const leftEnd = scrollingUp && !heldInPlace;
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
