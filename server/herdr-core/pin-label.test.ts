@@ -274,6 +274,47 @@ describe("bridgePins", () => {
     });
   }
 
+  it("keeps the Herdr app's pin of a terminal whose agent quit before Ovis stopped and came back while it was stopped", async () => {
+    const dir = stateDir();
+    const terminals: Held[] = [{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }, { address: "t2", state: "live", labels: {} }];
+    const first = fakeCore(terminals);
+    const preferences = store(dir, ["local:t1"]);
+    const earlier = bridge(first, preferences, dir);
+    await first.opened();
+    await earlier.idle();
+    // t1's agent quits; the Agents list drops the shell's pin as t2 is pinned; Ovis stops
+    first.tell({ type: "status", terminal: "t1", data: { status: null } });
+    preferences.set({ settings: {}, pins: ["local:t2"] });
+    await earlier.idle();
+    earlier.stop();
+    const core = fakeCore(terminals);
+    const pins = bridge(core, new PreferenceStore(dir), dir);
+    await core.opened();
+    await pins.idle();
+    expect(new PreferenceStore(dir).get().pins).toEqual(["local:t2", "local:t1"]);
+    expect(core.written).toEqual([]);
+  });
+
+  it("keeps the Herdr app's pin of a terminal back from a shell that a full list left out, through later changes", async () => {
+    const dir = stateDir();
+    const full = Array.from({ length: MAX_PINS - 1 }, (_, index) => `local:workspace:w${index}`);
+    const preferences = store(dir, ["local:t1"]);
+    const core = fakeCore([{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }]);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    core.tell({ type: "status", terminal: "t1", data: { status: null } });
+    preferences.set({ settings: {}, pins: [...full, "local:workspace:last"] });
+    core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+    preferences.set({ settings: { theme: "dark" } });
+    await pins.idle();
+    expect(core.written).toEqual([]);
+    preferences.set({ settings: {}, pins: full });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([...full, "local:t1"]);
+    expect(core.written).toEqual([]);
+  });
+
   it("keeps the Herdr app's pin of a terminal whose agent quit while its events were cut off, once an agent runs there again", async () => {
     const dir = stateDir();
     const preferences = store(dir, []);
