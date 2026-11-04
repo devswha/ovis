@@ -69,7 +69,7 @@ import { sendUserFileCall } from "../lib/sendUserFile.ts";
 import { LINE_IMAGES_SHOWN, LINE_IMAGES_SHOWN_TOUCH, lineImages, linePictures, previewPlace, workImages, type WorkImage } from "../lib/workImages.ts";
 import { shouldFoldUserMessage } from "../lib/userMessageFold.ts";
 import { invalidatePaneCommands } from "../lib/paneCommandCache.ts";
-import { afterMove, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows, type OutcomeState } from "../lib/outcomeChip.ts";
+import { afterMove, isSessionChange, moveCommand, noteCatalogChanges, type HistoryMove, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows, type OutcomeState } from "../lib/outcomeChip.ts";
 import { typedTerminalCommand } from "../lib/compose.ts";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { commandScreenClosed, sentOutcome, type TerminalPeek } from "../lib/terminalPeek.ts";
@@ -1334,9 +1334,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const [outcomes, setOutcomes] = useState<CommandOutcome[]>([]);
   const outcomesNow = useRef(outcomes);
   outcomesNow.current = outcomes;
-  /** a move to another history: the outcomes held when the chat saw it, and the first list after it (lib/outcomeChip.ts afterMove) */
-  const [historyMove, setHistoryMove] = useState<{ history: string | undefined; held: CommandOutcome[] } | null>(null);
-  const firstAfterMove = useRef<CommandOutcome[] | undefined>(undefined);
+  /** a move to another history, what the chat knew when it saw it, and the send that made it once listed (lib/outcomeChip.ts afterMove) */
+  const [historyMove, setHistoryMove] = useState<HistoryMove & { history: string | undefined } | null>(null);
+  const moveMade = useRef<CommandOutcome | null>(null);
+  /** the session changes that made no move out of the history shown: listed in the pane's first poll, or a move already made; null until that poll */
+  const enteredMoves = useRef<Set<string> | null>(null);
+  /** when this pane was shown: a session change sent after it did not bring the chat here */
+  const shownAt = useRef(0);
   const onOutcomesRef = useRef(onOutcomes);
   onOutcomesRef.current = onOutcomes;
   /** the outcomes whose catalog change this chat has already answered with a fresh command read */
@@ -1487,7 +1491,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     shownPane.current = paneId;
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
-    history.current = undefined; setHistoryId(undefined);
+    history.current = undefined; setHistoryId(undefined); enteredMoves.current = null; shownAt.current = Date.now();
     pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
@@ -1631,8 +1635,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
               navigated();
               // the sends to the history left behind are no receipts of this one: the last prompt poll holds them,
               // and the server lists them until herdr names the new session, which can be a poll after this read
-              firstAfterMove.current = undefined;
-              setHistoryMove({ history: conversation.history_id, held: outcomesNow.current });
+              moveMade.current = null;
+              setHistoryMove({ history: conversation.history_id, held: outcomesNow.current, entered: new Set(enteredMoves.current), seenAt: Date.now() });
             }
             dropOlder();
           }
@@ -1849,6 +1853,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           setAnsweredPrompt(null);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
           setOutcomes((current) => JSON.stringify(current) === JSON.stringify(next.outcomes) ? current : next.outcomes);
+          enteredMoves.current ??= new Set(next.outcomes.filter((outcome) => isSessionChange(outcome)
+            && Date.parse(outcome.created_at) < shownAt.current).map((outcome) => outcome.id));
           onOutcomesRef.current?.(paneId, next.outcomes.map((outcome) => outcome.id));
           noteCatalogChanges(next.outcomes, catalogNoted.current, () => invalidatePaneCommands(paneId, machineId));
           if (sentKeyRef.current === sent) {
@@ -1984,6 +1990,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (!visible) return;
     let pointer: { x: number; y: number } | null = null;
     let touchY: number | undefined;
+    // A wheel or a drag up the transcript moves the view before its scroll event comes: a follow the
+    // list queued before it (a long chat's first open) would land first and take the reader back to
+    // the end (#2594). A key may not scroll the transcript at all (focus on a button), so it drops
+    // nothing: its scroll event decides.
+    const readingUp = (): void => {
+      scrollInputAt.current = performance.now();
+      dropPendingListScroll(timeline.current);
+    };
     const mark = (event: Event): void => {
       const node = scroller.current;
       if (event instanceof KeyboardEvent) {
@@ -2017,7 +2031,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // event, and a new press is a new gesture
       if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
-      if (event instanceof WheelEvent && event.deltaY < 0) scrollInputAt.current = performance.now();
+      if (event instanceof WheelEvent && event.deltaY < 0) readingUp();
       if (event instanceof PointerEvent) {
         if (event.type === "pointerdown") {
           pointer = { x: event.clientX, y: event.clientY };
@@ -2032,7 +2046,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
       if ((event.type === "touchstart" || event.type === "touchmove") && event instanceof TouchEvent) {
         const y = event.touches[0]?.clientY;
-        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) scrollInputAt.current = performance.now();
+        if (event.type === "touchmove" && y !== undefined && touchY !== undefined && y > touchY) readingUp();
         touchY = y;
       }
     };
@@ -2254,13 +2268,20 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const workBlockLive = lastSplit !== null && (visibleWorkParts(lastSplit.work, settings.showThinking).length > 0 || lastSplit.answer.length === 0);
   // a running turn with words and no work rows: the activity is a line under its words, as before
   const answerOnlyLive = lastSplit !== null && !workBlockLive;
+  // the last turn ended on its answer, named by its row (two turns can share a start time)
+  const answeredRow = lastShownTurn?.role === "assistant" && endedOnAnswer(lastShownTurn) ? slots.current.rows[shownTurns.length - 1]?.key ?? null : null;
+  // the answered row the pane was last seen at rest under: working again after that, a turn began.
+  // Blocked (waiting on the user) or an unknown status is no rest: the answer may still be trailed.
+  const restedUnder = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if ((workStatus === "idle" || workStatus === "done") && answeredRow !== null) restedUnder.current = answeredRow;
+  }, [workStatus, answeredRow]);
   // working over a turn that ended on its answer: the status trailing that answer, or a turn the agent
-  // began by itself with no row yet. The next turn's head waits out the lag, so none flashes under
-  // each answer. A send from here has its turn on the way, and its head shows at once.
-  const afterAnswer = workStatus === "working" && lastShownTurn?.role === "assistant" && lastShownTurn !== finishedBeforeSend && endedOnAnswer(lastShownTurn);
-  // the wait runs for that finished turn, named by its start (no later read of it changes that): a new
-  // turn read in already finished waits its own, and the frame it first shows in draws no head
-  const answerTurn = afterAnswer && lastShownTurn !== undefined ? lastShownTurn.ts ?? chatTurnAnchor(lastShownTurn) : null;
+  // began by itself with no row yet. A send from here has its turn on the way, and its head shows at once.
+  const afterAnswer = workStatus === "working" && lastShownTurn !== finishedBeforeSend && answeredRow !== null;
+  // Only a rest seen under that answer tells a new turn from a status still trailing it, however long
+  // the lag; the new turn's head then waits out the lag too, so none flashes under each answer.
+  const answerTurn = afterAnswer && restedUnder.current === answeredRow ? answeredRow : null;
   const [lagOutFor, setLagOutFor] = useState<string | null>(null);
   useEffect(() => {
     if (answerTurn === null) { setLagOutFor(null); return; }
@@ -2293,9 +2314,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // sent row for one no turn records (yet), placed by send time (lib/outcomeChip.ts)
   const shownOutcomes = useMemo(() => {
     if (historyMove === null || historyMove.history !== historyId) return outcomes;
-    if (outcomes !== historyMove.held) firstAfterMove.current ??= outcomes;
-    return afterMove(outcomes, historyMove.held, firstAfterMove.current);
-  }, [outcomes, historyMove, historyId]);
+    if (moveMade.current === null) {
+      moveMade.current = moveCommand(outcomes, historyMove);
+      if (moveMade.current !== null) enteredMoves.current?.add(moveMade.current.id);
+    }
+    return afterMove(outcomes, historyMove, moveMade.current, shownTurns);
+  }, [outcomes, historyMove, historyId, shownTurns]);
   const withOutcomes = useMemo(() => outcomeRows(shownTurns, shownOutcomes, { restored: hiddenSend, beginningLoaded: olderCursor === null }), [shownTurns, shownOutcomes, hiddenSend, olderCursor]);
   const timelineRows = useMemo((): ChatRow[] => {
     const rows = withOutcomes.map((row): ChatRow => {
@@ -2364,7 +2388,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
   }, [navigationRef]);
   // the rail scrolls the chat from outside it, where the input listeners do not see the wheel
-  const minimapWheel = useCallback((deltaY: number) => { if (deltaY < 0) scrollInputAt.current = performance.now(); }, []);
+  const minimapWheel = useCallback((deltaY: number) => {
+    if (deltaY < 0) { scrollInputAt.current = performance.now(); dropPendingListScroll(timeline.current); }
+  }, []);
   // a chip's action: the card's first control (the card is drawn into the dock, outside the
   // transcript), or the terminal lens where the command's screen is
   const focusPrompt = useCallback(() => {
