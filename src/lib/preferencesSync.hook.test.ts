@@ -48,8 +48,8 @@ describe("preferences sync real send path", () => {
   let keepalives: boolean[];
   /** the bodies the PUTs carried, in order */
   let sent: PreferencesChange[];
-  /** an older server: no theme sides, and no mute list in what it keeps or answers */
-  const dropNewKeys = ({ muted_panes: _muted, ...doc }: SharedPreferences): SharedPreferences => ({
+  /** an older server: no theme sides, no mute list and no state folder id in what it keeps or answers */
+  const dropNewKeys = ({ muted_panes: _muted, state_id: _id, ...doc }: SharedPreferences): SharedPreferences => ({
     ...doc, settings: Object.fromEntries(Object.entries(doc.settings).filter(([key]) => key !== "darkTheme" && key !== "lightTheme")),
   });
   interface Client {
@@ -555,6 +555,34 @@ describe("preferences sync real send path", () => {
     store = new PreferenceStore(dir);
     for (let index = 0; index < saves; index += 1) store.set({ settings: {}, pins: ["local:t2"] });
     expect(store.get().revision).toBe(saves);
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
+  it("a page that opened on the server rolled back to a release without the id still tells a server started over since", async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the same browser opens on the server rolled back to a release that names no folder
+    oldServer = true;
+    await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    oldServer = false;
+    // then the server starts over with a fresh state folder, and catches up with the revision kept
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    for (let index = 0; index < 2; index += 1) store.set({ settings: {}, pins: ["local:t2"] });
     store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
     const client = await open(DEFAULT_SETTINGS, true);
     await windows();

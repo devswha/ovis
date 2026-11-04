@@ -17,7 +17,36 @@ const put = (store: PreferenceStore, body: string, headers: Record<string, strin
 /** a document saved at least once, which names its state folder */
 const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 
+const quietly = () => spyOn(console, "error").mockImplementation(() => undefined);
+
 describe("shared preferences", () => {
+  it("sends no id while its file is damaged, and leaves that file as it is", async () => {
+    quietly();
+    const dir = root();
+    writeFileSync(join(dir, "preferences-id.json"), "{damaged");
+    const store = new PreferenceStore(dir);
+    const saved = await (await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).json();
+    expect(saved.revision).toBe(1);
+    expect(saved.state_id).toBeUndefined();
+    expect(readFileSync(join(dir, "preferences-id.json"), "utf8")).toBe("{damaged");
+    expect(new PreferenceStore(dir).get().state_id).toBeUndefined();
+  });
+
+  it("refuses a first save whose id cannot be kept, and names the folder with the next", async () => {
+    quietly();
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    const rename = fs.renameSync;
+    const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith("preferences-id.json")) throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
+      rename(from, to);
+    });
+    try { expect((await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).status).toBe(500); } finally { spy.mockRestore(); }
+    expect(store.get()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+    expect(readdirSync(dir).filter((name) => !name.endsWith(".tmp"))).toEqual([]);
+    expect(await (await put(store, JSON.stringify({ settings: {}, pins: ["local:t1"] }))).json()).toEqual(named({ revision: 1, settings: {}, pins: ["local:t1"], muted_panes: [] }));
+  });
+
   it("names its state folder from the first save on, across restarts, and a fresh folder anew", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);
@@ -617,8 +646,9 @@ describe("a damaged preferences file", () => {
     const heard: number[] = [];
     store.subscribe((preferences) => heard.push(preferences.revision));
     const rename = fs.renameSync;
+    // replacing preferences.json fails (the folder's id is written first, and is not what this is about)
     const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      if (String(from).endsWith(".tmp")) throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
+      if (String(to).endsWith("preferences.json")) throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
       rename(from, to);
     });
     expect((await put(store, JSON.stringify({ settings: { theme: "light" } }))).status).toBe(500);
