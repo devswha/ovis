@@ -218,6 +218,23 @@ it("reads no conversation when the read that decides the Kiro guard fails and a 
   } finally { nested.mockRestore(); mac.mockRestore(); }
 });
 
+it("asks again when herdr answers the lookup's own read without process facts, and resolves the nested Codex then", async () => {
+  // Given a Kiro pane showing its conversation's own long answer: omo's check sees the wrapper, agent.get's read
+  // comes back without process facts, and the read after it shows the wrapper again
+  agentFolders = { cwd: root };
+  screen = answer;
+  foreground = [{ pid: 2147483647, argv: ["zsh (kiro-cli-term)"] }];
+  shellPid = 2147483647;
+  processReads = [foreground, null];
+  // the probe proves the nested Codex from the wrapper herdr names, and nothing from an answer without process facts
+  const nested = spyOn(kiro, "kiroCodexProcess").mockImplementation(async (info) => info === undefined ? null : { pid: 2147483646, argv: ["codex"], identity: "10:1,20:1,2147483646:1" });
+  const mac = asOnMac();
+  try {
+    // Then the conversation is read from the next answer, as before the lookup reused its read
+    expect(await paneTranscript(root, home, labelledSnapshot())).toMatchObject({ source: "codex-transcript", path });
+  } finally { nested.mockRestore(); mac.mockRestore(); }
+});
+
 it("keeps the Kiro guard when the pane became a Kiro wrapper after an earlier read saw a plain Codex", async () => {
   // Given a pane showing its cwd thread's own prompts and short answers, which only a plain Codex may be read by
   agentFolders = { cwd: root };

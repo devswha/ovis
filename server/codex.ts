@@ -3016,7 +3016,8 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // read now, never the caller's earlier answer (agent.get's own read, when herdr gave one): a screen match below
   // binds the rollout to these processes, and one read before a Codex left (or before its pid came back) would
   // bind a conversation to the wrong one
-  const { codexProcesses, processes, open } = await openRollouts(paneId, home, agent.processRead === undefined ? undefined : agent.processRead.info ?? null);
+  // (an answer without process facts is asked again, as before: a nested Codex may yet be proven from the next one)
+  const { codexProcesses, processes, open } = await openRollouts(paneId, home, agent.processRead?.info);
   // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
   // a Codex gone since) ties it to no conversation, and the terminal stands in
   if (codexProcesses.length === 0) return null;
