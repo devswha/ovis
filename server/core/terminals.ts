@@ -185,22 +185,24 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
    */
   function paneMoved(from: string, to: string): void {
     if (from === to) return;
-    const retire = (): void => {
-      if (!attachments.has(from)) return;
-      broadcast(from, { type: "pty-exit", pane_id: from, code: null });
-      closeAttachment(from);
-      const exited = retiringAttachments.get(from);
-      if (!exited) return;
-      const earlier = retiringAttachments.get(to);
-      const waited: Promise<void> = Promise.all([earlier, exited]).then(() => undefined).finally(() => {
-        if (retiringAttachments.get(to) === waited) retiringAttachments.delete(to);
-      });
-      retiringAttachments.set(to, waited);
+    // what `from` still retires: an earlier move's wait carried to it included, so A to B to C waits for A
+    const retire = (): Promise<void> | undefined => {
+      if (attachments.has(from)) {
+        broadcast(from, { type: "pty-exit", pane_id: from, code: null });
+        closeAttachment(from);
+      }
+      return retiringAttachments.get(from);
     };
-    // one still being created ends once it is
+    // one still being created ends once it is; the new ID waits for that from now, not from then
     const creating = pendingAttachments.get(from);
-    if (creating) void creating.then(retire, () => undefined);
-    else retire();
+    const exited = creating ? creating.then(retire, () => retiringAttachments.get(from)) : retire();
+    if (!exited) return;
+    const earlier = retiringAttachments.get(to);
+    // a process that failed to exit cleanly still let go: the wait never refuses the attach behind it
+    const waited: Promise<void> = Promise.all([earlier, exited]).then(() => undefined, () => undefined).finally(() => {
+      if (retiringAttachments.get(to) === waited) retiringAttachments.delete(to);
+    });
+    retiringAttachments.set(to, waited);
   }
 
   /** An interact client's terminal sizes the pty: the grid is remembered as this client's, and it drives. */

@@ -405,6 +405,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const receipts = firstReceipts.get(from);
     firstReceipts.delete(from);
     if (receipts) firstReceipts.set(to, [...firstReceipts.get(to) ?? [], ...receipts].slice(-FIRST_MESSAGE_RECEIPTS));
+    // typed Pi receipts, failed above as for a changed terminal, stay dismissible under the new ID
+    const typed = piTyped.get(from);
+    piTyped.delete(from);
+    piConsumed.delete(from);
+    if (typed) {
+      piTyped.set(to, [...piTyped.get(to) ?? [], ...typed]);
+      publishPi(to);
+    }
   }
   function authorizePending(owner: Client, paneId: string, lease: PendingLease): void {
     authorizeSocket(owner);

@@ -523,4 +523,31 @@ describe("a pane moved to a new ID (#1503)", () => {
     expect(f.queue.outcome("a", "p2", item.message.id)).toBe("discarded");
     expect(await f.queue.resend("p2", item.message.id, "fingerprint", async () => ({ ok: true }))).toMatchObject({ ok: false, code: "pending_discarded" });
   });
+
+  it("never tries a send the move overtook again by itself, even after a retryable refusal", () => {
+    const f = fixture(), item = f.enqueue(1);
+    f.queue.status("p1", "idle");
+    expect(f.queue.claim(item, true)).toBe(true);
+    f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+    f.queue.settle(item, { code: "input_not_ready", message: "not ready" }, false, true);
+    f.queue.status("p2", "idle");
+    expect(f.queue.next("p2")).toBeNull();
+    expect(f.queue.list("a", "p2")).toMatchObject([{ id: item.message.id, state: "held" }]);
+  });
+
+  it.each([["delivered", { ok: true }, "sent"], ["ambiguous", { ok: false, code: "submit_changed", message: "Check the terminal" }, "uncertain"]] as const)(
+    "settles a held copy's send that ends after the move under the new ID: %s", async (_name, reply, expected) => {
+      const f = fixture(), item = f.enqueue(1);
+      f.queue.hold("a");
+      const answer = Promise.withResolvers<{ ok: boolean; code?: string; message?: string }>();
+      const sent = f.queue.resend("p1", item.message.id, "fingerprint", () => answer.promise);
+      f.queue.move("p1", "p2", { code: "pane_moved", message: "moved" });
+      answer.resolve(reply);
+      await sent;
+      if (expected === "sent") expect(f.queue.outcome("a", "p2", item.message.id)).toBe("sent");
+      else {
+        expect(f.queue.list("a", "p2")).toMatchObject([{ id: item.message.id, state: "uncertain" }]);
+        expect(f.queue.discard(item, true)).toBe(false);
+      }
+    });
 });
