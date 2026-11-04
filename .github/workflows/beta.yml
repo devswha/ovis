@@ -1,20 +1,24 @@
 name: Beta
-# Publishes a beta build of every commit on main whose CI passed, for the PCs that opted into the beta
+# Publishes a beta build of the newest commit on main whose CI passed, for the PCs that opted into the beta
 # update channel (OVIS_UPDATE_CHANNEL=beta, or `beta` in the `update-channel` file of the state dir;
-# docs/guide.md#updates). Nobody else is offered one: a stable updater takes plain vX.Y.Z tags only.
+# docs/guide.md#beta-builds). Nobody else is offered one: a stable updater takes plain vX.Y.Z tags only.
 #
-# - tag: tags the commit vX.Y.Z-beta.N, where X.Y.Z is the version main is heading for (package.json's,
-#   or its next patch once that version is released) and N counts up per version. The server's updater
-#   on the beta channel builds and installs it like a release. A commit that an existing v* tag already
-#   contains (a CI run that finished after a newer one) gets none.
+# - tag: tags the newest main commit with a successful CI push run beta/vX.Y.Z-beta.N, where X.Y.Z is the
+#   version main is heading for (package.json's, or its next patch once that version is released) and N
+#   counts up per version. The tags stay outside v*, which the installers, the app setups and the
+#   release jobs read as releases. The server's updater on the beta channel builds and installs it like a
+#   release. Whichever CI run triggered it, a run publishes the newest green commit, so a run that waited
+#   or was displaced loses nothing; a commit a newer tag already contains gets none, and one already
+#   tagged is built again only when run by hand (to retry a failed desktop build).
 # - desktop, desktop-publish: builds the desktop app (app/electron) at that version and uploads it with
 #   its beta-*.yml feed files to the rolling `desktop-beta` prerelease, which the app reads on the beta
-#   channel (app/electron/src/updates.ts, BETA_FEED). A prerelease is never GitHub's latest, so the
-#   stable feed (releases/latest/download) never sees it. Linux x64 and arm64 AppImages, and an arm64
+#   channel (app/electron/src/updates.ts, BETA_FEED); the previous beta's files stay until the next one,
+#   for an app that read the feed just before. A prerelease is never GitHub's latest, so the stable feed
+#   (releases/latest/download) never sees it. Linux x64 and arm64 AppImages, and an arm64
 #   Mac build, signed and notarized once the repository variable DESKTOP_MAC_SIGN is 'true' (a Mac app
 #   updates itself only when signed).
 #
-# The beta tags are made here only: never push a v* tag by hand.
+# The beta tags are made here only: never push a v* or beta/* tag by hand.
 on:
   workflow_run:
     workflows: [CI]
@@ -23,7 +27,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# one beta at a time, in order: a newer commit's run waits instead of cancelling the one building
+# one beta at a time: a newer run waits instead of cancelling the one building (and then takes the newest green commit)
 concurrency:
   group: beta
   cancel-in-progress: false
@@ -38,6 +42,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: write
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -52,36 +57,49 @@ jobs:
       - name: Pick the beta version
         id: version
         env:
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BY_HAND: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           git fetch --quiet --force --tags origin
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
-            echo "::error::$SHA is not on main." >&2
+          SHA=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+          if [ -z "$SHA" ] || ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::No commit on main has a successful CI run ('$SHA')." >&2
             exit 1
           fi
-          # a newer commit's beta (or a release) already brings this one
-          if [ -n "$(git tag --contains "$SHA" --list 'v*')" ]; then
-            echo "A v* tag already contains $SHA; no beta."
+          # a newer commit's beta, or a release, already brings this one
+          if [ -n "$(comm -23 <(git tag --contains "$SHA" --list 'v*' 'beta/*' | sort) <(git tag --points-at "$SHA" --list 'beta/*' | sort))" ]; then
+            echo "A newer tag already contains $SHA; no beta."
             exit 0
           fi
-          version=$(git show "$SHA:package.json" | jq -r .version)
-          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "::error::package.json's version '$version' is not X.Y.Z." >&2
-            exit 1
+          existing=$(git tag --points-at "$SHA" --list 'beta/v*' | head -n 1)
+          if [ -n "$existing" ]; then
+            if [ "$BY_HAND" != true ]; then
+              echo "$SHA is already $existing; no beta."
+              exit 0
+            fi
+            beta="${existing#beta/v}"
+          else
+            version=$(git show "$SHA:package.json" | jq -r .version)
+            if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::package.json's version '$version' is not X.Y.Z." >&2
+              exit 1
+            fi
+            # once X.Y.Z is released, main is heading for the next patch
+            if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+              version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+            fi
+            last=$(git tag --list "beta/v$version-beta.*" | sed -n "s|^beta/v$version-beta\.\([0-9][0-9]*\)$|\1|p" | sort -n | tail -1)
+            beta="$version-beta.$(( ${last:-0} + 1 ))"
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
-          # once X.Y.Z is released, main is heading for the next patch
-          if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
-            version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
-          fi
-          last=$(git tag --list "v$version-beta.*" | sed -n "s/^v$version-beta\.\([0-9][0-9]*\)$/\1/p" | sort -n | tail -1)
-          beta="$version-beta.$(( ${last:-0} + 1 ))"
           {
-            echo "tag=v$beta"
+            echo "tag=beta/v$beta"
             echo "version=$beta"
             echo "sha=$SHA"
           } >> "$GITHUB_OUTPUT"
       - name: Tag the beta
-        if: steps.version.outputs.tag != ''
+        if: steps.version.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -119,9 +137,14 @@ jobs:
       - name: Install the app's packages
         working-directory: app/electron
         run: bun install --frozen-lockfile
-      # the app and the server it carries say the beta's version; electron-builder names its feed
-      # files after the version's channel (beta-mac.yml, beta-linux.yml, beta-linux-arm64.yml)
-      - name: Set the beta version
+      # staged at main's own version: the server the app carries and its Rust PTY host (fetched from that
+      # version's release) keep it; only the app takes the beta's
+      - name: Stage hc, Bun and the server
+        working-directory: app/electron
+        run: bun scripts/build.ts stage
+      # electron-builder names the feed files after the version's channel (beta-mac.yml, beta-linux.yml,
+      # beta-linux-arm64.yml)
+      - name: Set the app's beta version
         env:
           VERSION: ${{ needs.tag.outputs.version }}
         run: |
@@ -161,7 +184,7 @@ jobs:
           APPLE_API_KEY: ${{ steps.sign.outputs.key }}
           APPLE_API_KEY_ID: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_ISSUER || '' }}
-        run: bun run dist
+        run: bun scripts/build.ts package
       - name: Remove the notary key
         if: always() && steps.sign.outputs.key != ''
         env:
@@ -204,10 +227,13 @@ jobs:
           fi
           # the feed files last: an app never reads a feed whose files are missing
           find . -maxdepth 1 -type f ! -name 'beta*.yml' -print0 | xargs -0 gh release upload desktop-beta --clobber
+          previous=$(gh release view desktop-beta --json name --jq '.name' | sed -n 's/^Desktop app beta //p')
           gh release upload desktop-beta beta*.yml --clobber
           gh release edit desktop-beta --prerelease --title "Desktop app beta $VERSION"
-          # the builds of earlier betas go once the feed names the new ones
+          # the builds before the previous one go: the previous one stays for an app that read its feed just before
           gh release view desktop-beta --json assets --jq '.assets[].name' | while read -r name; do
-            [ -e "$name" ] || gh release delete-asset desktop-beta "$name" --yes
+            [ -e "$name" ] && continue
+            [ -n "$previous" ] && [[ "$name" == *"-$previous-"* || "$name" == *"-$previous."* ]] && continue
+            gh release delete-asset desktop-beta "$name" --yes
           done
           echo "Published the desktop app $VERSION to desktop-beta." >> "$GITHUB_STEP_SUMMARY"
