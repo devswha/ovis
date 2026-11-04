@@ -62,6 +62,29 @@ export function loadSidebarPins(): string[] {
   } catch { return []; }
 }
 
+const SHARED_KEY = "ovis:sidebar-pins-shared";
+
+/**
+ * The pins this browser last knew the server to hold (lib/preferencesSync.ts), or null while it has
+ * known none. Kept with the pins, so a page opened again tells its own pins from ones removed
+ * elsewhere meanwhile, instead of sending them back as new.
+ */
+export function loadSharedPins(): string[] | null {
+  try {
+    const value = storage()?.getItem(SHARED_KEY);
+    if (value === undefined || value === null) return null;
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0) : null;
+  } catch { return null; }
+}
+
+export function saveSharedPins(keys: readonly string[] | null): void {
+  try {
+    if (keys === null) storage()?.removeItem(SHARED_KEY);
+    else storage()?.setItem(SHARED_KEY, JSON.stringify(keys));
+  } catch { /* storage denied: the next page starts as one that has known none */ }
+}
+
 export function saveSidebarPins(keys: readonly string[]): void {
   try { storage()?.setItem(STORAGE_KEY, JSON.stringify([...new Set(keys)])); }
   catch { /* storage denied: pins last for the session */ }
