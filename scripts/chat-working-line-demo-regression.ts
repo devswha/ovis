@@ -239,7 +239,8 @@ try {
       console.log("PASS a turn read in already finished waits its own lag: no Working head under its answer");
 
       // herdr rests before a read holds the turn's answer (#2550, about 1 s live): the turn stays at
-      // work until the answer is drawn, never shown ended with no answer
+      // work until the answer is drawn, never shown ended with no answer, also over a read between
+      // that brings only more of the turn's work
       const books: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "How many books?" }] };
       const shelved: ConversationTurn[] = [...answeredTurns,
         { role: "user", ts: null, parts: [{ kind: "text", text: "Which shelf holds the atlas?" }] },
@@ -252,17 +253,16 @@ try {
       await flaky.locator(".chat-activity", { hasText: "Working" }).waitFor();
       await painted(page);
       await record(page, panes.flaky);
-      await page.evaluate(([id, done]) => new Promise<void>((settled) => {
-        const order = (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder;
-        order.status(id as string, "done");
-        // fixed wait: the transcript's lag behind herdr's rest at a turn end
-        setTimeout(() => {
-          const w = window as unknown as { addedTurns: Record<string, unknown>; conversationChanged(pane: string): void };
-          w.addedTurns[id as string] = done;
-          w.conversationChanged(id as string);
-          settled();
-        }, 700);
-      }), [panes.flaky, [...shelved, { role: "assistant", ts: null, parts: [{ kind: "text", text: "There are forty books.", phase: "final_answer" }] }]] as const);
+      const counting: ConversationTurn = { role: "assistant", ts: null, parts: [
+        { kind: "tool", name: "Bash", summary: "ls books", input: JSON.stringify({ command: "ls books" }), output: "40", call_id: "books", state: "ok" },
+      ] };
+      await status(page, panes.flaky, "done");
+      await painted(page);
+      await addTurns(page, panes.flaky, [...shelved, counting]);
+      // the new turn's row, open or folded: its header counts the command
+      await page.waitForFunction((id) => [...document.querySelectorAll(`.pane-frame[data-layout-pane="${id}"] [data-chat-row]`)].at(-1)?.textContent?.includes("1 command") === true, panes.flaky);
+      await painted(page);
+      await addTurns(page, panes.flaky, [...shelved, { ...counting, parts: [...counting.parts, { kind: "text", text: "There are forty books.", phase: "final_answer" }] }]);
       await flaky.getByText("There are forty books.", { exact: true }).waitFor();
       await painted(page);
       const lagged = await stop(page);
@@ -292,6 +292,7 @@ try {
       const greeting = page.locator(".pane-frame.is-current .composer-greeting");
       // the demo's new agent works for a moment first: it is greeted once it rests
       await greeting.waitFor({ timeout: 8_000 });
+      await page.locator('.pane-frame.is-current .composer-status[data-status="idle"]').waitFor({ state: "attached", timeout: 8_000 });
       await painted(page);
       await record(page, blank);
       const greeted = page.evaluate(() => {
@@ -307,8 +308,12 @@ try {
       await page.evaluate((id) => new Promise<void>((settled) => {
         const order = (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder;
         order.status(id, "working");
-        // fixed wait: how long a /clear's working status lasted live (241\u2013549 ms)
-        setTimeout(() => { order.status(id, "idle"); settled(); }, 400);
+        const shown = (): void => {
+          if (document.querySelector('.pane-frame.is-current .composer-status[data-status="working"]') === null) { requestAnimationFrame(shown); return; }
+          // fixed wait: how long a /clear's working status lasted live (241\u2013549 ms)
+          setTimeout(() => { order.status(id, "idle"); settled(); }, 400);
+        };
+        shown();
       }), blank);
       await painted(page);
       const cleared = await stop(page);

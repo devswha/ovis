@@ -1268,9 +1268,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // Native Grok/Agy events can arrive while Herdr still reports ready/done. This is display
   // feedback only: sending, queuing and stopping retain the server's input authority.
   // herdr rested while the turn on screen has no answer yet (the page then): the turn is shown at work
-  // until a read changes that page, or for ANSWER_READ_WAIT_MS. Display only, as above.
+  // until a read changes that page with anything but more of an unanswered turn (its answer, a turn
+  // of the user's), or for ANSWER_READ_WAIT_MS with no such read. Display only, as above.
   const [answerWait, setAnswerWait] = useState<{ pane: string; page: ConversationTurn[] } | null>(null);
-  const awaitingAnswer = answerWait !== null && answerWait.pane === paneId && answerWait.page === state.turns && (agentStatus === "idle" || agentStatus === "done");
+  const pageEnd = state.turns.at(-1);
+  const awaitingAnswer = answerWait !== null && answerWait.pane === paneId && (agentStatus === "idle" || agentStatus === "done")
+    && (answerWait.page === state.turns || (pageEnd?.role === "assistant" && !endedOnAnswer(pageEnd)));
   const shownStatus = awaitingAnswer ? "working" : agentStatus;
   const activity = state.activity ?? (shownStatus === "working" ? "working" : "idle");
   const workStatus = state.activity !== undefined && agentStatus !== "blocked" ? activity === "idle" ? "idle" : "working" : shownStatus;
@@ -2269,11 +2272,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (lastShownTurn.role === "assistant" && endedOnAnswer(lastShownTurn)) return;
     setAnswerWait({ pane: paneId, page: state.turns });
   }, [paneId, agentStatus]);
+  // a read that brings more of the unanswered turn shows the transcript still moves: the wait starts again
+  const awaitedPage = awaitingAnswer ? state.turns : null;
   useEffect(() => {
     if (answerWait === null) return;
     const timer = window.setTimeout(() => setAnswerWait(null), ANSWER_READ_WAIT_MS);
     return () => window.clearTimeout(timer);
-  }, [answerWait]);
+  }, [answerWait, awaitedPage]);
   const lastSplit = lastShownTurn !== undefined && isLiveWorkTurn(lastShownTurn, true, workStatus, finishedBeforeSend) ? splitTurn(lastShownTurn.parts) : null;
   // the last turn runs and already says the agent works: its work block, or the head standing in
   // for one while it has no answer yet
