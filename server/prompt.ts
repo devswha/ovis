@@ -1866,16 +1866,28 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             await Bun.sleep(50);
           }
         };
-        /** Whether a read still shows the question this answer is for (its id carries its call and, for questions drawn alike, its tab). */
-        const sameQuestion = (shown: ParsedPrompt | null, screen: string): boolean => {
+        /**
+         * Whether a read still shows the question this answer is for (its id carries its call and, for questions drawn alike, its tab).
+         * `onCursor`: a key that acts on the row under the cursor (Enter, Space), which must still be the row the moves left it on.
+         */
+        const sameQuestion = (shown: ParsedPrompt | null, screen: string, onCursor: boolean): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
-          if (responder === "pi-question" || responder === "pi-confirm") return parsePiDialog(screen, true)?.id === parsed.id;
+          if (responder === "pi-question" || responder === "pi-confirm") {
+            const dialog = parsePiDialog(screen, true);
+            return dialog?.id === parsed.id && (!onCursor || dialog.selectedIndex === cursor);
+          }
           // a fallback card is the screen's own (readPrompt draws it when no reader knows the screen): the same card by
           // what it asks and offers, whatever else ticked on the screen since (a spinner, a timer, a token count)
-          if (responder.startsWith("fallback")) return parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen))?.id === parsed.id;
+          if (responder.startsWith("fallback")) {
+            const card = parsedByPublicPrompt.get(parseFallbackPrompt(agent, screen));
+            return card?.id === parsed.id && (!onCursor || card.selectedIndex === cursor);
+          }
           return shown?.id === parsed.id && shown.question === parsed.question && shown.ompCall === parsed.ompCall
-            && shown.nativeSteps?.index === parsed.nativeSteps?.index;
+            && shown.nativeSteps?.index === parsed.nativeSteps?.index && (!onCursor || shown.selectedIndex === cursor);
         };
+        // Hermes's multi-select: every key, the ticks after the first and the Enter that locks them, is on the same
+        // question, so each is checked against it as the first was
+        const togglesInPlace = responder === "hermes-question" && body.option_indices !== undefined;
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
           const write = async (): Promise<void> => {
             const first = !move && !committed;
@@ -1894,9 +1906,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           // with, as before. pi's look is as it was (pi-ask's own check, awaited with the request's deadline).
           const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
           const guardUntil = agent === "pi" ? null : Date.now() + SETTLE_MS;
-          if (!committed) {
+          if (!committed || togglesInPlace) {
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
-            const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS, sameQuestion, () => ({ written: write() }),
+            const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
+            const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
+              (shown, screen) => sameQuestion(shown, screen, onCursor), () => ({ written: write() }),
               interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
@@ -1970,9 +1984,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             }
             // GJC's selector can close under the answer: its composer must not take the moves.
             if (move && walked && (list || reader?.reread === "each-move" || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();
-            if (!move && !committed) {
+            if (!move && (!committed || togglesInPlace)) {
               // The first irreversible step goes only once the menu shows the expected cursor.
-              // Later keys follow as before: the menu itself changes under them.
+              // Later keys follow as before: the menu itself changes under them (but for Hermes's ticks).
               if (moved && !(await onRow())) return promptChanged();
               if (request.signal.aborted) return promptChanged();
             }
