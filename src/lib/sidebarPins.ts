@@ -65,23 +65,26 @@ export function loadSidebarPins(): string[] {
 const SHARED_KEY = "ovis:sidebar-pins-shared";
 
 /**
- * The pins this browser last knew the server to hold (lib/preferencesSync.ts), or null while it has
- * known none. Kept with the pins, so a page opened again tells its own pins from ones removed
- * elsewhere meanwhile, instead of sending them back as new.
+ * The pins this browser last knew the server to hold (lib/preferencesSync.ts), with the revision of
+ * the document that held them; null while it has known none. Kept with the pins, so a page opened
+ * again tells its own pins from ones removed elsewhere meanwhile, instead of sending them back as new.
  */
-export function loadSharedPins(): string[] | null {
+export interface SharedPins { pins: string[]; revision: number }
+
+export function loadSharedPins(): SharedPins | null {
   try {
     const value = storage()?.getItem(SHARED_KEY);
     if (value === undefined || value === null) return null;
     const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === "string" && key.length > 0) : null;
+    if (typeof parsed !== "object" || parsed === null || !("pins" in parsed) || !("revision" in parsed) || !Array.isArray(parsed.pins) || typeof parsed.revision !== "number") return null;
+    return { pins: parsed.pins.filter((key): key is string => typeof key === "string" && key.length > 0), revision: parsed.revision };
   } catch { return null; }
 }
 
-export function saveSharedPins(keys: readonly string[] | null): void {
+export function saveSharedPins(shared: SharedPins | null): void {
   try {
-    if (keys === null) storage()?.removeItem(SHARED_KEY);
-    else storage()?.setItem(SHARED_KEY, JSON.stringify(keys));
+    if (shared === null) storage()?.removeItem(SHARED_KEY);
+    else storage()?.setItem(SHARED_KEY, JSON.stringify(shared));
   } catch { /* storage denied: the next page starts as one that has known none */ }
 }
 

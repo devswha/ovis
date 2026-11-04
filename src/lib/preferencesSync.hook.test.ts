@@ -486,6 +486,27 @@ describe("preferences sync real send path", () => {
     expect(store.get().pins).toEqual(["local:t1"]);
   });
 
+  it("a page opened again on a server started over that already holds other pins keeps its own too", async () => {
+    store.set({ settings: {}, pins: [] });
+    await open();
+    await windows();
+    await act(async () => { setSidebarPins(["local:t1"]); });
+    await send();
+    await act(async () => { for (const renderer of renderers.splice(0)) renderer.unmount(); });
+    clients.length = 0;
+    // the server starts over with a fresh state folder, and gets a pin from elsewhere first
+    rmSync(dir, { recursive: true, force: true });
+    dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
+    store = new PreferenceStore(dir);
+    store.set({ settings: {}, pins: ["local:t2"] });
+    store.subscribe((doc) => { for (const client of clients) client.receive(doc); });
+    const client = await open(DEFAULT_SETTINGS, true);
+    await windows();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await send();
+    expect(store.get().pins).toEqual(["local:t2", "local:t1"]);
+  });
+
   it("mute survives restart and another browser", async () => {
     const a = await open();
     await windows();
