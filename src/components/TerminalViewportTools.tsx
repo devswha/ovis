@@ -55,6 +55,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     let writing = false;
     let desired: number | null = null;
     let dirty = false;
+    // something other than output (a resize, a scroll, coming into view, a refresh) moved since the read began
+    let urgent = false;
     // metrics reads in a row with nothing in between that could move them: the poll backs off
     let idle = 0;
     let version = 0;
@@ -123,7 +125,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (!alive) return;
       if (pending || writing) { dirty = true; return; }
       if (!showing()) { idle = 0; schedule(1000); return; }
-      pending = true; dirty = false;
+      pending = true; dirty = false; urgent = false;
       const revision = version;
       const output = outputVersion;
       const cols = terminal.cols, rows = terminal.rows;
@@ -161,10 +163,10 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       } finally {
         pending = false;
         // an idle pane at the bottom backs off; output, a scroll, a resize, moved metrics or coming back into view resets it
-        if (alive) schedule(scrollPollDelay(dirty, idle++, scrollRef.current));
+        if (alive) schedule(scrollPollDelay(dirty, idle++, scrollRef.current, !urgent && !query));
       }
     };
-    const wake = () => { dirty = true; idle = 0; schedule(); };
+    const wake = () => { dirty = true; urgent = true; idle = 0; schedule(); };
     const flush = async () => {
       if (writing || desired === null || !alive || viewportIntent.isSearching()) return;
       writing = true;
@@ -227,8 +229,12 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       previewRef.current = null;
       clearHits();
     });
-    refreshRef.current = () => { dirty = true; idle = 0; paint(); schedule(0); };
-    const parsed = terminal.onWriteParsed(() => { outputVersion++; clearHits(); wake(); });
+    refreshRef.current = () => { dirty = true; urgent = true; idle = 0; paint(); schedule(0); };
+    // output alone: a view following the bottom only learns the history grew, so it reads at the follow pace
+    const parsed = terminal.onWriteParsed(() => {
+      outputVersion++; clearHits(); dirty = true; idle = 0;
+      schedule(scrollPollDelay(true, 0, scrollRef.current, !urgent && !query));
+    });
     const rendered = terminal.onRender(paintHits);
     const resized = terminal.onResize(() => { version++; clearHits(); setScroll(null); wake(); paint(); });
     const visibility = () => {
