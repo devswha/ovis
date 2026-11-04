@@ -153,8 +153,17 @@ const PROMPT_STALE_READS = 2;
  * the terminal, or asked by the pane's session before, is not drawn again. Another herdr's pane IDs
  * forget it (lib/paneLifetime.ts). */
 const lastPrompts = new Map<string, { machineId: string; session: string | null; prompt: InteractivePrompt }>();
+/** Text typed into each pane's card (by paneStorageId) and not sent, with the prompt it answers: once
+ * a read shows that question gone, it joins the composer's draft, also after the chat was drawn again. */
+const cardTexts = new Map<string, { machineId: string; paneId: string; promptId: string; text: string }>();
 paneLifetimes.onRetire((machineId) => {
   for (const [key, kept] of lastPrompts) if (kept.machineId === machineId) lastPrompts.delete(key);
+  // typed for the herdr that went: recovery offers it, the new herdr's pane under that ID never gets it
+  for (const [key, typed] of cardTexts) {
+    if (typed.machineId !== machineId) continue;
+    cardTexts.delete(key);
+    if (typed.text.trim() !== "") paneLifetimes.keep(machineId, typed.paneId, "message", typed.text);
+  }
 });
 const keptPrompt = (kept: { session: string | null; prompt: InteractivePrompt } | undefined, session: string | null): InteractivePrompt | null =>
   kept !== undefined && kept.session === session ? kept.prompt : null;
@@ -1281,7 +1290,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // the prompt whose answer went out, by its id: its card waits for the next read of the screen
   const [answeredPrompt, setAnsweredPrompt] = useState<string | null>(null);
   // what the user typed into the card's own answer field, and for which prompt
-  const cardText = useRef<{ promptId: string; text: string } | null>(null);
   const sessionRef = useRef(agentSession);
   sessionRef.current = agentSession;
   // Each prompt that appears is an occurrence of its own, and gets a card of its own. The prompt's
@@ -1458,7 +1466,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
     history.current = undefined; setHistoryId(undefined);
-    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); cardText.current = null; setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1511,6 +1519,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useEffect(() => {
     const seen = seenSession.current;
     seenSession.current = { pane: paneId, session: agentSession };
+    // and the card it shows is that session's question: it goes, and the screen is read again now
+    if (seen.pane === paneId && seen.session !== agentSession) { setPrompt(null); setPromptPollKey((key) => key + 1); }
     if (seen.pane === paneId && seen.session !== agentSession) setPollKey((key) => key + 1);
   }, [paneId, agentSession]);
 
@@ -1781,9 +1791,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // text typed into a card whose question is gone (answered in the terminal, often while offline)
     // is not lost: it joins the composer's draft, as other input typed offline waits there
     const keepCardText = (shown: string | null): void => {
-      const typed = cardText.current;
-      if (typed === null || typed.promptId === shown) return;
-      cardText.current = null;
+      const typed = cardTexts.get(promptKey);
+      if (typed === undefined || typed.promptId === shown) return;
+      cardTexts.delete(promptKey);
       if (typed.text.trim() !== "") composerDrafts.restorePending(composerDraftKey(promptKey), typed.text);
     };
     // a dropped connection says nothing about the screen either: the card stays until a read answers
@@ -1799,15 +1809,19 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // Keep unchanged prompts stable, but refresh navigation without replacing the card's edits.
       const sent = sentKeyRef.current;
       const session = sessionRef.current;
+      const lifetime = paneLifetimes.generation(machineId);
       let quick = false;
       try {
         const next = await fetchPanePromptState(paneId);
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
-          keepCardText(next.prompt?.id ?? null);
           setPrompt((current) => polledPrompt(current, next.prompt));
-          if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
+          // a read begun under a herdr that has gone since answers for nothing kept for the new one
+          if (paneLifetimes.generation(machineId) === lifetime) {
+            keepCardText(next.prompt?.id ?? null);
+            if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
+          }
           if (next.prompt === null && quickReads > 0) { quickReads -= 1; quick = true; } else quickReads = 0;
           setAnsweredPrompt(null);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
@@ -2471,13 +2485,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       input card, where PaneTerminal keeps its place. The prompt itself (its poll, the answer, the
       re-read) stays here. */}
   {prompt !== null && promptDock !== null && createPortal(
-    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} onTextChange={(text) => { cardText.current = { promptId: prompt.id, text }; }} onAnswered={(toMessageBox) => {
+    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} onTextChange={(text) => { cardTexts.set(paneStorageId(machineId, paneId), { machineId, paneId, promptId: prompt.id, text }); }} onAnswered={(toMessageBox) => {
       // the card reports only while it is the one shown; still, only its own prompt is cleared
       onPromptAnswered?.(toMessageBox);
       // the card stays, waiting, until the read below shows what the screen asks next: it never goes
       // and comes back between two questions of one form
       setAnsweredPrompt(prompt.id);
-      cardText.current = null;
       // and is not drawn again as open if the chat mounts again before that read (lastPrompts)
       lastPrompts.delete(paneStorageId(machineId, paneId));
       // a form of several questions goes on to its next one: read it now, not at the next poll

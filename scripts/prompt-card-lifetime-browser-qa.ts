@@ -1,7 +1,7 @@
 /**
  * Real ChatView and PromptCard over a loopback fixture server (#2590):
- * 1. a pane that comes back on another session shows no card from the session before, also while reads fail;
- * 2. an answer typed into the card while offline survives as the composer's draft once the question is gone;
+ * 1. a pane that comes back on another session, or moves to one while shown, shows no card from the session before, also while reads fail;
+ * 2. an answer typed into the card while offline, or before the Terminal lens, survives as the composer's draft once the question is gone;
  * 3. after herdr's blocked edge, a question drawn just after the first read shows well before the 2 s poll.
  */
 import assert from "node:assert/strict";
@@ -27,6 +27,8 @@ let server: ReturnType<typeof Bun.serve> | undefined;
 let answer: { prompt: InteractivePrompt | null } | "fail" = { prompt: null };
 let readWaiters: Array<() => void> = [];
 const nextRead = (): Promise<void> => new Promise((resolve) => { readWaiters.push(resolve); });
+// an answer the server holds open, as it does while it re-reads the screen to confirm it
+let heldAnswer: { arrived: () => void; release: Promise<void> } | null = null;
 try {
   const repo = join(import.meta.dir, ".."), output = join(root, "dist");
   symlinkSync(join(repo, "node_modules"), join(root, "node_modules"), "dir");
@@ -43,6 +45,10 @@ try {
       return response;
     }
     if (url.pathname === "/api/pane/conversation") return Response.json({ source: "claude-transcript", cursor: null, turns });
+    if (url.pathname === "/api/pane/prompt/answer" && heldAnswer !== null) {
+      const held = heldAnswer; heldAnswer = null; held.arrived();
+      return held.release.then(() => Response.json({ ok: true }));
+    }
     if (url.pathname === "/api/pane/commands") return Response.json({ commands: [] });
     if (url.pathname.startsWith("/api/")) return Response.json({ error: "not_found" }, { status: 404 });
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
@@ -87,6 +93,11 @@ try {
       answer = "fail";
       await setChat(page, { mounted: true });
       assert.equal(await card(page).getByText("SESSION-B: run the tests?").count(), 1, "the same session's card draws again at mount");
+      // the pane moves to another session while the chat is shown: the card goes, reads failing or not
+      const reread = nextRead();
+      await setChat(page, { agentSession: "session-c" });
+      await reread;
+      assert.equal(await card(page).count(), 0, "no card from the session before after a session change while shown");
       assert.deepEqual(errors, []);
       console.log("PASS a pane back on another session shows no card from the session before");
     } finally { await close(); }
@@ -106,6 +117,47 @@ try {
       assert.equal(draft, "my offline answer", "the typed answer is the composer's draft");
       assert.deepEqual(errors, []);
       console.log("PASS an answer typed offline survives as the composer's draft");
+    } finally { await close(); }
+  });
+
+  await scenario("typed before the Terminal lens", async () => {
+    answer = { prompt: question("e", "Which remote?") };
+    const { page, close, errors } = await open();
+    try {
+      await card(page).getByText("Which remote?").waitFor();
+      await card(page).locator(".prompt-card-custom input").fill("upstream please");
+      await setChat(page, { mounted: false });
+      answer = { prompt: null };
+      const read = nextRead();
+      await setChat(page, { mounted: true });
+      await read;
+      await page.waitForFunction(() => (window as unknown as { composerDraft: () => string }).composerDraft() === "upstream please");
+      assert.equal(await card(page).count(), 0);
+      assert.deepEqual(errors, []);
+      console.log("PASS an answer typed before the Terminal lens survives as the composer's draft");
+    } finally { await close(); }
+  });
+
+  await scenario("answer sent while the question goes", async () => {
+    answer = { prompt: question("f", "Which feature branch?") };
+    const { page, close, errors } = await open();
+    try {
+      await card(page).getByText("Which feature branch?").waitFor();
+      let release = (): void => {};
+      const arrived = new Promise<void>((resolve) => { heldAnswer = { arrived: resolve, release: new Promise((done) => { release = done; }) }; });
+      const input = card(page).locator(".prompt-card-custom input");
+      await input.fill("feature-x");
+      await input.press("Enter");
+      await arrived;
+      answer = { prompt: null };
+      await nextRead();
+      await card(page).waitFor({ state: "detached" });
+      release();
+      await page.waitForFunction(() => !document.querySelector(".prompt-card"));
+      const draft = await page.evaluate(() => (window as unknown as { composerDraft: () => string }).composerDraft());
+      assert.equal(draft, "", "a sent answer does not come back as a draft");
+      assert.deepEqual(errors, []);
+      console.log("PASS an answer sent while its question goes is not put back as a draft");
     } finally { await close(); }
   });
 

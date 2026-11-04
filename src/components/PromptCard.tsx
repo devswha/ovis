@@ -110,6 +110,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, onAn
     const coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
     setPending(true);
     setError(null);
+    // the typed text is on its way: a read that sees the question gone meanwhile keeps none of it
+    onTextChange?.("");
     try {
       await answerPanePrompt({ pane_id: paneId, prompt_id: prompt.id, ...choice });
       if (!shown.current) return false;
@@ -118,6 +120,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, onAn
       const active = document.activeElement;
       onAnswered(focusFollowsAnswer({ fromCard, origin, coarse, cardMounted: card !== null, inCard: card?.contains(active) === true, onPage: active === null || active === document.body }));
     } catch (cause) {
+      // not sent: the text is the user's again, also once this card is gone
+      onTextChange?.(custom);
       if (!shown.current) return false;
       // a card read before the question moved on: refused as changed (409), or as an answer it no longer fits (400).
       // The note stays until the card is replaced or answered again, so the button never looks dead
