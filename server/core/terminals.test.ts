@@ -72,18 +72,21 @@ for (const readOnly of [false, true]) for (const ready of [false, true]) {
 }
 
 // #2664 review: a herdr-core joiner's bounded tail may have lost the attach's clear, and the history it kept doubled;
-// a tail on the alternate screen keeps no history, and leaving that screen blanked what the tail restores
+// a tail on the alternate screen keeps no history, and leaving that screen blanked what the tail restores;
+// one that leaves it again reprinted the shell's lines after it into the history the joiner kept
 for (const [stream, cleared] of [
-  [`${coreAttach.CLEAR_HISTORY}whole stream`, false],
-  [`${coreAttach.CLEAR_HISTORY}${"h".repeat(2048)}main tail`, true],
-  [`\x1b[?1049h${"a".repeat(2048)}alternate tail`, false],
+  [`${coreAttach.CLEAR_HISTORY}whole stream`, "none"],
+  [`${coreAttach.CLEAR_HISTORY}${"h".repeat(2048)}main tail`, "ahead"],
+  [`\x1b[?1049h${"a".repeat(2048)}alternate tail`, "none"],
+  [`\x1b[?1049h${"a".repeat(2048)}\x1b[?1049lshell after`, "where it leaves"],
 ] as const) {
-  it(`clears a herdr-core joiner's kept history ahead of its replay only for a cut main-screen tail: ${stream.slice(-14)}`, async () => {
+  it(`clears a herdr-core joiner's kept history once in its cut tail (${cleared}): ${stream.slice(-14)}`, async () => {
     const frames = await join({ ready: true, replayPrefix: coreAttach.CLEAR_JOINER_HISTORY, retained: stream });
     const tail = new ReplayBuffer(1024);
     tail.append(stream);
     expect(frames.filter((frame) => frame.type === "pty-data")).toEqual([
-      { type: "pty-data", pane_id: "p", data: (cleared ? coreAttach.CLEAR_JOINER_HISTORY : "") + tail.text(), replay: true },
+      { type: "pty-data", pane_id: "p", data: cleared === "ahead" ? coreAttach.CLEAR_JOINER_HISTORY + tail.text()
+        : cleared === "where it leaves" ? tail.text().replace("\x1b[?1049l", coreAttach.CLEAR_JOINER_HISTORY) : tail.text(), replay: true },
     ]);
     // #2664 review: rows a cut tail of in-place updates never draws again stay on the joiner's screen
     expect(coreAttach.CLEAR_JOINER_HISTORY).not.toMatch(/\x1b\[[02]?J|\x1b\[H/);
