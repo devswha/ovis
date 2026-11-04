@@ -26,6 +26,8 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "削除",
+  "Remove {name}": "{name} を削除",
   "Save": "保存",
   "Goal": "目標",
   "Waiting for your answer": "回答待ち",
@@ -280,6 +282,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "バックグラウンドタスク {n} 件",
   "{n} background tasks": "バックグラウンドタスク {n} 件",
   "Try again": "再試行",
+  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
   "Rename tab": "タブの名前を変更",
@@ -333,6 +337,7 @@ const BASE: Record<string, string> = {
   "Weekly": "週次",
   "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
+  "differs": "不一致",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
