@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { CommandOutcome, ConversationTurn } from "../../shared/protocol.ts";
 import { translate } from "./i18n.ts";
-import { afterMove, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows } from "./outcomeChip.ts";
+import { afterMove, moveCommand, noteCatalogChanges, outcomeChip, outcomeCommand, outcomeLabel, outcomeNote, outcomeResultText, outcomeRows } from "./outcomeChip.ts";
 
 const en = (key: string, vars?: Record<string, string | number>): string => translate("en", key, vars);
 
@@ -84,29 +84,48 @@ describe("afterMove", () => {
   const sent = (id: string, text: string, second: number) => outcome({ id, text, created_at: `2026-10-20T10:00:${String(second).padStart(2, "0")}.000Z` });
   const compact = sent("compact", "/compact", 1), clear = sent("clear", "/clear", 3), after = sent("after", "/context", 4);
   const ids = (outcomes: readonly CommandOutcome[]) => outcomes.map((shown) => shown.id);
+  /** what ChatView shows for each list polled after the move: the first send found to make it is kept */
+  const shown = (lists: readonly (readonly CommandOutcome[])[], held: readonly CommandOutcome[], options: { entered?: string[]; turns?: ConversationTurn[] } = {}) => {
+    const move = { held, entered: new Set(options.entered ?? []) };
+    let made: CommandOutcome | null = null;
+    return [held, ...lists].map((outcomes) => {
+      made ??= moveCommand(outcomes, move);
+      return ids(afterMove(outcomes, move, made, options.turns ?? []));
+    });
+  };
 
   test("in the list held at the move, leaves out the sends before its newest /clear, /new or /resume, and all of them with none", () => {
-    const held = [after, clear, compact];
-    expect(ids(afterMove(held, held))).toEqual(["after", "clear"]);
-    const twice = [compact, sent("new", "/new", 2), clear];
-    expect(ids(afterMove(twice, twice))).toEqual(["clear"]);
+    expect(shown([], [after, clear, compact])).toEqual([["after", "clear"]]);
+    expect(shown([], [compact, sent("new", "/new", 2), clear])).toEqual([["clear"]]);
     // /clearly is another command
-    const none = [compact, sent("clearly", "/clearly", 2)];
-    expect(afterMove(none, none)).toEqual([]);
+    expect(shown([], [compact, sent("clearly", "/clearly", 2)])).toEqual([[]]);
   });
 
   test("in a later list, leaves out the sends before the move also when that list brings them first", () => {
-    const first = [compact, clear];
-    expect(ids(afterMove(first, [], first))).toEqual(["clear"]);
     // a /resume sent after the move did not move the chat: the sends before it stay
-    expect(ids(afterMove([clear, after, sent("resume", "/resume", 6)], [], first))).toEqual(["clear", "after", "resume"]);
+    expect(shown([[compact, clear], [clear, after, sent("resume", "/resume", 6)]], [])).toEqual([[], ["clear"], ["clear", "after", "resume"]]);
+  });
+
+  test("takes the move from a later list that lists it, not from an earlier poll's list without it", () => {
+    const done = { ...compact, state: "result-observed" as const };
+    expect(shown([[done], [done, clear]], [compact]).at(-1)).toEqual(["clear"]);
   });
 
   test("with no move listed (a /clear typed in the terminal), keeps a later list whole: a send to the new conversation shows", () => {
-    const held = [after];
-    expect(afterMove(held, held)).toEqual([]);
     const later = [{ ...after, state: "result-observed" as const }];
-    expect(afterMove(later, held, later)).toEqual(later);
+    expect(shown([later], [after])).toEqual([[], ["after"]]);
+  });
+
+  test("does not take the session change that brought the chat to the conversation it left for the move out of it", () => {
+    expect(shown([], [clear, after], { entered: ["clear"] })).toEqual([[]]);
+  });
+
+  test("after a /resume back, keeps the earlier sends whose turns are in the conversation it returned to", () => {
+    const context = sent("context", "/context", 1), resume = sent("resume", "/resume", 20);
+    const turns = [user("/context", "2026-10-20T10:00:01.000Z")];
+    expect(shown([[context, resume]], [clear], { turns }).at(-1)).toEqual(["context", "resume"]);
+    // a send to the conversation left, listed first after the move, has no turn here
+    expect(shown([[compact, clear]], [], { turns: [] }).at(-1)).toEqual(["clear"]);
   });
 });
 
