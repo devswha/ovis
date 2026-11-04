@@ -58,8 +58,8 @@ describe("usePaneCommands after a failed read", () => {
     await act(async () => { renderer = create(createElement(Probe, { pane: "w-stall:p1" })); });
     await settle(() => fetchSpy.mock.calls.length >= 1);
     stalled = false;
-    // the chat read deadline fails the quiet read, then the first retry asks again
-    await act(async () => { jest.advanceTimersByTime(15_000); });
+    // the read's deadline (past the server's own 45 s) fails the quiet read, then the first retry asks again
+    await act(async () => { jest.advanceTimersByTime(60_000); });
     await settle(() => false);
     await act(async () => { jest.advanceTimersByTime(2_000); });
     await settle(() => seen.length > 0);

@@ -1,7 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 
 import type { SlashCommand } from "../../shared/protocol.ts";
-import { observePaneSessions } from "./api.ts";
+import { observePaneSessions, paneSessionEvents, paneSessionsMoving } from "./api.ts";
 import { cachedPaneCommands, invalidatePaneCommands, onPaneCommandsInvalidated, paneCommandsNow } from "./paneCommandCache.ts";
 
 describe("cachedPaneCommands", () => {
@@ -116,7 +116,7 @@ describe("cachedPaneCommands", () => {
   });
 
   test("the same pane's agent in another session or folder asks for its own list, not the one on its way (#2593)", async () => {
-    const roster = (session: string, cwd: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "w6:p1", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: session }, cwd }] } }]);
+    const roster = (session: string, cwd: string, foreground_cwd?: string) => observePaneSessions([{ id: "local", snapshot: { panes: [{ pane_id: "w6:p1", agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: session }, cwd, foreground_cwd }] } }], paneSessionEvents());
     const resolvers: ((commands: SlashCommand[]) => void)[] = [];
     const fetchCommands = (): Promise<SlashCommand[]> => new Promise((resolve) => { resolvers.push(resolve); });
     try {
@@ -142,8 +142,17 @@ describe("cachedPaneCommands", () => {
       void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
       expect(resolvers.length).toBe(3);
       resolvers[2]!([]);
+      // the server lists the foreground folder's commands: a change of it alone is another list
+      roster("b", "/repo/c", "/repo/d");
+      void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      expect(resolvers.length).toBe(4);
+      // herdr said the panes changed: until the roster names them, no read joins one begun before
+      paneSessionsMoving("local");
+      void cachedPaneCommands("w6:p1", "local", "claude", fetchCommands);
+      expect(resolvers.length).toBe(5);
+      resolvers[3]!([]); resolvers[4]!([]);
     } finally {
-      observePaneSessions([{ id: "local", snapshot: { panes: [] } }]);
+      observePaneSessions([{ id: "local", snapshot: { panes: [] } }], paneSessionEvents());
     }
   });
 });

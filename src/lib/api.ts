@@ -529,7 +529,7 @@ export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">)
  * replaced another reuses its pane IDs, so the session is the herdr's too; a pane the roster no longer
  * lists has none.
  */
-export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session" | "cwd">[] } | null }[], readAfter?: number): void {
+export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session" | "cwd" | "foreground_cwd">[] } | null }[], readAfter?: number): void {
   for (const machine of machines) {
     if (machine.snapshot === null) continue;
     // only a roster read after the PC's last event names its panes' sessions now; one read before it (a poll
@@ -542,7 +542,8 @@ export function observePaneSessions(machines: readonly { id: string; snapshot: {
       listed.add(key);
       const session = `${machine.snapshot.herdr_lifetime ?? ""}\u0000${paneSessionKey(pane)}`;
       paneSessions.set(key, session);
-      paneCommandScopes.set(key, `${session}\u0000${pane.cwd ?? ""}`);
+      // the folder the server lists the pane's commands for (pane-context.ts)
+      paneCommandScopes.set(key, `${session}\u0000${pane.foreground_cwd ?? pane.cwd ?? ""}`);
     }
     for (const key of paneSessions.keys()) if (key.startsWith(paneKey("", machine.id)) && !listed.has(key)) paneSessions.delete(key);
     for (const key of paneCommandScopes.keys()) if (key.startsWith(paneKey("", machine.id)) && !listed.has(key)) paneCommandScopes.delete(key);
@@ -551,10 +552,11 @@ export function observePaneSessions(machines: readonly { id: string; snapshot: {
 
 /**
  * What a pane's slash commands are read for now: its session and folder as the roster last named them
- * (empty before it names the pane). The same pane running its agent in another project lists other skills.
+ * (empty before it names the pane), or its PC's moving token until the roster after a session change
+ * names them. The same pane running its agent in another project lists other skills.
  */
 export function paneCommandScope(paneId: string, machineId: string): string {
-  return paneCommandScopes.get(paneKey(paneId, machineId)) ?? "";
+  return movingSessions.get(machineId)?.token ?? paneCommandScopes.get(paneKey(paneId, machineId)) ?? "";
 }
 
 /**
@@ -1226,8 +1228,9 @@ export async function removeWorktree(request: RemoveWorktreeRequest, machineId =
 
 /** GET /api/pane/commands: the slash commands the pane's agent understands (built-in + custom). */
 export async function fetchPaneCommands(paneId: string, machineId = "local"): Promise<SlashCommand[]> {
-  // a read that never answers would be shared by every later caller for good: it fails at the chat's deadline instead
-  return (await withChatReadDeadline((signal) => getJson<{ commands: SlashCommand[] }>(machinePath(machineId, `pane/commands?pane_id=${encodeURIComponent(paneId)}`), { signal }), chatReadDeadlineMs(machineId))).commands;
+  // a read that never answers would be shared by every later caller for good: it fails at a deadline instead,
+  // past the 45 s the server waits for a scan before it answers 503 (server/commands.ts COMMANDS_WAIT_MS)
+  return (await withChatReadDeadline((signal) => getJson<{ commands: SlashCommand[] }>(machinePath(machineId, `pane/commands?pane_id=${encodeURIComponent(paneId)}`), { signal }), 4 * chatReadDeadlineMs(machineId))).commands;
 }
 
 /**
