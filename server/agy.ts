@@ -13,8 +13,9 @@ const MAX_ENTRIES = 100_000;
 const MAX_LINE = 16 * 1024 * 1024;
 const SCAN_BYTES = 32 * 1024 * 1024;
 // The catalog's database and WAL grow with the session's payloads, not its step count: a long
-// session passes 32 MiB during a turn (#2618). The copy is still bounded, and made only on change.
-const CATALOG_BYTES = 256 * 1024 * 1024;
+// session passes 32 MiB during a turn (#2618). The copy is synchronous and repeats while a turn
+// writes, so the bound stays near that size until it leaves the main thread (#2706).
+const CATALOG_BYTES = 64 * 1024 * 1024;
 const hash = (value: string): string => createHash("sha256").update(value).digest("base64url");
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export class AgyUnavailable extends Error { constructor() { super("Agy history is unavailable"); } }

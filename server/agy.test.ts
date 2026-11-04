@@ -62,9 +62,9 @@ it("reads a checkpointed WAL catalog without recreating missing side files", () 
 });
 
 it.each([
-  ["database", 256 * 1024 * 1024 + 1, 0],
-  ["WAL", 8192, 256 * 1024 * 1024 + 1],
-  ["combined", 128 * 1024 * 1024, 128 * 1024 * 1024 + 1],
+  ["database", 64 * 1024 * 1024 + 1, 0],
+  ["WAL", 8192, 64 * 1024 * 1024 + 1],
+  ["combined", 32 * 1024 * 1024, 32 * 1024 * 1024 + 1],
 ] as const)("rejects an oversized %s before copying the catalog", (_name, dbBytes, walBytes) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-catalog-limit-")));
   try {
