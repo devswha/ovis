@@ -43,7 +43,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
    * `<core id>/<terminal>` → the pin both sides last agreed on; `shells`, the agreed terminals seen
    * without an agent since, until an agent runs there again (kept on disk, as a restart may come between)
    */
-  const { agreed, shells } = readAgreed(agreedPath);
+  const { agreed, shells, pending } = readAgreed(agreedPath);
   /** each live terminal of the current core: whether its label says pinned, as last heard */
   const live = new Map<string, boolean>();
   /**
@@ -65,7 +65,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
 
   const saveAgreed = () => {
     try {
-      writeStateDocument(agreedPath, `${JSON.stringify({ ...Object.fromEntries(agreed), [SHELLS]: [...shells] })}\n`, false);
+      writeStateDocument(agreedPath, `${JSON.stringify({ ...Object.fromEntries(agreed), [SHELLS]: [...shells], [PENDING]: [...pending] })}\n`, false);
       unsaved = false;
     } catch (error) {
       unsaved = true;
@@ -73,8 +73,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     }
   };
   const setAgreed = (address: string, pinned: boolean) => {
+    const settled = pending.delete(agreedKey(address));
     if (agreed.get(agreedKey(address)) === pinned) {
-      if (unsaved) saveAgreed();
+      if (unsaved || settled) saveAgreed();
       return;
     }
     agreed.set(agreedKey(address), pinned);
@@ -147,6 +148,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // a write hc refused sends no event back
         const index = queued.indexOf(echo);
         if (index >= 0) queued.splice(index, 1);
+        // Ovis's change stays Ovis's, even once the terminal is a shell whose row the list prunes
+        const key = agreedKey(address);
+        if (agreed.has(key) && !pending.has(key)) { pending.add(key); saveAgreed(); }
         retry(address);
       }
     });
@@ -177,8 +181,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     const base = agreed.get(agreedKey(address));
     const ovis = listed(address);
     if (ovis || !labelPinned) leftOut.delete(address);
-    // back from a shell, Ovis's list may have pruned the row: only a pin there tells Ovis's side
-    const shell = shells.has(agreedKey(address)) && labelPinned === base;
+    // back from a shell, Ovis's list may have pruned the row: only a pin there tells Ovis's side,
+    // unless Ovis changed it itself and the label write failed
+    const shell = shells.has(agreedKey(address)) && labelPinned === base && !pending.has(agreedKey(address));
     const wanted = base === undefined || leftOut.has(address) || shell ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
     if (ovis !== wanted && !list(address, wanted)) {
       refused.add(address);
@@ -227,7 +232,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     clearTimeout(retries.get(address)?.timer);
     retries.delete(address);
     const shell = shells.delete(agreedKey(address));
-    if (agreed.delete(agreedKey(address)) || shell) saveAgreed();
+    const unwritten = pending.delete(agreedKey(address));
+    if (agreed.delete(agreedKey(address)) || shell || unwritten) saveAgreed();
   };
 
   const unsubscribe = store.subscribe((preferences) => {
@@ -287,7 +293,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       leftOut.clear();
       const shown = new Set(result.terminals.filter((terminal) => terminal.state === "live").map((terminal) => agreedKey(terminal.address)));
       let pruned = false;
-      for (const key of agreed.keys()) if (key.startsWith(`${core}/`) && !shown.has(key)) { agreed.delete(key); shells.delete(key); pruned = true; }
+      for (const key of agreed.keys()) if (key.startsWith(`${core}/`) && !shown.has(key)) { agreed.delete(key); shells.delete(key); pending.delete(key); pruned = true; }
       if (pruned) saveAgreed();
       // every terminal known before any is settled, so a list started for one holds the others' pins
       for (const terminal of result.terminals) {
@@ -321,18 +327,20 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
 
 /** the key in herdr-core-pins.json listing `shells`; never a terminal's, which holds a `/` */
 const SHELLS = "shells";
+/** the key listing agreed terminals whose last label write of Ovis's change failed */
+const PENDING = "pending";
 
-function readAgreed(path: string): { agreed: Map<string, boolean>; shells: Set<string> } {
+function readAgreed(path: string): { agreed: Map<string, boolean>; shells: Set<string>; pending: Set<string> } {
   try {
     const read = readStateDocument(path);
     if (read.kind === "json" && isRecord(read.value)) {
       const agreed = new Map(Object.entries(read.value).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
       const listed = read.value[SHELLS];
-      const shells = Array.isArray(listed) ? listed.filter((key): key is string => typeof key === "string" && agreed.has(key)) : [];
-      return { agreed, shells: new Set(shells) };
+      const keys = (value: unknown) => Array.isArray(value) ? value.filter((key): key is string => typeof key === "string" && agreed.has(key)) : [];
+      return { agreed, shells: new Set(keys(listed)), pending: new Set(keys(read.value[PENDING])) };
     }
   } catch (error) {
     console.warn(`herdr-core: could not read ${path}; pins are settled as if first seen:`, error);
   }
-  return { agreed: new Map(), shells: new Set() };
+  return { agreed: new Map(), shells: new Set(), pending: new Set() };
 }

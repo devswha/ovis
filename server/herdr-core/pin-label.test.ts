@@ -337,6 +337,29 @@ describe("bridgePins", () => {
     expect(core.written).toEqual([{ terminal: "t1", labels: { "herdr.pinned": "1" } }, { terminal: "t2", labels: { "herdr.pinned": "1" } }]);
   });
 
+  it("keeps an unpin made in Ovis whose label write failed, of a terminal that came back a shell, once an agent runs there again", async () => {
+    const dir = stateDir();
+    const preferences = store(dir, ["local:t1"]);
+    const terminals: Held[] = [{ address: "t1", state: "live", labels: { "herdr.pinned": "1" } }];
+    const core = fakeCore(terminals);
+    const pins = bridge(core, preferences, dir);
+    await core.opened();
+    await pins.idle();
+    // hc is away: the unpin's label write fails, and t1's agent quits meanwhile
+    core.state.failing = true;
+    preferences.set({ settings: {}, pins: [] });
+    await pins.idle();
+    terminals[0]!.status = null;
+    await core.drop();
+    await pins.idle();
+    core.state.failing = false;
+    core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+    await pins.idle();
+    expect(preferences.get().pins).toEqual([]);
+    expect(terminals[0]!.labels).toEqual({});
+    expect(core.written).toEqual([{ terminal: "t1", labels: { "herdr.pinned": "" } }]);
+  });
+
   it("keeps the last of a quick pin and unpin, whatever order hc's answer and event come in", async () => {
     const dir = stateDir();
     const preferences = store(dir, []);
