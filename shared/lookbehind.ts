@@ -1,5 +1,5 @@
 /**
- * Safari before 16.4 cannot parse a lookbehind (`(?<=`, `(?<!`), and one in a module stops the
+ * Safari before 16.4 cannot parse a lookbehind (`(?<` then `=` or `!`), and one in a module stops the
  * whole app from loading there (#2534). So no pattern of the client has one: the character before
  * a match is matched with it (`(?:^|[^…])(…)`, the match proper a group) where that character can
  * never be the end of the match before, or else asked about in code, with `charBefore`.

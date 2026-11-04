@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fail, lineOf, files as scan, read, repo, stripComments } from "../scripts/source-scan.ts";
+import { fail, lineOf, files as scan, read, repo } from "../scripts/source-scan.ts";
 
 // Client conventions from AGENTS.md and src/AGENTS.md that used to be prose only. Each failure
 // says what to change; server rules are in server/conventions.test.ts, repo-wide ones in
@@ -190,7 +190,8 @@ describe("regular expressions", () => {
   // loading there (#2534); the build does not rewrite regular expressions.
   it("use no lookbehind in the client's code", () => {
     const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("shared/**/*.ts")].filter((name) => !/\.test\./.test(name)).flatMap((file) => {
-      const source = stripComments(read(file));
+      // read as written: comment stripping takes a `/*` in a regex class for a comment and hides what follows
+      const source = read(file);
       return [...source.matchAll(/\(\?<[=!]/g)].map((match) => `${file}:${lineOf(source, match.index)}`);
     });
     fail(offenders, "No lookbehind ((?<= or (?<!) in the client: match the character before with the pattern, or check it in code (shared/lookbehind.ts).");
