@@ -298,8 +298,10 @@ describe("herdr-core adapter", () => {
     core.notify(channel, "event", { seq: 3, type: "status", terminal: "vps/t2", data: { status: { app: "codex", state: "working" } } });
     core.notify(channel, "event", { seq: 4, type: "labels", terminal: "vps/t2", data: { labels: { "herdr.seen": "0" } } });
     core.notify(channel, "event", { seq: 5, type: "finished", terminal: "vps/t2", data: { reason: "exited", exit_code: 0 } });
-    core.notify(channel, "event", { seq: 6, type: "created", terminal: "t4", data: { address: "t4", state: "live", turn: 0 } });
-    core.notify(channel, "missed", { seq: 7, terminals: [] });
+    // the other machine's own Herdr app document, as hc tells it: its machine, no terminal
+    core.notify(channel, "event", { seq: 6, type: "doc", machine: "vps", data: { name: "herdr-app", version: 1 } });
+    core.notify(channel, "event", { seq: 7, type: "created", terminal: "t4", data: { address: "t4", state: "live", turn: 0 } });
+    core.notify(channel, "missed", { seq: 8, terminals: [] });
     await ended.promise;
     // this PC's own new terminal still comes through, after the other machine's events that came first
     expect(frames).toEqual([{ event: "pane.created", data: { type: "pane_created", pane_id: "t4" } }]);

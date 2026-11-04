@@ -598,7 +598,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
 }
 
 /** One hc event notification (herdr-core schema/README.md, Events). */
-interface HcEvent { type: string; terminal?: string; data?: Record<string, unknown> }
+/** `machine`: the other machine an event is about (a `doc` there names no terminal); none for this core's own */
+interface HcEvent { type: string; terminal?: string; machine?: string; data?: Record<string, unknown> }
 
 /** A status report as hc sends it in a record or a `status` event; null when it is none. */
 function statusOf(reported: unknown): HcStatus | null {
@@ -683,7 +684,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
   const reported = new Map<string, string>();
   const onEvent = (event: HcEvent) => {
     // another machine's terminal is none of this PC's panes (snapshot.ts `onOtherMachine`)
-    if (event.terminal !== undefined && onOtherMachine(event.terminal)) return;
+    if (event.machine !== undefined || (event.terminal !== undefined && onOtherMachine(event.terminal))) return;
     if (early) { early.push(event); return; }
     const paneId = event.terminal;
     switch (event.type) {
@@ -765,7 +766,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     if (message["method"] === "missed") { end(); return; }
     const params = message["params"];
     if (message["method"] !== "event" || !isRecord(params) || typeof params["type"] !== "string") return;
-    onEvent({ type: params["type"], ...(typeof params["terminal"] === "string" ? { terminal: params["terminal"] } : {}), ...(isRecord(params["data"]) ? { data: params["data"] } : {}) });
+    onEvent({ type: params["type"], ...(typeof params["terminal"] === "string" ? { terminal: params["terminal"] } : {}), ...(typeof params["machine"] === "string" ? { machine: params["machine"] } : {}), ...(isRecord(params["data"]) ? { data: params["data"] } : {}) });
   }, () => {
     socket.data.unsubscribe?.();
     send(socket, `${JSON.stringify({ id: request.id, error: { code: "bad_frame", message: `hc event line exceeds ${EVENT_LINE_BYTES} bytes` } })}\n`, true);
