@@ -31,11 +31,13 @@ mac:
   artifactName: Ovis-${version}-${arch}.${ext}
   # Developer ID signing from CSC_LINK + CSC_KEY_PASSWORD or CSC_NAME, and notarization from
   # APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER (scripts/notarize-dmg.mjs); unsigned without them.
-  # Every Mach-O inside is signed, the bundled hc, Bun and PTY host included, with the inherit plist.
+  # The app takes build/entitlements.mac.plist and everything else inside build/entitlements.mac.inherit.plist,
+  # found by name. Resources holds the server's files too: sign only its programs (hc, Bun, the PTY host)
+  # and native modules, not every data file in them. A new Mach-O there that this misses fails notarization.
+  signIgnore:
+    - '/Contents/Resources/(?!ovis/bin/|ovis/server/bin/)(?!.*(\.node|\.dylib|/spawn-helper)$)'
   hardenedRuntime: true
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.inherit.plist
   extendInfo:
     NSMicrophoneUsageDescription: Ovis uses the microphone for dictation.
 dmg:
