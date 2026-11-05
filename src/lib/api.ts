@@ -748,14 +748,14 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
   const { response, body } = await withChatReadDeadline(async (signal) => {
     const response = await apiFetch(requestUrl, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
     // as it arrived, whatever becomes of its body: its time bounds this browser's clock against the PC's
-    const received = performance.now();
+    const received = performance.now(), receivedWall = Date.now();
     if (response.status === 304 && known) {
-      observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time"), received);
+      observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time"), received, receivedWall);
       return { response, body: known.body };
     }
     if (!response.ok) throw await errorFrom(url, response);
     const body = (await response.json()) as ConversationResponse;
-    observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time") ?? body.server_time, received);
+    observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time") ?? body.server_time, received, receivedWall);
     return { response, body };
   }, chatReadDeadlineMs(machineId), page.signal).catch((cause: unknown) => {
     // a failed read gives up what it held of the pages' order: a later read is the newest again

@@ -224,6 +224,22 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("counts a sleep the monotonic clock missed: another device's identical turn during it is not this send's", () => {
+    const key = waitingKey("local", "slept");
+    const pc = Date.parse("2026-11-05T10:00:00Z");
+    try {
+      settleWaitingSends(key, [], pc, true);
+      observeWaitingClock(key, new Date(pc).toISOString(), 1_000, pc);
+      // the phone slept an hour: its wall clock went on, its monotonic clock a second. It sends on waking,
+      // before a read is answered; another device wrote the same words 10 s before
+      rememberWaitingSend(key, "repeat", pc + 3_600_000, waitingBaseline(key, 2_000, pc + 3_600_000));
+      settleWaitingSends(key, [user("repeat", pc + 3_590_000)], pc + 3_600_300, true);
+      expect(currentWaitingSends(key).map((send) => send.text)).toEqual(["repeat"]);
+      settleWaitingSends(key, [user("repeat", pc + 3_590_000), user("repeat", pc + 3_600_200)], pc + 3_600_500, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("allows for the two clocks drifting apart since the chat's last read", () => {
     const key = waitingKey("local", "clock-drift");
     const pc = Date.parse("2026-11-05T10:00:00Z");
@@ -421,7 +437,7 @@ describe("waitingText", () => {
         settleWaitingSends(key, [user("earlier", 1)], 10, true);
         rememberWaitingSend(key, "next", 20, waitingBaseline(key));
       }
-      const baselines = keys.map(waitingBaseline);
+      const baselines = keys.map((key) => waitingBaseline(key));
       clearMachineWaitingSends("cleanup-PC");
       expect(keys.map((key) => currentWaitingSends(key).length)).toEqual([0, 0, 1]);
       for (const [index, key] of keys.entries()) expect(waitingBaseline(key)).toEqual(baselines[index]!);
@@ -440,12 +456,12 @@ describe("waitingText", () => {
         settleWaitingSends(key, [user("earlier", 1)], 10, true);
         rememberWaitingSend(key, "next", 20, waitingBaseline(key));
       }
-      const baselines = keys.map(waitingBaseline);
+      const baselines = keys.map((key) => waitingBaseline(key));
       pruneWaitingSends(roster("connected", { panes: [{ pane_id: "closed" }, { pane_id: "active" }, { pane_id: "sibling" }] } as Machine["snapshot"]));
       expect(waitingBaseline(keys[4]!)).toEqual(baselines[4]!);
       for (const machines of [[], roster("disconnected", snapshot), roster("connecting", snapshot), roster("reconnecting", snapshot), roster("error", snapshot), roster("connected", null)]) {
         pruneWaitingSends(machines);
-        expect(keys.map(waitingBaseline)).toEqual(baselines);
+        expect(keys.map((key) => waitingBaseline(key))).toEqual(baselines);
         expect(keys.map((key) => currentWaitingSends(key).length)).toEqual([1, 1, 1, 1, 1]);
       }
       pruneWaitingSends(roster("connected", snapshot));

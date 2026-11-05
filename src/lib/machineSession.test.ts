@@ -333,6 +333,24 @@ describe("PC connection ownership", () => {
     } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
   });
 
+  it("settles a row by the PC's stamp though its chat never read the pane, with this browser's clock a minute ahead", () => {
+    const { session, socket } = setup("unread-stamp-pc");
+    const key = waitingKey("unread-stamp-pc", "w1:p1");
+    const pc = Date.parse("2026-11-05T10:00:00Z");
+    const user = (text: string, at: number) => ({ role: "user" as const, ts: new Date(at).toISOString(), parts: [{ kind: "text" as const, text }] });
+    const clock = spyOn(Date, "now").mockReturnValue(pc + 60_000);
+    try {
+      start(session, socket);
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [{ ...message("p1", "sending"), sending_at: new Date(pc).toISOString() }] });
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], removed: [{ id: "p1", outcome: "sent" }] });
+      // the chat opens on the pane after the row went out: another device's same words before it, then its own turn
+      settleWaitingSends(key, [user("review this next", pc - 300)], pc + 60_500, true);
+      expect(currentWaitingSends(key)).toHaveLength(1);
+      settleWaitingSends(key, [user("review this next", pc - 300), user("review this next", pc + 400)], pc + 60_600, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { clock.mockRestore(); forgetWaitingSends(key); session.close(); }
+  });
+
   // sent through another connection: this one never saw it go out, and its turn may be read already
   it("keeps no waiting message for a row removed as sent that this connection never saw sending", () => {
     const { session, socket } = setup("elsewhere-pc");

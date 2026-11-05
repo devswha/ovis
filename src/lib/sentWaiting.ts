@@ -68,6 +68,9 @@ const turnTime = (turn: Turn): number => turn.ts === null ? Number.NaN : Date.pa
  */
 const CLOCK_DRIFT = 0.001;
 
+/** How far the wall clock may run ahead of the monotonic one, past drift, before the device is taken to have slept. A step of the wall clock past it counts the same, as the wall clock alone did before. */
+const SLEEP_SLACK_MS = 2_000;
+
 /**
  * `answeredAt`: the newest time of the turns written after this one, NaN when none is dated.
  * `last`: it is the last of the turns read, nothing after it, dated or not.
@@ -113,7 +116,7 @@ const waiting = new Map<string, WaitingPane>();
 /** the user turns each pane's chat showed last, for the baseline of its next send */
 const shown = new Map<string, Omit<WaitingBaseline, "pcFloor">>();
 /** each pane's last answered read: the PC's clock as it answered, and this browser's monotonic clock as it arrived */
-const clocks = new Map<string, { pcTime: number; received: number }>();
+const clocks = new Map<string, { pcTime: number; received: number; receivedWall: number }>();
 const listedPanes = new Map<string, ReadonlySet<string>>();
 const empty: readonly WaitingSend[] = [];
 const listeners = new Set<() => void>();
@@ -144,26 +147,32 @@ function userTurns(turns: readonly Turn[]): { turn: Turn; key: string; answeredA
 
 /**
  * What the pane's chat holds now; take it before submitting, as `at` is. `now`: this browser's
- * monotonic clock (performance.now), which a wall clock step does not move.
+ * monotonic clock (performance.now), which a wall clock step does not move; `wall` its wall clock.
  */
-export function waitingBaseline(key: string, now = performance.now()): WaitingBaseline | null {
+export function waitingBaseline(key: string, now = performance.now(), wall = Date.now()): WaitingBaseline | null {
   const turns = shown.get(key);
   if (turns === undefined) return null;
   const clock = clocks.get(key);
+  if (clock === undefined) return { ...turns, pcFloor: null };
+  const counted = Math.max(0, now - clock.received), walked = wall - clock.receivedWall;
+  // Many browsers stop the monotonic clock while the device sleeps, though the PC's clock goes on: once
+  // the wall clock went on further than the two can drift apart, it is the one that counted the sleep
+  const passed = walked > counted + SLEEP_SLACK_MS + counted * CLOCK_DRIFT ? walked : counted;
   // the PC's clock went on at least as fast as this one, less what the two may drift apart
-  return { ...turns, pcFloor: clock === undefined ? null : clock.pcTime + Math.max(0, now - clock.received) * (1 - CLOCK_DRIFT) };
+  return { ...turns, pcFloor: clock.pcTime + passed * (1 - CLOCK_DRIFT) };
 }
 
 /**
  * A read of the pane was answered (a 304 too): `serverTime` is the PC's clock as it answered
  * (ConversationResponse.server_time, or the `x-server-time` header), `received` this browser's
- * monotonic clock as the answer arrived. Each answer replaces those that arrived before it: a PC whose
- * clock was set back is bounded by its clock now, and an older read whose body was parsed late does
- * not bring its time back. Without a time (an older bridge) the last one stays.
+ * monotonic clock as the answer arrived and `receivedWall` its wall clock then. Each answer replaces
+ * those that arrived before it: a PC whose clock was set back is bounded by its clock now, and an older
+ * read whose body was parsed late does not bring its time back. Without a time (an older bridge) the
+ * last one stays.
  */
-export function observeWaitingClock(key: string, serverTime: string | null | undefined, received = performance.now()): void {
+export function observeWaitingClock(key: string, serverTime: string | null | undefined, received = performance.now(), receivedWall = Date.now()): void {
   const pcTime = serverTime == null ? Number.NaN : Date.parse(serverTime);
-  if (Number.isFinite(pcTime) && !((clocks.get(key)?.received ?? Number.NEGATIVE_INFINITY) > received)) clocks.set(key, { pcTime, received });
+  if (Number.isFinite(pcTime) && !((clocks.get(key)?.received ?? Number.NEGATIVE_INFINITY) > received)) clocks.set(key, { pcTime, received, receivedWall });
 }
 
 export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null): void {

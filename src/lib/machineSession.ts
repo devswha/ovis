@@ -84,10 +84,11 @@ export class MachineSession {
         for (const item of message.messages) {
           if (item.state === "sending" && !this.going.has(item.id)) {
             // that frame can come after the row's Enter (replayed after a reconnect, or handled late): the
-            // PC's clock now would bound it too tightly, but the PC stamped the row before typing it. An
-            // older bridge does not: only the turns' times do then
+            // PC's clock now would bound it too tightly, but the PC stamped the row before typing it, which
+            // bounds it though the chat never read the pane. An older bridge does not: only the turns' times do then
             const after = waitingBaseline(key), stamped = item.sending_at === undefined ? Number.NaN : Date.parse(item.sending_at);
-            this.going.set(item.id, { at: Date.now(), after: after === null ? null : { ...after, pcFloor: Number.isFinite(stamped) ? stamped : null } });
+            const pcFloor = Number.isFinite(stamped) ? stamped : null;
+            this.going.set(item.id, { at: Date.now(), after: after !== null ? { ...after, pcFloor } : pcFloor === null ? null : { keys: new Set(), latest: null, takenAt: Date.now(), pcFloor } });
           }
           else if (item.state === "queued" || item.state === "held") this.going.delete(item.id);
         }
