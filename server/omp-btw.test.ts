@@ -83,6 +83,32 @@ describe("ompBtwTopics", () => {
     expect(ompBtwTopics(linked)).toEqual([]);
   });
 
+  it("keeps what it answers and remembers to a bounded amount of text, the most recently written first", () => {
+    const { transcript, history } = session("wordy");
+    for (let index = 0; index < 40; index++) {
+      save(history, { ...topic(`w${index}`, 1000 + index), answer: "a".repeat(150 * 1024) });
+      const written = new Date(Date.UTC(2026, 10, 1) + index * 1000);
+      utimesSync(join(history, `entry-w${index}.json`), written, written);
+    }
+    for (let poll = 0; poll < 3; poll++) {
+      const read = ompBtwTopics(transcript);
+      expect(read.length).toBeLessThan(40);
+      expect(read.reduce((sum, found) => sum + found.answer.length, 0)).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(read[0]?.id).toBe("w39");
+    }
+  });
+
+  it("reads a topic again when its file is replaced, even at the same size and time", () => {
+    const { transcript, history } = session("replaced");
+    const when = new Date(Date.UTC(2026, 10, 1));
+    save(history, { ...topic("r1", 1), answer: "first" });
+    utimesSync(join(history, "entry-r1.json"), when, when);
+    expect(ompBtwTopics(transcript)[0]?.answer).toBe("first");
+    save(history, { ...topic("r1", 1), answer: "again" });
+    utimesSync(join(history, "entry-r1.json"), when, when);
+    expect(ompBtwTopics(transcript)[0]?.answer).toBe("again");
+  });
+
   it("answers none for a session that never used /btw", () => {
     const transcript = join(root, "quiet.jsonl");
     writeFileSync(transcript, "");

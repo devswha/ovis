@@ -7,8 +7,8 @@
  * are another conversation. A record is taken only as OMP itself would load it (a regular file, its
  * exact fields, its id matching its name); anything else is skipped, and so is a history reached
  * through a linked folder. A question may carry pictures, so a read is bounded: the hundred most
- * recently written topics, a byte budget, and a record kept until its file changes, since the chip
- * asks again every few seconds. Statuses are shown as saved:
+ * recently written topics, a budget of bytes read and of words kept and answered, and a record kept
+ * until its file changes, since the chip asks again every few seconds. Statuses are shown as saved:
  * a reader cannot tell a topic still being answered from one whose writer stopped. Pictures attached
  * to a question are not sent. The dispatcher in index.ts runs the access gate first.
  */
@@ -18,13 +18,18 @@ import type { OmpBtwExchange, OmpBtwTopic } from "../shared/protocol.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 
 const MAX_TOPICS = 100;
-/** a topic whose question carries pictures is larger than its words; OMP sets no bound, these keep a read cheap */
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
+/** a topic whose question carries pictures is larger than its words: the files read in one request, by size */
 const MAX_READ_BYTES = 32 * 1024 * 1024;
+/** the words kept and answered for one history, cached records included */
+const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_TITLE_BYTES = 4096;
-/** the histories read lately: by folder, each topic file's record as of its size and time */
+/** the histories read lately: by folder, each topic file's record as of that file's identity, size and times */
 const MAX_CACHED_HISTORIES = 16;
-type Cached = { size: number; mtimeMs: number; topic: Omit<OmpBtwTopic, "title"> | null };
+type Stamp = { size: number; mtimeMs: number; ctimeMs: number; ino: number };
+type Cached = Stamp & { topic: Omit<OmpBtwTopic, "title"> | null; text: number };
+const same = (a: Stamp, b: Stamp): boolean => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.ino === b.ino;
+const textOf = (topic: Omit<OmpBtwTopic, "title"> | null): number => topic === null ? 0
+  : [topic, ...topic.follow_ups].reduce((sum, exchange) => sum + exchange.question.length + exchange.answer.length + (exchange.error?.length ?? 0), 0);
 const cache = new Map<string, Map<string, Cached>>();
 const ENTRY = /^entry-([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\.json$/;
 const STATUSES = new Set<string>(["running", "complete", "cancelled", "error", "interrupted"]);
@@ -78,9 +83,10 @@ export function ompBtwTopics(transcript: string): OmpBtwTopic[] {
   const directory = join(artifacts, "btw-history");
   let names: string[];
   try {
-    if (!folder(artifacts) || !folder(directory)) return [];
+    if (!folder(artifacts) || !folder(directory)) throw new Error("no history folder");
     names = readdirSync(directory);
   } catch {
+    cache.delete(directory);
     return [];
   }
   const files = names.flatMap((name) => {
@@ -88,7 +94,7 @@ export function ompBtwTopics(transcript: string): OmpBtwTopic[] {
     if (id === undefined) return [];
     try {
       const stat = lstatSync(join(directory, name));
-      return stat.isFile() ? [{ name, id, size: stat.size, mtimeMs: stat.mtimeMs }] : [];
+      return stat.isFile() ? [{ name, id, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino }] : [];
     } catch {
       return [];
     }
@@ -96,12 +102,21 @@ export function ompBtwTopics(transcript: string): OmpBtwTopic[] {
   const known = cache.get(directory);
   const kept = new Map<string, Cached>();
   let budget = MAX_READ_BYTES;
+  let text = 0;
   for (const file of files) {
     const before = known?.get(file.name);
-    if (before && before.size === file.size && before.mtimeMs === file.mtimeMs) { kept.set(file.name, before); continue; }
-    if (file.size > MAX_FILE_BYTES || file.size > budget) continue;
-    budget -= file.size;
-    kept.set(file.name, { size: file.size, mtimeMs: file.mtimeMs, topic: topicOf(join(directory, file.name), file.id) });
+    let entry: Cached;
+    if (before && same(before, file)) entry = before;
+    else {
+      if (file.size > budget) continue;
+      budget -= file.size;
+      const topic = topicOf(join(directory, file.name), file.id);
+      entry = { size: file.size, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, topic, text: textOf(topic) };
+    }
+    // the most recently written first: once the words reach the bound, older topics are left out and not kept
+    if (text + entry.text > MAX_TEXT_BYTES) break;
+    text += entry.text;
+    kept.set(file.name, entry);
   }
   cache.delete(directory);
   cache.set(directory, kept);
