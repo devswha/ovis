@@ -40,24 +40,24 @@ afterAll(() => {
   }
 });
 
-test("only lines a program writes are announced: not a scroll back through history, nor a screen rebuilt at a new font size (#2963)", async () => {
+test("only lines a program writes are announced: not a scroll back through history, nor a screen rebuilt at a new size (#2963)", async () => {
   const COLS = 40, ROWS = 6;
   screen.box = { width: COLS * 8, height: ROWS * 16 };
-  const listeners = { render: [] as (() => void)[], scroll: [] as (() => void)[] };
+  const listeners = { render: [] as (() => void)[], scroll: [] as (() => void)[], resize: [] as (() => void)[] };
   const on = (list: (() => void)[]) => (listener: () => void) => { list.push(listener); return { dispose: () => {} }; };
   const buffer = { baseY: 0, viewportY: 0 };
   const term: any = {
     cols: COLS, rows: ROWS, element: screen, buffer: { active: buffer },
     options: { fontFamily: "monospace", fontSize: 13, theme: {}, scrollback: 100 },
     write: () => {}, reset: () => {}, refresh: () => {},
-    onResize: on([]), onRender: on(listeners.render), onScroll: on(listeners.scroll),
+    onResize: on(listeners.resize), onRender: on(listeners.render), onScroll: on(listeners.scroll),
   };
   const host = new FakeElement();
   const history = Array.from({ length: 30 }, (_, i) => `OLD-${i}\r\n`).join("");
   const overlay = await attachGhosttyOverlay(term, host as unknown as HTMLElement, () => [history]);
   try {
     const announcer = screen.children[0]!.children.find((child) => child.hasAttribute("aria-live"))!;
-    const frame = (listener: "render" | "scroll"): string => {
+    const frame = (listener: "render" | "scroll" | "resize"): string => {
       for (const callback of listeners[listener]) callback();
       flush();
       return announcer.textContent;
@@ -80,6 +80,22 @@ test("only lines a program writes are announced: not a scroll back through histo
     expect(frame("render")).toBe("HELLO");
     term.write("WORLD\r\n");
     expect(frame("render")).toBe("WORLD");
+
+    // a line printed as the font changes, before the frame that draws both, is still announced
+    term.write("DURING\r\n");
+    term.options.fontSize = 13;
+    screen.box = { width: COLS * 8, height: ROWS * 16 };
+    expect(frame("render")).toBe("DURING");
+
+    // a pane that gets shorter and back again announces only the next line, not the rows it had hidden
+    term.rows = 4;
+    screen.box = { width: COLS * 8, height: 4 * 16 };
+    frame("resize");
+    term.rows = ROWS;
+    screen.box = { width: COLS * 8, height: ROWS * 16 };
+    expect(frame("resize")).toBe("DURING");
+    term.write("AGAIN\r\n");
+    expect(frame("render")).toBe("AGAIN");
   } finally {
     overlay?.dispose();
   }

@@ -99,8 +99,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   screen.append(layer);
 
   let rowEls: HTMLDivElement[] = [];
+  // each row's text, kept with rowHtml through a rebuild: a row the next frame leaves alone is not new (#2963)
   let rowText: string[] = [];
-  // the screen a pane opens on, or is rebuilt to, is what is there already: read, not announced
+  // the screen a pane opens on is what is there already: read, not announced
   let primed = false;
   // bytes reached libghostty since the last frame: a frame without any only scrolled the view, which announces nothing
   let written = false;
@@ -139,9 +140,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
 
   const rebuildRows = (): void => {
     text.textContent = "";
-    // the rebuilt rows show rowHtml, so their text stays: a row the next frame leaves alone is not new (#2963)
-    rowText = rowText.slice(0, term.rows);
-    primed = false;
     rowEls = [];
     for (let y = 0; y < term.rows; y++) {
       const row = document.createElement("div");
@@ -264,7 +262,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
     const buffer = term.buffer.active;
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
-    const before = [...rowText];
+    const before = rowText.slice(0, term.rows);
     const changed = vt.frame((y, runs) => {
       const row = rowEls[y];
       if (!row) return;
@@ -276,7 +274,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       rowHtml[y] = html;
       rowText[y] = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
     });
-    if (primed && written) announce(newLines(before, rowText));
+    if (primed && written) announce(newLines(before, rowText.slice(0, term.rows)));
     primed = true;
     written = false;
     if (changed) {
