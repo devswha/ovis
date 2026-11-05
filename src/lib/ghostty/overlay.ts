@@ -216,7 +216,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     return width;
   };
-  const fittedCell = (text: string, wide: boolean, flags: number): string | null => {
+  /** a cell drawn in a box of its own, or null for plain text; `glyph` is the inherited style its glyph takes (runHtml) */
+  const fittedCell = ({ text, wide }: GhosttyRun["cells"][number], flags: number, glyph: string): string | null => {
     if (!wide && !PRIVATE_USE.test(text)) return null;
     // each character asks for its faces once a font, as xterm's rows do
     if (!asked.has(text)) {
@@ -226,17 +227,18 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     const width = glyphWidth(text, flags);
     const size = term.options.fontSize ?? 13;
+    const own = (...css: string[]): string => [...css, glyph].filter(Boolean).join(";");
     if (!wide) {
       if (!oversizedIcon(text, width, cellW)) return null;
       // a separator keeps its height and is narrowed to its cell, as xterm's rows draw it
-      if (POWERLINE.test(text)) return `<span class="ghostty-icon"><span class="ghostty-fit" style="transform:scaleX(${cellW / width});transform-origin:0 0">${escapeHtml(text)}</span></span>`;
-      return `<span class="ghostty-icon" style="font-size:${size * iconScale([width], cellW)}px">${escapeHtml(text)}</span>`;
+      if (POWERLINE.test(text)) return `<span class="ghostty-icon"><span class="ghostty-fit" style="${own(`transform:scaleX(${cellW / width})`, "transform-origin:0 0")}">${escapeHtml(text)}</span></span>`;
+      return `<span class="ghostty-icon" style="${own(`font-size:${size * iconScale([width], cellW)}px`)}">${escapeHtml(text)}</span>`;
     }
     const fit = glyphFit(2 * cellW - width, width, cellW);
-    if (!fit) return `<span class="ghostty-wide">${escapeHtml(text)}</span>`;
-    const scale = fit.scale !== 1 ? `font-size:${size * fit.scale}px;` : "";
+    if (!fit) return `<span class="ghostty-wide"${glyph ? ` style="${glyph}"` : ""}>${escapeHtml(text)}</span>`;
+    const scale = fit.scale !== 1 ? `font-size:${size * fit.scale}px` : "";
     const stretch = fit.stretch !== 1 ? `transform:scaleX(${fit.stretch})` : "";
-    return `<span class="ghostty-wide"><span class="ghostty-fit" style="${scale}${stretch}">${escapeHtml(text)}</span></span>`;
+    return `<span class="ghostty-wide"><span class="ghostty-fit" style="${own(scale, stretch)}">${escapeHtml(text)}</span></span>`;
   };
   const lateFaces = followLateFaces(document.fonts as Iterable<FontFace> | undefined, (callback) => requestAnimationFrame(callback), () => {
     widths.clear();
@@ -246,26 +248,37 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   const runHtml = (run: GhosttyRun): string => {
     let fg = run.fg, bg = run.bg;
     if (run.flags & STYLE_INVERSE) [fg, bg] = [bg ?? themeColors(term).background, fg ?? themeColors(term).foreground];
-    const css: string[] = [];
-    if (fg) css.push(`color:${fg}`);
-    if (bg) css.push(`background:${bg}`);
-    if (run.flags & STYLE_BOLD) css.push("font-weight:bold");
-    if (run.flags & STYLE_ITALIC) css.push("font-style:italic");
-    if (run.flags & STYLE_FAINT) css.push("opacity:.6");
-    if (run.flags & STYLE_INVISIBLE) css.push("color:transparent");
+    // what the run's box alone takes
+    const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
+    if (bg) box.push(`background:${bg}`);
+    if (run.flags & STYLE_FAINT) box.push("opacity:.6");
+    // xterm's `span:not(.xterm-bold)` rule sets the weight of every boxed cell, so a run keeps its own
+    if (run.flags & STYLE_BOLD) box.push("font-weight:bold");
     const lines = [run.flags & STYLE_UNDERLINE_MASK ? "underline" : "", run.flags & STYLE_STRIKE ? "line-through" : ""].filter(Boolean);
-    if (lines.length) css.push(`text-decoration:${lines.join(" ")}`);
+    if (lines.length) box.push(`text-decoration:${lines.join(" ")}`);
+    // what its text inherits
+    const glyph: string[] = [];
+    if (fg) glyph.push(`color:${fg}`);
+    if (run.flags & STYLE_ITALIC) glyph.push("font-style:italic");
+    if (run.flags & STYLE_INVISIBLE) glyph.push("color:transparent");
+    // an element whose parent has an inherited value of its own (a colour) misses the browser's style cache and is
+    // styled from scratch: on a screen of Korean in a colour a cell, three elements a cell made each frame's style
+    // recalculation several times longer than xterm's. A run that is only boxed cells (a wide or icon cell each)
+    // gives the inherited values to the innermost box instead, so no element sits under a parent with a colour of its own
+    let boxed = run.cells.map((cell) => fittedCell(cell, run.flags, ""));
+    const leaves = glyph.length > 0 && boxed.every((html) => html !== null);
+    if (leaves) boxed = run.cells.map((cell) => fittedCell(cell, run.flags, glyph.join(";")));
     let body = "";
     let plain = "";
-    for (const cell of run.cells) {
-      const fitted = fittedCell(cell.text, cell.wide, run.flags);
-      if (fitted !== null) {
+    run.cells.forEach((cell, index) => {
+      const fitted = boxed[index];
+      if (fitted) {
         if (plain) { body += escapeHtml(plain); plain = ""; }
         body += fitted;
       } else plain += cell.text;
-    }
+    });
     if (plain) body += escapeHtml(plain);
-    return `<span style="left:calc(var(--ghostty-cw)*${run.x})${css.length ? `;${css.join(";")}` : ""}">${body}</span>`;
+    return `<span style="${(leaves ? box : [...box, ...glyph]).join(";")}">${body}</span>`;
   };
 
   const picture = (image: GhosttyImage): HTMLCanvasElement | null => {
