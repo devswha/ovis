@@ -5,8 +5,8 @@
  * call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
  * its devices is asking.
  */
-import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
-import type { AddRecord, LinkRecord } from "../../../shared/account-records.ts";
+import { ACCOUNT_RECORDS_MAX, accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
+import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import type { RemotePairingRequest } from "../../../shared/protocol.ts";
 import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
@@ -46,14 +46,16 @@ export interface PcAccountStatus {
   readonly account: string | null;
   /** its relay rows that are not members */
   readonly unlinked: readonly string[];
+  /** the keys its account removed: every member's `remove`, not only this client's */
+  readonly removed: readonly string[];
 }
 
 export async function pcAccountStatus(fetch: PcFetch): Promise<PcAccountStatus> {
   const response = await fetch("/api/account/status");
   if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { account?: unknown; unlinked?: unknown };
-  const unlinked = Array.isArray(body.unlinked) ? body.unlinked.filter((id): id is string => typeof id === "string") : [];
-  return { account: typeof body.account === "string" ? body.account : null, unlinked };
+  const body = await response.json() as { account?: unknown; unlinked?: unknown; removed?: unknown };
+  const strings = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return { account: typeof body.account === "string" ? body.account : null, unlinked: strings(body.unlinked), removed: strings(body.removed) };
 }
 
 /** Whether this device's row on the PC should be linked to `account` now. */
@@ -207,8 +209,100 @@ export async function admitToAccount(options: {
   }
   // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again
   await options.store.update("adds", (current) => ({ ...current, [add.id]: { account: options.account, record: add, to: others } }));
+  // a device this client checked itself: a PC it brings into the account later gets this add too
+  await rememberApproved(options.store, add);
   await sendQueuedAdds({ service: options.service, store: options.store, account: options.account });
   return add;
+}
+
+/** Keeps `add` as a device this client approved itself; an approval again after a removal takes the removal back here. */
+export async function rememberApproved(store: AccountStore, add: AddRecord): Promise<void> {
+  await store.update("approved", (current) => ({ ...current, [add.key]: add }));
+  await store.update("removed", (current) => {
+    if (current?.[add.key] === undefined) return current;
+    const { [add.key]: _approvedAgain, ...rest } = current;
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+}
+
+/**
+ * A PC of the account says it removed some of the devices this client approved (another member's
+ * `remove`, perhaps): they leave the approved list, and this client signs a `remove` of its own for
+ * each, so a PC it brings into the account later tombstones them too. A PC that names a key wrongly
+ * only keeps that device out of the PCs this client enrolls.
+ */
+export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly string[]; now?: () => number }): Promise<void> {
+  const approved = (await options.store.get("approved")) ?? {};
+  const gone = options.removed.filter((key) => approved[key]?.account === options.account);
+  for (const key of gone) {
+    const remove: RemoveRecord = await signAccountRecord({
+      v: 1, kind: "remove", account: options.account, key,
+      issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
+    }, options.key.private_key);
+    await rememberRemoved(options.store, remove);
+  }
+}
+
+/** Keeps a `remove` this client signed: its key leaves the approved list, and a PC it enrolls tombstones it first. */
+export async function rememberRemoved(store: AccountStore, remove: RemoveRecord): Promise<void> {
+  await store.update("removed", (current) => ({ ...current, [remove.key]: remove }));
+  await store.update("approved", (current) => {
+    if (current?.[remove.key] === undefined) return current;
+    const { [remove.key]: _removed, ...rest } = current;
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+}
+
+/** Marks a PC this client is about to link while it had no account: enrollPc hands it the account's devices. */
+export async function planEnroll(store: AccountStore, serverId: string, account: string): Promise<void> {
+  await store.update("enrolls", (current) => ({ ...current, [serverId]: { account, done: [] } }));
+}
+
+/** A refusal that says nothing final about the record: the PC could not read its tombstones, so it is sent again. */
+const UNDECIDED = new Set(["account_unavailable"]);
+
+/**
+ * Sends a planned PC (planEnroll) the account's devices as this client knows them
+ * (docs/account.md, "Account members"): first the `remove`s it signed, so the PC tombstones those
+ * keys, then the `add`s for the devices it approved itself, never a key another PC lists. `fetch`
+ * must be a session signed in with the account key on that PC, after the link. Every record's
+ * outcome is read; one the PC did not answer, or could not decide on, is sent again on the next
+ * call. True once nothing is left to send there.
+ */
+export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+  const planned = (await options.store.get("enrolls"))?.[options.serverId];
+  if (planned === undefined || planned.account !== options.account) return true;
+  const ofAccount = <R extends { account: string; id: string }>(records: Readonly<Record<string, R>> | undefined) =>
+    Object.values(records ?? {}).filter((record) => record.account === options.account && !planned.done.includes(record.id));
+  const removes = ofAccount(await options.store.get("removed"));
+  const adds = ofAccount(await options.store.get("approved"));
+  const done: string[] = [];
+  const send = async (path: string, records: readonly { id: string }[]): Promise<boolean> => {
+    let all = true;
+    for (let start = 0; start < records.length; start += ACCOUNT_RECORDS_MAX) {
+      const batch = records.slice(start, start + ACCOUNT_RECORDS_MAX);
+      const answer = await (await post(options.fetch, path, path === "/api/account/enroll" ? { account: options.account, records: batch } : { records: batch })).json() as { results?: unknown };
+      const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
+      for (const record of batch) {
+        const result = results.find((entry) => entry.id === record.id);
+        const final = result?.outcome === "applied" || result?.outcome === "unchanged" || (result?.outcome === "refused" && !UNDECIDED.has(String(result.code)));
+        if (final) done.push(record.id);
+        else all = false;
+      }
+    }
+    return all;
+  };
+  // the adds go only once every removal has its outcome there: a removed key is tombstoned first
+  const finished = await send("/api/account/records", removes) && await send("/api/account/enroll", adds);
+  await options.store.update("enrolls", (current) => {
+    const entry = current?.[options.serverId];
+    if (current === undefined || entry === undefined || entry.account !== options.account) return current;
+    const rest = { ...current };
+    if (finished) delete rest[options.serverId];
+    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+  return finished;
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */

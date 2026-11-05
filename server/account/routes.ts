@@ -30,7 +30,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
     const mailbox = context.services.accountMailbox;
-    return reply({ account: devices.account(), ...devices.accountRows(), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error } });
+    return reply({ account: devices.account(), ...devices.accountRows(), removed: devices.accountRemovals(), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error } });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);

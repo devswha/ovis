@@ -195,10 +195,11 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removed": ["<key>"], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`removed` lists the keys the account removed here (a `remove` record), not the ones revoked on the PC.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -221,6 +222,17 @@ removed and absent, or signed before this PC paired the key again) and `refused`
 `POST /api/account/enroll` `{ "account": "acct_1", "records": [<add>, …] }`: what a member sends a
 PC it just paired. The request's own device must already be a member of `account` (it links itself
 first). Same answer as `records`.
+
+What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
+its link brings a PC that had no account into it, it sends that PC, over a session signed in with
+the account key, first the `remove`s it signed (through `records`, so the PC tombstones those keys),
+then the `add`s it signed for devices it approved itself, with their role (rule 6). It never takes
+a key from another PC's device list. It reads every record's outcome and sends again, on its next
+connection to that PC, each one the PC did not answer or answered `account_unavailable`. A key a PC
+of the account lists under `removed` (another member's removal) leaves this client's approved list
+when it next reads that PC's status, and the client signs its own `remove` for it, so a PC it enrolls
+after that tombstones it. A device another member approved is not in this client's list, so this
+enrollment does not add it.
 
 ### Introductions
 

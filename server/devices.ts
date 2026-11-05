@@ -748,6 +748,12 @@ export class DeviceStore {
 
   isTombstoned(key: string): boolean { return this.tombstones.some((t) => t.key === key); }
 
+  /** The keys this PC's account removed (a `remove` record), not the ones revoked on the PC itself. */
+  accountRemovals(): string[] {
+    const account = this.account();
+    return account === null ? [] : this.tombstones.filter((t) => t.account === account && t.record_id !== "local").map((t) => t.key);
+  }
+
   hasKey(key: string): boolean { return this.devices.some((d) => d.relay_public_key === key && !this.stale(d)); }
 
   /** Whether `key` is a P-256 key devices.json accepts (readDeviceRegistry checks every row's). */

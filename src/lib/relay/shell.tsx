@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { linkThisDevice, needsLink, pcAccountStatus, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { enrollPc, forgetRemoved, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -383,6 +383,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
+      // a device the account removed, by any member, is one this client no longer hands a new PC
+      if (status.account === session.account) await forgetRemoved({ store: accountStore, key, account: session.account, removed: status.removed });
+      // a PC this link brings into the account gets the devices this client approved itself (enrollPc)
+      if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) opened.renew();
@@ -392,6 +396,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (!linking && device.account !== session.account && device.device_id !== null && !status.unlinked.includes(device.device_id)) {
         const known = device;
         device = await store.update(serverId, (current) => ({ ...(current ?? known), account: session.account }));
+      }
+      if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
+        // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
+        let signedIn = opened;
+        try {
+          if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
+          await enrollPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId });
+        } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
+        finally { if (signedIn !== opened) signedIn.close(); }
       }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });

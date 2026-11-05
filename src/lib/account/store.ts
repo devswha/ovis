@@ -6,7 +6,7 @@
  * opens this one.
  */
 import { exportAccountKey } from "../../../shared/account-records.ts";
-import type { AddRecord } from "../../../shared/account-records.ts";
+import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts";
 
 export interface AccountKey {
   readonly private_key: CryptoKey;
@@ -45,6 +45,21 @@ interface Records {
   pending: Readonly<Record<string, PendingSignIn>>;
   /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
   adds: Readonly<Record<string, QueuedAdd>>;
+  /**
+   * By key: the `add` this device signed for a device it approved itself (docs/account.md, rule 6),
+   * what it hands a PC it brings into the account (account/join.ts, enrollPc)
+   */
+  approved: Readonly<Record<string, AddRecord>>;
+  /** by key: the `remove` this device signed for a device of the account, which such a PC gets first */
+  removed: Readonly<Record<string, RemoveRecord>>;
+  /** by server_id: a PC this device brought into the account, and the records whose outcome it read there */
+  enrolls: Readonly<Record<string, PlannedEnroll>>;
+}
+
+export interface PlannedEnroll {
+  readonly account: string;
+  /** ids of the records the PC answered with a final outcome */
+  readonly done: readonly string[];
 }
 
 export interface QueuedAdd {
