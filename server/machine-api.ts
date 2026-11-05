@@ -251,6 +251,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "relay" && parts.length === 1 && request.method === "POST") {
       setRequestRoute("/api/machines/relay");
+      // the link holds a one-time pairing code, a secret like an SSH password
+      if (!canSendSecret(request)) return fail("https_required", "A pairing link requires HTTPS or localhost", 403);
       const body: unknown = await request.json().catch(() => null);
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing link", 400);
       return jsonResponse({ machine: await manager.addRelay(body.link, body.name) }, 201);

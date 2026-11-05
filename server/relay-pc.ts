@@ -17,6 +17,8 @@ import type { HttpRequest, WsStream } from "../shared/relay-mux-engine.ts";
 import { MuxProtocolError, REQUEST_HEADERS } from "../shared/relay-mux.ts";
 import type { RelayOffer } from "../shared/relay-offer.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
+import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
+import { OUTPUT_HARD_BYTES } from "./output-window.ts";
 import { writePrivateState } from "./private-state.ts";
 
 /** The other PC refused this one for good (revoked, never paired, a new identity or protocol): retrying cannot help. */
@@ -44,9 +46,10 @@ interface SavedKey {
  * (channel.ts saves a first pairing's key only on AUTH_OK), so a pairing that fails leaves nothing behind.
  */
 export class RelayPcKey implements RelayDeviceStore {
-  private constructor(private readonly path: string, private device: RelayDevice, private readonly pkcs8: string) {}
+  /** `wanted`: whether the PC is still this server's; a pairing or sign-in finishing after its removal writes no key */
+  private constructor(private readonly path: string, private device: RelayDevice, private readonly pkcs8: string, private readonly wanted: () => boolean) {}
 
-  static async create(path: string, offer: RelayOffer, label = relayPcLabel()): Promise<RelayPcKey> {
+  static async create(path: string, offer: RelayOffer, wanted: () => boolean, label = relayPcLabel()): Promise<RelayPcKey> {
     const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
     const pkcs8 = base64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", keys.privateKey)));
     const { code: _code, ...saved } = offer;
@@ -55,10 +58,10 @@ export class RelayPcKey implements RelayDeviceStore {
       ...(saved.name === undefined ? {} : { name: saved.name }),
       device_id: null, label, private_key: await signingKey(pkcs8),
       public_spki: base64url(new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey))),
-    }, pkcs8);
+    }, pkcs8, wanted);
   }
 
-  static async load(path: string): Promise<RelayPcKey> {
+  static async load(path: string, wanted: () => boolean): Promise<RelayPcKey> {
     const saved = JSON.parse(readFileSync(path, "utf8")) as SavedKey;
     if (saved?.v !== 1 || typeof saved.device_id !== "string" || typeof saved.private_pkcs8 !== "string"
       || typeof saved.public_spki !== "string" || typeof saved.label !== "string") throw new Error("Invalid relay PC key");
@@ -68,7 +71,7 @@ export class RelayPcKey implements RelayDeviceStore {
       ...(offer.name === undefined ? {} : { name: offer.name }),
       device_id: saved.device_id, label: saved.label, public_spki: saved.public_spki,
       private_key: await signingKey(saved.private_pkcs8),
-    }, saved.private_pkcs8);
+    }, saved.private_pkcs8, wanted);
   }
 
   /** The PC as the relay names it, without any pairing code: what a reconnect signs in to. */
@@ -88,6 +91,7 @@ export class RelayPcKey implements RelayDeviceStore {
     // the current one is handed over only once admitted: a new key is a pairing that channel.ts saves on AUTH_OK
     const next = change(this.device.device_id === null ? undefined : this.device);
     if (next.device_id === null) throw new Error("Relay PC was not admitted");
+    if (!this.wanted()) throw new Error("Relay PC was removed");
     writePrivateState(this.path, {
       v: 1, offer: this.offer, device_id: next.device_id, label: next.label, public_spki: next.public_spki, private_pkcs8: this.pkcs8,
     } satisfies SavedKey);
@@ -127,7 +131,10 @@ function fatal(error: unknown): error is Error {
 const STREAM_WAIT_MS = 30_000;
 const METHODS: readonly string[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
-interface Forwarded { target: string; remote?: WsStream; open: boolean; waiting: (string | Uint8Array)[]; closed: boolean }
+interface Forwarded { target: string; remote?: WsStream; open: boolean; waiting: (string | Uint8Array)[]; waitingBytes: number; closed: boolean; abort: AbortController }
+
+/** What a socket may send before the other PC accepted its stream; past it the socket closes (1009). */
+const WAITING_BYTES = 1024 * 1024;
 
 /** A close code a server-side socket may send: the relay's own (1006) and reserved ones become 1011. */
 function sendableClose(code: number): number {
@@ -159,15 +166,19 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const waiting = new Set<() => void>();
   mux.onStreamAvailable = () => { for (const wake of [...waiting]) wake(); };
   /** Opens a stream, waiting its turn while every place is taken, as the hosted app's requests do. */
-  const opened = async <T>(open: () => T): Promise<T> => {
+  const opened = async <T>(open: () => T, signal: AbortSignal): Promise<T> => {
     const deadline = performance.now() + STREAM_WAIT_MS;
     for (;;) {
+      signal.throwIfAborted();
       try { return open(); } catch (error) {
         if (closed || !(error instanceof MuxStreamError && error.code === "refused")) throw error;
         await new Promise<void>((resolve, reject) => {
-          const wake = (): void => { clearTimeout(timer); waiting.delete(wake); resolve(); };
-          const timer = setTimeout(() => { waiting.delete(wake); reject(new Error("No relay stream place came free")); }, Math.max(0, deadline - performance.now()));
+          const done = (): void => { clearTimeout(timer); waiting.delete(wake); signal.removeEventListener("abort", aborted); };
+          const wake = (): void => { done(); resolve(); };
+          const aborted = (): void => { done(); reject(signal.reason); };
+          const timer = setTimeout(() => { done(); reject(new Error("No relay stream place came free")); }, Math.max(0, deadline - performance.now()));
           waiting.add(wake);
+          signal.addEventListener("abort", aborted, { once: true });
         });
       }
     }
@@ -179,10 +190,11 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     const stream = await opened(() => mux.openHttp({
       target, method: request.method as HttpRequest["method"], body: body ? "stream" : "none",
       headers: [...request.headers].filter(([name]) => allowed.includes(name)),
-    }));
+    }), request.signal);
     return new Promise<Response>((resolve, reject) => {
       const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
       request.signal.addEventListener("abort", aborted, { once: true });
+      if (request.signal.aborted) { aborted(); return; }
       stream.onDispose = (error) => {
         request.signal.removeEventListener("abort", aborted);
         if (error) reject(error);
@@ -195,7 +207,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   };
   const connect = async (local: Bun.ServerWebSocket<Forwarded>): Promise<void> => {
     let remote: WsStream;
-    try { remote = await opened(() => mux.openWs({ target: local.data.target, headers: [], protocols: [] })); }
+    try { remote = await opened(() => mux.openWs({ target: local.data.target, headers: [], protocols: [] }), local.data.abort.signal); }
     catch { local.close(1012, "PC connection lost"); return; }
     if (local.data.closed) { remote.close(1000); return; }
     local.data.remote = remote;
@@ -203,8 +215,12 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       local.data.open = true;
       for (const message of local.data.waiting) remote.send(message);
       local.data.waiting = [];
+      local.data.waitingBytes = 0;
     };
-    remote.onMessage = (message) => { local.send(message); };
+    // as this PC's own sockets: output that cannot be delivered, or backs up past the budget, ends the socket (4008)
+    remote.onMessage = (message) => {
+      if (local.send(message) === 0 || local.getBufferedAmount() > OUTPUT_HARD_BYTES) local.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
+    };
     remote.onClose = (event) => { local.close(sendableClose(event.code), event.reason.slice(0, 100)); };
   };
   const token = randomBytes(32).toString("base64url");
@@ -221,7 +237,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       const url = new URL(request.url);
       const target = url.pathname + url.search;
       if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        return bun.upgrade(request, { data: { target, open: false, waiting: [], closed: false } }) ? undefined : new Response(null, { status: 400 });
+        return bun.upgrade(request, { data: { target, open: false, waiting: [], waitingBytes: 0, closed: false, abort: new AbortController() } }) ? undefined : new Response(null, { status: 400 });
       }
       return forward(request, target).catch(() => new Response(null, { status: 502 }));
     },
@@ -232,12 +248,16 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       },
       message(local, message) {
         const data = typeof message === "string" ? message : new Uint8Array(message);
-        if (local.data.open) local.data.remote?.send(data);
-        else local.data.waiting.push(data);
+        if (local.data.open) { local.data.remote?.send(data); return; }
+        local.data.waitingBytes += typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
+        if (local.data.waitingBytes > WAITING_BYTES) { local.close(1009, "too much sent before the PC answered"); return; }
+        local.data.waiting.push(data);
       },
       close(local, code, reason) {
         sockets.delete(local);
         local.data.closed = true;
+        local.data.waiting = [];
+        local.data.abort.abort();
         local.data.remote?.close(code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000, reason.slice(0, 100));
       },
     },

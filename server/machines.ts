@@ -1378,7 +1378,8 @@ export class MachineManager {
     if (runtime.machine.kind === "relay") {
       try {
         let key: RelayPcKey;
-        try { key = await RelayPcKey.load(this.relayKeyPath(runtime.machine.id)); }
+        const wanted = () => !this.stopped && runtime.generation === generation && this.machines.get(runtime.machine.id) === runtime;
+        try { key = await RelayPcKey.load(this.relayKeyPath(runtime.machine.id), wanted); }
         catch (error) { throw new RelayPcRefused("This PC's relay key could not be read. Remove it and add it again with a new pairing link.", { cause: error }); }
         if (generation !== runtime.generation || this.stopped) return;
         const tunnel = await openRelayPcTunnel(key.offer, key, { socket: this.relaySocket, onLost: (error) => this.lost(runtime, generation, error) });
@@ -1576,7 +1577,7 @@ export class MachineManager {
     if ([...this.machines.values()].some(({ machine }) => machine.relay?.server_id === serverId)) throw new Error("That PC is already added.");
     const id = randomUUID();
     const keyPath = this.relayKeyPath(id);
-    const key = await RelayPcKey.create(keyPath, offer);
+    const key = await RelayPcKey.create(keyPath, offer, () => !this.stopped);
     const runtime = this.runtime({
       id, name: (typeof name === "string" ? name.trim() : offer.name?.trim()) || "PC", kind: "relay", relay: { server_id: serverId, relay: offer.relay },
       enabled: true, state: "connecting", error: null, snapshot: null,
@@ -1595,7 +1596,14 @@ export class MachineManager {
     }
     runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
-    this.persist(); this.emit();
+    // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
+    try { this.persist(); } catch (error) {
+      this.machines.delete(id);
+      runtime.machine.enabled = false; this.disconnect(runtime);
+      removeRelayPcKey(keyPath);
+      throw error;
+    }
+    this.emit();
     try { await this.observe(runtime); this.emit(); } catch (e) { this.lost(runtime, generation, e); }
     return runtime.machine;
   }
