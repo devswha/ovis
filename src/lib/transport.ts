@@ -43,9 +43,38 @@ export interface Transport {
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
 }
 
+/** Reads in flight on the browser's own connections, each with the abort abandonNativeReads ends it by. */
+const nativeReads = new Set<AbortController>();
+
+function nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  // a write is never given up for the caller: the server may have done it
+  if (method !== "GET" && method !== "HEAD") return fetch(input, init);
+  const own = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  const read = new AbortController();
+  // the caller's abort keeps reaching the body after the headers came
+  let signal = read.signal;
+  if (own && typeof AbortSignal.any === "function") signal = AbortSignal.any([own, read.signal]);
+  else if (own?.aborted) read.abort(own.reason);
+  else own?.addEventListener("abort", () => read.abort(own.reason), { once: true });
+  nativeReads.add(read);
+  return fetch(input, { ...init, signal }).finally(() => { nativeReads.delete(read); });
+}
+
+/**
+ * The connection to the server was found dead without a close (an unanswered probe): a read sent on
+ * one of the browser's connections lost with it never answers, and holds one of the few connections
+ * the browser keeps to a host, so every later request, the chat's reads too, waits behind it until
+ * the browser gives that connection up, often a minute later. The reads still waiting are given up.
+ */
+export function abandonNativeReads(): void {
+  for (const read of nativeReads) read.abort(new DOMException("The connection to the server was lost.", "AbortError"));
+  nativeReads.clear();
+}
+
 export const nativeTransport: Transport = {
   kind: "native",
-  fetch: (input, init) => fetch(input, init),
+  fetch: nativeFetch,
   openSocket: (url) => new WebSocket(url),
   openEventSource: (url) => new EventSource(url),
   resourceUrl: (path) => path,
