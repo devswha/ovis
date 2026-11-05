@@ -50,6 +50,8 @@ export type HerdrTab = TabInfo;
  * What herdr-core (server/herdr-core/snapshot.ts) reports about the terminal, each absent where it
  * reported nothing (and always on herdr's TUI runtime):
  * `parent_pane_id`: the pane of the terminal that started this one (hc's `parent`), when that pane is shown.
+ * `own_tab`: the pane is in a tab of its own terminal (in Other terminals, or a helper's under its
+ * parent's tab), which herdr-core does not split.
  * `agent_kind`, `agent_message`, `agent_progress`: the program's own OSC 7501 report: what a blocked
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
@@ -57,9 +59,16 @@ export type HerdrTab = TabInfo;
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary;
   parent_pane_id?: string;
+  own_tab?: true;
   agent_kind?: string;
   agent_message?: string;
   agent_progress?: number;
+  /**
+   * herdr-core only: the terminal's own grid. Its layout rects are shares of a fixed area there
+   * (server/herdr-core/layout-doc.ts), not cells, so an attach that must not resize the terminal
+   * (an observer, a chat lens) starts at this size instead.
+   */
+  grid?: { cols: number; rows: number };
   /** This bridge's counter of transitions into displayed DONE, scoped by finish_epoch. */
   finish_id?: number;
 };
@@ -86,7 +95,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, RelayPairingRequest, RelayPairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -153,6 +162,11 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
+ *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
+ *         404 relay_pairing_gone once it left, was decided or ran out of time
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -614,7 +628,7 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -623,6 +637,12 @@ export interface ConversationResponse {
    * and the pane's output can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
+  /**
+   * On a scrollback answer to a refresh that named the history shown (`history_id`): the reader lost
+   * its proof of the conversation without seeing it end. Keep the turns shown, append nothing, and
+   * read again on the pane's next activity rather than on a timer.
+   */
+  recovery?: "waiting";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
@@ -891,7 +911,7 @@ export interface PromptAnswer {
  *    | insert {id, pane_id, text}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
  *    | pane-status | pane-exited | session-changed | conversation-changed | secret-result
- *    | insert-result | watch-data | watch-end | error
+ *    | insert-result | input-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
  *  pty-data.flow carries a stream_id and cumulative UTF-8 payload offset;
@@ -947,8 +967,10 @@ export type ClientMessage =
    * still on its way, and a message sent next waits for it; an older bridge types it like any key.
    * `automatic`: the browser's terminal made the text itself (an answer to the program's query), nobody
    * typed it. On herdr-core it reaches the program as hc's automatic input where hc confirmed it, so it
-   * does not make this viewer the active one; everywhere else, and on an older bridge, it is typed as before. */
-  | { type: "input"; pane_id: string; text: string; stop?: true; automatic?: true }
+   * does not make this viewer the active one; everywhere else, and on an older bridge, it is typed as before.
+   * `id` (feature "input-receipt"): a per-connection integer the bridge answers with an input-result once the
+   * text was written or refused. Without it no input-result comes, as on an older bridge. */
+  | { type: "input"; pane_id: string; text: string; stop?: true; automatic?: true; id?: number }
   | { type: "keys"; pane_id: string; keys: string[] }
   /** a composer message, sent to servers whose snapshot lists "submit": the server types it and
    * its own Enter after a short gap, and answers with a submit-result of the same id. `text` is
@@ -1068,7 +1090,7 @@ export interface ClientConnectionTrace {
  * the pane's last TERMINAL_HISTORY_LINES lines, so the client keeps the scrollback and scrolls it itself. Without it herdr
  * owns the scrollback and the client keeps none.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1116,6 +1138,10 @@ export type ServerMessage =
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
    * may or may not have arrived. Older bridges never send it. */
   | { type: "insert-result"; id: number; pane_id: string; ok: boolean; code?: string; message?: string }
+  /** the answer to an `input` with an `id` (feature "input-receipt"): ok once its bytes were written to the pty or
+   * herdr took them, never that the program read them; a refusal names why (an error frame says it to the user too).
+   * Input whose connection ended before its turn is never typed, and nothing answers it. */
+  | { type: "input-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message.
    * `dismissed` removes an uncertain copy, never proves withdrawal or delivery. Existing clients
    * remove owned IDs for any explicit outcome; Edit restores only `discarded`. */

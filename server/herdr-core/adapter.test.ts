@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, jest } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, tabClose, tabCreate, workspaceClose, workspaceCreate, agentManifests, agentStart, ping } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
 import { paintedScreen, type SeenObserver, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
+import type { HerdrPane } from "../../shared/protocol.ts";
 import type { HcTerminal } from "./snapshot.ts";
 
 type Handler = (params: Record<string, unknown>) => unknown;
@@ -39,7 +40,7 @@ class FakeCore implements HcTransport {
     if (this.plain) {
       this.plain = false;
       if (!this.answerHello) return;
-      this.controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ id: 0, jsonrpc: "2.0", result: { generation: 1, framed: true, version: "0.1.14", core: { id: "c1", name: "lab" }, methods: [], features: [] } })}\n`));
+      this.controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ id: 0, jsonrpc: "2.0", result: { generation: 1, framed: true, version: "0.1.14", core: { id: "c1", name: "lab" }, methods: Object.keys(this.handlers), features: [] } })}\n`));
       return;
     }
     this.frames(bytes);
@@ -78,7 +79,7 @@ class FakeCore implements HcTransport {
     this.calls.push({ method: message.method, params: message.params });
     const handler = this.handlers[message.method];
     const reply = handler
-      ? (() => { try { return { result: handler(message.params) }; } catch (error) { return { error: { code: -32000, message: String(error), data: { kind: "not_found" } } }; } })()
+      ? (() => { try { return { result: handler(message.params) }; } catch (error) { return { error: { code: -32000, message: String(error), data: { kind: (error as { kind?: string }).kind ?? "not_found" } } }; } })()
       : { error: { code: -32601, message: `no ${message.method}`, data: { kind: "unknown_method" } } };
     this.controller.enqueue(Buffer.concat([encodeFrame(0, FRAME_DATA, JSON.stringify({ jsonrpc: "2.0", id: message.id, ...reply })), this.replyTail]));
     this.replyTail = new Uint8Array(0);
@@ -162,7 +163,15 @@ describe("herdr-core adapter", () => {
 
   it("says it is herdr-core, so the browser offers only what herdr-core can do", async () => {
     const { socket } = await setup([terminal("t1")]);
-    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core" });
+    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false, arrange: false } });
+  });
+
+  it("offers Ovis's own layout calls only on a core whose Herdr app document was never written", async () => {
+    const { socket } = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }) });
+    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    // splits, zoom and order need a core that writes documents, as its hello says
+    const writes = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }), "doc.set": () => ({ version: 1 }) });
+    expect((await ping(writes.socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true });
   });
 
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
@@ -265,9 +274,51 @@ describe("herdr-core adapter", () => {
   it("refuses what only the Herdr app does, and a pane hc does not have, in herdr's codes", async () => {
     const { socket } = await setup([terminal("t1")]);
     const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
-    expect(await failure(herdrRpc("pane.split", { pane_id: "t1", direction: "right" }, socket))).toBe("unsupported");
+    expect(await failure(herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket))).toBe("unsupported");
+    // the Herdr app arranges this core (its document is written): its names and places are its own
+    expect(await failure(workspaceRename("s1", "x", socket))).toBe("unsupported");
+    expect(await failure(tabRename("s1t1", "x", socket))).toBe("unsupported");
+    expect(await failure(paneMoveToNewTab("t1", "hc-other", null, socket))).toBe("unsupported");
+    expect(await failure(herdrRpc("tab.move", { tab_id: "s1t1", insert_index: 0 }, socket))).toBe("unsupported");
     expect(await failure(paneGet("t9", socket))).toBe("pane_not_found");
     expect(await failure(paneSendText("t9", "x", socket))).toBe("pane_not_found");
+  });
+
+  it("tells nothing about another hc machine's terminals and types into none of them (#2768)", async () => {
+    let channel = 0;
+    const typed: unknown[] = [];
+    const { socket, cores } = await setup([terminal("t1"), terminal("vps/t2")], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [terminal("vps/t2", { status: { app: "codex", state: "idle" } })] };
+      },
+      "terminal.attach": (params) => { typed.push(params["terminal"]); return { channel: cores.at(-1)!.channel(), terminal: terminal("vps/t2") }; },
+    });
+    const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(await failure(paneSendText("vps/t2", "x", socket))).toBe("pane_not_found");
+    expect(typed).toEqual([]);
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.created" }, { type: "layout.updated" }, { type: "pane.agent_status_changed", pane_id: "vps/t2" }], {
+      onEvent: (frame) => frames.push(frame),
+      onStarted: () => started.resolve(),
+      onClose: () => ended.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores.at(-1)!;
+    core.notify(channel, "event", { seq: 2, type: "created", terminal: "vps/t3", data: { address: "vps/t3", state: "live", turn: 0, labels: { "herdr.space": "spcRemote" } } });
+    core.notify(channel, "event", { seq: 3, type: "status", terminal: "vps/t2", data: { status: { app: "codex", state: "working" } } });
+    core.notify(channel, "event", { seq: 4, type: "labels", terminal: "vps/t2", data: { labels: { "herdr.seen": "0" } } });
+    core.notify(channel, "event", { seq: 5, type: "finished", terminal: "vps/t2", data: { reason: "exited", exit_code: 0 } });
+    // the other machine's own Herdr app document, as hc tells it: its machine, no terminal
+    core.notify(channel, "event", { seq: 6, type: "doc", machine: "vps", data: { name: "herdr-app", version: 1 } });
+    core.notify(channel, "event", { seq: 7, type: "created", terminal: "t4", data: { address: "t4", state: "live", turn: 0 } });
+    core.notify(channel, "missed", { seq: 8, terminals: [] });
+    await ended.promise;
+    // this PC's own new terminal still comes through, after the other machine's events that came first
+    expect(frames).toEqual([{ event: "pane.created", data: { type: "pane_created", pane_id: "t4" } }]);
   });
 
   it("streams status for the subscribed panes only, a finish as herdr's exit and close (a kill as a close alone), and ends on hc's missed", async () => {
@@ -521,7 +572,7 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
 
 describe("herdr-core adapter, new and closed terminals", () => {
   /** a core whose terminal list follows its own terminal.run, terminal.kill and terminal.rm */
-  async function living(start: HcTerminal[]) {
+  async function living(start: HcTerminal[], extra: Record<string, Handler> = {}) {
     const terminals = [...start];
     const runs: Record<string, unknown>[] = [];
     const ends: string[] = [];
@@ -545,9 +596,31 @@ describe("herdr-core adapter, new and closed terminals", () => {
         terminals.splice(terminals.findIndex((entry) => entry.address === params["terminal"]), 1);
         return { removed: params["terminal"] };
       },
+      ...extra,
     });
     return { ...ready, runs, ends };
   }
+  /** a core no Herdr app arranges: its layout document was never written */
+  const NO_DOC = { "doc.get": () => ({ value: null, version: 0 }) };
+
+  it("keeps a renamed workspace's name on a new tab, so it stays when the tab it was given in closes", async () => {
+    const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T", "ovis.workspace": "Named" } })], NO_DOC);
+    await tabCreate({ workspaceId: "S" }, socket);
+    expect(runs[0]!["labels"]).toMatchObject({ "herdr.space": "S", "ovis.workspace": "Named" });
+    await tabClose("T", socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.label)).toEqual(["Named"]);
+  });
+
+  it("refuses to move a helper to Other terminals, where its parent's tab would still show it", async () => {
+    const { socket } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } }), terminal("t2", { parent: "t1" }), terminal("t3")], NO_DOC);
+    await expect(paneMoveToNewTab("t2", "hc-other", null, socket)).rejects.toMatchObject({ code: "unsupported" });
+  });
+
+  it("splits no pane on a core that keeps no documents", async () => {
+    const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T" } })], NO_DOC);
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(runs).toEqual([]);
+  });
 
   it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {
     const { socket, runs } = await living([terminal("t1")]);
@@ -586,6 +659,15 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect(ends.slice(4)).toEqual(["kill t1", "rm t1"]);
     expect((await sessionSnapshot(socket)).panes).toEqual([]);
     await expect(paneClose("t9", socket)).rejects.toMatchObject({ code: "pane_not_found" });
+  });
+
+  it("closes a tab's terminal the Herdr app holds hidden along with the rest", async () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [
+      { type: "block", id: "b1", content: { terminal: "t1" } }, { type: "block", id: "b3", hidden: true, content: { terminal: "t3" } },
+    ] } }] }] };
+    const { socket, ends } = await living([terminal("t1"), terminal("t3")], { "doc.get": (params) => ({ value: params["name"] === "herdr-app" ? layout : null, version: 1 }) });
+    await tabClose("s1t1", socket);
+    expect(ends.sort()).toEqual(["kill t1", "kill t3", "rm t1", "rm t3"]);
   });
 
   it("closes only a tab's own terminal when labels name the same ids in other spaces", async () => {
@@ -752,5 +834,215 @@ describe("herdr-core adapter, agents", () => {
     expect(kinds).toContain("codex");
     expect(kinds).not.toContain("omo");
   });
+
+  it("offers no agent on Windows, and types no start into its PowerShell, which the start cannot quote for", async () => {
+    const { socket, cores } = await setup([terminal("t1", { argv: ["pwsh.exe", "-NoExit", "-Command", "x"] })]);
+    // one request line straight to the adapter: herdr's client would take the Unix socket for a Windows pipe name
+    const ask = (method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve, reject) => {
+      let text = "";
+      void Bun.connect({ unix: socket, socket: {
+        open: (connection) => { connection.write(`${JSON.stringify({ id: "w", method, params })}\n`); },
+        data: (_connection, chunk) => { text += chunk.toString(); if (text.includes("\n")) resolve(JSON.parse(text) as Record<string, unknown>); },
+        connectError: (_connection, error) => reject(error),
+      } });
+    });
+    const platform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      expect(await ask("server.agent_manifests", {})).toMatchObject({ result: { manifests: [] } });
+      expect(await ask("agent.start", { pane_id: "t1", kind: "claude" })).toMatchObject({ error: { code: "agent_pane_unsupported" } });
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform });
+    }
+    expect(cores.flatMap((core) => core.typed)).toEqual([]);
+  });
 });
+});
+
+describe("herdr-core adapter, Ovis's layout document", () => {
+  /** hc's documents: `doc.set` writes only at the version read (`conflict` otherwise), `conflicts` more writers come first */
+  function documents(conflicts = 0, otherWriter?: (docs: Map<string, { value: unknown; version: number }>) => void) {
+    const docs = new Map<string, { value: unknown; version: number }>();
+    const writes: unknown[] = [];
+    const conflict = () => Object.assign(new Error("conflict"), { kind: "conflict" });
+    let interleave = otherWriter;
+    return {
+      docs,
+      writes,
+      handlers: {
+        "doc.get": (params: Record<string, unknown>) => docs.get(String(params["name"])) ?? { value: null, version: 0 },
+        "doc.set": (params: Record<string, unknown>) => {
+          const name = String(params["name"]);
+          writes.push(params["value"]);
+          // another client writes between this one's read and its write
+          if (interleave) { interleave(docs); interleave = undefined; }
+          const stored = docs.get(name) ?? { value: null, version: 0 };
+          if (conflicts > 0) { conflicts--; docs.set(name, { ...stored, version: stored.version + 1 }); throw conflict(); }
+          if (params["version"] !== stored.version) throw conflict();
+          docs.set(name, { value: params["value"], version: stored.version + 1 });
+          return { version: stored.version + 1 };
+        },
+      } satisfies Record<string, Handler>,
+    };
+  }
+  /** a core whose terminal list follows its own terminal.run */
+  async function core(start: HcTerminal[], store = documents()) {
+    const terminals = [...start];
+    let next = terminals.length + 1;
+    const ready = await setup(terminals, {
+      ...store.handlers,
+      "terminal.run": (params) => {
+        const record = terminal(`t${next++}`, { labels: params["labels"] as Record<string, string> });
+        terminals.push(record);
+        return record;
+      },
+      // `key: ""` takes a label off, as hc does
+      "terminal.label": (params) => {
+        const index = terminals.findIndex((entry) => entry.address === params["terminal"]);
+        const merged = { ...terminals[index]!.labels, ...(params["labels"] as Record<string, string>) };
+        terminals[index] = { ...terminals[index]!, labels: Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== "")) };
+        return terminals[index];
+      },
+    });
+    return { ...ready, terminals, store };
+  }
+  const labeled = (address: string, space = "S", tab = "T") => terminal(address, { labels: { "herdr.space": space, "herdr.tab": tab } });
+  const rects = async (socket: string) => Object.fromEntries((await sessionSnapshot(socket)).layouts[0]!.panes.map((pane) => [pane.pane_id, pane.rect]));
+
+  it("marks as its own tab exactly the panes it refuses to split: a helper's and Other terminals' (#2806)", async () => {
+    const { socket } = await core([labeled("t1"), terminal("t5", { parent: "t1" }), terminal("t6")]);
+    const panes = (await sessionSnapshot(socket)).panes as HerdrPane[];
+    expect(panes.map((pane) => [pane.pane_id, pane.own_tab])).toEqual([["t1", undefined], ["t5", true], ["t6", true]]);
+    for (const pane of panes.filter((candidate) => candidate.own_tab)) {
+      await expect(herdrRpc("pane.split", { target_pane_id: pane.pane_id, direction: "right" }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    }
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+  });
+
+  it("splits right then down as one tree, laid out top down whatever size the viewers make the terminals (#2812)", async () => {
+    const { socket, terminals, store } = await core([labeled("t1")]);
+    expect((await herdrRpc<{ pane: { pane_id: string; tab_id: string } }>("pane.split", { target_pane_id: "t1", direction: "right" }, socket)).pane).toMatchObject({ pane_id: "t2", tab_id: "T" });
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, socket);
+    const placed = { t1: { x: 0, y: 0, width: 500, height: 500 }, t3: { x: 0, y: 500, width: 500, height: 500 }, t2: { x: 500, y: 0, width: 500, height: 1000 } };
+    expect(await rects(socket)).toEqual(placed);
+    // each viewer sized its terminal to its pane: the next snapshots place them the same
+    for (const [index, held] of terminals.entries()) terminals[index] = { ...held, cols: 15 - index, rows: 1 };
+    expect(await rects(socket)).toEqual(placed);
+    expect(await rects(socket)).toEqual(placed);
+    expect(store.docs.get("ovis-layout")!.value).toEqual({ schema: 1, workspaces: [{ id: "S", tabs: [{ id: "T", zoomed: null,
+      root: { split: "right", ratio: 0.5, first: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t3" } }, second: { leaf: "t2" } } }] }] });
+    const layout = (await sessionSnapshot(socket)).layouts[0]!;
+    expect(layout.splits.map((split) => split.id)).toEqual(["split_0_root", "split_1_0"]);
+  });
+
+  it("writes again at the new version when another writer came first, once", async () => {
+    const store = documents(1);
+    const { socket } = await core([labeled("t1")], store);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+    expect(store.writes).toHaveLength(2);
+    expect(store.docs.get("ovis-layout")!.version).toBe(2);
+    expect(Object.keys(await rects(socket))).toEqual(["t1", "t2"]);
+  });
+
+  it("moves a divider, resizes, swaps and zooms panes in the document", async () => {
+    const { socket } = await core([labeled("t1")]);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+    await herdrRpc("layout.set_split_ratio", { tab_id: "T", path: [], ratio: 0.3 }, socket);
+    expect((await rects(socket))["t1"]!.width).toBe(300);
+    const resized = await herdrRpc<{ resize: { changed: boolean; layout: { panes: { pane_id: string; rect: { width: number } }[] } } }>("pane.resize", { pane_id: "t1", direction: "right", amount: 0.2 }, socket);
+    expect(resized.resize.changed).toBe(true);
+    expect(resized.resize.layout.panes[0]!.rect.width).toBe(500);
+    const swapped = await herdrRpc<{ swap: { changed: boolean; target_pane_id: string } }>("pane.swap", { pane_id: "t1", direction: "right" }, socket);
+    expect(swapped.swap).toMatchObject({ changed: true, target_pane_id: "t2" });
+    expect((await rects(socket))["t2"]!.x).toBe(0);
+    expect((await herdrRpc<{ swap: { changed: boolean; reason: string } }>("pane.swap", { pane_id: "t2", direction: "left" }, socket)).swap).toMatchObject({ changed: false, reason: "no_neighbor" });
+    const zoomed = await herdrRpc<{ zoom: { zoomed: boolean; focused_pane_id: string } }>("pane.zoom", { pane_id: "t1", mode: "toggle" }, socket);
+    expect(zoomed.zoom).toMatchObject({ zoomed: true, focused_pane_id: "t1" });
+    expect((await sessionSnapshot(socket)).layouts[0]).toMatchObject({ zoomed: true, focused_pane_id: "t1" });
+    expect((await herdrRpc<{ zoom: { changed: boolean; reason: string } }>("pane.zoom", { pane_id: "t1", mode: "on" }, socket)).zoom).toMatchObject({ changed: false, reason: "already_zoomed" });
+    await herdrRpc("pane.zoom", { pane_id: "t1", mode: "off" }, socket);
+    expect((await sessionSnapshot(socket)).layouts[0]!.zoomed).toBe(false);
+    // a split in a zoomed tab shows every pane again, the new one with them
+    await herdrRpc("pane.zoom", { pane_id: "t1", mode: "on" }, socket);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, socket);
+    expect((await sessionSnapshot(socket)).layouts[0]).toMatchObject({ zoomed: false });
+  });
+
+  it("reorders workspaces and tabs, Other terminals staying last", async () => {
+    const { socket } = await core([labeled("t1", "A", "A1"), labeled("t2", "A", "A2"), labeled("t3", "B", "B1"), terminal("t4")]);
+    await herdrRpc("workspace.move", { workspace_id: "B", insert_index: 0 }, socket);
+    await herdrRpc("tab.move", { tab_id: "A2", insert_index: 0 }, socket);
+    const shown = await sessionSnapshot(socket);
+    expect(shown.workspaces.map((workspace) => workspace.workspace_id)).toEqual(["B", "A", "hc-other"]);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A2", "A1"]);
+  });
+
+  it("drops a closed pane from its tab and adds one labeled into it from elsewhere to its right", async () => {
+    const { socket, terminals } = await core([labeled("t1")]);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, socket);
+    terminals.splice(0, 1);
+    expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 1000, height: 1000 } });
+    terminals.push(labeled("t9"));
+    expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 500, height: 1000 }, t9: { x: 500, y: 0, width: 500, height: 1000 } });
+  });
+
+  it("keeps another client's reorder that landed first, applying this move to the order as it is then", async () => {
+    const order = (ids: string[]) => ({ schema: 1, workspaces: ids.map((id) => ({ id, tabs: [{ id: `${id}1`, zoomed: null, root: { leaf: `t${id}` } }] })) });
+    const store = documents(0, (docs) => docs.set("ovis-layout", { value: order(["D", "A", "B", "C"]), version: docs.get("ovis-layout")!.version + 1 }));
+    store.docs.set("ovis-layout", { value: order(["A", "B", "C", "D"]), version: 1 });
+    const { socket } = await core(["A", "B", "C", "D"].map((id) => labeled(`t${id}`, id, `${id}1`)), store);
+    // B to the end, while another client moves D to the front
+    await herdrRpc("workspace.move", { workspace_id: "B", insert_index: 4 }, socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.workspace_id)).toEqual(["D", "A", "C", "B"]);
+  });
+
+  it("moves a workspace dropped after Other terminals to the end, and a tab dropped among helpers' tabs after their parent's", async () => {
+    const { socket } = await core([labeled("t1", "A", "A1"), labeled("t2", "A", "A2"), terminal("t5", { parent: "t1" }), labeled("t3", "B", "B1"), terminal("t4")]);
+    await herdrRpc("workspace.move", { workspace_id: "A", insert_index: 3 }, socket);
+    let shown = await sessionSnapshot(socket);
+    expect(shown.workspaces.map((workspace) => workspace.workspace_id)).toEqual(["B", "A", "hc-other"]);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A1", "A:t5", "A2"]);
+    // A2 dropped before the helper's tab: it goes before the next tab Ovis orders after it, which is none
+    await herdrRpc("tab.move", { tab_id: "A2", insert_index: 1 }, socket);
+    shown = await sessionSnapshot(socket);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A1", "A:t5", "A2"]);
+    await herdrRpc("tab.move", { tab_id: "A2", insert_index: 0 }, socket);
+    shown = await sessionSnapshot(socket);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A2", "A1", "A:t5"]);
+  });
+
+  it("starts no shell for a split a newer Ovis's layout would refuse, and says when a split pane could not be placed", async () => {
+    const foreign = documents();
+    foreign.docs.set("ovis-layout", { value: { schema: 2 }, version: 3 });
+    const refused = await core([labeled("t1")], foreign);
+    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, refused.socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(refused.terminals.map((held) => held.address)).toEqual(["t1"]);
+    // two writers came first: the shell runs, and the answer says where it went
+    const busy = await core([labeled("t1")], documents(2));
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, busy.socket)).rejects.toMatchObject({ code: "layout_not_saved" });
+    expect(Object.keys(await rects(busy.socket))).toEqual(["t1", "t2"]);
+  });
+
+  it("neither reads nor overwrites a layout a newer Ovis wrote, and leaves the Herdr app's document alone", async () => {
+    const store = documents();
+    store.docs.set("ovis-layout", { value: { schema: 2, anything: true }, version: 4 });
+    const { socket } = await core([labeled("t1"), labeled("t2")], store);
+    expect(Object.keys(await rects(socket))).toEqual(["t1", "t2"]);
+    await expect(herdrRpc("layout.set_split_ratio", { tab_id: "T", path: [], ratio: 0.3 }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(store.writes).toEqual([]);
+    store.docs.delete("ovis-layout");
+    store.docs.set("herdr-app", { value: { spaces: [] }, version: 1 });
+    await expect(herdrRpc("pane.zoom", { pane_id: "t1" }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(store.writes).toEqual([]);
+  });
+
+  it("names a pane in a label, and shows the terminal's own name once it is cleared", async () => {
+    const { socket, terminals } = await core([terminal("t1", { name: "shell", labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    await herdrRpc("pane.rename", { pane_id: "t1", label: "logs" }, socket);
+    expect(terminals[0]!.labels).toMatchObject({ "ovis.pane": "logs" });
+    expect((await paneGet("t1", socket)).label).toBe("logs");
+    await herdrRpc("pane.rename", { pane_id: "t1", label: null }, socket);
+    expect((await paneGet("t1", socket)).label).toBe("shell");
+  });
 });

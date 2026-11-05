@@ -6,6 +6,7 @@ import "./SettingsDialog.css";
 import type { AppActions } from "../lib/actions.ts";
 import { useInstallPrompt } from "../lib/install.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
+import { canReuseExternalLinkTab } from "../lib/terminalFileLinks.ts";
 import { loadRelayShell } from "../lib/relay.ts";
 import { inRelayShell, useRelay } from "../lib/useRelay.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
@@ -14,7 +15,7 @@ import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib
 import { exactChordRisk, isReservedShortcutKey, parseExactChord } from "../lib/shortcutBindings.ts";
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
-import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, HISTORY_PROMPTS, DEFAULT_SETTINGS, DIFF_STYLES, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, HISTORY_PROMPTS, DEFAULT_SETTINGS, DIFF_STYLES, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
 import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
@@ -30,7 +31,8 @@ import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
 import { LOCAL_MACHINE, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
+import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { addRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -395,6 +397,12 @@ function AppearancePage() {
       <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed")} wide>
         <Segmented label={t("Agents order")} value={settings.agentOrder} onChange={(agentOrder) => update({ agentOrder })} options={[{ value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }]} />
       </SettingsRow>
+      <SettingsRow label={t("Group agents by state")} description={t("On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.")}>
+        <Toggle label={t("Group agents by state")} checked={settings.agentGroups} onChange={(agentGroups) => update({ agentGroups })} />
+      </SettingsRow>
+      {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
+        <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
+      </SettingsRow>}
       <SettingsRow label={t("Agent logos")} description={t("Draw each agent's logo in its brand colors, or without color")} wide>
         <Segmented label={t("Agent logos")} value={settings.agentMarks} onChange={(agentMarks) => update({ agentMarks })} options={[{ value: "color", label: t("Color") }, { value: "mono", label: t("Mono") }]} />
       </SettingsRow>
@@ -528,6 +536,9 @@ function ChatPage() {
         <SettingsRow label={t("Web links")} description={t(filePanelAvailable ? "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way." : "Pages this PC serves, such as Tailscale reports, can open in the app. Shift-click opens the other way.")}>
           <Segmented label={t("Web links")} value={settings.webLinks} onChange={(webLinks) => update({ webLinks })} options={WEB_LINK_TARGETS.map((webLinks) => ({ value: webLinks, label: webLinks === "panel" ? t(filePanelAvailable ? "Beside the pane" : "In the app") : t("In a new tab") }))} />
         </SettingsRow>
+        {canReuseExternalLinkTab() && <SettingsRow label={t("Reuse tab for external links")} description={t("External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.")}>
+          <Toggle label={t("Reuse tab for external links")} checked={settings.reuseExternalLinkTab} onChange={(reuseExternalLinkTab) => update({ reuseExternalLinkTab })} />
+        </SettingsRow>}
       </SettingsGroup>
     </>
   );
@@ -569,19 +580,27 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
   );
 }
 
-function AlertsPage({ onEnableNotifications }: { onEnableNotifications: () => Promise<PushActionResult> }) {
+function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications: () => Promise<PushActionResult>; machines: readonly Machine[] }) {
   const { settings, update } = useSettings();
   const t = useT();
+  const filters = useAlertFilters();
   // the Sound switch as last set: the preview waits for the audio, and must not play once it is off
   const alertSoundWanted = useRef(settings.alertSound);
   return (
+    <>
     <SettingsGroup note={t("For this device. An alert waits a little first, and none comes when the pane changes meanwhile, as when you answer at the PC.")}>
       <PushTestControls onEnable={onEnableNotifications} />
-      <SettingsRow label={t("Needs input")} description={t("An agent waits for an answer or a permission")}>
+      <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
         <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
+      </SettingsRow>
+      <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
+        <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
       </SettingsRow>
       <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
         <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
+      </SettingsRow>
+      <SettingsRow label={t("Stopped on an error")} description={t("A turn that ended on an error, as OmO and GJC report it")}>
+        <Toggle label={t("Stopped on an error")} checked={filters.error === true} onChange={(error) => updateAlertFilters({ error })} />
       </SettingsRow>
       <SettingsRow label={t("In the app")} description={t("While the app is open, these drop in from the top of the screen at once. Tap one to open its pane.")}>
         <Toggle label={t("In the app")} checked={settings.alertInApp} onChange={(alertInApp) => update({ alertInApp })} />
@@ -595,6 +614,29 @@ function AlertsPage({ onEnableNotifications }: { onEnableNotifications: () => Pr
           if (alertSound) void unlockAlertSound().then((ready) => { if (ready && alertSoundWanted.current) previewAlertSound(); });
         }} />
       </SettingsRow>
+    </SettingsGroup>
+    <AlertPcsGroup machines={machines} />
+    </>
+  );
+}
+
+/**
+ * Which PCs alert this device, the Host first: one turned off here sends it nothing, on any channel.
+ * Shown with two PCs or more; kept by the PC's name (lib/alertFilters.ts).
+ */
+function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
+  const t = useT();
+  const { pcsOff } = useAlertFilters();
+  if (machines.length < 2) return null;
+  const listed = [...machines].sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"));
+  return (
+    <SettingsGroup title={t("Alerts from")} section="alert-pcs">
+      {listed.map((machine) => (
+        <SettingsRow key={machine.id} label={machine.name}>
+          <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(machine.name)}
+            onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((name) => name !== machine.name) : [...pcsOff, machine.name] })} />
+        </SettingsRow>
+      ))}
     </SettingsGroup>
   );
 }
@@ -661,13 +703,18 @@ function VoicePage() {
           <Segmented label={t("Microphone button")} value={settings.voiceInput} onChange={(voiceInput) => void chooseVoiceInput(voiceInput)} options={VOICE_BUTTONS.map((voiceInput) => ({ value: voiceInput, label: t(voiceInput === "auto" ? "Auto" : voiceInput === "on" ? "On" : "Off") }))} />
         </SettingsRow>
         {settings.voiceInput !== "off" && (
-          <SettingsRow label={t("Dictation language")} description={t("Auto listens for the app's language, or for the browser's when the app is not translated into it")} htmlFor="settings-voice-language">
+          <SettingsRow label={t("Dictation language")} description={t("Auto listens for the app's language, or for the browser's when the app is not translated into it")} htmlFor="settings-voice-language" wide>
             <DictationLanguageSelect />
+          </SettingsRow>
+        )}
+        {settings.voiceInput !== "off" && (
+          <SettingsRow label={t("Speech recognition")} description={<>{t(settings.voiceEngine === "auto" ? "Auto uses the API key when one is saved, else the browser" : settings.voiceEngine === "browser" ? "The browser recognizes the speech, even with a key saved" : "Only the API key below transcribes")}{settings.voiceEngine === "server" && voice && !voice.configured && <span className="voice-error">{t("Save an API key to use the mic")}</span>}</>} wide>
+            <Segmented label={t("Speech recognition")} value={settings.voiceEngine} onChange={(voiceEngine) => update({ voiceEngine })} options={VOICE_ENGINES.map((voiceEngine) => ({ value: voiceEngine, label: t(voiceEngine === "auto" ? "Auto" : voiceEngine === "browser" ? "Browser" : "API key") }))} />
           </SettingsRow>
         )}
       </SettingsGroup>
 
-      {settings.voiceInput !== "off" && (
+      {settings.voiceInput !== "off" && settings.voiceEngine !== "browser" && (
         <SettingsGroup title={t("Tidy dictated text")} section="tidy-dictation">
           <SettingsRow label={t("In chat")} description={t("Drops fillers and fixes spacing; code and paths stay as spoken")}>
             <Toggle label={t("Tidy dictated text in chat")} checked={settings.voicePolishChat} onChange={(voicePolishChat) => update({ voicePolishChat })} />
@@ -682,7 +729,7 @@ function VoicePage() {
         <div className="settings-item">
           {voice && (
             <p className="settings-label voice-status">
-              {voice.configured ? t(voice.source === "env" ? "OpenAI key set by OVIS_OPENAI_API_KEY" : "OpenAI key saved on this PC") : t("No OpenAI key: the browser's speech recognition is used")}
+              {voice.configured ? t(voice.source === "env" ? "OpenAI key set by OVIS_OPENAI_API_KEY" : "OpenAI key saved on this PC") : t(settings.voiceEngine === "server" ? "No OpenAI key saved" : "No OpenAI key: the browser's speech recognition is used")}
             </p>
           )}
           {voice && voice.source !== "env" && (
@@ -705,7 +752,7 @@ function VoicePage() {
           )}
           {voiceError && <p className="settings-hint voice-error" role="alert">{voiceError}</p>}
           <p className="settings-hint voice-privacy">
-            {voice && !voice.configured
+            {settings.voiceEngine === "browser" || (voice && !voice.configured && settings.voiceEngine === "auto")
               ? t("Without a key the browser recognizes the speech: Chrome and Edge send the audio to Google or Microsoft. Nothing is recorded until you press the mic.")
               : t("Audio is sent to OpenAI with your key. Nothing is recorded until you press the mic.")}
           </p>
@@ -869,7 +916,7 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
       {fact(t("Listens on"), bind === "loopback" ? t("Loopback") : bind === "tailnet" ? t("Tailscale address") : t("Other address"),
         bind === "other" ? t("A network address, every interface or a host name: other devices on that network may reach it.")
           : t("The address the server listens on. A proxy on this PC can still forward other traffic to it."))}
-      {fact(t("This connection"), ingress === "direct" ? t("No proxy seen") : ingress === "proxy" ? t("Through a proxy") : ingress === "tailscale" ? t("Through Tailscale") : ingress === "funnel" ? t("Through Tailscale Funnel") : ingress === "relay" ? t("Through the Ovis relay") : t("Unknown"),
+      {fact(t("This connection"), ingress === "direct" ? t("No proxy seen") : ingress === "proxy" ? t("Through a proxy") : ingress === "tailscale" ? t("Through Tailscale") : ingress === "funnel" ? t("Through Tailscale Funnel") : ingress === "relay" ? t("Through the Ovis relay") : ingress === "portal" ? t("Through Portal") : t("Unknown"),
         ingress === "direct" ? t("No proxy said it forwarded this browser's request. One that adds nothing, such as an SSH tunnel, looks the same.")
           : ingress === "relay" ? t("This browser's request came from a phone paired through the Ovis relay, end-to-end encrypted: the relay could not read it.")
           : t("How this browser's request arrived, not how every device reaches the server."))}
@@ -994,6 +1041,42 @@ function SidebarPcsGroup({ machines }: { machines: readonly Machine[] }) {
   );
 }
 
+/**
+ * Another PC through the Ovis relay, no SSH: its pairing link (Settings → Phone & devices → Copy link there) pairs this
+ * PC's server with it as a phone would. The link holds a one-time code, so it stays in the input, never in state.
+ */
+function AddRelayPc() {
+  const t = useT();
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ error: boolean; text: string } | null>(null);
+  const add = async () => {
+    const link = input.current?.value.trim() ?? "";
+    if (!link) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const { machine } = await addRelayPc(link);
+      if (input.current) input.current.value = "";
+      setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
+    } catch (error) {
+      setResult({ error: true, text: error instanceof Error ? error.message : String(error) });
+    } finally { setBusy(false); }
+  };
+  return (
+    <>
+      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Phone & devices, choose Copy link, and paste it here.")} wide>
+        <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); void add(); }}>
+          <input ref={input} className="input relay-pc-input" type="url" placeholder="https://app.ovis.sh/s/…" aria-label={t("Pairing link")}
+            autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy} />
+          <button type="submit" className="btn" disabled={busy} aria-busy={busy || undefined} aria-label={t("Add a PC through the relay")}>{t("Add PC")}</button>
+        </form>
+      </SettingsRow>
+      {result && <p className="settings-item settings-hint" role={result.error ? "alert" : "status"}>{result.text}</p>}
+    </>
+  );
+}
+
 /** a set-aside copy of machines.json (the PCs added in this app), not of herdr-profile-state.json */
 const heldAddedPcs = (name: string): boolean => name.startsWith("machines.json.");
 
@@ -1005,6 +1088,7 @@ function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSet
       <SettingsRow label={t("Add PC")} description={t("Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.")}>
         <button type="button" className="btn" onClick={actions.openAddPc}><Monitor aria-hidden="true" />{t("Add PC")}</button>
       </SettingsRow>
+      <AddRelayPc />
       {/* the switch is the server's and waits for its answer; Add PC never does */}
       {pcSettings && (
         <SettingsRow label={t("Update PC bridges automatically")} description={t("When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.")}>
@@ -1262,6 +1346,8 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const shown = useRef<{ page: SettingsPage | null; keyBar: boolean } | null>(null);
   // the group a landing named, followed into view until the reader moves the page
   const following = useRef<{ group: HTMLElement; page: SettingsPage | null } | null>(null);
+  // the group a landing named that was not drawn yet, waited for until the reader moves the page
+  const awaited = useRef<{ named: string; page: SettingsPage | null } | null>(null);
   const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "voice" ? "Voice input"
     : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Phone & devices" : id === "remote" ? "Remote PCs" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
@@ -1290,7 +1376,11 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
         pointed.focus({ preventScroll: true });
         pointed.scrollIntoView();
         following.current = { group: pointed, page };
-      } else tab(page)?.focus();
+      } else {
+        tab(page)?.focus();
+        // a group drawn only once the server answers (Anonymous usage counts) is landed on when it comes
+        if (named) awaited.current = { named, page };
+      }
     } else if (before.page !== page && narrow) {
       // a phone shows one of the two: the focus follows into the page, and back onto its row
       if (page !== null) backRef.current?.focus();
@@ -1300,9 +1390,29 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     // past the fold: it is brought back into view until the reader moves the page or leaves it.
     // The subscription is made again whenever this runs, so development's replay of the effect
     // keeps following; the reader's move or another page ends it for good
+    const body = settingsBodyRef.current;
+    const wait = awaited.current;
+    if (wait !== null && (wait.page !== page || keyBarOpen)) awaited.current = null;
+    else if (wait !== null && body) {
+      const moves = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+      const unsubscribe = (): void => {
+        observer.disconnect();
+        for (const move of moves) body.removeEventListener(move, stop);
+      };
+      const stop = (): void => { awaited.current = null; unsubscribe(); };
+      const observer = new MutationObserver(() => {
+        const group = body.querySelector<HTMLElement>(`[data-section="${CSS.escape(wait.named)}"]`);
+        if (!group) return;
+        stop();
+        group.focus({ preventScroll: true });
+        group.scrollIntoView();
+      });
+      observer.observe(body, { childList: true, subtree: true });
+      for (const move of moves) body.addEventListener(move, stop, { passive: true });
+      return unsubscribe;
+    }
     const follow = following.current;
     if (follow === null || follow.page !== page || keyBarOpen) { following.current = null; return; }
-    const body = settingsBodyRef.current;
     const observer = new ResizeObserver(() => follow.group.scrollIntoView());
     const moves = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
     const unsubscribe = (): void => {
@@ -1357,7 +1467,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "appearance": return <AppearancePage />;
       case "chat": return <ChatPage />;
       case "terminal": return <TerminalPage keyBarButtonRef={keyBarButtonRef} onEditKeyBar={openKeyBar} />;
-      case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} />;
+      case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} machines={machines} />;
       case "voice": return <VoicePage />;
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
