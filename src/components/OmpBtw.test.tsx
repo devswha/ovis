@@ -74,6 +74,19 @@ test("lists the saved topics once opened, and a topic opens on its question, its
   expect(text()).toContain("The API is on 7421.");
 });
 
+test("says the list is as it last read when a later read fails", async () => {
+  // The HTTP boundary answers once, then fails.
+  let fail = false;
+  jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => fail ? Response.json({ error: { code: "internal_error", message: "x" } }, { status: 500 }) : Response.json({ topics: [TOPIC] }), globalThis.fetch));
+  await act(async () => { renderer = create(pane()); });
+  await act(async () => renderer!.root.findAllByType("button")[0]!.props.onClick());
+  expect(text()).not.toContain("Couldn't refresh");
+  fail = true;
+  await act(async () => { jest.runOnlyPendingTimers(); });
+  expect(text()).toContain("Couldn't refresh: this is the list as it last read");
+  expect(text()).toContain("Which port does the dev server use?");
+});
+
 test("gives up a read that never answers at its deadline and asks again", async () => {
   // The HTTP boundary holds every request open until the client aborts it.
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(

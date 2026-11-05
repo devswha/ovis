@@ -40,24 +40,31 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   const [topics, setTopics] = useState<OmpBtwTopic[]>([]);
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<string | null>(null);
+  // the last read failed: the list on screen is the one read before
+  const [failed, setFailed] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
   usePhoneSheetBack(() => setOpen(false), open);
   // another pane or PC: its own topics, never these
-  useEffect(() => { setTopics([]); setOpen(false); setShown(null); }, [paneId, machineId]);
+  useEffect(() => { setTopics([]); setOpen(false); setShown(null); setFailed(false); }, [paneId, machineId]);
   useEffect(() => { if (!open) setShown(null); }, [open]);
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | undefined;
-    // a read that stalls is given up at its deadline and asked again, so the list never stops refreshing
+    // a read that stalls is given up at its deadline and asked again, so the list never stops refreshing;
+    // a hidden page asks nothing and looks again on the next tick
     const load = (): void => {
+      const later = (): void => { if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
+      if (document.visibilityState === "hidden") { later(); return; }
       const controller = reading = new AbortController();
       const deadline = setTimeout(() => controller.abort(), READ_DEADLINE_MS);
-      const again = (): void => { clearTimeout(deadline); if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
-      fetchPaneBtw(paneId, controller.signal).then((found) => { if (alive) setTopics(found); again(); }, again);
+      fetchPaneBtw(paneId, controller.signal).then(
+        (found) => { clearTimeout(deadline); if (alive) { setTopics(found); setFailed(false); } later(); },
+        () => { clearTimeout(deadline); if (alive) setFailed(true); later(); },
+      );
     };
     load();
     return () => { alive = false; clearTimeout(timer); reading?.abort(); };
@@ -65,15 +72,17 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // Escape closes the list and goes no further: in the message box it would also stop the agent's turn
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape") return;
+      event.stopPropagation();
       // the list unmounts with the topic that held the focus: hand it back to the chip
       if (root.current?.contains(document.activeElement)) toggle.current?.focus();
       setOpen(false);
     };
     window.addEventListener("pointerdown", outside);
-    window.addEventListener("keydown", escape);
-    return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape); };
+    window.addEventListener("keydown", escape, true);
+    return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape, true); };
   }, [open]);
   // Match BackgroundTasks: bound the upward-opening list to the room above the input card.
   useLayoutEffect(() => {
@@ -119,6 +128,7 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
     </button>
     {open && <div ref={menu} id={id} className="menu bg-tasks-menu btw-menu" role="dialog" aria-label={t("Side conversations")}>
       <div className="menu-heading">{t("Side conversations")}</div>
+      {failed && <p className="bg-tasks-note" role="status">{t("Couldn't refresh: this is the list as it last read")}</p>}
       <ul className="bg-task-list">{topics.map((topic) => {
         const when = formatChatTimestamp(topic.at, now, locale, t);
         const expanded = shown === topic.id;
