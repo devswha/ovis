@@ -71,6 +71,8 @@ export interface RepoBranches {
 export interface RepoCommitDetail {
   repository: RepoDiffRepository;
   commit: RepoCommit;
+  /** `commit.refs` may be missing some: the refs at it passed the list's byte cap */
+  refs_truncated: boolean;
   /** the whole message, its trailing newlines left out; cut at `limits.max_message_bytes` when `message_truncated` */
   message: string;
   message_truncated: boolean;

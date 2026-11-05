@@ -82,6 +82,19 @@ describe("GET /api/workspace/git/log", () => {
     expect(branch.next_skip).toBeNull();
   });
 
+  it("never fetches a commit a partial clone is missing: a read stays on this disk", async () => {
+    const remote = repository("log-promisor");
+    commit(remote, "shared", 1_700_000_000);
+    git(remote, ["config", "uploadpack.allowFilter", "true"]);
+    git(remote, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    const clone = join(scratch, "log-partial");
+    git(scratch, ["clone", "-q", "--filter=blob:none", `file://${remote}`, clone]);
+    const later = commit(remote, "only on the remote", 1_700_000_060);
+    expect(await codeOf(repoLog(clone, query({ oid: later })))).toBe("revision_not_found");
+    expect(await codeOf(repoCommit(clone, query({ rev: later })))).toBe("revision_not_found");
+    expect(Bun.spawnSync(["git", "-C", clone, "cat-file", "-e", later], { env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } }).exitCode).not.toBe(0);
+  });
+
   it("answers an empty page for a repository with no commit yet", async () => {
     const empty = repository("log-unborn");
     expect(await repoLog(empty, query())).toMatchObject({ oid: null, commits: [], next_skip: null, repository: { unborn: true } });
@@ -161,6 +174,7 @@ describe("GET /api/workspace/git/show", () => {
     expect(detail.message_truncated).toBe(false);
     expect(detail.base).toBe(detail.commit.parents[0]!);
     expect(detail.commit.refs).toEqual(["refs/heads/main"]);
+    expect(detail.refs_truncated).toBe(false);
     const changes = await repoDiffFiles(root, query({ scope: "commit", base: detail.base, head: detail.commit.oid }));
     expect(changes.files.map((file) => file.path)).toEqual(["side.txt"]);
   });

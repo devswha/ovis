@@ -11,7 +11,8 @@ import { type Context, EMPTY_TREE_OIDS, type GitRun, MAX_REFNAME_BYTES, OID, Rep
 
 export const REPO_LOG_MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
-const MAX_SKIP = 1_000_000;
+/** past any real history, so every `next_skip` a page answers is one the next request takes */
+const MAX_SKIP = 999_999_999;
 export const REPO_COMMIT_MAX_MESSAGE_BYTES = 64 * 1024;
 
 export interface RepoLogOptions extends RepoDiffOptions {
@@ -65,7 +66,7 @@ async function refsAt(context: Context, root: string, oids: string[]): Promise<{
 function countOf(params: URLSearchParams, name: string, code: string, min: number, max: number, fallback: number): number {
   const value = params.get(name);
   if (value === null || value === "") return fallback;
-  if (!/^\d{1,7}$/.test(value) || Number(value) < min || Number(value) > max) throw new RepoDiffError(code, `${name} must be a whole number from ${min} to ${max}`, 400);
+  if (!/^\d{1,9}$/.test(value) || Number(value) < min || Number(value) > max) throw new RepoDiffError(code, `${name} must be a whole number from ${min} to ${max}`, 400);
   return Number(value);
 }
 
@@ -185,6 +186,7 @@ export async function repoCommit(cwd: string, params: URLSearchParams, options: 
   return {
     repository,
     commit: { ...read, refs: refs.refs.get(oid) ?? [] },
+    refs_truncated: !refs.complete,
     // a message cut at its cap may end inside a character, which decodes as U+FFFD
     message: body.overflow ? body.stdout.replace(/\uFFFD+$/u, "") : body.stdout.replace(/\n+$/, ""),
     message_truncated: body.overflow,
