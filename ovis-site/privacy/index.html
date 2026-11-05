@@ -69,8 +69,8 @@
 <li>Your account: a random account ID, which provider you signed in with, and a one-way hash of that provider's ID for you. Not your email, name, avatar or GitHub repositories.</li>
 <li>Your sign-ins: one-way hashes of the tokens each signed-in device holds, and when they expire.</li>
 <li>Your PCs: for each PC you add, its name, its relay ID and public key, the relay it uses, when it was added and when it last checked in.</li>
-<li>Messages waiting for a PC: signed records that add or remove a device (that device's public key and name, and which device signed it), kept until the PC collects them, and never more than 30 days.</li>
-<li>Join requests: which PC a new device is waiting at, the name it gave and its public key, kept for 10 minutes, used to alert your other devices and to let them check the device they approve.</li>
+<li>Messages waiting for a PC: signed records that add or remove a device (that device's public key and name, and which device signed it), kept until the PC collects them; after 30 days they are no longer handed out, and they are deleted within a day after that.</li>
+<li>Join requests: which PC a new device is waiting at, the name it gave and its public key, handed out for 10 minutes and deleted within a day, used to alert your other devices and to let them check the device they approve.</li>
 </ul>
 <p>It never receives what you type, what your PCs show, your files, the six-digit numbers you compare, or any device's private key. To stop using it, choose <strong>Sign out</strong> in the app; to have your account and everything above deleted, write to us (see Contact).</p>
 <h2>Alerts</h2>
