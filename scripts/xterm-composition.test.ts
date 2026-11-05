@@ -118,6 +118,32 @@ describe("xterm mobile composition input", () => {
     expect(e.sent.join("")).toBe("니다");
   });
 
+  it("forwards an edit before the end as an insertion without deleting other text", () => {
+    const e = editor();
+    e.compose("abcdef");
+    e.textarea.selectionStart = e.textarea.selectionEnd = 3;
+    e.event("keydown", { keyCode: 229 });
+    e.textarea.value = "abcXdef";
+    jest.runAllTimers();
+    expect(e.sent).toEqual(["abcdef", "X"]);
+  });
+
+  for (const [name, clear] of [
+    ["Enter", (e: ReturnType<typeof editor>) => e.event("keydown", { keyCode: 13 })],
+    ["a paste or blur", (e: ReturnType<typeof editor>) => e.helper.finishReplacement()],
+  ] as const) {
+    it(`sends a pending edit before ${name} clears the textarea`, () => {
+      const e = editor();
+      e.compose("long command");
+      e.event("keydown", { keyCode: 229 });
+      e.value("long command.");
+      clear(e);
+      e.value("");
+      jest.runAllTimers();
+      expect(e.sent).toEqual(["long command", "."]);
+    });
+  }
+
   it("does not deliver a deferred edit after the terminal resets", () => {
     const e = editor();
     e.compose("word word");
