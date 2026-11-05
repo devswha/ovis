@@ -395,6 +395,5 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Group agents by state": "按状态分组代理",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "在此设备上，把代理列在工作区上方：先是需要你回应的，然后是工作中、已完成和空闲。已固定的代理仍在最上面。",
   "Within a state": "同一状态内",
-  "Longest wait puts the agent that has waited longest first, within each PC": "按等待时长会在每台电脑内把等待最久的代理排在最前",
   "Longest wait": "按等待时长",
 };

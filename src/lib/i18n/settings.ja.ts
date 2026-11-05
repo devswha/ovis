@@ -395,6 +395,5 @@ export const SETTINGS_JA: Record<string, string> = {
   "Group agents by state": "エージェントを状態ごとにまとめる",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "このデバイスでは、エージェントをワークスペースの上に表示します。応答が必要なものが先で、次に作業中、完了、待機の順です。ピン留めしたエージェントは一番上のままです。",
   "Within a state": "同じ状態の中で",
-  "Longest wait puts the agent that has waited longest first, within each PC": "待ち時間順では、PC ごとに一番長く待っているエージェントを先に並べます",
   "Longest wait": "待ち時間順",
 };

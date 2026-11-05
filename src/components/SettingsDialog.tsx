@@ -399,7 +399,7 @@ function AppearancePage() {
       <SettingsRow label={t("Group agents by state")} description={t("On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.")}>
         <Toggle label={t("Group agents by state")} checked={settings.agentGroups} onChange={(agentGroups) => update({ agentGroups })} />
       </SettingsRow>
-      {settings.agentGroups && <SettingsRow label={t("Within a state")} description={t("Longest wait puts the agent that has waited longest first, within each PC")} wide>
+      {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
         <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
       </SettingsRow>}
       <SettingsRow label={t("Agent logos")} description={t("Draw each agent's logo in its brand colors, or without color")} wide>

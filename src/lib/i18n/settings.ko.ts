@@ -395,6 +395,5 @@ export const SETTINGS_KO: Record<string, string> = {
   "Group agents by state": "에이전트를 상태별로 묶기",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "이 기기에서 에이전트를 워크스페이스 위에 보여 줍니다. 내 응답이 필요한 에이전트가 먼저, 그다음 작업 중, 완료, 대기 순입니다. 고정한 에이전트는 맨 위에 그대로 있습니다.",
   "Within a state": "같은 상태 안에서",
-  "Longest wait puts the agent that has waited longest first, within each PC": "오래 기다린 순은 PC마다 가장 오래 기다린 에이전트를 먼저 놓습니다",
   "Longest wait": "오래 기다린 순",
 };
