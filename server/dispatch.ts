@@ -359,10 +359,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (machineId && machineId !== "local") {
       if (access.level === "none") return unauthorizedJson(access.reason);
       if (!machines?.endpoint(machineId)) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
+      // whose receipts these are: the paired device, else the Portal user or Tailscale login the request proved
+      const principal = deviceId !== undefined ? JSON.stringify(["device", deviceId])
+        : access.portal ? JSON.stringify(["portal", access.portal.method, access.portal.user])
+        : access.login !== undefined ? JSON.stringify(["tailscale", access.login]) : undefined;
       let relay: MachineRelay | undefined;
       try {
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
-          (browser) => ctx.services.relayReceiptIds.scope(machineId, deviceId, browser));
+          (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
         await relay.ready;
         const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
         if (upgraded) return undefined;
