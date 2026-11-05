@@ -411,6 +411,20 @@ try {
     await paused.clock.runFor(30_000);
     assert.equal(reads, before, "a wait schedules no backstop reads");
     await paused.evaluate(() => window.chatFallbackQA.until(() => window.chatFallbackQA.listening()));
+    // a read that fails while waiting proves nothing to wait on: the backstop retries it
+    copilotWaiting = false; lookupTimeout = true;
+    const failed = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
+    await paused.evaluate(() => window.chatFallbackQA.output());
+    await failed;
+    copilotWaiting = true; lookupTimeout = false;
+    const afterFailure = reads;
+    const retried = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation", { timeout: 5000 })
+      .catch(() => assert.fail("a read that failed while waiting is retried without pane activity"));
+    // just past the 10s backstop: further on, the read's own timeout would cancel it before it answers
+    await paused.clock.runFor(11_000);
+    await retried;
+    assert.ok(reads > afterFailure, "a read that failed while waiting is retried without pane activity");
+    await banner.waitFor();
     copilotWaiting = false;
     turns = [...turns, { role: "assistant", ts: null, parts: [{ kind: "text", text: "Copilot turn after the wait" }] }];
     const woken = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");

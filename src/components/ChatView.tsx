@@ -1761,6 +1761,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         setReadPresentation(proved ? readKey : undefined);
       } catch (cause) {
         if (cancelled || generation !== olderGeneration.current) return;
+        // a failed read proves nothing to wait on: the failure shows and the backstop retries it
+        setStale(false);
         setLoaded(true);
         setError(userFailure(cause));
         setErrorStatus(cause instanceof ApiError ? cause.status : null);
