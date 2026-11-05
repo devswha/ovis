@@ -108,7 +108,9 @@ async function phone(transport: Transport, serverKey: string) {
     binding: () => { const binding = channelBinding(channel); if (!binding) throw new Error("No binding"); return binding; },
     async hello(features = [PAIR_SAS_FEATURE]) {
       await send({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features, required_features: [] } });
-      const welcome = await inbox.next();
+      let welcome = await inbox.next();
+      // outside the owner's pairing window a provisional WELCOME comes before HELLO; the answer that selects follows it
+      if (welcome.type === FrameType.WELCOME && welcome.payload.provisional && features.length > 0) welcome = await inbox.next();
       if (welcome.type !== FrameType.WELCOME) throw new Error(`Expected WELCOME, got ${welcome.type}`);
       return welcome.payload;
     },

@@ -6,7 +6,8 @@
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { ACCOUNT_FEATURE, decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_PROTOCOL } from "./relay-mux.ts";
+import { ACCOUNT_FEATURE, decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL } from "./relay-mux.ts";
+import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
@@ -162,6 +163,11 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let connectionId = "";
     const limits = { ...LIMITS_V1 };
     let welcome: Uint8Array | undefined;
+    /** a provisional WELCOME a phone comparing digits passed over, counted with the setup frames at admission */
+    let passed: Uint8Array | undefined;
+    /** the nonce of a provisional WELCOME this phone signed in on, and the PC's answer to HELLO that may follow it */
+    let provisionalNonce: string | undefined;
+    let answered: Uint8Array | undefined;
     let server: RelayServerInfo = { version: "", relayProtocol: RELAY_PROTOCOL };
     let receipt: Uint8Array | undefined;
     let incoming = Promise.resolve();
@@ -216,6 +222,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       if (phase === "welcome" && frame.type === FrameType.WELCOME) {
+        // sent before the PC read HELLO, so it cannot select comparing digits: the WELCOME answering HELLO follows
+        if (comparing && frame.payload.provisional && !passed) { passed = bytes; return; }
         // before any credential: a PC of another relay generation is an update, not a pairing
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol, features: frame.payload.features };
@@ -223,6 +231,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
+        provisionalNonce = frame.payload.provisional ? frame.payload.nonce : undefined;
         if (comparing) {
           // an older PC pairs only with a code from its QR code
           if (!frame.payload.features.includes(PAIR_SAS_FEATURE)) throw new MuxProtocolError("unsupported_extension", "The PC cannot pair without a code");
@@ -260,6 +269,15 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         }).catch(failed);
         return;
       }
+      // a PC that selects something (the account feature) answers HELLO after the provisional WELCOME this
+      // phone already signed in on: the same nonce, so the sign-in stands, and only what it selected is new
+      if (phase === "auth" && frame.type === FrameType.WELCOME && !frame.payload.provisional && provisionalNonce !== undefined && !answered) {
+        if (frame.payload.nonce !== provisionalNonce || frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("protocol_error", "The PC's answer to HELLO changed its WELCOME");
+        if (frame.payload.features.some((feature) => !offered.includes(feature))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
+        server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol, features: frame.payload.features };
+        answered = bytes;
+        return;
+      }
       if (phase !== "auth" || frame.type !== FrameType.AUTH_OK) {
         throw new MuxProtocolError("protocol_error", "Unexpected frame before AUTH_OK");
       }
@@ -274,12 +292,16 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (!kept || kept.server_public_key !== device.server_public_key || kept.public_spki !== device.public_spki) {
           throw new MuxProtocolError("auth_changed", "Stored relay identity changed during authentication");
         }
-        return { ...kept, device_id: frame.payload.device_id };
+        // the PC's answer to the relay-hints this phone offered in HELLO, inside the Noise channel the
+        // PC authenticated: the relay cannot have written these
+        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.
       // Outgoing HELLO/AUTH already used the mux ledger, so inbound receipts are safe.
+      if (passed) mux.receive(passed);
       mux.receive(welcome);
+      if (answered) mux.receive(answered);
       if (challenge) mux.receive(challenge);
       mux.receive(bytes);
       if (receipt) mux.receive(receipt);
@@ -355,7 +377,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           onClose: (error) => stop(error),
         });
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [...offered], required_features: [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [RELAY_HINTS, ...offered], required_features: [] } });
       }).catch(failed);
     };
   });
