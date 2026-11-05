@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import { createContext, isValidElement, useContext, type ComponentProps, type ReactNode } from "react";
 import { ChevronDown, Minus, Plus } from "lucide-react";
 
 import "./SettingsControls.css";
@@ -7,13 +7,42 @@ import "./SettingsControls.css";
  * The parts every Settings page is built from: a group is a caption over one card, a card holds
  * rows parted by hairlines, and a row is a label with its one control at the end of the line.
  */
+/**
+ * The words typed in Settings' search (SettingsDialog.tsx): while it holds any, a row draws only
+ * when its label and description hold every one of them, and a group whose title holds them all
+ * shows each of its rows. Outside a search it is empty and nothing is filtered.
+ */
+export const SettingsQuery = createContext<readonly string[]>([]);
+
+/** What a search matches by: case and full-width forms folded, so "Font" finds "font". */
+const folded = (text: string): string => text.normalize("NFKC").toLocaleLowerCase();
+
+export function settingsQueryWords(query: string): string[] {
+  return folded(query).split(/\s+/).filter((word) => word !== "");
+}
+
+/** The words a label or description shows, a description built of elements (a sentence and a warning) included. */
+function textOf(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join(" ");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return "";
+}
+
+export function matchesSettingsQuery(words: readonly string[], ...texts: ReactNode[]): boolean {
+  const shown = folded(texts.map(textOf).join(" "));
+  return words.every((word) => shown.includes(word));
+}
+
 /** `section`: the group's name in a link to it (`?settings=<page>&section=<name>`, lib/deepLink.ts) */
 export function SettingsGroup({ title, note, className, section, children }: { title?: string; note?: ReactNode; className?: string; section?: string; children: ReactNode }) {
+  const words = useContext(SettingsQuery);
+  const titled = words.length > 0 && title !== undefined && matchesSettingsQuery(words, title);
   return (
     <section className={className ? `settings-section ${className}` : "settings-section"} data-section={section} tabIndex={section ? -1 : undefined}>
       {title !== undefined && <h3>{title}</h3>}
       {note !== undefined && <p className="settings-description settings-note">{note}</p>}
-      <div className="settings-card">{children}</div>
+      <div className="settings-card">{titled ? <SettingsQuery.Provider value={[]}>{children}</SettingsQuery.Provider> : children}</div>
     </section>
   );
 }
@@ -23,8 +52,10 @@ export function SettingsGroup({ title, note, className, section, children }: { t
  * segments, a text field): the row stacks there, and stays one line everywhere else.
  */
 export function SettingsRow({ label, description, htmlFor, wide = false, children }: { label: string; description?: ReactNode; htmlFor?: string; wide?: boolean; children: ReactNode }) {
+  const words = useContext(SettingsQuery);
+  if (words.length > 0 && !matchesSettingsQuery(words, label, description)) return null;
   return (
-    <div className={wide ? "settings-row is-wide" : "settings-row"}>
+    <div className={wide ? "settings-row is-wide" : "settings-row"} data-setting="">
       <div className="settings-row-text">
         {htmlFor !== undefined ? <label className="settings-label" htmlFor={htmlFor}>{label}</label> : <span className="settings-label">{label}</span>}
         {description !== undefined && <span className="settings-description">{description}</span>}

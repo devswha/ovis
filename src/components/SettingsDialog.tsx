@@ -27,7 +27,7 @@ import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { MarkdownOutlineRow } from "./MarkdownOutlineRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Stepper, Toggle } from "./SettingsControls.tsx";
+import { Segmented, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
 import { FONT_FAMILY_MAX_CHARS, sanitizeFontFamily } from "../lib/fontFamily.ts";
 import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiFontPreset } from "../lib/typography.ts";
@@ -1447,6 +1447,12 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "voice" ? "Voice input"
     : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Phone & devices" : id === "remote" ? "Remote PCs" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
+  // Settings' search: every page's rows that hold all the words typed, each where it can be changed
+  // at once, under its page's name, as Zed's and VS Code's settings searches show them
+  const [query, setQuery] = useState("");
+  const words = useMemo(() => settingsQueryWords(query), [query]);
+  const searching = words.length > 0 && !keyBarOpen && (!narrow || page === null);
+  const openFromSearch = (id: SettingsPage): void => { setQuery(""); openPage(id); };
   const openKeyBar = (): void => {
     settingsScrollRef.current = settingsBodyRef.current?.scrollTop ?? 0;
     setKeyBarOpen(true);
@@ -1525,11 +1531,11 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const [pcSettingsError, setPcSettingsError] = useState<string | null>(null);
   // asked when a page that shows them opens, so a request that failed earlier is made again
   useEffect(() => {
-    if (page !== "remote" && page !== "about") return;
+    if (page !== "remote" && page !== "about" && !searching) return;
     let live = true;
     machineRequest<MachineSettings>("/settings").then((settings) => { if (live) setPcSettings(settings); }, () => { if (live) setPcSettings(null); });
     return () => { live = false; };
-  }, [page]);
+  }, [page, searching]);
   const updatePcSettings = async (patch: Partial<MachineSettings>) => {
     try { setPcSettings(await machineRequest<MachineSettings>("/settings", "PATCH", patch)); setPcSettingsError(null); }
     catch (e) { setPcSettingsError(e instanceof Error ? e.message : String(e)); }
@@ -1559,10 +1565,10 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     event.preventDefault();
     const next = PAGES[(to + PAGES.length) % PAGES.length]!.id;
     tab(next)?.focus();
-    if (!narrow) openPage(next);
+    if (!narrow) openFromSearch(next);
   };
 
-  const body = (): ReactNode => {
+  const body = (page: SettingsPage): ReactNode => {
     switch (page) {
       case "appearance": return <AppearancePage />;
       case "chat": return <ChatPage />;
@@ -1584,18 +1590,38 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   return (
     <div className={overPreview ? "modal-scrim settings-over-preview" : "modal-scrim"} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       {/* named Settings on every page: the page's own name is the visible title */}
-      <section ref={surface} className="modal settings-dialog" role="dialog" aria-modal="true" aria-label={keyBarOpen ? t("Key bar") : t("Settings")} tabIndex={-1}>
+      <section ref={surface} className={searching ? "modal settings-dialog is-searching" : "modal settings-dialog"} role="dialog" aria-modal="true" aria-label={keyBarOpen ? t("Key bar") : t("Settings")} tabIndex={-1}>
         <header className="modal-header settings-header">
           {(keyBarOpen || (narrow && page !== null)) && <button type="button" ref={backRef} className="icon-button" aria-label={t("Back to settings")} onClick={goBack}><ArrowLeft aria-hidden="true" /></button>}
-          <h2 className="modal-title">{keyBarOpen ? t("Key bar") : page === null ? t("Settings") : label(page)}</h2>
+          <h2 className="modal-title">{keyBarOpen ? t("Key bar") : searching && !narrow ? t("Search results") : page === null ? t("Settings") : label(page)}</h2>
           <button type="button" className="icon-button" aria-label={t("Close settings")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         {listShown && (
           <nav className="settings-nav" aria-label={t("Settings")}>
             <p className="settings-nav-title" aria-hidden="true">{t("Settings")}</p>
-            <div ref={tabsRef} className="settings-tabs" role="tablist" aria-orientation="vertical">
+            <div className="settings-search">
+              <Search aria-hidden="true" />
+              <input
+                type="search"
+                className="input settings-search-input"
+                value={query}
+                placeholder={t("Search settings")}
+                aria-label={t("Search settings")}
+                aria-controls={searching ? "settings-search-results" : undefined}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  // the first Escape empties the search, the next one closes Settings (its listener skips a handled key)
+                  if (event.key !== "Escape" || query === "" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                  event.preventDefault();
+                  setQuery("");
+                }}
+              />
+            </div>
+            <div ref={tabsRef} className="settings-tabs" role="tablist" aria-orientation="vertical" hidden={searching && narrow}>
               {PAGES.map(({ id, icon: Icon }, index) => (
-                <button key={id} type="button" role="tab" className="settings-tab" data-settings-page={id} aria-selected={page === id} aria-controls={page === id ? "settings-panel" : undefined} tabIndex={focusable === id ? 0 : -1} onClick={() => openPage(id)} onKeyDown={(event) => onTabKey(event, index)}>
+                <button key={id} type="button" role="tab" className="settings-tab" data-settings-page={id} aria-selected={!searching && page === id} aria-controls={!searching && page === id ? "settings-panel" : undefined} tabIndex={focusable === id ? 0 : -1} onClick={() => openFromSearch(id)} onKeyDown={(event) => onTabKey(event, index)}>
                   <Icon aria-hidden="true" />
                   <span>{label(id)}</span>
                   <ChevronRight className="settings-tab-chevron" aria-hidden="true" />
@@ -1604,7 +1630,23 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
             </div>
           </nav>
         )}
-        {page !== null && <div key={page} ref={settingsBodyRef} id="settings-panel" className="modal-body settings-body" role="tabpanel" aria-label={label(page)} hidden={keyBarOpen}>{saveError !== null && <SaveFailure error={saveError} paused={savePaused} retrying={saveRetrying} onRetry={onRetrySave} />}{body()}</div>}
+        {searching ? (
+          <div id="settings-search-results" className="modal-body settings-body settings-search-results" role="region" aria-label={t("Search results")}>
+            {saveError !== null && <SaveFailure error={saveError} paused={savePaused} retrying={saveRetrying} onRetry={onRetrySave} />}
+            <p className="settings-search-empty" role="status">{t("No settings match.")}</p>
+            <SettingsQuery.Provider value={words}>
+              {PAGES.map(({ id }) => (
+                <section key={id} className="settings-search-page" aria-label={label(id)}>
+                  <button type="button" className="settings-search-page-title" aria-label={t("Open {page}", { page: label(id) })} onClick={() => openFromSearch(id)}>
+                    <span>{label(id)}</span>
+                    <ChevronRight aria-hidden="true" />
+                  </button>
+                  {body(id)}
+                </section>
+              ))}
+            </SettingsQuery.Provider>
+          </div>
+        ) : page !== null && <div key={page} ref={settingsBodyRef} id="settings-panel" className="modal-body settings-body" role="tabpanel" aria-label={label(page)} hidden={keyBarOpen}>{saveError !== null && <SaveFailure error={saveError} paused={savePaused} retrying={saveRetrying} onRetry={onRetrySave} />}{body(page)}</div>}
         {keyBarOpen && <div className="modal-body settings-key-bar-body"><KeyBarSettings /></div>}
       </section>
     </div>

@@ -456,6 +456,74 @@ const checkSelectArrows = async (page: Page): Promise<void> => {
   }
 };
 
+/**
+ * Settings' own search, at 1440 and 390: the settings of every page that hold all the words typed,
+ * each under its page's name and changed right there; a group named by the words shows its settings;
+ * a page's name opens it; no match says so; and Escape empties the search before it closes Settings.
+ */
+async function dialogSearch(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  for (const width of [1440, 390] as const) {
+    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    try {
+      await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(url);
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      await openSettings(page);
+      const dialog = dialogOf(page);
+      const search = dialog.getByRole("searchbox", { name: "Search settings", exact: true });
+      const results = dialog.getByRole("region", { name: "Search results", exact: true });
+      // the pages drawn with what each shows: its name and the labels of the settings in sight
+      const shown = () => results.evaluate((region) => [...region.querySelectorAll<HTMLElement>(".settings-search-page")].filter((section) => section.checkVisibility())
+        .map((section) => [section.getAttribute("aria-label"), [...section.querySelectorAll<HTMLElement>("[data-setting]")].filter((row) => row.checkVisibility()).map((row) => row.querySelector(".settings-label")?.textContent ?? "")] as const));
+
+      await search.fill("Font SIZE");
+      const found = await shown();
+      assert.deepEqual(found.map(([name]) => name), ["Appearance", "Chat", "Terminal"], `${width}px: "font size" finds settings on those pages only`);
+      for (const [name, label] of [["Appearance", "Interface font size"], ["Chat", "Chat font size"], ["Terminal", "Terminal font size"]] as const) {
+        assert.ok(found.find(([page]) => page === name)?.[1].includes(label), `${width}px: ${label} is found under ${name}`);
+      }
+      assert.equal(await dialog.getByRole("tablist").isVisible(), width !== 390, `${width}px: a phone's results take the list's place`);
+
+      // a setting found is changed where it is shown
+      await results.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
+      assert.equal(await results.getByRole("group", { name: "Terminal font size", exact: true }).locator("output").textContent(), "14px");
+
+      // a group named by the words shows each of its settings
+      await search.fill("quick replies");
+      assert.deepEqual(await shown(), [["Chat", ["Show above the message box"]]], `${width}px: the Quick replies group's setting is found by the group's name`);
+
+      await search.fill("zzqxv nothing");
+      await dialog.getByRole("status").filter({ hasText: "No settings match." }).waitFor();
+      assert.deepEqual(await shown(), [], `${width}px: no page is drawn when nothing matches`);
+
+      // the first Escape empties the search and keeps Settings; the next one closes it
+      await search.press("Escape");
+      assert.equal(await search.inputValue(), "");
+      assert.equal(await results.count(), 0);
+      assert.equal(await dialog.getByRole("tablist").isVisible(), true, `${width}px: the list of pages is back`);
+      assert.equal(await page.locator(".settings-dialog").count(), 1, `${width}px: Escape on a search does not close Settings`);
+
+      // a page's name opens the page and ends the search
+      await search.fill("sound");
+      await results.getByRole("button", { name: "Open Alerts", exact: true }).click();
+      await dialog.getByRole("tabpanel", { name: "Alerts", exact: true }).waitFor();
+      assert.equal(await search.count() === 0 || await search.inputValue() === "", true, `${width}px: opening a page ends the search`);
+      if (width === 1440) {
+        await search.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
+      }
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS Settings' search at 1440 and 390px: settings of every page found and changed in place, groups by name, pages opened, nothing matching said, Escape empties first");
+}
+
 try {
   await buildDemoApp(app);
   await buildDevelopmentDemoApp(devApp);
@@ -1039,6 +1107,7 @@ try {
 
       await lateCloseStep(browser, url);
       await settingsSearch(browser, url);
+      await dialogSearch(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();

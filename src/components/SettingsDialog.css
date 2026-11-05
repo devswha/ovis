@@ -52,6 +52,81 @@
   gap: 2px;
 }
 
+.settings-tabs[hidden] {
+  display: none;
+}
+
+/* Settings' search, over the list of pages; its results take the page's place (a phone's list's) */
+.settings-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.settings-search > svg {
+  position: absolute;
+  left: var(--space-3);
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.settings-search-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding-left: calc(var(--space-3) + 16px + var(--space-2));
+}
+
+/* each page with a row that matches: its name, which opens it, over the groups it holds there */
+.settings-search-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settings-search-page-title {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+
+.settings-search-page-title svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+
+.settings-search-empty {
+  display: none;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.settings-search-results:not(:has(> .settings-search-page > .settings-section > .settings-card > [data-setting])) > .settings-search-empty {
+  display: block;
+}
+
+/* only settings (SettingsControls.tsx SettingsRow) are found: a page's lists, buttons, facts, notes
+   and hints stay on the page itself, and a group or a page left with no setting in sight is not drawn */
+.settings-search-page > :not(.settings-section, .settings-search-page-title),
+.settings-search-results .settings-card > :not([data-setting]),
+.settings-search-results .settings-note,
+.settings-search-results .settings-section:not(:has(> .settings-card > [data-setting])),
+.settings-search-page:not(:has(> .settings-section > .settings-card > [data-setting])) {
+  display: none;
+}
+
 .settings-tab {
   display: flex;
   align-items: center;
@@ -475,6 +550,20 @@
 
   .settings-tab-chevron {
     display: block;
+  }
+
+  /* searching, the field stays over its results, which take the list's place */
+  .settings-dialog.is-searching {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .settings-dialog.is-searching .settings-nav {
+    padding-bottom: 0;
+    overflow: visible;
+  }
+
+  .settings-dialog.is-searching .settings-body {
+    grid-row: 3;
   }
 
   .settings-shortcut-select {
