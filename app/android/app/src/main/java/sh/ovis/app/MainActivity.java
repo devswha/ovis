@@ -189,7 +189,9 @@ public class MainActivity extends BridgeActivity {
                     }
 
                     // WebView does not ask shouldOverrideUrlLoading about a form's POST: a sign-in form
-                    // posting over plain http is held here, before anything is sent
+                    // posting over plain http is held here, before anything is sent, and a POST that goes
+                    // on is where the next step is judged from. WebView follows a POST's redirects with
+                    // no callback, so those stay unchecked (the check is best effort)
                     @Override
                     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                         Uri url = request.getUrl();
@@ -197,10 +199,13 @@ public class MainActivity extends BridgeActivity {
                             signingIn &&
                             request.isForMainFrame() &&
                             "POST".equalsIgnoreCase(request.getMethod()) &&
-                            "http".equals(url.getScheme()) &&
-                            refuseSignInStep(url.toString(), pc)
+                            ("https".equals(url.getScheme()) || "http".equals(url.getScheme())) &&
+                            !appOrigin.equals(url.getScheme() + "://" + url.getHost())
                         ) {
-                            return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+                            if (refuseSignInStep(url.toString(), pc)) {
+                                return new WebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream(new byte[0]));
+                            }
+                            signInAt = PCStore.origin(url.toString());
                         }
                         return super.shouldInterceptRequest(view, request);
                     }
