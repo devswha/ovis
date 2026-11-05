@@ -1,7 +1,8 @@
 /**
  * The sidebar's section heads and PC rows on the real demo client, never a live herdr session: the
  * PCs and Agents heads' counts and always-shown carets, open and folded, in both section orders; a
- * PC header's agent count traded for its actions on hover and focus (always actions under a finger);
+ * PC header's agent count traded for its actions on hover and focus (always actions under a finger,
+ * also on a fine pointer with a touch screen beside it), and no count for a PC that is not connected;
  * folded PCs one row each; and each list's edge fades following its real overflow.
  * The roster is the demo's own, or that roster on two connected PCs (the Host "Laptop" and "Work PC").
  * UI_EVIDENCE_DIR saves synthetic screenshots at 390 and 1280, light and dark.
@@ -63,8 +64,15 @@ interface Scene {
   grouped?: boolean;
   height?: number;
   forcedColors?: boolean;
+  /** a hybrid device: a fine primary pointer that hovers, with a touch screen beside it (any-pointer: coarse) */
+  hybrid?: boolean;
   storage?: Record<string, string>;
 }
+
+/** Chromium's own pointer and hover media for a hybrid device, so its stylesheet answers as on one (Blink's
+ *  pointer types: coarse 2, fine 4; hover types: none 1, hover 2). Playwright's hasTouch would make the primary
+ *  pointer coarse instead. */
+const HYBRID = "--blink-settings=primaryPointerType=4,availablePointerTypes=6,primaryHoverType=2,availableHoverTypes=3";
 
 const app = mkdtempSync(join(tmpdir(), "ovis-sidebar-heads-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
@@ -160,13 +168,15 @@ try {
   } });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+    let hybridBrowser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
     try {
       /** Each check is a fresh device: its own preferences, nothing shared with the last. */
       const check = async (name: string, scene: Scene, run: (page: Page, label: string) => Promise<void>) => {
         if (only !== undefined && !name.includes(only)) return;
         const phone = scene.width <= 768;
-        const label = `${name} ${scene.width}/${scene.mode}${scene.twoPcs ? "/two-pcs" : ""}${scene.grouped ? "/agents-first" : ""}${scene.forcedColors ? "/forced-colors" : ""}`;
-        const context = await browser.newContext({ viewport: { width: scene.width, height: scene.height ?? 844 }, colorScheme: scene.mode, hasTouch: phone, isMobile: phone, deviceScaleFactor: 1, forcedColors: scene.forcedColors ? "active" : "none", locale: "en-US" });
+        const label = `${name} ${scene.width}/${scene.mode}${scene.twoPcs ? "/two-pcs" : ""}${scene.grouped ? "/agents-first" : ""}${scene.forcedColors ? "/forced-colors" : ""}${scene.hybrid ? "/hybrid" : ""}`;
+        if (scene.hybrid) hybridBrowser ??= await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox", HYBRID] });
+        const context = await (scene.hybrid ? hybridBrowser! : browser).newContext({ viewport: { width: scene.width, height: scene.height ?? 844 }, colorScheme: scene.mode, hasTouch: phone, isMobile: phone, deviceScaleFactor: 1, forcedColors: scene.forcedColors ? "active" : "none", locale: "en-US" });
         try {
           await context.addInitScript((scene) => {
             if (localStorage.getItem("heads-fixture:ready") === "1") return;
@@ -237,7 +247,8 @@ try {
           if (!phone) await page.mouse.move(width - 8, 600);
           const rest = await pcHeader(page, "Work PC");
           assert.equal(rest.countWords, `${agentsOnWork} agents running`, `${label}: the count's words say what it counts`);
-          assert.equal(rest.countTitle, rest.countWords, `${label}: the tooltip says the same words`);
+          // no tooltip: a pointer never reaches the count (it lets presses through to the + under it, and a hover hides it)
+          assert.equal(rest.countTitle, null, `${label}: the count claims no tooltip a pointer cannot reach`);
           if (phone) {
             // under a finger nothing hovers: the actions always show, a finger's size, and the count stays out
             assert.equal(rest.count, null, `${label}: no count in view under a finger`);
@@ -248,6 +259,8 @@ try {
             assert.ok(!rest.toggle && !rest.add, `${label}: at rest the fold and + are out of sight`);
             assert.ok(rest.toggleBox!.width > 0 && rest.addBox!.width > 0, `${label}: the unseen fold and + keep their cells`);
             assert.ok(Math.abs((rest.countBox!.left + rest.countBox!.width / 2) - (rest.addBox!.left + rest.addBox!.width / 2)) <= 1, `${label}: the count sits in the +'s cell`);
+            const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".machine-new, .machine-agent-count")?.className ?? null, { x: rest.countBox!.left + rest.countBox!.width / 2, y: rest.countBox!.top + rest.countBox!.height / 2 });
+            assert.match(hit ?? "", /\bmachine-new\b/, `${label}: a press on the count lands on the + under it (${hit})`);
             await page.locator('section.machine-group[aria-label="PC Work PC"] .machine-name').hover();
             const hovered = await pcHeader(page, "Work PC");
             assert.equal(hovered.count, null, `${label}: a hover takes the count away`);
@@ -328,8 +341,11 @@ try {
           const add = header.locator(".machine-new");
           await header.scrollIntoViewIfNeeded();
           assert.equal(await add.isDisabled(), true, `${label}: the offline PC's + is disabled`);
+          // its snapshot is the last one seen: it counts no agents as running now
+          assert.equal((await pcHeader(page, "Work PC")).countWords, null, `${label}: a disconnected PC says no agents running`);
           if (width > 768) {
             await page.mouse.move(width - 8, 600);
+            assert.equal((await pcHeader(page, "Work PC")).count, null, `${label}: at rest a disconnected PC shows no agent count`);
             assert.equal(await add.evaluate((element) => getComputedStyle(element).opacity), "0", `${label}: at rest the + is out of sight`);
             await header.locator(".machine-name").hover();
           }
@@ -343,6 +359,16 @@ try {
           assert.equal(lone.pcsCountName, "1 PC shown", `${label}: the singular count says what it counts`);
         });
       }
+      // a fine pointer with a touch screen beside it: a finger may come next, so the actions never hide
+      for (const mode of ["light", "dark"] as const) await check("a hybrid device always shows a PC's actions", { width: 1280, mode, twoPcs: true, hybrid: true }, async (page, label) => {
+        assert.deepEqual(await page.evaluate(() => [matchMedia("(hover: hover) and (pointer: fine)").matches, matchMedia("(any-pointer: coarse)").matches]), [true, true], `${label}: the browser answers as a hybrid device`);
+        await page.locator('section.machine-group[aria-label="PC Work PC"] .machine-header').scrollIntoViewIfNeeded();
+        await page.mouse.move(1272, 600);
+        const rest = await pcHeader(page, "Work PC");
+        assert.ok(rest.toggle && rest.add, `${label}: at rest the fold and + show`);
+        assert.equal(rest.count, null, `${label}: no count in view over the actions`);
+        assert.equal(rest.countWords, `${await agentRowsOn(page, "work")} agents running`, `${label}: a screen reader still hears the count`);
+      });
       // forced colors paint every edge in full: a fade there is only lost text
       await check("forced colors fade no edge", { width: 1280, mode: "dark", twoPcs: true, height: 640, forcedColors: true }, async (page, label) => {
         await page.locator(".machine-list").evaluate((element) => { element.scrollTop = (element.scrollHeight - element.clientHeight) / 2; });
@@ -351,6 +377,6 @@ try {
           assert.equal(await page.locator(list).evaluate((element) => getComputedStyle(element).maskImage), "none", `${label}: ${list} has no mask`);
         }
       });
-    } finally { await browser.close(); }
+    } finally { await browser.close(); await hybridBrowser?.close(); }
   } finally { server.stop(true); }
 } finally { rmSync(app, { recursive: true, force: true }); }

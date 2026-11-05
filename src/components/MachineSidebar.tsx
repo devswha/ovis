@@ -278,10 +278,11 @@ export function MachineSidebar(props: Props) {
   </div></SidebarFilterProvider></SidebarActivityProvider>;
 }
 
-/** A count in a head's trailing cell: the number in view, its words for a screen reader and a pointer's
- *  tooltip, so a bare number is never all that is said. */
-function SidebarCount({ className, n, words }: { className: string; n: number; words: string }) {
-  return <span className={className} title={words}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
+/** A count in a head's trailing cell: the number in view, its words for a screen reader and, where a pointer
+ *  can rest on it, a tooltip, so a bare number is never all that is said. `tooltip={false}` for a count a
+ *  pointer never reaches. */
+function SidebarCount({ className, n, words, tooltip = true }: { className: string; n: number; words: string; tooltip?: boolean }) {
+  return <span className={className} title={tooltip ? words : undefined}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
 }
 
 /** the reader's fold of the PCs section, kept on this device as Agents' is (`ovis:agents-collapsed`) */
@@ -360,7 +361,9 @@ function MachineGroup({ machine, headerless = false, ...props }: Props & { machi
         {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
         <span className={`machine-dot is-${machine.action_required === "setup" ? "setup" : machine.state}`} title={machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state])} aria-hidden="true" />
       </div>
-      {agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent running") : t("{n} agents running", { n: agentCount })} />}
+      {/* only a connected PC counts: a disconnected one keeps its last snapshot, whose agents may long be gone; no
+          tooltip, as a pointer never reaches the count (SidebarSections.css) */}
+      {online && agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent running") : t("{n} agents running", { n: agentCount })} tooltip={false} />}
       {machine.kind !== "local" && <button className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-expanded={editing} onClick={() => { setEditing(!editing); setConfirmDelete(false); }}><SlidersHorizontal aria-hidden="true" /></button>}
       {/* the fold over this PC's workspaces sits beside the + */}
       <button className="sidebar-row-action machine-toggle" aria-expanded={!folded} aria-label={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} title={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>

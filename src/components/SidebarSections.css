@@ -75,9 +75,11 @@
 /* A PC's header at rest says how many agents run on it, in the +'s cell; a pointer over the header, or the
    focus in it, trades that count for its actions (manage, fold, +), as the Codex app shows a row's actions
    on hover. The fold and the + keep their cells while unseen, so the name never moves and a press lands on
-   them. Only a fine pointer that hovers gets the trade: anywhere else (a finger, no hover) the actions
-   always show, a disabled + dimmed as ever, and the count stays out of sight, still read by a screen
-   reader. A PC that is not connected keeps its manage button in view (Machines.css). */
+   them: the count lets presses through, and so has no tooltip, which a pointer could never show. Only a
+   fine pointer that hovers, with no touch screen beside it, gets the trade: anywhere else (a finger, a
+   hybrid laptop's touch screen, no hover) the actions always show, a disabled + dimmed as ever, and the
+   count stays out of sight, still read by a screen reader. A PC that is not connected counts nothing (its
+   snapshot is the last one seen) and keeps its manage button in view (Machines.css). */
 .machine-header { position: relative; }
 
 .machine-agent-count {
@@ -96,7 +98,7 @@
   pointer-events: none;
 }
 
-@media (hover: hover) and (pointer: fine) {
+@media (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {
   .machine-header:not(:hover):not(:focus-within) > :is(.machine-toggle, .machine-new) { opacity: 0; }
 
   .machine-header:not(:hover):not(:focus-within) > .machine-agent-count { opacity: 1; }

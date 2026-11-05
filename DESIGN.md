@@ -1234,12 +1234,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   next: a `--space-4` gap of its own made each about a row and a half (issue 2617). An open PC's
   workspaces end with a `--space-2` gap before the next header. At rest a header's trailing cell
   says how many agents run on that PC (`.machine-agent-count`, its words, **3 agents running**, for
-  a screen reader and the tooltip); a pointer over the header or the focus in it trades that count
-  for its manage button, caret and `+`, as the Codex app shows a row's actions on hover. The caret
-  and the `+` keep their cells while unseen, so the name never moves and a press lands on them.
-  Only a fine pointer that hovers gets the trade: under a finger, or with no hover, the actions
-  always show at a finger's size (a disabled `+` dimmed as ever) and the count stays out of sight,
-  still read by a screen reader. A connected PC's clipped state line keeps no padding, which
+  a screen reader; no tooltip, as presses pass through it to the `+` and a hover hides it), and a
+  disconnected PC, whose snapshot is the last one seen, counts nothing; a pointer over the header
+  or the focus in it trades that count for its manage button, caret and `+`, as the Codex app shows
+  a row's actions on hover. The caret and the `+` keep their cells while unseen, so the name never
+  moves and a press lands on them. Only a fine pointer that hovers, with no touch screen beside it,
+  gets the trade: under a finger, on a hybrid laptop with a touch screen, or with no hover, the
+  actions always show (a disabled `+` dimmed as ever) and the count stays out of sight, still read by a
+  screen reader. A coarse primary pointer gets the existing finger-sized actions (`Machines.css`);
+  hybrid action visibility does not change that sizing rule. A connected PC's clipped state line keeps no padding, which
   would lengthen the list's scroll.
 - When the sidebar shows one PC and it is the Host (the only PC, or the others hidden on this device), its group
   has no header: there is no other PC to tell it from, and the workspaces start the list, as the Claude app lists its
