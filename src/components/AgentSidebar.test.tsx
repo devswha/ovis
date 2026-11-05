@@ -311,4 +311,36 @@ describe("AgentSidebar fold memory", () => {
     expect(writes).toEqual([]);
     expect((await sidebar.remount(inactive)).expanded()).toBe(true);
   });
+
+  it("draws the groups in one list, so a row whose state changes moves to its new group instead of being drawn anew", async () => {
+    // Given grouping on for this device.
+    stored.set("ovis:agent-groups", "true");
+    const blockedRoster = (blocked: boolean) => roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: blocked ? "blocked" as const : "working" as const } : pane) },
+    }));
+    const grouped = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(grouped(blockedRoster(false))); });
+    const mounted = renderer!;
+    const list = () => mounted.root.findByProps({ className: "agent-list agent-list-grouped" });
+    // the group a row stands under: the last heading before it in the one list
+    const groupOf = (pane: string): string | undefined => {
+      let group: string | undefined;
+      for (const child of list().children) {
+        if (typeof child === "string") continue;
+        if (child.props.className === "agent-group-label") group = child.props["data-group"];
+        if (child.props["data-pane"] === pane) return group;
+      }
+      return undefined;
+    };
+    expect(groupOf(paneId)).toBe("working");
+    // When the agent becomes blocked, its row is still a child of the same list, now under Needs you.
+    await act(async () => { mounted.update(grouped(blockedRoster(true))); });
+    expect(groupOf(paneId)).toBe("blocked");
+    expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
+  });
 });
