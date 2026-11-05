@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcess } from "node:child_process";
 import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
-import { debInstallCommand, updatePlan } from "./updates.ts";
+import { debInstallCommand, updateChannel, updatePlan } from "./updates.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -289,7 +289,8 @@ function allowPermissions(): void {
 async function startUpdates(): Promise<void> {
   let linuxPackage: string | null = null;
   try { linuxPackage = readFileSync(join(process.resourcesPath, "package-type"), "utf8").trim(); } catch { /* not a Linux package */ }
-  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")), linuxPackage, execPath: process.execPath });
+  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")),
+    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath });
   if (!plan.enabled) {
     console.log(`Updates are off: ${plan.reason}.`);
     return;
@@ -317,6 +318,11 @@ async function startUpdates(): Promise<void> {
   }
   const autoUpdater = plan.installer === "deb" ? new OvisDebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
   if (plan.feed) autoUpdater.setFeedURL({ provider: "generic", url: plan.feed });
+  // beta-mac.yml and beta-linux.yml on beta, latest-*.yml otherwise; setting a channel allows downgrades, which stay off
+  autoUpdater.channel = plan.channel === "beta" ? "beta" : "latest";
+  autoUpdater.allowPrerelease = plan.channel === "beta";
+  autoUpdater.allowDowngrade = false;
+  console.log(`Updates: ${plan.channel} channel.`);
   // a .deb installs behind a password prompt: only when asked from the tray, never on a plain quit
   if (plan.installer === "deb") autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.on("error", (error) => console.error(`Update failed: ${message(error)}`));
