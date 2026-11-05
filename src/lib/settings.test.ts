@@ -511,6 +511,13 @@ describe("clipboard from a pane", () => {
   });
 });
 
+it("draws no terminal pictures until this device turns them on", () => {
+  expect(sanitizeSettings({}).terminalImages).toBe(false);
+  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
+  expect(SETTING_SCOPE.terminalImages).toBe("device");
+});
+
 it("drops the folder grouping an older version stored", () => {
   expect(sanitizeSettings({ sidebarGrouping: "directory" })).not.toHaveProperty("sidebarGrouping");
 });
