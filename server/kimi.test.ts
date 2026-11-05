@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, openSync, closeSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, openSync, closeSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -224,6 +224,20 @@ it("sees a switch typed while the old lock lingers, or written in two pieces", (
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
   rmSync(lockA);
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+});
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("holds an idle Kimi's session only while its folder's history can be read", () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const cwd = "/work";
+  writeFileSync(join(wire("session_a"), "..", "..", "..", "state.json"), JSON.stringify({ id: "session_a", version: 2, cwd }));
+  const history = join(home, ".kimi-code", "user-history", `${createHash("md5").update(cwd).digest("hex")}.jsonl`);
+  mkdirSync(join(history, ".."), { recursive: true });
+  writeFileSync(history, "");
+  lock("session_a", liveLock());
+  expect(kimiWireForPane("w5:p1", [process.pid], home)).toBe(wire("session_a"));
+  rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+  chmodSync(history, 0o000);
+  try { expect(kimiWireForPane("w5:p1", [process.pid], home)).toBeNull(); } finally { chmodSync(history, 0o600); }
 });
 
 it("ignores a lock a crashed process left behind, another host's and a broken one", () => {

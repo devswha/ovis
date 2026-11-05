@@ -149,10 +149,10 @@ const SWITCH_COMMAND = /^\/(?:sessions|resume|new|clear)(?:\s|$)/;
  */
 function readHistory(path: string, from: number): { end: number; switched: boolean; changed: number } | null {
   let fd: number;
-  try { fd = openSync(path, "r"); } catch { return from === 0 ? { end: 0, switched: false, changed: 0 } : null; }
+  try { fd = openSync(path, "r"); } catch (error) { return from === 0 && (error as NodeJS.ErrnoException).code === "ENOENT" ? { end: 0, switched: false, changed: 0 } : null; }
   try {
     const { size, mtimeMs } = statSync(path);
-    if (size < from || size - from > HISTORY_BYTES) return null;
+    if (from < 0 || size < from || size - from > HISTORY_BYTES) return null;
     const bytes = Buffer.alloc(size - from);
     if (readSync(fd, bytes, 0, bytes.length, from) !== bytes.length) return null;
     const whole = bytes.lastIndexOf(0x0a) + 1;
@@ -169,7 +169,7 @@ function readHistory(path: string, from: number): { end: number; switched: boole
 /** Where the history's last whole line ends now: what is typed after it is read from there. */
 function historyEnd(path: string): number | null {
   let fd: number;
-  try { fd = openSync(path, "r"); } catch { return 0; }
+  try { fd = openSync(path, "r"); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null; }
   try {
     const { size } = statSync(path);
     const tail = Buffer.alloc(Math.min(size, 64 * 1024));
@@ -196,8 +196,8 @@ function historyAfterProof(path: string | undefined, previous: { path: string; s
     try { changed ??= statSync(path).mtimeMs; } catch { /* gone: what it held is unknown */ }
     if (since === undefined || since === sinceBefore || changed === undefined || since + PROMPT_WRITE_MS < changed) return { history: previous, stale: true };
   }
-  const end = historyEnd(path);
-  return { history: end === null ? undefined : { path, size: end }, stale: false };
+  // a history that cannot be read now is read from nowhere: the binding then holds only while a lock proves it
+  return { history: { path, size: historyEnd(path) ?? -1 }, stale: false };
 }
 
 /**
