@@ -203,15 +203,31 @@ export class RelayLink {
     socket.binaryType = "arraybuffer";
     this.warm = socket;
     let proofAnswered = false;
+    let lastHeard = this.clock.now();
     let cancelKeepalive: (() => void) | undefined;
+    // Given up on (it stalled, or closed): another is opened after a pause, without waiting for a close
+    // event a half-open socket may never deliver.
+    const abandon = () => {
+      cancelKeepalive?.();
+      if (this.warm !== socket) return;
+      this.warm = undefined;
+      socket.close();
+      if (this.stopped || this.control !== control.socket) return;
+      // clients are still served through `connected` meanwhile
+      const delay = Math.round(Math.min(++this.warmAttempts, 30) * 1000 * (0.8 + (this.options.random ?? Math.random)() * 0.4));
+      this.cancelWarmRetry = this.clock.setTimeout(() => { this.cancelWarmRetry = undefined; this.openWarm(); }, delay);
+    };
+    // As the control socket: a socket the relay has not answered for 30 s (its upgrade, challenge or pong) is lost.
     const heartbeat = () => {
       if (this.warm !== socket) return;
+      if (this.clock.now() - lastHeard >= 30_000) { abandon(); return; }
       if (proofAnswered) socket.send('{"type":"ping"}');
       cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
     };
-    socket.onopen = () => { cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000); };
+    cancelKeepalive = this.clock.setTimeout(heartbeat, 10_000);
     socket.onmessage = (event) => {
       if (this.warm !== socket) return;
+      lastHeard = this.clock.now();
       if (!proofAnswered) {
         proofAnswered = this.prove(socket, event.data, "warm", control.generation);
         return;
@@ -227,16 +243,8 @@ export class RelayLink {
       else socket.close();
       this.openWarm();
     };
-    socket.onerror = () => socket.close();
-    socket.onclose = () => {
-      cancelKeepalive?.();
-      if (this.warm !== socket) return;
-      this.warm = undefined;
-      if (this.stopped || this.control !== control.socket) return;
-      // refused or dropped: clients are still served through `connected` meanwhile
-      const delay = Math.round(Math.min(++this.warmAttempts, 30) * 1000 * (0.8 + (this.options.random ?? Math.random)() * 0.4));
-      this.cancelWarmRetry = this.clock.setTimeout(() => { this.cancelWarmRetry = undefined; this.openWarm(); }, delay);
-    };
+    socket.onerror = abandon;
+    socket.onclose = abandon;
   }
 
   private endWarm(): void {
