@@ -2550,8 +2550,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    * turn that changed since the search has another name, which a later turn of its time may have
    * taken: the one turn that is the match is opened (pickedTurn), never one of two. A match in a store
    * row the chat has not read (pickAhead) is decided once the newest page is read again, also when
-   * only an earlier page's rows tell so (the newest holds tool calls alone, which no row names). `missing`: no
-   * such turn, or its transcript was replaced meanwhile.
+   * only an earlier page's rows tell so (the newest holds tool calls alone, which no row names), or
+   * when no row read settles it back to the beginning. `missing`: no such turn, or its transcript was
+   * replaced meanwhile.
    */
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
     const reveal = (): Promise<RevealResult> => new Promise((done) => {
@@ -2577,7 +2578,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       if (pickSettled(read, match)) return reveal();
       before = page.cursor;
     }
-    return reveal();
+    return match.row !== undefined ? revealNewest() : reveal();
   };
   // Covers first layout, restored short chats and a fresh read that changes no scroll offset.
   useLayoutEffect(() => { measureEnd(); });
