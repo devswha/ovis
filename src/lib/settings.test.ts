@@ -160,6 +160,19 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps Draw with libghostty in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalGhostty).toBe(false);
+    saveSettings(sanitizeSettings({ terminalGhostty: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalGhostty");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalGhostty).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalGhostty: false });
+    expect(loadSettings().terminalGhostty).toBe(false);
+    records.set("ovis:terminal-ghostty", "\"true\"");
+    expect(loadSettings().terminalGhostty).toBe(false);
+  });
+
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
     saveSettings(sanitizeSettings({ composerArtifacts: true }));
@@ -543,6 +556,13 @@ describe("clipboard from a pane", () => {
     expect(sanitizeSettings({ ...reloaded, theme: "dark" }).paneClipboard).toBe(false);
     expect(sanitizeSettings({ paneClipboard: "false" }).paneClipboard).toBe(true);
   });
+});
+
+it("draws with xterm until this device turns libghostty on", () => {
+  expect(sanitizeSettings({}).terminalGhostty).toBe(false);
+  expect(sanitizeSettings({ terminalGhostty: "true" }).terminalGhostty).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: true })))).terminalGhostty).toBe(true);
+  expect(SETTING_SCOPE.terminalGhostty).toBe("device");
 });
 
 it("drops the folder grouping an older version stored", () => {

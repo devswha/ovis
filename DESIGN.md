@@ -3154,7 +3154,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   640px the New tab button (off by default), the Artifacts chip (off by default, the device setting
   `composerArtifacts`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
-  speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
+  speed, input mode, Key bar, Clipboard from a pane, Draw with libghostty (off by default, the
+  device setting `terminalGhostty`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
@@ -3453,6 +3454,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ordered change set, so Retry resends the current change, never an old request body.
 
 ### Terminal host, key bar and drawer
+- **Draw with libghostty** (Settings > Terminal, off by default, herdr-core only): libghostty-vt draws the
+  pane's text, cursor and Kitty graphics pictures in a layer over xterm's screen, at xterm's cell size;
+  xterm's own text and cursor are hidden under it and xterm keeps input, selection, links, search and
+  scrolling. It follows Ghostty's own split of a terminal core (libghostty-vt) from the renderer an app
+  draws with, rather than a second terminal widget: everything built on xterm keeps working while the
+  drawing moves. The layer takes no pointer events; pictures keep the layer Kitty gave them (below
+  the text, or above it).
 - **Find in terminal** in the header's More menu and Mod+Shift+F opens a find bar above the
   grid. It uses the existing input and icon-button primitives: a query, match ordinal,
   previous/next and close controls, with a dim note that scrolling is shared by all clients.

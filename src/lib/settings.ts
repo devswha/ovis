@@ -113,6 +113,9 @@ export interface Settings {
    *  Stored under this key, not 0.4.1's `terminalOsc52`: settings are saved whole, so a `false` there
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
+  /** a herdr-core pane is drawn by libghostty over its xterm, Kitty graphics pictures included (lib/ghostty/overlay.ts);
+   *  off by default. herdr's own server redraws a pane from its grid, which keeps no pictures, so it stays with xterm. */
+  terminalGhostty: boolean;
   /** a pane whose grid this device does not size and is wider than this screen (a mirrored pane: a Windows
    *  PC, no terminal attach; an attached pane it only watches, or holds under the keyboard, at the grid
    *  another device gave the pty) is drawn folded to the screen's width (lib/terminalFold.ts); false draws
@@ -226,14 +229,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, terminalMirrorWrap, sidebarFilter, voiceEngine, the agent groups, the
+ * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, terminalMirrorWrap, terminalGhostty, sidebarFilter, voiceEngine, the agent groups, the
  * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort">;
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalGhostty">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -310,6 +313,8 @@ export const SETTING_SCOPE = {
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
   terminalFontSize: "device",
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
+  // a phone's browser has less memory for the module and decoded pictures than a desk
+  terminalGhostty: "device",
   // a phone folds a wide mirror, a desk's window may draw it whole
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
@@ -363,6 +368,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
   paneClipboard: true,
+  terminalGhostty: false,
   terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
@@ -560,6 +566,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontSize: sanitizeUiFontSize(record["uiFontSize"]),
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
+    terminalGhostty: record["terminalGhostty"] === true,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
@@ -707,6 +714,8 @@ function readComposerArtifacts(): boolean {
 /** Settings > Chat > Expand thinking and Collapse work, each kept in a key of its own for the same reason: off until chosen. */
 export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
+/** Settings > Terminal > Draw with libghostty, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_GHOSTTY_STORAGE_KEY = "ovis:terminal-ghostty";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
 
@@ -758,7 +767,8 @@ export function loadSettings(): Settings {
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
   return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
-    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab) };
+    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
+    terminalGhostty: readChatFold(TERMINAL_GHOSTTY_STORAGE_KEY, DEFAULT_SETTINGS.terminalGhostty) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -769,7 +779,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, expandThinking, foldWork, reuseExternalLinkTab, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, expandThinking, foldWork, reuseExternalLinkTab, terminalGhostty, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
@@ -781,6 +791,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
     window.localStorage.setItem(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, JSON.stringify(reuseExternalLinkTab));
+    window.localStorage.setItem(TERMINAL_GHOSTTY_STORAGE_KEY, JSON.stringify(terminalGhostty));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;

@@ -570,6 +570,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Clipboard from a pane")} description={t("A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.")}>
         <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
       </SettingsRow>
+      <SettingsRow label={t("Draw with libghostty")} description={t("Draws a pane with libghostty, the terminal engine of Ghostty, on this device, with the pictures a program sends with the Kitty graphics protocol (kitty icat, timg, chafa). Only on a PC that runs herdr-core, as the desktop app does, and from the next time a pane is opened. A preview: typing, selection, links and search still go through xterm.js underneath.")}>
+        <Toggle label={t("Draw with libghostty")} checked={settings.terminalGhostty} onChange={(terminalGhostty) => update({ terminalGhostty })} />
+      </SettingsRow>
       <SettingsRow label={t("Use alongside herdr's own window")} description={t("Turn this on if herdr is also open in a terminal window, on this PC or another. A second after you switch to another window, or after 10 seconds without typing or clicking in a terminal you type straight into, this tab only watches the pane, so herdr's window keeps the pane at its own size instead of this window's. Type or click in the terminal to type again: what you type goes in once it is back. While it watches, the pane is drawn at herdr's size and may not fill this window.")}>
         <Toggle label={t("Use alongside herdr's own window")} checked={settings.releasePaneAway} onChange={(releasePaneAway) => update({ releasePaneAway })} />
       </SettingsRow>
