@@ -1,10 +1,13 @@
 /**
  * What the desktop app reads to keep its computer awake while an agent works (app/electron/src/awake.ts).
  * A server the app runs keeps `desktop-activity.json` in its state folder: `{ "working": n }`, how many of
- * this PC's panes have an agent working, as clients are shown it. It is read again shortly after a status
- * change and every minute, rewritten only when the count changes, and removed when the server stops.
+ * this PC's panes have an agent at work (`busyPanes`), as clients are shown it. It is read again shortly
+ * after a status change and every minute, one read at a time, rewritten only when the count changes, and
+ * removed when the server starts and stops. A read that fails counts as none working: the app must never
+ * hold the computer awake on a count nobody can confirm.
  */
 import { renameSync, rmSync, writeFileSync } from "node:fs";
+import type { HerdrPane } from "../shared/protocol.ts";
 
 export const DESKTOP_ACTIVITY_FILE = "desktop-activity.json";
 
@@ -13,10 +16,15 @@ const SETTLE_MS = 1_000;
 /** a change the status frames missed (a resync, a pane gone quietly) is caught this often */
 const REFRESH_MS = 60_000;
 
+/** panes whose agent works: in a turn, or at rest while its turn's background work still runs */
+export function busyPanes(panes: readonly Pick<HerdrPane, "agent_status" | "background_tasks" | "background_wait">[]): number {
+  return panes.filter((pane) => pane.agent_status === "working" || pane.background_wait === true || (pane.background_tasks ?? 0) > 0).length;
+}
+
 export interface DesktopActivity {
   /** a pane's status may have changed: read again soon */
   changed(): void;
-  /** reads the count now and writes it when it changed */
+  /** reads the count and writes it when it changed; a call during a read is answered by one more read after it */
   refresh(): Promise<void>;
   stop(): void;
 }
@@ -25,13 +33,16 @@ export function trackDesktopActivity({ path, working }: { path: string; working:
   let written: number | null = null;
   let soon: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  const refresh = async (): Promise<void> => {
+  let reading: Promise<void> | null = null;
+  let again = false;
+  // a file a server before this one left behind (killed before it could remove it) says nothing of now
+  rmSync(path, { force: true });
+  const readOnce = async (): Promise<void> => {
     let count: number;
     try { count = await working(); }
     catch (error) {
-      // the last count stands: the app lets go once the server stops, and the next read corrects it
       console.warn(`desktop activity: the panes could not be read (${error instanceof Error ? error.message : String(error)})`);
-      return;
+      count = 0;
     }
     if (stopped || count === written) return;
     try {
@@ -43,15 +54,29 @@ export function trackDesktopActivity({ path, working }: { path: string; working:
       console.warn(`desktop activity: ${path} could not be written (${error instanceof Error ? error.message : String(error)})`);
     }
   };
+  const refresh = (): Promise<void> => {
+    if (reading !== null) {
+      again = true;
+      return reading;
+    }
+    reading = (async () => {
+      do {
+        again = false;
+        await readOnce();
+      } while (again && !stopped);
+    })().finally(() => { reading = null; });
+    return reading;
+  };
   const every = setInterval(() => void refresh(), REFRESH_MS);
   every.unref?.();
-  void refresh();
+  const changed = (): void => {
+    if (soon !== null || stopped) return;
+    soon = setTimeout(() => { soon = null; void refresh(); }, SETTLE_MS);
+    soon.unref?.();
+  };
+  changed();
   return {
-    changed() {
-      if (soon !== null || stopped) return;
-      soon = setTimeout(() => { soon = null; void refresh(); }, SETTLE_MS);
-      soon.unref?.();
-    },
+    changed,
     refresh,
     stop() {
       stopped = true;

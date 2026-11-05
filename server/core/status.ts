@@ -7,7 +7,7 @@ import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { alertStatus, paneAlertsMuted, paneTitle } from "../../shared/notify-policy.ts";
 import { BackgroundWait } from "../background-wait.ts";
-import { DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
+import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
 import { ClaudeSubagentStatus } from "../claude-subagents.ts";
 import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
@@ -346,7 +346,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   const desktopActivity = options.desktopActivity === true ? trackDesktopActivity({
     path: join(options.stateDir ?? defaultStateDir(), DESKTOP_ACTIVITY_FILE),
-    working: async () => (await clientSnapshot()).panes.filter((pane) => pane.agent_status === "working").length,
+    working: async () => busyPanes((await clientSnapshot()).panes),
   }) : null;
 
   function broadcastAll(message: ServerMessage): void {
