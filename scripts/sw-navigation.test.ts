@@ -6,12 +6,13 @@ import { stampServiceWorker } from "./service-worker-build.ts";
 
 const source = readFileSync(join(import.meta.dir, "..", "public", "sw.js"), "utf8");
 const ORIGIN = "https://app.ovis.sh";
-const SCOPE = `${ORIGIN}/s/${"0123456789abcdef".repeat(2)}/`;
+const SERVER_ID = "0123456789abcdef".repeat(2);
+const SCOPE = `${ORIGIN}/s/${SERVER_ID}/`;
 
 type Store = Map<string, Response>;
 
 /** sw.js run against in-memory caches and a network that answers `pages` and `files`. */
-function worker(options: { shell: boolean; build: string; caches?: Record<string, Record<string, string>>; network: Record<string, string>; keptAt?: Date; offline?: boolean }) {
+function worker(options: { shell: boolean; build: string; caches?: Record<string, Record<string, string>>; network: Record<string, string>; keptAt?: Date; offline?: boolean; brokenCaches?: boolean }) {
   const stores = new Map<string, Store>();
   const key = (request: Request | string) => new URL(typeof request === "string" ? request : request.url, ORIGIN).href;
   const page = (body: string, date = new Date()) => new Response(body, { headers: { "content-type": "text/html", date: date.toUTCString() } });
@@ -31,7 +32,10 @@ function worker(options: { shell: boolean; build: string; caches?: Record<string
     };
   };
   const cacheStorage = {
-    open: async (name: string) => open(name),
+    open: async (name: string) => {
+      if (options.brokenCaches) throw new DOMException("denied", "SecurityError");
+      return open(name);
+    },
     keys: async () => [...stores.keys()],
     delete: async (name: string) => stores.delete(name),
     match: async (request: Request | string) => {
@@ -93,15 +97,26 @@ describe("service worker navigations", () => {
 
   it("asks the network on the reload that brings in a newer shell, once", async () => {
     const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: { ...NETWORK } });
-    await requestFreshShell(sw.caches);
+    await requestFreshShell(sw.caches, SERVER_ID);
     expect(await sw.navigate()).toBe(NEW_SHELL);
     sw.network[new URL(SCOPE).pathname] = OLD_SHELL;
     expect(await sw.navigate()).toBe(NEW_SHELL);
   });
 
+  it("leaves another PC's request for a fresh shell to that PC", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: NETWORK });
+    await requestFreshShell(sw.caches, "fedcba9876543210".repeat(2));
+    expect(await sw.navigate()).toBe(OLD_SHELL);
+  });
+
+  it("asks the network when the caches cannot be read", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: NETWORK, brokenCaches: true });
+    expect(await sw.navigate()).toBe(NEW_SHELL);
+  });
+
   it("keeps the kept shell for a reload that finds the host unreachable", async () => {
     const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: NETWORK, offline: true });
-    await requestFreshShell(sw.caches);
+    await requestFreshShell(sw.caches, SERVER_ID);
     expect(await sw.navigate()).toBe(OLD_SHELL);
   });
 

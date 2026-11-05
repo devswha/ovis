@@ -141,7 +141,7 @@ const FRESH_SHELL = "/__ovis-fresh-shell";
 const KEPT_SHELL_MS = 24 * 60 * 60 * 1000;
 
 async function takeFreshRequest() {
-  return (await caches.open(FILES)).delete(FRESH_SHELL);
+  return (await caches.open(FILES)).delete(`${FRESH_SHELL}/${shellServerId()}`);
 }
 
 function keptRecently(response) {
@@ -289,8 +289,11 @@ self.addEventListener("fetch", (event) => {
         // The hosted shell starts from the shell it kept: its host may be a slow ocean away, and
         // which build a page runs is told apart from the PC's by the version policy, not by being
         // fresh. The network's shell is kept for the next open.
-        const fresh = RELAY_RESOURCES ? await takeFreshRequest() : false;
-        const kept = RELAY_RESOURCES && !fresh ? await keptShell() : null;
+        let kept = null;
+        try {
+          const fresh = RELAY_RESOURCES ? await takeFreshRequest() : false;
+          kept = RELAY_RESOURCES && !fresh ? await keptShell() : null;
+        } catch (err) { /* storage that fails costs only the head start: the network is asked */ }
         if (kept && keptRecently(kept.response)) {
           event.waitUntil(fetch(request)
             .then((response) => (response.ok ? keepShell(response, kept.cache) : undefined))
