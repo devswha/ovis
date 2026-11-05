@@ -12,6 +12,7 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { pcAlertKey, type Machine } from "../../shared/machines.ts";
 import { parseAlertPcs, type AlertPrefs } from "../../shared/notify-policy.ts";
 
 export const ALERT_FILTERS_KEY = "ovis:alert-filters";
@@ -76,6 +77,16 @@ function subscribeAlertFilters(listener: () => void): () => void {
 /** This device's finer alert choices, kept current across its tabs. */
 export function useAlertFilters(): AlertFilters {
   return useSyncExternalStore(subscribeAlertFilters, readAlertFilters, () => cache.filters);
+}
+
+/**
+ * The PCs turned off, with the relay ID of each one turned off by name before its ID was known (an earlier
+ * version, or a PC not yet heard from): its own server knows it by that ID, not by the name another roster
+ * gives it. The same list where there is none to add.
+ */
+export function keyedAlertPcs(pcsOff: string[], machines: readonly Pick<Machine, "name" | "relay" | "server_id">[]): string[] {
+  const added = machines.map(pcAlertKey).filter((key, index) => key !== machines[index]!.name && pcsOff.includes(machines[index]!.name) && !pcsOff.includes(key));
+  return added.length > 0 ? [...pcsOff, ...new Set(added)] : pcsOff;
 }
 
 /** The device's alert choices with the finer ones: what its push subscription carries. */

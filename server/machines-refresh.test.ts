@@ -885,6 +885,17 @@ describe("workspace order evidence through the manager", () => {
     expect(remoteOf(manager)?.server_id).toBe(theirs);
   });
 
+  it("keeps an SSH PC's relay ID across a restart, so its alerts are known by it before it answers (#2876)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-machine-id-"));
+    const id = "0f0f0f0f-0000-4000-8000-000000000001", theirs = "cd".repeat(16);
+    writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "Office", enabled: false, target: { destination: "office" }, server_id: theirs, snapshot: null }]));
+    const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null));
+    cleanups.push(() => { manager.stop(); rmSync(dir, { recursive: true, force: true }); });
+    expect(manager.list().find((machine) => machine.id === id)?.server_id).toBe(theirs);
+    manager.patch(id, { name: "Office 2" });
+    expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))[0].server_id).toBe(theirs);
+  });
+
   it("a connection's first epoch is published only once its health proves it", async () => {
     const { manager, send, setHealth } = await remoteFixture();
     const health = gatedHealth();

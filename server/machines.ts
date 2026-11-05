@@ -29,7 +29,7 @@ import type { RelaySocket } from "../shared/relay-channel.ts";
 import { openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel } from "./relay-pc.ts";
 
 type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: SessionSnapshot | null }
-  & ({ kind?: "ssh"; target: SshTarget } | { kind: "relay"; relay: NonNullable<Machine["relay"]> });
+  & ({ kind?: "ssh"; target: SshTarget; server_id?: string } | { kind: "relay"; relay: NonNullable<Machine["relay"]> });
 interface Runtime {
   machine: Machine;
   ssh?: SshConnection;
@@ -355,7 +355,8 @@ export class MachineManager {
             if (typeof item.relay?.server_id !== "string" || !SERVER_ID_PATTERN.test(item.relay.server_id) || typeof item.relay.relay !== "string" || !isWssOrigin(item.relay.relay)) throw new Error("Invalid machine registration");
             machine = { ...common, kind: "relay", relay: { server_id: item.relay.server_id, relay: item.relay.relay } };
           } else if (item.kind === "relay") throw new Error("Invalid machine registration");
-          else machine = { ...common, kind: "ssh", target: validateTarget(item.target) };
+          // its relay ID as its health last said it, so its alerts are known by it before it answers again
+          else machine = { ...common, kind: "ssh", target: validateTarget(item.target), ...(typeof item.server_id === "string" && SERVER_ID_PATTERN.test(item.server_id) ? { server_id: item.server_id } : {}) };
           const runtime = this.runtime(machine);
           this.machines.set(item.id, runtime);
           if (item.enabled) queueMicrotask(() => void this.reconnect(runtime));
@@ -579,7 +580,7 @@ export class MachineManager {
    */
   private persist(): void {
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine }) => machine);
-    const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
+    const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, ...(m.server_id ? { server_id: m.server_id } : {}), enabled: m.enabled, snapshot: m.snapshot }));
     const relayPcs: StoredMachine[] = owned.filter((m) => m.kind === "relay").map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
     const relayText = JSON.stringify(relayPcs);
     if (relayText !== this.relayWritten || !holdsDocument(this.relayStatePath, relayText)) {
@@ -1516,7 +1517,7 @@ export class MachineManager {
         const boot = webUi?.boot_id;
         if (!current() || typeof boot !== "string" || boot === "") return null;
         // its relay ID, which a device turns its alerts off by (shared/machines.ts pcAlertKey)
-        if (typeof webUi?.server_id === "string" && SERVER_ID_PATTERN.test(webUi.server_id)) runtime.machine.server_id = webUi.server_id;
+        if (typeof webUi?.server_id === "string" && SERVER_ID_PATTERN.test(webUi.server_id) && runtime.machine.server_id !== webUi.server_id) { runtime.machine.server_id = webUi.server_id; this.saveSoon(); }
         this.proved(runtime, boot);
         return boot;
       } catch { return null; }
