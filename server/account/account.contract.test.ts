@@ -617,14 +617,20 @@ test("an introduction is refused from a non-member, for a device no member added
   expect((await post(link, "/api/account/introduce", { key: joining.spki, pcs: [{ ...introducedPc(), server_id: "f".repeat(32) }] })).body.error?.code).toBe("introduction_invalid");
 });
 
-test("an introduction lasts ten minutes", () => {
-  let now = 0;
-  const introductions = new AccountIntroductions(() => now);
-  introductions.set("k", [introducedPc()]);
-  now = INTRODUCTION_TTL_MS - 1;
-  expect(introductions.get("k")).not.toBeNull();
-  now = INTRODUCTION_TTL_MS;
-  expect(introductions.get("k")).toBeNull();
+test("introductions for a device merge by PC, outlast a restart, and go once they expire", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-introductions-"));
+  try {
+    const path = join(dir, "account-introductions.json");
+    let now = 0;
+    const [nuc, laptop] = [introducedPc(), introducedPc("laptop")];
+    const introductions = new AccountIntroductions(() => now, path);
+    introductions.set("k", [nuc]);
+    introductions.set("k", [laptop, { ...nuc, name: "nuc renamed" }]);
+    now = INTRODUCTION_TTL_MS - 1;
+    expect(new AccountIntroductions(() => now, path).get("k")).toEqual([laptop, { ...nuc, name: "nuc renamed" }]);
+    now = INTRODUCTION_TTL_MS;
+    expect(new AccountIntroductions(() => now, path).get("k")).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the device list shows account members' account, key and adder to a driving device, and to a watching one nothing of it", async () => {

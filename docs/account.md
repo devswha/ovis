@@ -45,8 +45,9 @@ in three ways:
 - `link`: a device already paired with this PC through the relay (by QR, code or comparing digits)
   proves its account key over its own session, and its row takes the account key and `account` in
   one write. This is how a PC gets its first member, so it needs no member before it.
-- `enroll`: a member hands a PC it just paired a batch of `add` records for the account's other
-  clients. It is a batch of records, nothing more.
+- `enroll`: a member hands a PC it just brought into the account the account's removals and the
+  `add` records for its other devices, in one batch ([Enrolling a PC](#enrolling-a-pc)). It is a
+  batch of records, nothing more.
 
 The row an `add` makes has a known id, so the new device can sign in without asking the PC first:
 the first 16 hex digits of `SHA-256("ovis-account-device/1" || server_id || key)`, with `server_id`
@@ -266,18 +267,28 @@ device it approved itself (an `add` it signed), at most 256. A PC cannot make it
 signed by a key the PC made up, and it signs nothing for any of them.
 
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
-its link brings a PC that had no account into it, it sends that PC, over a session signed in with
-the account key, the `remove`s it signed itself and the ones it kept, as signed (through
-`enroll`, which also lifts the PC's barrier), so the PC tombstones those keys, now or once their
-signer is a member there. It takes
-no key from another PC's device list or status. It reads every record's outcome and sends again, on
-its next connection to that PC, each one the PC did not answer or answered `account_unavailable`,
-and any removal it signed while the enrollment ran.
+its link brings a PC that had no account into it, it first reads every other PC of the account it
+is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
+none of them answers it sends nothing and tries again on its next connection. Then, over a
+session signed in with the account key, one `enroll`, as signed:
 
-It enrolls no `add`. No client can know it holds every removal of the account: one may sit in the
-unread mailbox of a PC that is off, or only on PCs this client has no pairing with. An add it
-signed earlier could then let a device another member removed into the new PC. So a new PC admits
-the account's devices by approval instead: each device asks once and is compared digit by digit.
+- the `remove`s it signed itself and the ones it kept;
+- the `add`s it signed itself and the ones those PCs list, except any for a key one of them keeps
+  out or that any verified removal it saw names, whoever signed it. Such a device asks once by
+  comparing digits instead. The new PC applies an add only when its signer is a member there, so a
+  PC that lists adds signed by a key it made up lets nobody in;
+- those keys as `held`, so no add that reaches the PC later lets them in either.
+
+It signs nothing for any of it. It reads every record's outcome and sends again, on its next
+connection to that PC, each one the PC did not answer or could not decide on, and any removal it
+signed while the enrollment ran. Then each PC that answered introduces the new PC to every device
+the enrollment let in ([Introductions](#introductions)), so those devices sign in there without
+asking.
+
+A removal that only PCs the client could not reach hold, and that the account service hides from
+the new PC's mailbox, is missed: the removed device then comes back on the new PC, announced there
+as any admission is. A client reading its other PCs first makes that need every PC holding the
+removal to be off or unreachable.
 
 ### Introductions
 
@@ -287,10 +298,11 @@ through X, and then signs in to each as usual; each PC still decides by its own 
 `POST /api/account/introduce` `{ "key", "pcs": [{ "server_id", "server_public_key", "relay", "name" }] }`:
 from a drive account member (`account_required` otherwise), for a key X holds a row for that an
 account member added (`added_by`, from an `add` or a remote approval; `introduction_unknown_key`
-otherwise). `pcs` lists only PCs the member verified itself (QR, digits, or its own pairing), at
+otherwise). A device paired with X by code or QR and linked there is not introduced: it compares
+digits once with a PC it was not added to. `pcs` lists only PCs the member verified itself (QR, digits, or its own pairing), at
 most 32: `server_id` must derive from `server_public_key`, `relay` is a `wss:` origin, `name` at
-most 48 characters (`introduction_invalid` otherwise). X keeps it in memory only, for 10 minutes;
-a later one for the same key replaces it. Answers 204.
+most 48 characters (`introduction_invalid` otherwise). X keeps it in `account-introductions.json`, for 30 days after the last one, merged by PC (a later
+entry for the same PC replaces it, at most 32 PCs and 256 devices). Answers 204.
 
 `GET /api/account/introduction`: over the new device's own signed-in session, watch access included
 (the one account route that needs no drive access, since it reads only the caller's own
@@ -520,11 +532,12 @@ the account service gets an answer the relay refuses.
   together with a stolen sign-in still could.
 - **A PC that stays off while the account service hides a removal** keeps the removed device until a
   client connects to it and hands over the record directly.
-- **Relayed removals are best effort.** A client relays the removals it kept only when it brings a
-  PC into the account, not ones it learns later; a PC from before relaying (#2956) drops one whose
-  signer is not its member yet; a PC keeps at most 8 signers' records per removed key and at most
-  1000 waiting records, and a client keeps at most 256. None of this admits a device: adds are not
-  enrolled, so a new PC still lets the account's devices in only by approval.
+- **A removal no reachable PC holds.** When a client brings a PC into the account, a removal held
+  only by PCs it cannot reach, and hidden by the account service, is missed (see what a client
+  enrolls): the device comes back on that PC, announced there. A client relays the removals it kept
+  only when it brings a PC into the account, not ones it learns later.
+- **A client from before enrollments** links a new PC and never enrolls it: that PC's barrier stays,
+  and the account's devices join it by comparing digits.
 - **A coding agent on the desktop app's machine** can drive the app's account key (rule 3). The same
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser

@@ -408,11 +408,27 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
         let signedIn = opened;
+        // the account's other PCs this device is in, read first for what they keep out (docs/account.md, "Enrolling a PC")
+        const peers: RelayTransport[] = [];
         try {
           if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
-          await enrollOnPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId });
+          const others = (await store.list()).filter((other) => other.server_id !== serverId && other.device_id !== null && other.account === session.account && other.public_spki === key.public_spki);
+          const reached = await Promise.allSettled(others.map(async (other) => {
+            const peer = await open(offerOf(other), { store, label });
+            peers.push(peer);
+            return { serverId: other.server_id, fetch: (path: string, init?: RequestInit) => peer.fetch(path, init) };
+          }));
+          const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
+          await enrollOnPc({
+            fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc,
+            // a PC that could not be opened is one more that was not checked
+            others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
+          });
         } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
-        finally { if (signedIn !== opened) signedIn.close(); }
+        finally {
+          if (signedIn !== opened) signedIn.close();
+          for (const peer of peers) peer.close();
+        }
       }
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
       const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
