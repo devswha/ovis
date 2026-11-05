@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Globe, Monitor, Network, RadioTower, Wifi, type LucideIcon } from "lucide-react";
 
 import type { ObservedIngress } from "../../shared/protocol.ts";
@@ -14,7 +15,11 @@ import { inRelayShell } from "../lib/useRelay.ts";
  */
 export function ConnectionRouteMark({ portal, ingress }: { portal: boolean; ingress: ObservedIngress | null }) {
   const t = useT();
-  const route = connectionRoute({ relay: inRelayShell(), portal, funnel: ingress === "funnel", protocol: window.location.protocol, hostname: window.location.hostname });
+  // the server's word on this page's requests holds through a failed health read, which clears the
+  // facts it brought: a missing answer is no evidence of another route
+  const known = useRef<ObservedIngress | null>(null);
+  if (ingress !== null) known.current = ingress;
+  const route = connectionRoute({ relay: inRelayShell(), portal, ingress: known.current, protocol: window.location.protocol, hostname: window.location.hostname });
   if (route === null) return null;
   const [Icon, word, title]: [LucideIcon, string, string] =
     route === "relay" ? [RadioTower, t("relay"), t("Via the Ovis relay")]

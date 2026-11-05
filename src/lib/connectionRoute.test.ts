@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
+import type { ObservedIngress } from "../../shared/protocol.ts";
 import { connectionRoute } from "./connectionRoute.ts";
 
-const route = (hostname: string, page: { relay?: boolean; portal?: boolean; funnel?: boolean; protocol?: string } = {}) =>
-  connectionRoute({ relay: false, portal: false, funnel: false, protocol: "https:", hostname, ...page });
+const route = (hostname: string, page: { relay?: boolean; portal?: boolean; ingress?: ObservedIngress | null; protocol?: string } = {}) =>
+  connectionRoute({ relay: false, portal: false, ingress: null, protocol: "https:", hostname, ...page });
 
 describe("how this device reaches Ovis", () => {
   it("is the relay on the hosted shell, and Portal for a Portal sign-in, whatever the address", () => {
@@ -17,11 +18,22 @@ describe("how this device reaches Ovis", () => {
   });
 
   it("is direct for a request the server saw come through Tailscale Funnel, though its name is a tailnet one", () => {
-    expect(route("pc.tail1e211e.ts.net", { funnel: true })).toBe("direct");
+    expect(route("pc.tail1e211e.ts.net", { ingress: "funnel" })).toBe("direct");
+  });
+
+  it("is Tailscale when the server saw the request come through Tailscale serve, whatever name the page used", () => {
+    expect(route("ovis.example.com", { ingress: "tailscale" })).toBe("tailscale");
+  });
+
+  it("reads a name with its trailing root dot as the same name", () => {
+    expect(route("pc.tail1e211e.ts.net.")).toBe("tailscale");
+    expect(route("localhost.")).toBe("local");
+    expect(route("pc.local.")).toBe("lan");
   });
 
   it("is local on a loopback address: this PC, or a tunnel to another", () => {
-    for (const host of ["localhost", "127.0.0.1", "[::1]", "app.localhost"]) expect(route(host)).toBe("local");
+    for (const host of ["localhost", "127.0.0.1", "127.1.2.3", "[::1]", "app.localhost"]) expect(route(host)).toBe("local");
+    expect(route("127.example.com")).toBe("direct");
   });
 
   it("is Tailscale on its address ranges and MagicDNS names, and not just outside them", () => {

@@ -1,12 +1,12 @@
 /**
  * How this device reaches the Ovis it shows, from facts the page owns: the hosted shell's relay
- * transport, a Portal sign-in, the server's word that this request came through Tailscale Funnel
- * (the public internet), or the address the browser loaded the app from. Nothing guesses what lies
+ * transport, a Portal sign-in, the server's word on how this request came (Tailscale Funnel, the
+ * public internet, or Tailscale serve), or the address the browser loaded the app from. Nothing guesses what lies
  * behind a name: an address that is none of the known kinds, a bare machine name included (a LAN
  * host, or a Tailscale MagicDNS short name), is "direct". A loopback address is "local": this PC, or
  * a tunnel to another one, which neither the page nor the server can tell apart.
  */
-import { isLoopbackHost } from "./phone.ts";
+import type { ObservedIngress } from "../../shared/protocol.ts";
 
 export type ConnectionRoute = "relay" | "portal" | "local" | "tailscale" | "lan" | "direct";
 
@@ -30,13 +30,15 @@ function lanHost(host: string): boolean {
 }
 
 /** The route, or null in the phone app's bundled demo, which reaches no PC at all. */
-export function connectionRoute(page: { relay: boolean; portal: boolean; funnel: boolean; protocol: string; hostname: string }): ConnectionRoute | null {
+export function connectionRoute(page: { relay: boolean; portal: boolean; ingress: ObservedIngress | null; protocol: string; hostname: string }): ConnectionRoute | null {
   if (page.protocol === "capacitor:") return null;
   if (page.relay) return "relay";
   if (page.portal) return "portal";
-  if (page.funnel) return "direct";
-  const host = page.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (isLoopbackHost(host) || host === "::1") return "local";
+  if (page.ingress === "funnel") return "direct";
+  if (page.ingress === "tailscale") return "tailscale";
+  // a trailing root dot names the same host (the server's own host check drops it too)
+  const host = page.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (/^127(?:\.\d{1,3}){3}$/.test(host) || host === "localhost" || host.endsWith(".localhost") || host === "::1") return "local";
   if (tailnetHost(host)) return "tailscale";
   if (lanHost(host)) return "lan";
   return "direct";
