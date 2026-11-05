@@ -181,6 +181,9 @@ describe("saved theme migration", () => {
     // a size written without its base (a build from before it) leaves the base recorded for another size unread
     records.set("ovis:file-font-size", "22");
     expect(loadSettings()).toMatchObject({ fileFontSize: 22, fileFontBase: null });
+    // a save never keeps a base beside another size (a Reset over another tab's base, #2984)
+    saveSettings({ ...loadSettings(), fileFontSize: null, fileFontBase: base });
+    expect(records.get("ovis:file-font-base")).toBe("null");
   });
 
   it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
