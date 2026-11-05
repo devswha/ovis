@@ -136,6 +136,31 @@ test("a save answering after its editor was closed leaves a draft typed since al
   expect(listeners.has("beforeunload")).toBe(false);
 });
 
+test("a save answering late leaves the draft of an editor opened again meanwhile", async () => {
+  const listeners = new Set<string>();
+  Object.assign(globalThis.window, { addEventListener: (type: string) => listeners.add(type), removeEventListener: (type: string) => listeners.delete(type) });
+  let answer: (response: Response) => void = () => {};
+  setTransport({ ...nativeTransport, fetch: async (_input, init) => {
+    if (init?.method === "PUT") return new Promise<Response>((resolve) => { answer = resolve; });
+    return Response.json(opened("a\n", "r1"));
+  } });
+  let root = await render(() => {});
+  await type(root, "only copy\n");
+  await press(root, "Save");
+  await act(async () => button(root, "Save").props.onClick());
+  await act(async () => renderer?.unmount());
+  // opened again while the save is on its way: it takes the kept draft
+  root = await render(() => {});
+  expect(root.findByType("textarea").props.value).toBe("only copy\n");
+  await act(async () => { answer(Response.json({ path: "/work/notes.md", revision: "r2", size: 10, modified: "2026-11-05T00:00:01.000Z" })); });
+  await settle();
+  expect(listeners.has("beforeunload")).toBe(true);
+  await act(async () => renderer?.unmount());
+  root = await render(() => {});
+  expect(root.findByType("textarea").props.value).toBe("only copy\n");
+  await press(root, "Cancel");
+});
+
 test("Cancel leaves without saving", async () => {
   const seen = pc([Response.json(opened("a\n", "r1"))], () => Response.json({}));
   const done: boolean[] = [];

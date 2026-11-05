@@ -22,9 +22,10 @@ import { openAuthorized, ownedFolders, release, resolveFilePath } from "./file-v
  * cannot send the rename anywhere else; on macOS the folders from the pane's folder down must be
  * this user's own and writable by nobody else (`ownedFolders`), checked right before the rename.
  * Other platforms do not save yet. The file's extended attributes and access list are carried over
- * to the new file (file-attributes.ts); one whose access list cannot be is not saved. Each read and save runs on a file thread (`file-pool.ts`, `text-read` and
- * `text-save`), so a slow disk holds that thread, not the server's; a save that outlives its
- * deadline is answered 503 and may still land, which the next save's revision check then sees.
+ * to the new file (file-attributes.ts); one whose access list cannot be is not saved. A read runs on a file thread (`file-pool.ts` `text-read`). A save
+ * runs on the server's own thread, synchronously: two saves never interleave, and a save is over
+ * when it is answered, never still running after a timeout. It is at most 1 MiB written to the
+ * disk the file was just read from; a disk that stalls during it holds the server for that long.
  */
 
 /** A request this route will not carry out, with the status and code it answers. */
@@ -222,27 +223,6 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     if (temp !== null) try { unlinkSync(join(anchor, temp)); } catch { /* never created, or already gone */ }
     if (original !== -1) closeSync(original);
     if (folderFd !== null) closeSync(folderFd);
-  }
-}
-
-/** How long a save waits for the one before it, whichever file thread that one is on. */
-export const SAVE_LOCK_WAIT_MS = 10_000;
-
-/**
- * Runs `run` holding `lock` (0 free, 1 held), shared by every file thread: a save the server
- * stopped waiting for (its deadline passed) still holds it until it really ends, so two saves never
- * overlap between their revision check and their rename. Past `waitMs` the save is refused (503).
- */
-export function withSaveLock<T>(lock: Int32Array<SharedArrayBuffer>, run: () => T, waitMs = SAVE_LOCK_WAIT_MS): T {
-  const until = Date.now() + waitMs;
-  while (Atomics.compareExchange(lock, 0, 0, 1) !== 0) {
-    const left = until - Date.now();
-    if (left <= 0) throw new TextEditRefused(503, "file_busy", "Another save is still running on this PC; try again in a moment");
-    Atomics.wait(lock, 0, 1, left);
-  }
-  try { return run(); } finally {
-    Atomics.store(lock, 0, 0);
-    Atomics.notify(lock, 0);
   }
 }
 

@@ -9,8 +9,8 @@ import { paneCommands } from "./commands.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
 import { walkFiles } from "./files.ts";
-import { readEditableText, saveEditableText, TextEditRefused, withSaveLock } from "./file-edit.ts";
-import type { EditableText, TextSaved } from "../shared/files.ts";
+import { readEditableText, TextEditRefused } from "./file-edit.ts";
+import type { EditableText } from "../shared/files.ts";
 
 /**
  * How long a Claude task list reads on before it answers with what it read so far: well inside the
@@ -49,15 +49,13 @@ export type FileTask =
    * fallback found
    */
   | { op: "open"; path: string; get: { range: string | null; ifRange: boolean } | null; opened?: Int32Array<SharedArrayBuffer>; fastDiskMs?: number; within?: string | null }
-  /** a text file in the pane's folder `cwd` read to edit, and its save (`file-edit.ts`) */
-  | { op: "text-read"; path: string; cwd: string }
-  /** `lock`: shared by every thread, held for the whole save (`withSaveLock`) */
-  | { op: "text-save"; path: string; cwd: string; revision: string; text: string; lock: Int32Array<SharedArrayBuffer> };
+  /** a text file in the pane's folder `cwd` read to edit (`file-edit.ts`; its save runs on the server's thread) */
+  | { op: "text-read"; path: string; cwd: string };
 
-/** A text file read or saved, or why not: a refusal crosses the thread as plain fields, not as the error. */
-export type TextTaskResult = { done: EditableText | TextSaved } | { refused: { status: number; code: string; message: string; revision?: string } };
+/** A text file read to edit, or why not: a refusal crosses the thread as plain fields, not as the error. */
+export type TextTaskResult = { done: EditableText } | { refused: { status: number; code: string; message: string; revision?: string } };
 
-function textTask(run: () => EditableText | TextSaved): TextTaskResult {
+function textTask(run: () => EditableText): TextTaskResult {
   try { return { done: run() }; } catch (error) {
     if (!(error instanceof TextEditRefused)) throw error;
     return { refused: { status: error.status, code: error.code, message: error.message, ...(error.revision ? { revision: error.revision } : {}) } };
@@ -97,7 +95,6 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "render": return render(task.path, task.media, task.within ?? null);
     case "open": return open(task.path, task.get, task.opened, task.fastDiskMs ?? FAST_DISK_MS, task.within ?? null);
     case "text-read": return textTask(() => readEditableText(task.path, task.cwd));
-    case "text-save": return textTask(() => withSaveLock(task.lock, () => saveEditableText(task.path, task.cwd, task.revision, task.text)));
   }
 }
 

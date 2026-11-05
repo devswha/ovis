@@ -109,11 +109,12 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
     if (file === null) return;
     setState({ kind: "saving" });
     try {
-      const submitted = draft;
-      await saveEditableText({ pane_id: paneId, path: file.path, revision: file.revision, text: submitted });
+      // the entry kept for this text: an editor opened again meanwhile keeps an entry of its own
+      const submitted = drafts.get(key);
+      await saveEditableText({ pane_id: paneId, path: file.path, revision: file.revision, text: draft });
       if (mounted.current) finish(true);
-      // the editor was closed meanwhile: only the draft this save wrote goes, not one typed since in another
-      else if (drafts.get(key)?.draft === submitted) keepDraft(key, null);
+      // the editor was closed meanwhile: only the draft this save wrote goes, not one kept since
+      else if (submitted !== undefined && drafts.get(key) === submitted) keepDraft(key, null);
     } catch (reason) {
       if (!mounted.current) return;
       const code = reason instanceof ApiError ? reason.code : null;

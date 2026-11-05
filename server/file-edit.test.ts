@@ -8,7 +8,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import type { Access } from "./access.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { copyFileAttributes } from "./file-attributes.ts";
-import { MAX_TEXT_SAVE_BODY_BYTES, textEditAllowed, textSaveHooks, withSaveLock } from "./file-edit.ts";
+import { MAX_TEXT_SAVE_BODY_BYTES, textEditAllowed, textSaveHooks } from "./file-edit.ts";
 import { setFilePoolOptions } from "./file-pool.ts";
 import { runFileTask } from "./file-tasks.ts";
 import * as herdr from "./herdr/client.ts";
@@ -17,7 +17,8 @@ import { MAX_EDITABLE_TEXT_BYTES, type EditableText } from "../shared/files.ts";
 
 const sha = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-describe("editing a text file (#771)", () => {
+// Linux's own calls and outcomes (libc.so.6, /proc/self/fd): macOS saves by its own proof, Windows not at all
+describe.skipIf(process.platform !== "linux")("editing a text file (#771)", () => {
   let server: ReturnType<typeof createServer>;
   let stateDir: string;
   let folder: string;
@@ -79,7 +80,7 @@ describe("editing a text file (#771)", () => {
     expect(readdirSync(join(folder, "docs"))).toEqual(["notes.md"]);
   });
 
-  it("reads and saves on a file thread, and a long name saves too", async () => {
+  it("reads on a file thread, and a long name saves too", async () => {
     setFilePoolOptions();
     try {
       const long = file(`${"n".repeat(240)}.md`, "long\n");
@@ -132,15 +133,6 @@ describe("editing a text file (#771)", () => {
     const target = file("target.md", "t\n");
     const fd = openSync(target, "r+");
     try { expect(copyFileAttributes(-1, fd)).toBe(false); } finally { closeSync(fd); }
-  });
-
-  it("lets one save run at a time across file threads, and refuses one that waits too long", () => {
-    const lock = new Int32Array(new SharedArrayBuffer(4));
-    expect(withSaveLock(lock, () => Atomics.load(lock, 0))).toBe(1);
-    expect(Atomics.load(lock, 0)).toBe(0);
-    Atomics.store(lock, 0, 1);
-    expect(() => withSaveLock(lock, () => "ran", 20)).toThrow(expect.objectContaining({ status: 503, code: "file_busy" }));
-    Atomics.store(lock, 0, 0);
   });
 
   it("answers a save to a file removed since it was opened with a conflict", async () => {

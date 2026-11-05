@@ -12,7 +12,7 @@ import type { Access } from "./access.ts";
 import { isSecureRequest } from "./auth.ts";
 import { claudeSessionTempDir, claudeTempBases } from "./claude-store.ts";
 import { claudePaneSession } from "./conversation.ts";
-import { MAX_TEXT_SAVE_BODY_BYTES, readCappedText, TextEditRefused } from "./file-edit.ts";
+import { MAX_TEXT_SAVE_BODY_BYTES, readCappedText, saveEditableText, TextEditRefused } from "./file-edit.ts";
 import { fileTask } from "./file-pool.ts";
 import type { TextTaskResult } from "./file-tasks.ts";
 import { fileResponse, findFile, crossSiteFileRead, pageMediaResponse, pageMediaSource, PAGE_MEDIA_PATH, watchPageMedia } from "./file-view.ts";
@@ -72,9 +72,6 @@ export async function handleFileRequest(request: Request, url: URL, pathname: st
   return null;
 }
 
-/** Held by the save running now on any file thread (file-edit.ts withSaveLock). */
-const saveLock = new Int32Array(new SharedArrayBuffer(4));
-
 /** GET and PUT /api/fs/text (shared/files.ts): the pane's folder is the one a file may be edited in. */
 async function textRoute(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET") {
@@ -94,8 +91,8 @@ async function textRoute(request: Request, url: URL): Promise<Response> {
   if (typeof paneId !== "string" || paneId === "") return badRequest("missing_pane", "pane_id is required");
   if (typeof path !== "string" || typeof revision !== "string" || typeof text !== "string") return badRequest("invalid_body", "path, revision and text are strings");
   const cwd = (await paneContext(paneId)).cwd;
-  // one save at a time, whichever file thread it lands on, and for as long as it really runs (withSaveLock)
-  return textAnswer(await fileTask<TextTaskResult>({ op: "text-save", path, cwd, revision, text, lock: saveLock }));
+  // on this thread, synchronously: two saves never interleave, and no save goes on after its answer
+  return jsonResponse(saveEditableText(path, cwd, revision, text));
 }
 
 /** A text task's answer, or the refusal it came back with. */
