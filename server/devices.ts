@@ -206,7 +206,9 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
   const merged = new Map<string, AccountTombstone>();
   for (const tombstone of [...read.flatMap((list) => list ?? []), ...pending]) {
     const kept = merged.get(tombstone.key);
-    if (!kept || tombstone.removed_at > kept.removed_at) merged.set(tombstone.key, tombstone);
+    // an account's removal outranks a revoke on the PC, whatever their times: only the account's keeps a relay code out
+    const rank = (t: AccountTombstone) => t.record_id === "local" ? 0 : 1;
+    if (!kept || rank(tombstone) > rank(kept) || (rank(tombstone) === rank(kept) && tombstone.removed_at > kept.removed_at)) merged.set(tombstone.key, tombstone);
   }
   const tombstones = [...merged.values()];
   for (const [index, path] of paths.entries()) {
@@ -309,10 +311,12 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row an add or a remote approval made goes with an account's removal whatever its time, as removeAccountKey
-    // takes it; a revoke on this PC takes only rows made before it
+    // a member's row (an add or a remote approval: `account` and `added_by`) goes with its key's tombstone whatever
+    // its time, as removeAccountKey takes it; any other row, a relay code's re-pairing included, only with one newer
+    // than itself, an account's removal taking a relay code's row whatever its time too
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && ((device.added_by !== undefined && t.record_id !== "local") || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key
+        && ((device.added_by !== undefined && (device.account !== undefined || t.record_id !== "local")) || t.removed_at >= device.created_at));
   }
 
   /**
@@ -758,7 +762,7 @@ export class DeviceStore {
     const fresh = !this.isTombstoned(key);
     const removal = { key, account, record_id: recordId, removed_at: new Date(now).toISOString() };
     if (fresh) this.writeTombstones([...this.tombstones, removal]);
-    // a key this PC revoked first becomes the account's removal, which the cap on local revokes never drops
+    // a key this PC revoked first becomes the account's removal, so a code started through the relay cannot bring it back
     else if (this.tombstones.some((t) => t.key === key && t.record_id === "local")) this.writeTombstones(this.tombstones.map((t) => t.key === key ? removal : t));
     const ids = this.devices.filter((d) => d.relay_public_key === key).map((d) => d.id);
     for (const id of ids) this.revoke(id, record.by);
