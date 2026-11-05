@@ -13,6 +13,11 @@
  * (FileViewer.css .file-panel), its header one compact row on a hairline like the docked viewer's,
  * and the list filling the rest of the height.
  */
+/* a docked file or web page has its place: kept out of the row, not unmounted */
+.files-panel[hidden] {
+  display: none;
+}
+
 .files-dialog-docked {
   flex: 1 1 auto;
   display: flex;

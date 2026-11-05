@@ -86,16 +86,28 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
     await page.keyboard.press("Escape");
     assert.equal(await panel.count(), 1, "Escape outside the panel leaves it open");
 
-    // a file docks in its place, and closing it brings the list back
+    // a file docks in its place, and closing it brings the list back at the folder it was in
+    await panel.getByRole("button", { name: "Parent folder" }).click();
+    await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
     await panel.getByText("README.md").click();
     const viewer = page.locator("aside.file-panel .file-viewer-docked");
     await viewer.waitFor();
-    assert.equal(await panel.count(), 0);
+    assert.equal(await panel.isVisible(), false, "the file has the panel's place");
     assert.equal(await button.getAttribute("aria-pressed"), "false");
     await shot(page, `files-panel-file-1280-${theme}`);
     await viewer.getByRole("button", { name: "Close" }).click();
     await panel.waitFor();
-    await panel.getByText("README.md").waitFor();
+    await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
+
+    // the palette's Browse files shows it again over a docked file, as the header button does
+    await panel.getByText("README.md").click();
+    await viewer.waitFor();
+    await page.keyboard.press("ControlOrMeta+Shift+K");
+    const palette = page.getByRole("dialog", { name: "Command palette", exact: true });
+    await palette.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Browse files");
+    await palette.getByRole("option", { name: "Browse files" }).click();
+    await viewer.waitFor({ state: "detached" });
+    await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
 
     // the header button closes it again
     await button.click();

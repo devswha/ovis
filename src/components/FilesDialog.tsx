@@ -30,12 +30,14 @@ export interface FilesDialogProps {
   docked?: boolean;
   /** drawn first in the docked column (its resize edge) */
   panelStart?: ReactNode;
+  /** docked, with a file or web page in its place: kept, folder and tab, for when that closes */
+  covered?: boolean;
 }
 
 type Tab = "browse" | "changes" | "pr";
 
 /** The files of the pane's folder (and any other), each opened in the file viewer, and the changes of its repository, each opened as a diff. */
-export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, onBrowseFolders, onClose, docked = false, panelStart }: FilesDialogProps) {
+export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, onBrowseFolders, onClose, docked = false, panelStart, covered = false }: FilesDialogProps) {
   const t = useT();
   const machineId = useMachineId();
   const phone = useMediaQuery("(max-width: 480px)");
@@ -90,7 +92,7 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
     </div>
   </>;
   if (docked) return (
-    <aside ref={surface} className="file-panel files-panel" aria-labelledby="files-dialog-title" tabIndex={-1}>
+    <aside ref={surface} className="file-panel files-panel" aria-labelledby="files-dialog-title" tabIndex={-1} hidden={covered}>
       {panelStart}
       <section className="files-dialog files-dialog-docked">{content}</section>
     </aside>

@@ -42,6 +42,16 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   useEffect(() => {
     if (viewing !== null && fileDocked && webPage !== null) closeWebPage(true);
   }, [viewing, fileDocked, webPage, closeWebPage]);
+  // a docked file or web page over Files beside the pane; opening Files again (its button, the palette) closes it
+  const filesCovered = (viewing !== null && fileDocked) || webPage !== null;
+  const revealFiles = useCallback(() => {
+    setFilesOpen(true);
+    if (!filesDocked) return;
+    if (viewing !== null && fileDocked) closeFile();
+    else if (webPage !== null) closeWebPage();
+  }, [filesDocked, viewing, fileDocked, closeFile, webPage, closeWebPage]);
+  // no dialog, so no trap gives the focus back when it closes: what opened it gets it, as for the docked file
+  useFocusReturn(filesOpen && filesDocked);
   // the panel is no dialog, so no trap gives the focus back when it closes: what opened the file
   // (a link in the chat, a row of Files) gets it, as it does from the popup
   useFocusReturn(viewing !== null && fileDocked);
@@ -113,5 +123,5 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     if (!filesDocked && filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
     openFile({ path, paneId: selectedPaneId, machineId: selectedMachineId });
   }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen, filesDocked]);
-  return { filesOpen, setFilesOpen, filesDocked, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
+  return { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
 }
