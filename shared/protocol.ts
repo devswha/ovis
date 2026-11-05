@@ -125,7 +125,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/health                    -> { ok: true, herdr: HerdrIdentity (shared/machines.ts; terminal_attach false on a
  *                                          Windows herdr and on a bridge that cannot run the PTY sidecar; terminal_mirror: its
  *                                          terminal lens is the pane's screen, repainted; /api/bridge tells the same herdr), auth: HealthAuth,
- *                                          web_ui: { boot_id: string, revision: string | null },
+ *                                          web_ui: { boot_id: string, revision: string | null, server_id?: string (its relay ID,
+ *                                          authenticated only, where it has one: Machine.server_id) },
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
  *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
@@ -665,6 +666,12 @@ export interface ConversationResponse {
    * agent that keeps no entry tree.
    */
   abandoned?: { count: number; branches: number; summary: string | null };
+  /**
+   * The size in bytes of the transcript file the newest page was read from (Codex: its rollout), as
+   * the read saw it; absent from an older page and from stores that are not one file (OpenCode,
+   * Devin, Hermes, dsh), where the chat says the size is unknown.
+   */
+  transcript_bytes?: number;
 }
 
 export type { PluginActionContext, PluginAction, PluginActions, PluginActionsResponse, PluginActionRequest, PluginActionResult } from "./plugins.ts";

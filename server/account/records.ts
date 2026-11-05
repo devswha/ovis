@@ -27,7 +27,9 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (store.accountError !== null) return refused("account_unavailable");
   const account = store.account();
   if (account !== null && account !== record.account) return refused("account_mismatch");
-  const signer = store.accountSigner(record.signer, record.account);
+  // a member of any role may sign the remove of its own key: that is how a device leaves (docs/account.md)
+  const leaving = record.kind === "remove" && record.signer === record.key;
+  const signer = store.accountSigner(record.signer, record.account, leaving);
   if (!signer) return refused("signer_not_member");
   if (record.kind === "remove") return { id: record.id, outcome: store.removeAccountKey(record.key, record.account, { id: record.id, issuedAt: record.issued_at, by: { device_id: signer.id, label: signer.label } }, now) ? "applied" : "unchanged" };
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
@@ -59,8 +61,8 @@ export type LinkRefusal = RecordRefusal | "key_in_use";
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
  * member: the session is its authority, which is how a PC gets its first one.
  */
-export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string }): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
-  const { deviceId, serverId, sessionKey } = session;
+export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
+  const { deviceId, serverId, sessionKey, sessionId } = session;
   const record = await read(value);
   if ("refused" in record) return { refused: record.refused };
   if (record.kind !== "link") return { refused: "record_invalid" };
@@ -72,6 +74,6 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   if (store.isTombstoned(link.key)) return { refused: "tombstoned" };
   if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
-  const device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account);
+  const device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId);
   return device ? { device } : { refused: "link_not_owner" };
 }
