@@ -159,17 +159,18 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         data = output === outputVersion ? found : null;
         // also the box: a pane shown again by its visibility style, not its size, gets no ResizeObserver call
         paint();
-        // a page held on stale metrics runs on the first read after the latest output, while it is recent
+        // a page held on stale metrics runs on the first read after the latest output, while it is recent;
+        // one held only for a fresh read runs on a read that began soon after it, however long that read took
         if (heldPage && validScroll(metrics) && (output === outputVersion || (!heldPage.strict && heldPage.at <= startedAt))) {
           const held = heldPage;
           heldPage = null;
-          if (Date.now() - held.at < HELD_PAGE_MS) {
+          if (held.strict ? Date.now() - held.at < HELD_PAGE_MS : startedAt - held.at < HELD_PAGE_MS) {
             for (let step = 0; step < Math.abs(held.steps); step++) scrollPage(held.steps > 0 ? 1 : -1, true);
           }
         }
-        if (heldLines && output === outputVersion && validScroll(metrics)) {
+        if (heldLines && validScroll(metrics) && (output === outputVersion || heldLines.at <= startedAt)) {
           const held = heldLines; heldLines = null;
-          if (Date.now() - held.at < HELD_PAGE_MS) scrollLines(held.lines);
+          if (startedAt - held.at < HELD_PAGE_MS) scrollLines(held.lines, true);
         }
       } catch {
         // a failed read retries on the first step, not the idle backoff: page keys wait on it
@@ -249,10 +250,13 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       else { dirty = true; idle = 0; schedule(0); }
     };
     if (pageScroll) pageScroll.current = scrollPage;
-    const scrollLines = (lines: number) => {
+    /** `fresh` as for a page: metrics overtaken by output and older than the busy cadence may clamp the
+     * lines to a history size that has since changed, so they are read again first. */
+    const scrollLines = (lines: number, fresh = false) => {
       if (!interactive || !alive || viewportIntent.isSearching() || !showing()) return;
       const metrics = scrollRef.current;
-      if (validScroll(metrics)) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + lines);
+      const stale = !fresh && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS;
+      if (validScroll(metrics) && !stale) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + lines);
       else {
         heldLines = { lines: (heldLines && Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0) + lines, at: Date.now() };
         dirty = true; idle = 0; schedule(0);
