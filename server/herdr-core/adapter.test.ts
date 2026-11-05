@@ -883,6 +883,10 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     expect((await herdrRpc<{ zoom: { changed: boolean; reason: string } }>("pane.zoom", { pane_id: "t1", mode: "on" }, socket)).zoom).toMatchObject({ changed: false, reason: "already_zoomed" });
     await herdrRpc("pane.zoom", { pane_id: "t1", mode: "off" }, socket);
     expect((await sessionSnapshot(socket)).layouts[0]!.zoomed).toBe(false);
+    // a split in a zoomed tab shows every pane again, the new one with them
+    await herdrRpc("pane.zoom", { pane_id: "t1", mode: "on" }, socket);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, socket);
+    expect((await sessionSnapshot(socket)).layouts[0]).toMatchObject({ zoomed: false });
   });
 
   it("reorders workspaces and tabs, Other terminals staying last", async () => {

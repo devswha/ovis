@@ -718,7 +718,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         await editLayout((layout) => {
           const tab = tabHolding(layout, paneId);
           const root = splitLeaf(tab.root, paneId, root_pane.pane_id, direction);
-          return root && withTab(layout, tab.id, { root });
+          // a zoomed tab shows every pane again, so the new one is in view
+          return root && withTab(layout, tab.id, { root, zoomed: null });
         });
       } catch (error) {
         // the shell runs and shows to the right of the tab (layout-doc.ts `reconcile`): said, so nobody splits again for it

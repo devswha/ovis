@@ -112,15 +112,15 @@ describe("buildSnapshot", () => {
     expect(tab.splits.map((split) => [split.id, split.direction, split.ratio])).toEqual([["split_0_root", "right", 0.75], ["split_1_1", "down", 0.5]]);
   });
 
-  it("shows a stack's active child and skips a hidden node of the app's tree", () => {
+  it("shows every child of a stack, which Ovis cannot switch, and nowhere a hidden node of the app's tree", () => {
     const hidden = { ...block("t3"), hidden: true };
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [
       { type: "stack", id: "st", active: "p-t2", children: [block("t1"), block("t2")] }, hidden, block("t4"),
     ] } }] }] };
     for (const labels of [undefined, { "herdr.space": "s1", "herdr.tab": "s1t1" }]) {
       const snapshot = buildSnapshot(["t1", "t2", "t3", "t4"].map((address) => terminal(address, labels ? { labels } : {})), layout, "0.1.17");
-      expect(snapshot.layouts.map((tab) => tab.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width]))).toEqual([[["t2", 0, 500], ["t4", 500, 500]]]);
-      // the app holds the ones out of view: they show nowhere else, neither under Other terminals nor beside its tab
+      expect(snapshot.layouts.map((tab) => tab.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width]))).toEqual([[["t1", 0, 250], ["t2", 250, 250], ["t4", 500, 500]]]);
+      // the app holds a hidden one out of view: it shows nowhere else, neither under Other terminals nor beside its tab
       expect(snapshot.tabs.map((tab) => tab.tab_id)).toEqual(["s1t1"]);
     }
   });
@@ -250,6 +250,10 @@ describe("buildSnapshot, terminals the app has not placed", () => {
     ]);
     expect(seen[1]).toEqual(seen[0]);
     expect(seen[2]).toEqual(seen[0]);
+    // the cells each terminal has, apart from its place: an attach that must not resize starts at these
+    expect(buildSnapshot(grids, null, "0.1.17", undefined, doc).panes.map((pane) => [pane.pane_id, (pane as HerdrPane).grid])).toEqual([
+      ["t5", { cols: 80, rows: 25 }], ["t7", { cols: 80, rows: 25 }], ["t6", { cols: 80, rows: 50 }],
+    ]);
   });
 
   it("puts a second unplaced terminal of a tab beside the first, not over it", () => {

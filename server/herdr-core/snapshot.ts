@@ -130,7 +130,7 @@ function chain(parts: readonly { node: LayoutNode; weight: number }[], direction
   return { split: direction, ratio: clampRatio(parts[0]!.weight / total), first: parts[0]!.node, second: chain(parts.slice(1), direction) };
 }
 
-/** Takes every terminal a node of the app's tree names without showing it (a hidden node, a stack's other children). */
+/** Takes every terminal a node of the app's tree names without showing it (a hidden node). */
 function claim(node: unknown, take: (address: string) => HcTerminal | null): void {
   if (!isRecord(node)) return;
   const content = node["content"];
@@ -141,8 +141,8 @@ function claim(node: unknown, take: (address: string) => HcTerminal | null): voi
 /**
  * A tab's tree in the app's document (never trusted to have a shape: herdr-app src/layout.rs
  * `Node`) as a split tree over the live terminals, so it is laid out top down like Ovis's own: a
- * `column` stacks its children, a `stack` shows its active child (else its first shown one), anything
- * else sets them side by side; a hidden node is skipped. `take` hands over a live terminal not placed
+ * `column` stacks its children, anything else sets them side by side (a \`stack\` too: Ovis cannot
+ * switch its active child, so each one stays in reach); a hidden node and its terminals are left out. `take` hands over a live terminal not placed
  * yet, so one named twice is placed once; each one placed is added to `held`, in reading order.
  */
 function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[]): LayoutNode | null {
@@ -158,12 +158,6 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   }
   const children = node["children"];
   if (!Array.isArray(children)) return null;
-  if (node["type"] === "stack") {
-    const shown = children.filter((child) => isRecord(child) && child["hidden"] !== true);
-    const active = shown.find((child) => isRecord(child) && child["id"] === node["active"]) ?? shown[0];
-    for (const child of children) if (child !== active) claim(child, take);
-    return appTree(active, take, held);
-  }
   const parts = children.flatMap((child) => {
     const tree = appTree(child, take, held);
     return tree && isRecord(child) ? [{ node: tree, weight: weightOf(child) }] : [];
@@ -355,6 +349,7 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown:
     ...reportedFacts(terminal.status),
     pane_id: terminal.address,
     terminal_id: terminal.address,
+    grid: { cols: terminal.cols, rows: terminal.rows },
     workspace_id: workspaceId,
     tab_id: tabId,
     agent: agentOf(terminal),
