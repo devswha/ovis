@@ -254,7 +254,7 @@ export class DeviceStore {
    * `remote`: started through the relay, so it never lets a removed key back in; `startedBy`: the account
    * member that started it there, whose addition the new device then is
    */
-  private pending: { code: string; expires: number; attempts: number; remote: boolean; startedBy: string | null; memberRequired: boolean } | null = null;
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean } | null = null;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
     code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
@@ -460,7 +460,7 @@ export class DeviceStore {
     // a code started through the relay is never redeemed on the LAN listener, nor are its guesses spent there:
     // it would make a credential no relay key or account removal reaches
     if (localCodeOnly && this.pending?.remote === true) return null;
-    if (!this.checkPairingCode(code, now)) return null;
+    if (!this.checkPairingCode(code, now, localCodeOnly)) return null;
     // a member's code goes with the member here too (pairRelay)
     const startedBy = this.pending?.startedBy ?? null;
     if (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy))) return null;
@@ -476,10 +476,19 @@ export class DeviceStore {
     return { token, device: { id: device.id, label: device.label, role: device.role } };
   }
 
-  /** Both transports spend the same pending code's five guesses. */
-  private checkPairingCode(code: string, now: number): boolean {
+  /**
+   * Both transports spend the same pending code's five guesses. The LAN HTTPS listener has five of its
+   * own instead (`lan`), so a stranger there cannot spend a code a phone is about to type in elsewhere.
+   */
+  private checkPairingCode(code: string, now: number, lan = false): boolean {
     const pending = this.pending;
     if (pending === null || now > pending.expires) { this.pending = null; return false; }
+    if (lan) {
+      if ((pending.lanAttempts ?? 0) >= CODE_ATTEMPTS) return false;
+      if (same(code.replace(/\D/g, ""), pending.code)) return true;
+      pending.lanAttempts = (pending.lanAttempts ?? 0) + 1;
+      return false;
+    }
     if (!same(code.replace(/\D/g, ""), pending.code)) {
       pending.attempts += 1;
       if (pending.attempts >= CODE_ATTEMPTS) this.pending = null;

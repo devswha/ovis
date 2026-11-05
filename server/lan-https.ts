@@ -73,7 +73,12 @@ export function lanHttpsCertificate(stateDir: string, config: LanHttpsConfig, ad
   try {
     const kept = loaded(readFileSync(certPath, "utf8"), readFileSync(keyPath, "utf8"));
     const x509 = new X509Certificate(kept.cert);
-    if (Date.parse(x509.validTo) > Date.now() && addresses.every((address) => x509.checkIP(address) !== undefined)) return kept;
+    if (Date.parse(x509.validTo) > Date.now() && addresses.every((address) => x509.checkIP(address) !== undefined)) {
+      // a restored or copied state dir may have widened them
+      chmodSync(dir, 0o700);
+      chmodSync(keyPath, 0o600);
+      return kept;
+    }
   } catch {
     // missing or unreadable: made again below
   }
@@ -101,8 +106,9 @@ export function selfSignedCertificate(addresses: readonly string[], now = new Da
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const ecdsaSha256 = seq(oid("1.2.840.10045.4.3.2"));
   const name = seq(set(seq(oid("2.5.4.3"), tlv(0x0c, Buffer.from("Ovis LAN")))));
+  // positive, and minimal in DER: no leading zero byte for a parser to refuse
   const serial = randomBytes(16);
-  serial[0] = serial[0]! & 0x7f;
+  serial[0] = (serial[0]! & 0x7f) | 0x40;
   const ips = [...new Set(["127.0.0.1", ...addresses])].map((address) => tlv(0x87, Buffer.from(address.split(".").map(Number))));
   // no keyUsage: one without keyCertSign stops a verifier trusting the certificate as its own issuer, the way a pinned or installed self-signed one is trusted
   const extensions = seq(
@@ -116,7 +122,7 @@ export function selfSignedCertificate(addresses: readonly string[], now = new Da
     tlv(0x02, serial),
     ecdsaSha256,
     name,
-    seq(utcTime(new Date(now.getTime() - 60_000)), utcTime(new Date(now.getTime() + VALID_DAYS * 86_400_000))),
+    seq(derTime(new Date(now.getTime() - 60_000)), derTime(new Date(now.getTime() - 60_000 + VALID_DAYS * 86_400_000))),
     name,
     publicKey.export({ type: "spki", format: "der" }),
     tlv(0xa3, extensions),
@@ -144,10 +150,10 @@ function oid(dotted: string): Buffer {
   return tlv(0x06, Buffer.from(bytes));
 }
 
-/** UTCTime (YYMMDDHHMMSSZ), valid for the years 1950-2049 a certificate made now spans. */
-function utcTime(date: Date): Buffer {
-  const text = date.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z";
-  return tlv(0x17, Buffer.from(text));
+/** UTCTime (YYMMDDHHMMSSZ) through 2049, GeneralizedTime (YYYYMMDDHHMMSSZ) from 2050, as RFC 5280 says. */
+function derTime(date: Date): Buffer {
+  const digits = date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  return date.getUTCFullYear() < 2050 ? tlv(0x17, Buffer.from(`${digits.slice(2)}Z`)) : tlv(0x18, Buffer.from(`${digits}Z`));
 }
 
 function pem(label: string, der: Buffer): string {

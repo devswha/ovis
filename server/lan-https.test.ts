@@ -69,6 +69,27 @@ describe("lanHttpsCertificate", () => {
     expect(lanHttpsCertificate(stateDir, { port: 7318 }, ["10.0.0.7"]).sha256).not.toBe(moved.sha256);
   });
 
+  it("narrows a kept key's permissions again before reusing it", () => {
+    if (process.platform === "win32") return;
+    const stateDir = tempDir();
+    lanHttpsCertificate(stateDir, { port: 7318 }, ["192.168.1.50"]);
+    chmodSync(join(stateDir, "lan-https"), 0o755);
+    chmodSync(join(stateDir, "lan-https", "key.pem"), 0o644);
+    lanHttpsCertificate(stateDir, { port: 7318 }, ["192.168.1.50"]);
+    expect(statSync(join(stateDir, "lan-https")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(stateDir, "lan-https", "key.pem")).mode & 0o777).toBe(0o600);
+  });
+
+  it("makes certificates every parser takes, at most 825 days long, past 2049 too", () => {
+    // a serial with a leading zero byte fails to parse about once in 170 certificates
+    for (let made = 0; made < 400; made++) expect(() => new X509Certificate(selfSignedCertificate(["192.168.1.50"]).cert)).not.toThrow();
+    for (const now of [new Date("2026-11-06T00:00:00Z"), new Date("2049-06-01T00:00:00Z")]) {
+      const x509 = new X509Certificate(selfSignedCertificate(["192.168.1.50"], now).cert);
+      expect(Date.parse(x509.validTo) - Date.parse(x509.validFrom)).toBe(825 * 86_400_000);
+      expect(Date.parse(x509.validTo)).toBeGreaterThan(now.getTime());
+    }
+  });
+
   it("serves the operator's own certificate and key as they are", () => {
     const dir = tempDir();
     const own = selfSignedCertificate(["192.168.1.50"]);
@@ -188,6 +209,21 @@ describe("the LAN HTTPS listener", () => {
       const { code } = store.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false });
       for (const guess of [code, "000000", "111111", "222222", "333333", "444444"]) expect((await handleRequest(pairRequest(guess), lanContext(app)))!.status).toBe(401);
       expect(store.activePairing()?.code).toBe(code);
+    } finally {
+      app.stop();
+    }
+  });
+
+  it("spends five guesses of its own on a code, never the ones a phone elsewhere types it in with", async () => {
+    const app = createServer({ ...base, stateDir: tempDir() });
+    try {
+      const store = app.context.services.devices;
+      const { code } = store.startPairing();
+      const wrong = code === "123456" ? "654321" : "123456";
+      for (let guess = 0; guess < 5; guess++) expect((await handleRequest(pairRequest(wrong), lanContext(app)))!.status).toBe(401);
+      expect((await handleRequest(pairRequest(code), lanContext(app)))!.status).toBe(401);
+      expect(store.activePairing()?.code).toBe(code);
+      expect(store.pair(code, "Phone elsewhere", "drive")).not.toBeNull();
     } finally {
       app.stop();
     }
