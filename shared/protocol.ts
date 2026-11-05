@@ -363,9 +363,11 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         no_pull_request, 502 gh_failed, 504 gh_timeout. A watching device is refused, as for diffs)
  *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id= -> PullRequestCheckLog (the last
  *         lines of that Actions job's log, timestamps and colour codes removed; 400 invalid_job)
- *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, method } -> { ok: true }
+ *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, base_ref, method } -> { ok: true }
  *         (`gh pr merge --<method> --match-head-commit <head_oid>`: only the head the view showed is
- *         merged, the branch is kept; 400 invalid_body, 409 merge_refused with GitHub's reason)
+ *         merged, into the base it showed (read again first: 409 pull_request_changed), the branch
+ *         is kept; 400 invalid_body, 409 merge_queue (a base merged through a merge queue, where gh
+ *         would only queue it), 409 merge_refused with GitHub's reason)
  *  GET    /api/pane/prompt?pane_id=     -> PanePromptResponse
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and

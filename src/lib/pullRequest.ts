@@ -36,6 +36,7 @@ export function mergeBlockedWord(t: Translate, view: PullRequestView): string | 
   if (view.state === "merged") return t("Already merged.");
   if (view.state === "closed") return t("This pull request is closed.");
   if (view.draft) return t("A draft cannot be merged; mark it ready on GitHub first.");
+  if (view.merge_queue) return t("This base branch merges through a merge queue; merge it on GitHub.");
   switch (view.merge_state) {
     case "blocked": return t("Required checks or reviews have not passed yet.");
     case "behind": return t("The branch is behind its base; update it first.");
@@ -55,6 +56,8 @@ export function pullRequestErrorMessage(t: Translate, error: unknown): string {
     case "no_github_remote": return t("This repository has no GitHub remote.");
     case "not_a_repository": return t("This folder is not in a git repository.");
     case "gh_timeout": return t("gh took too long to answer.");
+    case "merge_queue": return t("This base branch merges through a merge queue; merge it on GitHub.");
+    case "pull_request_changed": return t("The pull request changed since it was shown. Refresh it, then merge.");
     case "merge_refused": case "gh_failed": return error.detail || t("The pull request could not be loaded.");
     case "read_only": return t("This device can only watch.");
     case "invalid_cwd": case "pane_not_found": return t("The pane's folder could not be read.");

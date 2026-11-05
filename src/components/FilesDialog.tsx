@@ -7,6 +7,7 @@ import { PullRequestPanel } from "./PullRequestPanel.tsx";
 import { RepoChanges } from "./RepoChanges.tsx";
 import type { RepoDiffFile } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
+import { useMachineId } from "../lib/machineContext.tsx";
 import type { RepoComparison } from "../lib/repoDiff.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -32,6 +33,7 @@ type Tab = "browse" | "changes" | "pr";
 /** The files of the pane's folder (and any other), each opened in the file viewer, and the changes of its repository, each opened as a diff. */
 export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, onBrowseFolders, onClose }: FilesDialogProps) {
   const t = useT();
+  const machineId = useMachineId();
   const phone = useMediaQuery("(max-width: 480px)");
   const surface = useFocusTrap<HTMLElement>(true);
   const [tab, setTab] = useState<Tab>("browse");
@@ -75,7 +77,8 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
               pane's folder, as Changes reads the new pane, instead of listing the pane it was opened on */}
           <div hidden={tab !== "browse"}><DirectoryBrowser key={paneId} start={start} onOpenFile={onOpenFile} onFolder={(path) => { folder.current = { pane: paneId, path }; }} /></div>
           {changesVisited && <div hidden={tab !== "changes"}><RepoChanges paneId={paneId} directory={start} onOpenDiff={onOpenDiff} /></div>}
-          {prVisited && <div hidden={tab !== "pr"}><PullRequestPanel paneId={paneId} directory={start} /></div>}
+          {/* one panel per PC and pane: an answer or a merge still on its way for the last pane never lands in this one */}
+          {prVisited && <div hidden={tab !== "pr"}><PullRequestPanel key={`${machineId}:${paneId}`} paneId={paneId} directory={start} /></div>}
         </div>
       </section>
     </div>

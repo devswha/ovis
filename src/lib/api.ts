@@ -1192,7 +1192,7 @@ export async function fetchPullRequestLog(target: PullRequestTarget, jobId: stri
 }
 
 /** POST /api/workspace/pr/merge: merges the pull request at the head it was read at, with the method shown. */
-export async function mergePullRequest(target: PullRequestTarget, merge: Pick<PullRequestMergeRequest, "number" | "head_oid" | "method">, machineId = "local"): Promise<void> {
+export async function mergePullRequest(target: PullRequestTarget, merge: Pick<PullRequestMergeRequest, "number" | "head_oid" | "base_ref" | "method">, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "workspace/pr/merge"), "POST", { ...(target.paneId ? { pane_id: target.paneId } : {}), ...(target.directory ? { directory: target.directory } : {}), ...merge } satisfies PullRequestMergeRequest);
 }
 

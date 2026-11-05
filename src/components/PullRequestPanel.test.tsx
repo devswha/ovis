@@ -16,7 +16,7 @@ let renderer: ReactTestRenderer | undefined;
 
 const VIEW: PullRequestView = {
   number: 12, title: "Fix the thing", url: "https://github.com/acme/widgets/pull/12", state: "open", draft: false,
-  head_ref: "fix/thing", base_ref: "main", head_oid: "f".repeat(40), merge_state: "blocked", mergeable: false, merge_method: "squash",
+  head_ref: "fix/thing", base_ref: "main", head_oid: "f".repeat(40), merge_state: "blocked", merge_queue: false, mergeable: false, merge_method: "squash",
   checks: [
     { name: "test", workflow: "CI", state: "fail", url: "https://github.com/acme/widgets/actions/runs/1/job/103", job_id: "103" },
     { name: "lint", workflow: "CI", state: "pass", url: "https://github.com/acme/widgets/actions/runs/1/job/101", job_id: "101" },

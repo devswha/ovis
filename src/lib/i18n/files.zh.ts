@@ -179,4 +179,6 @@ export const FILES_ZH: Record<string, string> = {
   "gh took too long to answer.": "gh 响应时间过长。",
   "{count} more on GitHub": "GitHub 上还有 {count} 条",
   "{failing} failing, {pending} pending, {passed} passed": "失败 {failing}，等待 {pending}，通过 {passed}",
+  "The pull request changed since it was shown. Refresh it, then merge.": "拉取请求在显示后已更改。请刷新后再合并。",
+  "This base branch merges through a merge queue; merge it on GitHub.": "此基础分支通过合并队列合并，请在 GitHub 上合并。",
 };

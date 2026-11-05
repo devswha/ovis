@@ -993,6 +993,7 @@ const DEMO_PR: PullRequestView = {
   base_ref: "main",
   head_oid: DEMO_HEAD,
   merge_state: "blocked",
+  merge_queue: false,
   mergeable: false,
   merge_method: "squash",
   checks: [

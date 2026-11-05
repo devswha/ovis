@@ -27,8 +27,11 @@ const MAX_STDERR_BYTES = 16 * 1024;
 const OID = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9]{1,20}$/;
 const MERGEABLE_STATES = new Set(["clean", "unstable", "has_hooks"]);
+const MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$base:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$base){id}}}";
 const PR_FIELDS = "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,statusCheckRollup";
-const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){viewerDefaultMergeMethod pullRequest(number:$number){reviewThreads(first:${PULL_REQUEST_MAX_THREADS}){totalCount nodes{isResolved isOutdated path line comments(first:1){totalCount nodes{author{login} body url}}}}}}}`;
+/** resolved threads are only skipped here: GitHub filters none, so pages are read until enough open ones are found */
+const THREAD_PAGES = 10;
+const THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!,$base:String!,$after:String){repository(owner:$owner,name:$name){viewerDefaultMergeMethod mergeQueue(branch:$base){id} pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line comments(first:1){totalCount nodes{author{login} body url}}}}}}}`;
 
 /** gh never prompts, pages, colours or checks for updates here */
 function ghEnvironment(): Record<string, string> {
@@ -64,11 +67,13 @@ async function runGh(cwd: string, args: string[], options: PullRequestOptions, k
   } catch {
     throw new PullRequestError("gh_missing", "GitHub CLI (gh) is not installed on this PC", 409);
   }
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; proc.kill(); }, options.deadlineMs ?? DEADLINE_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // the deadline holds the answer, not only gh: a child gh started (git) may keep the pipes open after gh is gone
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { proc.kill(); reject(new PullRequestError("gh_timeout", "gh did not answer in time", 504)); }, options.deadlineMs ?? DEADLINE_MS);
+  });
   try {
-    const [out, err, code] = await Promise.all([readCapped(proc.stdout, keepTail ? LOG_KEEP_BYTES : MAX_JSON_BYTES, keepTail), readCapped(proc.stderr, MAX_STDERR_BYTES, true), proc.exited]);
-    if (timedOut) throw new PullRequestError("gh_timeout", "gh did not answer in time", 504);
+    const [out, err, code] = await Promise.race([Promise.all([readCapped(proc.stdout, keepTail ? LOG_KEEP_BYTES : MAX_JSON_BYTES, keepTail).then((read) => { if (read.overflow && !keepTail) proc.kill(); return read; }), readCapped(proc.stderr, MAX_STDERR_BYTES, true), proc.exited]), deadline]);
     if (out.overflow && !keepTail) throw new PullRequestError("gh_failed", "gh answered more than this view reads", 502);
     // gh exits 4 when it needs a sign-in; older releases only say so
     if (code === 4 || /gh auth login/.test(err.text)) throw new PullRequestError("gh_signed_out", "gh on this PC is not signed in to GitHub", 409);
@@ -125,9 +130,9 @@ function checksOf(rollup: unknown): PullRequestCheck[] {
   return checks.map((check, index) => ({ check, index })).sort((a, b) => CHECK_ORDER[a.check.state] - CHECK_ORDER[b.check.state] || a.index - b.index).map(({ check }) => check);
 }
 
-function threadsOf(connection: Record<string, unknown>): { threads: PullRequestThread[]; truncated: boolean } {
+function threadsOf(connection: Record<string, unknown>): PullRequestThread[] {
   const nodes = (Array.isArray(connection["nodes"]) ? connection["nodes"] : []).map(record);
-  const threads = nodes.filter((node) => node["isResolved"] !== true).map((node): PullRequestThread => {
+  return nodes.filter((node) => node["isResolved"] !== true).map((node): PullRequestThread => {
     const comments = record(node["comments"]);
     const first = record((Array.isArray(comments["nodes"]) ? comments["nodes"] : [])[0]);
     return {
@@ -140,7 +145,15 @@ function threadsOf(connection: Record<string, unknown>): { threads: PullRequestT
       url: httpUrl(first["url"]),
     };
   });
-  return { threads, truncated: typeof connection["totalCount"] === "number" && connection["totalCount"] > nodes.length };
+}
+
+/** `-f`, not `-F`: gh would send a repository named `2048` or `true` as a number or a boolean */
+const repositoryVariables = (owner: string, name: string): string[] => ["-f", `owner=${owner}`, "-f", `name=${name}`];
+
+/** host, owner and name of a pull request's address; null when it is not one */
+function placeOf(url: string | null): { host: string; owner: string; name: string } | null {
+  const match = url?.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/\d+/);
+  return match ? { host: match[1]!, owner: match[2]!, name: match[3]! } : null;
 }
 
 function parseJson(stdout: string): Record<string, unknown> {
@@ -155,14 +168,27 @@ export async function pullRequestView(cwd: string, options: PullRequestOptions =
   const url = httpUrl(pr["url"]);
   const number = pr["number"];
   const headOid = text(pr["headRefOid"]);
-  const place = url?.match(/^https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/\d+/);
-  if (url === null || typeof number !== "number" || headOid === null || !OID.test(headOid) || !place) throw new PullRequestError("gh_failed", "gh answered something this view cannot read", 502);
-  const [, host, owner, name] = place;
-  const queried = await runGh(cwd, ["api", "graphql", ...(host === "github.com" ? [] : ["--hostname", host!]), "-f", `query=${THREADS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`], options);
-  if (queried.code !== 0) throw failure(queried.stderr, "gh could not read the review threads");
-  const repository = record(record(parseJson(queried.stdout)["data"])["repository"]);
-  const { threads, truncated } = threadsOf(record(record(repository["pullRequest"])["reviewThreads"]));
+  const place = placeOf(url);
+  if (url === null || typeof number !== "number" || headOid === null || !OID.test(headOid) || place === null) throw new PullRequestError("gh_failed", "gh answered something this view cannot read", 502);
+  const { host, owner, name } = place;
+  const baseRef = text(pr["baseRefName"]) ?? "";
+  const threads: PullRequestThread[] = [];
+  let repository: Record<string, unknown> = {};
+  let after: string | null = null;
+  let more = false;
+  for (let page = 0; page < THREAD_PAGES && threads.length <= PULL_REQUEST_MAX_THREADS; page++) {
+    const queried = await runGh(cwd, ["api", "graphql", ...(host === "github.com" ? [] : ["--hostname", host]), "-f", `query=${THREADS_QUERY}`, ...repositoryVariables(owner, name), "-F", `number=${number}`, "-f", `base=${baseRef}`, ...(after === null ? [] : ["-f", `after=${after}`])], options);
+    if (queried.code !== 0) throw failure(queried.stderr, "gh could not read the review threads");
+    repository = record(record(parseJson(queried.stdout)["data"])["repository"]);
+    const connection = record(record(repository["pullRequest"])["reviewThreads"]);
+    threads.push(...threadsOf(connection));
+    const pageInfo = record(connection["pageInfo"]);
+    after = text(pageInfo["endCursor"]);
+    more = pageInfo["hasNextPage"] === true && after !== null;
+    if (!more) break;
+  }
   const method = String(repository["viewerDefaultMergeMethod"] ?? "MERGE").toLowerCase();
+  const mergeQueue = repository["mergeQueue"] !== null && repository["mergeQueue"] !== undefined;
   const state = String(pr["state"] ?? "").toLowerCase();
   const mergeState = String(pr["mergeStateStatus"] ?? "unknown").toLowerCase();
   const draft = pr["isDraft"] === true;
@@ -173,27 +199,31 @@ export async function pullRequestView(cwd: string, options: PullRequestOptions =
     state: state === "merged" ? "merged" : state === "closed" ? "closed" : "open",
     draft,
     head_ref: text(pr["headRefName"]) ?? "",
-    base_ref: text(pr["baseRefName"]) ?? "",
+    base_ref: baseRef,
     head_oid: headOid,
     merge_state: mergeState,
-    mergeable: state === "open" && !draft && MERGEABLE_STATES.has(mergeState),
+    merge_queue: mergeQueue,
+    mergeable: state === "open" && !draft && !mergeQueue && MERGEABLE_STATES.has(mergeState),
     merge_method: method === "squash" || method === "rebase" ? method : "merge",
     checks: checksOf(pr["statusCheckRollup"]),
-    threads,
-    threads_truncated: truncated,
+    threads: threads.slice(0, PULL_REQUEST_MAX_THREADS),
+    threads_truncated: more || threads.length > PULL_REQUEST_MAX_THREADS,
   };
 }
 
 /** GitHub's log line prefix: an ISO time, then a space */
 const TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
-const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+/** terminal escapes: links and titles (OSC), colours and moves (CSI), and the two-byte ones (`ESC(B`) */
+const ESCAPES = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[ -/]*[0-~]/g;
+/** a sent message holds no control character but tab and newline (shared/protocol.ts) */
+const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
 
 /** GET /api/workspace/pr/log: the last lines of an Actions job's log, from the workspace's repository. */
 export async function pullRequestLog(cwd: string, jobId: string, options: PullRequestOptions = {}): Promise<PullRequestCheckLog> {
   if (!JOB_ID.test(jobId)) throw new PullRequestError("invalid_job", "job_id must be an Actions job's number", 400);
   const run = await runGh(cwd, ["api", `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`], options, true);
   if (run.code !== 0) throw failure(run.stderr, "gh could not read that job's log");
-  const lines = run.stdout.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ANSI, ""));
+  const lines = run.stdout.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ESCAPES, "").replace(CONTROLS, ""));
   // the first line of a tail that was cut is a part of one
   if (run.overflow) lines.shift();
   while (lines.length > 0 && lines.at(-1)!.trim() === "") lines.pop();
@@ -203,22 +233,35 @@ export async function pullRequestLog(cwd: string, jobId: string, options: PullRe
   return { job_id: jobId, text: joined.slice(-PULL_REQUEST_LOG_CHARS), truncated: run.overflow || kept.length < lines.length || joined.length > PULL_REQUEST_LOG_CHARS };
 }
 
-export interface MergeInput { number: number; head_oid: string; method: PullRequestMergeMethod }
+export interface MergeInput { number: number; head_oid: string; base_ref: string; method: PullRequestMergeMethod }
 
 /** The body of POST /api/workspace/pr/merge, past its folder fields; null when it is not one. */
 export function mergeInputOf(body: Record<string, unknown>): MergeInput | null {
-  const { number, head_oid: headOid, method } = body;
+  const { number, head_oid: headOid, base_ref: baseRef, method } = body;
   if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) return null;
   if (typeof headOid !== "string" || !OID.test(headOid)) return null;
+  if (typeof baseRef !== "string" || baseRef === "" || baseRef.length > 255) return null;
   if (method !== "merge" && method !== "squash" && method !== "rebase") return null;
-  return { number, head_oid: headOid, method };
+  return { number, head_oid: headOid, base_ref: baseRef, method };
 }
 
 /**
  * POST /api/workspace/pr/merge: GitHub merges the pull request only while its head is still the
- * commit the view showed. The branch stays: the workspace has it checked out.
+ * commit the view showed (`--match-head-commit`); its base, which gh cannot pin, is read again just
+ * before, so a pull request moved to another base is not merged into it. The branch stays: the
+ * workspace has it checked out.
  */
 export async function mergePullRequest(cwd: string, input: MergeInput, options: PullRequestOptions = {}): Promise<void> {
+  const viewed = await runGh(cwd, ["pr", "view", String(input.number), "--json", "baseRefName,headRefOid,url"], options);
+  if (viewed.code !== 0) throw failure(viewed.stderr, "gh could not read the pull request");
+  const now = parseJson(viewed.stdout);
+  if (now["baseRefName"] !== input.base_ref || now["headRefOid"] !== input.head_oid) throw new PullRequestError("pull_request_changed", "The pull request changed since it was shown; refresh it before merging", 409);
+  // through a merge queue gh only queues it, and the queue merges whatever the head is by then
+  const place = placeOf(httpUrl(now["url"]));
+  if (place === null) throw new PullRequestError("gh_failed", "gh answered something this view cannot read", 502);
+  const queued = await runGh(cwd, ["api", "graphql", ...(place.host === "github.com" ? [] : ["--hostname", place.host]), "-f", `query=${MERGE_QUEUE_QUERY}`, ...repositoryVariables(place.owner, place.name), "-f", `base=${input.base_ref}`], options);
+  if (queued.code !== 0) throw failure(queued.stderr, "gh could not read the base branch's merge rules");
+  if (record(record(parseJson(queued.stdout)["data"])["repository"])["mergeQueue"] != null) throw new PullRequestError("merge_queue", "This base branch merges through a merge queue; merge it on GitHub", 409);
   const run = await runGh(cwd, ["pr", "merge", String(input.number), `--${input.method}`, "--match-head-commit", input.head_oid], options);
   if (run.code !== 0) throw new PullRequestError("merge_refused", firstLine(run.stderr) || "GitHub did not merge the pull request", 409);
 }

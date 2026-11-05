@@ -176,7 +176,7 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
           body={t("GitHub merges {head} into {base} as it was shown here. This cannot be undone.", { head: view.head_ref, base: view.base_ref })}
           confirmLabel={mergeLabel(t, view.merge_method)}
           onConfirm={async () => {
-            await mergePullRequest(target, { number: view.number, head_oid: view.head_oid, method: view.merge_method });
+            await mergePullRequest(target, { number: view.number, head_oid: view.head_oid, base_ref: view.base_ref, method: view.merge_method });
             setConfirming(false);
             read();
           }}

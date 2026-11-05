@@ -2024,8 +2024,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Squash and merge, Rebase and merge, Merge pull request), at the end, right-aligned on a desktop
   and as wide as the column on a phone. It is off, with GitHub's reason above it, unless GitHub
   would merge now (`mergeStateStatus` clean, unstable or has_hooks): required checks or reviews,
-  a branch behind its base, conflicts, a draft. It asks first (`ConfirmDialog`), and merges only
-  the head commit the view showed (`--match-head-commit`); the branch is kept.
+  a branch behind its base, conflicts, a draft, or a base that merges through a merge queue (the
+  queue would merge whatever the head is by then, so that merge is left to GitHub). It asks first
+  (`ConfirmDialog`), and merges only the head commit the view showed (`--match-head-commit`) into
+  the base it showed (read again first); the branch is kept.
 - Priorities: 1. the title (`#n`, links to GitHub) and its state chip with `head -> base` in mono;
   2. **Checks**, failing first, then pending, then the rest, with a `failing, pending, passed`
   count, each row an icon in its status token (`--status-blocked`, `--status-working`,

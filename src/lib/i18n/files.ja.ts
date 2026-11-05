@@ -179,4 +179,6 @@ export const FILES_JA: Record<string, string> = {
   "gh took too long to answer.": "gh の応答に時間がかかりすぎました。",
   "{count} more on GitHub": "GitHub にさらに {count} 件",
   "{failing} failing, {pending} pending, {passed} passed": "失敗 {failing}、待機 {pending}、成功 {passed}",
+  "The pull request changed since it was shown. Refresh it, then merge.": "表示後にプルリクエストが変わりました。更新してからマージしてください。",
+  "This base branch merges through a merge queue; merge it on GitHub.": "このベースブランチはマージキューでマージされます。GitHub でマージしてください。",
 };

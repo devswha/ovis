@@ -47,6 +47,8 @@ export interface PullRequestView {
   head_oid: string;
   /** GitHub's mergeStateStatus, lower case: clean, unstable, has_hooks, blocked, behind, dirty, draft, unknown */
   merge_state: string;
+  /** the base branch merges through a merge queue: Merge is left to GitHub, where the queue is seen */
+  merge_queue: boolean;
   /** an open, ready pull request GitHub would merge now: required checks and reviews passed, no conflict */
   mergeable: boolean;
   merge_method: PullRequestMergeMethod;
@@ -71,6 +73,8 @@ export interface PullRequestMergeRequest {
   directory?: string;
   number: number;
   head_oid: string;
+  /** the base the view showed: a pull request moved to another base since is refused, not merged there */
+  base_ref: string;
   method: PullRequestMergeMethod;
 }
 
