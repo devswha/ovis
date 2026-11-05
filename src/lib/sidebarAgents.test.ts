@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentInfo, HerdrPane, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
-import { agentContext, agentTabName, paneMark, sidebarAgents, workspaceAgentLabels } from "./sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, paneTabRowTitle, sidebarAgents, tabRowTitle, workspaceAgentLabels } from "./sidebarAgents.ts";
 
 function workspace(id: string): WorkspaceInfo {
   return { workspace_id: id, active_tab_id: `${id}:t1`, label: id, number: 1, tab_count: 1, pane_count: 1, focused: false, agent_status: "idle" };
@@ -128,6 +128,11 @@ describe("agentContext", () => {
     expect(agentContext({ ...base, agentLabel: "Claude", markAgent: "claude" })).toEqual(["checkout-api"]);
     expect(agentContext({ ...base, agentLabel: "reviewer-bot", markAgent: "claude" })).toEqual(["reviewer-bot", "checkout-api"]);
   });
+
+  it("does not say the kind again after the row's own title leads the line (Agent row title: Tab name)", () => {
+    expect(agentContext({ ...base, title: "api review", lead: "claude" })).toEqual(["checkout-api"]);
+    expect(agentContext({ ...base, title: "api review", lead: "Idempotent payments" })).toEqual(["claude", "checkout-api"]);
+  });
 });
 
 describe("agentTabName", () => {
@@ -147,5 +152,54 @@ describe("agentTabName", () => {
     // herdr relabels the survivor "1" and leaves its number at 2
     const survivor = { ...tab("w1:t2", "w1"), label: "1", number: 2 };
     expect(agentTabName(survivor, [survivor], t)).toBeNull();
+  });
+});
+
+describe("tabRowTitle", () => {
+  const renamed = { ...tab("w1:t1", "w1"), label: "api review" };
+
+  it("names an agent row by the tab someone renamed, only under Tab name", () => {
+    expect(tabRowTitle("agent", renamed, [renamed])).toBeNull();
+    expect(tabRowTitle("tab", renamed, [renamed])).toBe("api review");
+    expect(tabRowTitle("tab", { ...renamed, label: "  api review " }, [renamed])).toBe("api review");
+    expect(tabRowTitle("tab", null, [renamed])).toBeNull();
+  });
+
+  it("keeps the row's own title for a tab herdr names by its place, the one that moved up after a close included", () => {
+    const first = { ...tab("w1:t1", "w1"), label: "1" };
+    const second = { ...tab("w1:t2", "w1"), label: "2", number: 2 };
+    expect(tabRowTitle("tab", first, [first, second])).toBeNull();
+    expect(tabRowTitle("tab", second, [first, second])).toBeNull();
+    // herdr relabels the survivor "1" and leaves its number at 2
+    const survivor = { ...second, label: "1" };
+    expect(tabRowTitle("tab", survivor, [survivor])).toBeNull();
+  });
+});
+
+describe("paneTabRowTitle", () => {
+  it("titles an agent pane's header as its row, never a shell's", () => {
+    const claude = pane("claude", { agent: "claude" });
+    const shell = pane("shell");
+    const named: SessionSnapshot = { ...snapshot([claude, shell]), tabs: [{ ...tab("w1:t1", "w1"), label: "api review" }] };
+    expect(paneTabRowTitle("tab", named, claude)).toBe("api review");
+    expect(paneTabRowTitle("agent", named, claude)).toBeNull();
+    expect(paneTabRowTitle("tab", named, shell)).toBeNull();
+    // an agent herdr lists before its pane says the kind has a row all the same
+    expect(paneTabRowTitle("tab", { ...named, agents: [agent(shell)] }, shell)).toBe("api review");
+    expect(paneTabRowTitle("tab", { ...named, tabs: [{ ...tab("w1:t1", "w1"), label: "1" }] }, claude)).toBeNull();
+    expect(paneTabRowTitle("tab", null, claude)).toBeNull();
+  });
+
+  it("keeps a helper's own title, row and header alike: the agent that started it already names the tab", () => {
+    const lead = pane("lead", { agent: "claude" });
+    const helper = pane("helper", { agent: "claude", parent_pane_id: "lead" });
+    const shell = pane("shell");
+    const fromShell = pane("from-shell", { agent: "codex", parent_pane_id: "shell" });
+    const named: SessionSnapshot = { ...snapshot([lead, helper, shell, fromShell]), tabs: [{ ...tab("w1:t1", "w1"), label: "api review" }] };
+    expect(paneTabRowTitle("tab", named, lead)).toBe("api review");
+    expect(paneTabRowTitle("tab", named, helper)).toBeNull();
+    // started from a shell, or by a pane no longer shown: no agent row names the tab for it
+    expect(paneTabRowTitle("tab", named, fromShell)).toBe("api review");
+    expect(paneTabRowTitle("tab", named, { ...helper, parent_pane_id: "gone" })).toBe("api review");
   });
 });

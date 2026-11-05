@@ -86,7 +86,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "New terminal failed: {reason}": "新建终端失败：{reason}",
   "Tab {n}": "标签页 {n}",
   "Close tab": "关闭标签页",
-  "Tab name": "标签页名称",
   "Actions for {tab}": "{tab} 的操作",
   "Close tab {name}?": "关闭标签页 {name}？",
   "Close failed: {reason}": "关闭失败：{reason}",

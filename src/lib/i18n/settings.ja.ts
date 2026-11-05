@@ -124,6 +124,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "このデバイスで、サイドバーの一覧の上に絞り込み欄を表示します。オフのときは、コマンドパレットの「ワークスペースとエージェントを絞り込む」で開きます。",
   "Agents order": "エージェントの並び順",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "アクティビティ順では、応答待ちのエージェントを一番上に、その後は最近変化した順に並べます。herdr 自体の順序は変わりません",
+  "Agent row title": "エージェント行のタイトル",
+  "Title each agent row, and its pane's header, with the agent's own title or with the name you gave its tab. A tab still named by its number keeps the agent's title.": "各エージェント行とそのパネルのヘッダーのタイトルに、エージェント自身のタイトルか、タブに付けた名前を使います。まだ番号で呼ばれているタブはエージェントのタイトルのままです。",
   "Workspaces": "ワークスペース順",
   "Activity": "アクティビティ順",
   "Agent logos": "エージェントのロゴ",

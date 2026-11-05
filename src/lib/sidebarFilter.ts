@@ -27,7 +27,8 @@ import { rosterPanes } from "./dagPane.ts";
 import type { Translate } from "./i18n.ts";
 import { matchesQuery } from "./paletteSearch.ts";
 import { shortPathTitle, stripPaneChrome } from "./paneName.ts";
-import { agentTabName, sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
+import type { AgentRowTitle } from "./settings.ts";
+import { agentTabName, paneTabRowTitle, sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import type { WorkspaceGroup } from "./sidebarPins.ts";
 import { worktreeGroups } from "./workspaceOrder.ts";
 
@@ -201,15 +202,17 @@ export function sidebarFilter(query: string, machines: readonly FilterMachine[],
 /**
  * What the field offers as it is typed in (the browser's suggestions under it): the names the rows show, as
  * the filter finds them, each once, in the roster's order. PC names, workspace names and the branches their
- * rows say, and the title each agent row shows; never a path, a transcript or an id. A PC in `unnamed`
- * (drawn without its header) offers no name.
+ * rows say, and the title each agent row shows (under Settings → Agent row title → Tab name, a renamed
+ * tab's first); never a path, a transcript or an id. A PC in `unnamed` (drawn without its header) offers no name.
  */
-export function filterSuggestions(machines: readonly FilterMachine[], branches: SidebarBranchLabels = new Map(), unnamed: ReadonlySet<string> = new Set()): string[] {
+export function filterSuggestions(machines: readonly FilterMachine[], branches: SidebarBranchLabels = new Map(), unnamed: ReadonlySet<string> = new Set(), agentRowTitle: AgentRowTitle = "agent"): string[] {
   const labels = new Set<string>();
   for (const machine of machines) {
     if (!unnamed.has(machine.id)) labels.add(machine.name);
     for (const workspace of machine.snapshot?.workspaces ?? []) for (const label of workspaceLabels(workspace, branches.get(machine.id)?.get(workspace.workspace_id))) labels.add(label);
     for (const entry of sidebarAgents(machine.snapshot)) {
+      const tabTitle = paneTabRowTitle(agentRowTitle, machine.snapshot ?? null, entry.pane);
+      if (tabTitle !== null) labels.add(tabTitle);
       const title = shownPaneTitle(entry.pane, entry.agent?.title);
       if (title !== null) labels.add(title);
     }

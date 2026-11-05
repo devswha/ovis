@@ -51,6 +51,7 @@ import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
 import { loadSettings, useSettings } from "./lib/settings.ts";
+import { paneTabRowTitle } from "./lib/sidebarAgents.ts";
 import { useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
@@ -376,7 +377,8 @@ export function App() {
   // the herdr the header names as current: this PC's last answer only while it is still shown (through one
   // failed read, not once unavailable), though its capabilities stay in targetHerdr
   const shownHerdr = selectedMachineId === "local" ? shownHealth?.herdr : targetHerdr;
-  const selectedTitle = selectedPane ? displayPaneTitle(selectedPane) : null;
+  // Settings → Agent row title → Tab name: an agent's renamed tab titles the header as it titles its row
+  const selectedTitle = selectedPane ? paneTabRowTitle(settings.agentRowTitle, snapshot, selectedPane) ?? displayPaneTitle(selectedPane) : null;
   // the tab that governs the pane region, so the strip's tabs and the pane they select are
   // one thing to a screen reader (A4); null while no tab owns this pane
   const tabPanelLabel = paneTabPanelLabel(snapshot, selectedPane, t);
@@ -939,7 +941,7 @@ export function App() {
               </button>
             </div> : undefined;
             // a half with no strip to carry its close (its pane gone, or the half crashed) keeps one in a bar of its own
-            const slotBar = splitOn ? <div className="pane-slot-bar"><span className="pane-slot-title">{pane ? displayPaneTitle(pane) : t("Pane closed")}</span>{slotEnd}</div> : null;
+            const slotBar = splitOn ? <div className="pane-slot-bar"><span className="pane-slot-title">{pane ? paneTabRowTitle(settings.agentRowTitle, slotSnapshot, pane) ?? displayPaneTitle(pane) : t("Pane closed")}</span>{slotEnd}</div> : null;
             return (
               <MachineContext.Provider key={slot} value={machineId}><AppLayoutContext.Provider value={appLayoutOf(herdr)}><SlotSessions slot={slot} machineIds={machines.map((item) => item.id)}><PaneFollowContext.Provider value={sameTabs && !active}>
               <div

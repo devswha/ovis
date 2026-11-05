@@ -1,4 +1,5 @@
-import type { AgentInfo, HerdrPane, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentInfo, HerdrPane, PaneInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentRowTitle } from "./settings.ts";
 import { customTabLabel, tabLabel } from "./tabName.ts";
 
 export interface SidebarAgent {
@@ -83,20 +84,53 @@ export function workspaceAgentLabels(agents: readonly SidebarAgent[]): Map<strin
 }
 
 /**
- * The tab an agent row names, as herdr's agents panel does: only when its workspace has two or
- * more tabs or the tab was renamed. A tab is judged by its place in the row, not its number:
- * herdr relabels the tab that moves up when the one before it closes, and keeps its number.
+ * A tab's place in its workspace's row, which herdr names it by until it is renamed. Its place, not
+ * its number: herdr relabels the tab that moves up when the one before it closes, and keeps its number.
  */
+function tabPlace(tab: TabInfo, workspaceTabs: readonly TabInfo[]): number {
+  return workspaceTabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1 || tab.number;
+}
+
+/** The tab an agent row names, as herdr's agents panel does: only when its workspace has two or more tabs or the tab was renamed. */
 export function agentTabName(tab: TabInfo | null | undefined, workspaceTabs: readonly TabInfo[], t: Parameters<typeof tabLabel>[1]): string | null {
   if (!tab) return null;
-  const place = workspaceTabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1 || tab.number;
+  const place = tabPlace(tab, workspaceTabs);
   return workspaceTabs.length > 1 || customTabLabel(tab, place) ? tabLabel(tab, t, place) : null;
+}
+
+/**
+ * Settings → Agent row title → Tab name: the name someone gave an agent's tab titles its row and its
+ * pane's header, as herdr's own agent rows lead with the tab (#2014). null under Agent, and for a
+ * tab herdr still names by its place, which keeps the row's own title.
+ */
+export function tabRowTitle(setting: AgentRowTitle, tab: TabInfo | null | undefined, workspaceTabs: readonly TabInfo[]): string | null {
+  return setting === "tab" && tab ? customTabLabel(tab, tabPlace(tab, workspaceTabs)) : null;
+}
+
+/** whether herdr reports an agent in this pane: only such a pane has a row (sidebarAgents), never a shell */
+function hasAgent(snapshot: SessionSnapshot, pane: PaneInfo): boolean {
+  return nonblank(pane.agent) !== null || snapshot.agents.some((agent) => agent.pane_id === pane.pane_id);
+}
+
+/**
+ * The same for an agent's pane, its row and its header alike. A helper (an agent another agent started)
+ * keeps its own title: its agent's row already names their tab, and a helper drawn under it has no
+ * second line to move its own title to.
+ */
+export function paneTabRowTitle(setting: AgentRowTitle, snapshot: SessionSnapshot | null, pane: PaneInfo & Pick<HerdrPane, "parent_pane_id">): string | null {
+  if (setting !== "tab" || !snapshot || !hasAgent(snapshot, pane)) return null;
+  const parent = pane.parent_pane_id === undefined ? undefined : snapshot.panes.find((candidate) => candidate.pane_id === pane.parent_pane_id);
+  if (parent !== undefined && parent.pane_id !== pane.pane_id && hasAgent(snapshot, parent)) return null;
+  const tabs = snapshot.tabs.filter((tab) => tab.workspace_id === pane.workspace_id);
+  return tabRowTitle(setting, tabs.find((tab) => tab.tab_id === pane.tab_id), tabs);
 }
 
 export interface AgentContextParts {
   agentLabel: string | null;
   /** the row's first line; an agent named like it is not said twice */
   title: string;
+  /** what leads the second line once a tab titles the row (tabRowTitle): the row's own title, which the kind does not repeat either */
+  lead?: string | null;
   /** the agent the row's mark draws, null for the generic mark: a kind the mark already says is not written again */
   markAgent: string | null;
   /** null with a single PC: herdr does not name a lone machine either */
@@ -106,11 +140,11 @@ export interface AgentContextParts {
 }
 
 /** An agent row's second line: who it is, then where it runs, without repeating a word the row already says. */
-export function agentContext({ agentLabel, title, markAgent, machineName, workspaceLabel, tabName }: AgentContextParts): string[] {
+export function agentContext({ agentLabel, title, lead, markAgent, machineName, workspaceLabel, tabName }: AgentContextParts): string[] {
   const agent = nonblank(agentLabel);
   const tab = nonblank(tabName);
   return [
-    agent && agent !== title.trim() && agent.toLowerCase() !== markAgent?.toLowerCase() ? agent : null,
+    agent && agent !== title.trim() && agent !== nonblank(lead) && agent.toLowerCase() !== markAgent?.toLowerCase() ? agent : null,
     nonblank(machineName),
     workspaceLabel,
     tab && tab !== workspaceLabel ? tab : null,

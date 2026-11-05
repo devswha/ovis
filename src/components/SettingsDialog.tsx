@@ -402,6 +402,9 @@ function AppearancePage() {
       <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed")} wide>
         <Segmented label={t("Agents order")} value={settings.agentOrder} onChange={(agentOrder) => update({ agentOrder })} options={[{ value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }]} />
       </SettingsRow>
+      <SettingsRow label={t("Agent row title")} description={t("Title each agent row, and its pane's header, with the agent's own title or with the name you gave its tab. A tab still named by its number keeps the agent's title.")} wide>
+        <Segmented label={t("Agent row title")} value={settings.agentRowTitle} onChange={(agentRowTitle) => update({ agentRowTitle })} options={[{ value: "agent", label: t("Agent") }, { value: "tab", label: t("Tab name") }]} />
+      </SettingsRow>
       <SettingsRow label={t("Group agents by state")} description={t("On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.")}>
         <Toggle label={t("Group agents by state")} checked={settings.agentGroups} onChange={(agentGroups) => update({ agentGroups })} />
       </SettingsRow>

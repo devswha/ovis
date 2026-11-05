@@ -124,6 +124,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "在此设备的侧边栏列表上方显示筛选框。关闭时，可从命令面板的“筛选工作区和代理”打开。",
   "Agents order": "代理排序",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "按活动排序会把等待回应的代理放在最上面，其余按最近变化排序；herdr 自身的顺序不会改变",
+  "Agent row title": "代理行标题",
+  "Title each agent row, and its pane's header, with the agent's own title or with the name you gave its tab. A tab still named by its number keeps the agent's title.": "用代理自己的标题，或你为其标签页取的名称，作为每个代理行及其面板标题栏的标题。仍以编号命名的标签页保留代理的标题。",
   "Workspaces": "工作区顺序",
   "Activity": "按活动",
   "Agent logos": "代理标志",

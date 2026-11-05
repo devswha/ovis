@@ -1301,6 +1301,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Appearance's **Agent row title** is **Agent** by default: an agent row is titled by its pane's
+  name, else its agent's title, and a renamed tab is part of its place. **Tab name** titles the row
+  by the name someone gave its tab, as herdr's own agent rows lead with the tab (its default
+  `[ui.sidebar.agents]` rows put `tab` on the first line), so sessions of one agent read apart by
+  the names their tabs were given. The row's own title (the pane's name, else the agent's) then
+  leads its second line before the place, which no longer repeats the tab; a title the same as the
+  tab is not said twice, nor is an agent's name the same as the tab or the row's own title, and each
+  row's ⋯ says both titles. A helper (an agent another agent started) keeps its own title, in its row
+  and its header alike: its agent's row already names the tab, and a helper drawn under it has no
+  second line. The header of an agent's pane takes the tab's name too, as its row does, and the
+  Filter field suggests it; the frames of a tab's panes keep their own titles under the tab strip
+  that names it. A tab herdr still names by its place keeps the row and the header as they are. The
+  choice is shared with the other browsers of the server (#2014).
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)

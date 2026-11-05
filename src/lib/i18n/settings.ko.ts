@@ -124,6 +124,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "이 기기에서 사이드바 목록 위에 필터 입력란을 보여 줍니다. 끄면 명령 팔레트의 워크스페이스와 에이전트 필터로 엽니다.",
   "Agents order": "에이전트 정렬",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "활동순은 응답을 기다리는 에이전트를 맨 위에 두고, 그다음 가장 최근에 바뀐 순서로 놓습니다. herdr 자체의 순서는 바뀌지 않습니다",
+  "Agent row title": "에이전트 행 제목",
+  "Title each agent row, and its pane's header, with the agent's own title or with the name you gave its tab. A tab still named by its number keeps the agent's title.": "각 에이전트 행과 그 패널의 헤더 제목을 에이전트 자체의 제목이나 탭에 지어 준 이름으로 표시합니다. 아직 번호로만 불리는 탭은 에이전트의 제목을 그대로 씁니다.",
   "Workspaces": "워크스페이스순",
   "Activity": "활동순",
   "Agent logos": "에이전트 로고",

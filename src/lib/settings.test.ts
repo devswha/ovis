@@ -469,6 +469,16 @@ it("keeps sidebar rows on one line unless two lines were chosen", () => {
   }
 });
 
+it("titles agent rows by their agent unless Tab name was chosen, for every browser of the server", () => {
+  expect(DEFAULT_SETTINGS.agentRowTitle).toBe("agent");
+  expect(sanitizeSettings({}).agentRowTitle).toBe("agent");
+  expect(sanitizeSettings({ agentRowTitle: "tab" }).agentRowTitle).toBe("tab");
+  for (const agentRowTitle of [null, "Tab", "pane", 1]) {
+    expect(sanitizeSettings({ agentRowTitle }).agentRowTitle).toBe("agent");
+  }
+  expect(SETTING_SCOPE.agentRowTitle).toBe("shared");
+});
+
 it("draws agent logos in their brand colors unless Mono was chosen", () => {
   expect(DEFAULT_SETTINGS.agentMarks).toBe("color");
   expect(sanitizeSettings({}).agentMarks).toBe("color");

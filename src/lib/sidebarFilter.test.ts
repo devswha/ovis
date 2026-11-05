@@ -241,6 +241,18 @@ describe("sidebarFilter", () => {
     expect(roster).toEqual(machines());
   });
 
+  it("suggests a renamed tab that titles an agent's row under Agent row title: Tab name, never a shell's tab", () => {
+    const roster = machines();
+    roster[0]!.snapshot!.tabs[0]!.label = "api review";
+    expect(filterSuggestions(roster)).not.toContain("api review");
+    const suggested = filterSuggestions(roster, new Map(), new Set(), "tab");
+    // the row's own title stays on its second line, so it is still offered, after the tab's
+    expect(suggested.slice(0, 4)).toEqual(["Laptop", "checkout-api", "export-guard", "flaky-retry-test"]);
+    expect(suggested.indexOf("api review")).toBe(suggested.indexOf("Idempotent payments") - 1);
+    // the shell in the "release" tab has no row
+    expect(suggested).not.toContain("release");
+  });
+
   it("neither searches nor suggests the name of a PC drawn without its header", () => {
     const lone = machines().slice(0, 1);
     const unnamed = new Set(["local"]);

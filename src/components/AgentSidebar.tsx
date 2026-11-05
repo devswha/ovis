@@ -4,15 +4,15 @@ import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, Lock, LockOpen, Pin
 import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { paneTokenValues } from "../../shared/pane-tokens.ts";
-import type { AgentStatus, HerdrPane, PlanSummary } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane, PlanSummary, TabInfo } from "../../shared/protocol.ts";
 import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowTokens.ts";
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, toggleAgentLock } from "../lib/paneLocks.ts";
-import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
-import { useSettings } from "../lib/settings.ts";
+import { agentContext, agentTabName, paneMark, paneTabRowTitle } from "../lib/sidebarAgents.ts";
+import { useSettings, type AgentRowTitle } from "../lib/settings.ts";
 import { useSidebarActivity } from "../lib/sidebarActivity.tsx";
 import { machineFilter } from "../lib/sidebarFilter.ts";
 import { useSidebarFilter } from "../lib/sidebarFilterContext.ts";
@@ -31,6 +31,8 @@ interface AgentRowBodyProps {
   /** the kind the mark draws, left off the second line: said for a screen reader, since the mark is aria-hidden */
   markKind: string | null;
   title: string;
+  /** the row's own title, first on its second line, once its renamed tab titles it (Settings → Agent row title) */
+  lead: string | null;
   /** the live name other tools address the agent by, when it has one */
   name: string | null;
   context: string;
@@ -78,7 +80,7 @@ export function blockedLabel(pane: Pick<HerdrPane, "agent_kind" | "agent_message
  * One agent in a list: the coding agent's mark, what it is working on, who and where it is, what
  * its plugins report, and how it is doing.
  */
-function AgentRowBody({ mark, markKind, title, name, context, tokens, backgroundTasks, plan, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false }: AgentRowBodyProps) {
+function AgentRowBody({ mark, markKind, title, lead, name, context, tokens, backgroundTasks, plan, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false }: AgentRowBodyProps) {
   const t = useT();
   const showProgress = progress !== undefined && (status === "working" || status === "blocked");
   return <>
@@ -98,7 +100,9 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
             <span className="visually-hidden">{t("Progress {percent}%", { percent: progress })}</span>
           </>}
         </span>
-        {!helper && (name || context) && <span className="agent-context">
+        {!helper && (lead || name || context) && <span className="agent-context">
+          {lead}
+          {lead && (name || context) && " · "}
           {name && <span className="agent-name">{name}</span>}
           {name && context && " · "}
           {context}
@@ -131,6 +135,19 @@ export interface AgentSidebarProps {
 /** what a row is called: the pane's label, else its agent's title, else the pane's own */
 function rowTitle({ pane, agent }: AgentRow["entry"]): string {
   return pane.label?.trim() || agent?.title?.trim() || pane.title?.trim() || displayPaneTitle(pane);
+}
+
+/**
+ * The title a row shows, and what then leads its second line. Under Settings → Agent row title →
+ * Tab name a renamed tab titles it (lib/sidebarAgents.ts paneTabRowTitle), and the row's own title moves
+ * under it unless the tab says the same, or it is only the pane's id.
+ */
+function rowTitles({ machine, entry }: AgentRow, setting: AgentRowTitle): { title: string; lead: string | null; tabs: TabInfo[]; byTab: boolean } {
+  const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === entry.workspace.workspace_id) ?? [];
+  const own = rowTitle(entry);
+  const tabTitle = paneTabRowTitle(setting, machine.snapshot, entry.pane);
+  if (tabTitle === null) return { title: own, lead: null, tabs, byTab: false };
+  return { title: tabTitle, lead: own !== tabTitle && own !== entry.pane.pane_id ? own : null, tabs, byTab: true };
 }
 
 /** Settings → Group agents by state: each group's heading */
@@ -219,9 +236,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const groups = useMemo(() => !settings.agentGroups ? null : groupAgentRows(parts.people, {
     sort: settings.agentGroupSort,
     status: ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined,
-    name: ({ entry }) => rowTitle(entry),
+    name: (row) => rowTitles(row, settings.agentRowTitle).title,
     seqs: activity.seqs,
-  }), [settings.agentGroups, settings.agentGroupSort, parts, activity]);
+  }), [settings.agentGroups, settings.agentGroupSort, settings.agentRowTitle, parts, activity]);
   // a folded list (a phone's starts so) opens while the filter keeps rows in it, so a match or the selection is
   // seen, not only kept; its caret then folds and opens it for the filter's time, the list's own fold untouched
   const [filterFold, setFilterFold] = useState<boolean | null>(null);
@@ -273,24 +290,26 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const machineName = (machine: Machine): string | null => machines.length > 1 ? machine.name : null;
 
   // what a row says of its agent, for the row and for its open menu
-  const describe = ({ machine, entry }: AgentRow) => {
+  const describe = (row: AgentRow) => {
+    const { machine, entry } = row;
     const { pane, workspace, tab, agent, agentLabel } = entry;
     const online = machine.state === "connected";
-    const title = rowTitle(entry);
+    const { title, lead, tabs, byTab } = rowTitles(row, settings.agentRowTitle);
     const name = agent?.name?.trim() || null;
     // the name has its own place on the line: the label beside it says the kind instead
     const kindLabel = name !== null && agentLabel === name ? entry.canonicalAgent ?? agent?.title?.trim() ?? null : agentLabel;
-    const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === workspace.workspace_id) ?? [];
     const mark = paneMark(entry);
     const markAgent = mark && hasAgentMark(mark) ? mark : null;
-    const parts = { agentLabel: kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
+    // a tab that titles the row is not said again in its place
+    const parts = { agentLabel: kindLabel, title, lead, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: byTab ? null : agentTabName(tab, tabs, t) };
     const contextParts = agentContext(parts);
     const context = contextParts.join(" · ");
     const kind = kindLabel?.trim() || null;
-    const markKind = kind && kind !== title.trim() && !contextParts.includes(kind) ? kind : null;
+    const markKind = kind && kind !== title.trim() && kind !== lead && !contextParts.includes(kind) ? kind : null;
     // a PC that is away says nothing of its agents now, its plugins' words included
     const tokens = online ? paneTokenValues(rowTokens, entry.canonicalAgent, pane.tokens ?? agent?.tokens) : [];
-    return { online, title, name, mark, context, markKind, tokens };
+    // nor is a name the same as the tab that titles the row, or as the row's own title after it
+    return { online, title, lead, name: byTab && (name === title || name === lead) ? null : name, mark, context, markKind, tokens };
   };
 
   // a helper reads under the agent that started it when that row is just above it in the same list (lib/agentRoster.ts)
@@ -347,14 +366,14 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const selected = machine.id === selectedMachineId && pane.pane_id === selectedPaneId;
     // under the filter a row it did not match is there for the selection: drawn as context, and said so
     const filterContext = filter.active && machineFilter(filter, machine.id)?.matchedPanes.has(pane.pane_id) !== true;
-    const { online, title, name, mark, context, markKind, tokens } = describe(row);
+    const { online, title, lead, name, mark, context, markKind, tokens } = describe(row);
     // the row cuts a long value: the tooltip, and a phone's menu sheet, say each in full
     const blocked = online ? blockedNote(pane, t) : null;
     const blockedShort = online ? blockedLabel(pane, t) : null;
     const startedBy = parentRow ? t("Started by {name}", { name: describe(parentRow).title }) : null;
     const status = online ? activity.status(machine.id, pane) : undefined;
     const progress = online && pane.agent_progress !== undefined && (status === "working" || status === "blocked") ? t("Progress {percent}%", { percent: pane.agent_progress }) : null;
-    const tooltip = [...new Set([pane.pane_id, title, context, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
+    const tooltip = [...new Set([pane.pane_id, title, lead, context, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
     const pinKey = sidebarPinKey(machine.id, pane.pane_id);
     const menuOpen = menu?.key === pinKey;
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
@@ -372,10 +391,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId: machine.id, paneId: pane.pane_id }));
         }}>
         {/* a saved roster's state is not news: a PC that is away says nothing about its agents */}
-        <AgentRowBody mark={mark} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} />
+        <AgentRowBody mark={mark} markKind={markKind} title={title} lead={lead} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} />
       </button>
       <div className="agent-actions">
-        <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
+        <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title: lead ? `${title} · ${lead}` : title })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
           <Ellipsis aria-hidden="true" />
         </button>
       </div>
@@ -445,7 +464,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         </ul>}
       </>}
     </div>
-    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.context} detail={[menuBlocked, ...menuShown.tokens].filter(Boolean).join(" · ") || undefined} onClose={closeMenu} items={[
+    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={[menuShown.lead, menuShown.context].filter(Boolean).join(" · ")} detail={[menuBlocked, ...menuShown.tokens].filter(Boolean).join(" · ") || undefined} onClose={closeMenu} items={[
       // a locked row keeps its pin until it is unlocked
       ...(menuLocked ? [] : [menuPinned
         ? { id: "unpin", label: t("Unpin agent"), icon: PinOff, run: () => runPin(menu) }

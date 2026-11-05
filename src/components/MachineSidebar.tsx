@@ -74,12 +74,12 @@ export function MachineSidebar(props: Props) {
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
+  const { settings } = useSettings();
   // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
-  const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed), [props.machines, branchLabels, unnamed]);
+  const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed, settings.agentRowTitle), [props.machines, branchLabels, unnamed, settings.agentRowTitle]);
   // Settings → Appearance → Sidebar filter off leaves the field out until the palette's Filter workspaces and
   // agents asks for it (`filterRequest`); it stays while it holds words, and goes on its close, Escape in it
   // empty, the focus leaving the sidebar while it is empty, or the phone's drawer closing
-  const { settings } = useSettings();
   const shell = useRef<HTMLDivElement>(null);
   const [filterAsked, setFilterAsked] = useState(false);
   const closable = !settings.sidebarFilter && filterAsked;
