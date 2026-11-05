@@ -1721,6 +1721,19 @@ button {
   --sidebar-shown-w: 0px;
 }
 
+/* Settings → Show the sidebar on hover (lib/sidebarPeek.ts): the collapsed sidebar over the pane, under the
+   header, at the width it has when open; the pane keeps its width, so no pty is resized */
+.app.sidebar-collapsed .sidebar.is-peek {
+  display: flex;
+  position: fixed;
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-drawer);
+  width: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
+  box-shadow: var(--shadow-drawer);
+}
+
 .scrim {
   display: none;
 }
@@ -1756,9 +1769,9 @@ button {
   padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
-/* the pane area: one pane, or two side by side (lib/split.ts). Each half is a pane slot with its
-   own tab strip and terminal; slot b exists only while split, and the halves keep their slots
-   when they trade sides, drawn by order */
+/* the pane area: one pane, or several side by side and stacked (lib/split.ts). Each slot has its
+   own tab strip and terminal; split, every slot is placed at the share of the area its layout gives
+   it (App's style), and keeps its element, and its terminals, wherever the layout moves it */
 .pane-split {
   position: relative;
   display: flex;
@@ -1775,13 +1788,42 @@ button {
   min-height: 0;
 }
 
-.pane-slot[data-side="left"] {
-  order: 0;
+.pane-split.is-split > .pane-slot {
+  position: absolute;
+}
+
+.pane-slot.joins-right {
   border-right: var(--hairline) solid var(--border-strong);
 }
 
-.pane-slot[data-side="right"] {
-  order: 1;
+.pane-slot.joins-below {
+  border-bottom: var(--hairline) solid var(--border-strong);
+}
+
+/* a boundary between slots with rows and columns (SplitDividers): a band to the pointer, a line to the eye */
+.pane-split-divider {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.pane-split-divider[data-dir="row"] {
+  width: 8px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.pane-split-divider[data-dir="column"] {
+  height: 8px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.pane-split-divider:hover,
+.pane-split-divider:active,
+.pane-split-divider:focus-visible {
+  background: var(--accent-tint);
+  outline: none;
 }
 
 /* a half's close sits at the end of its tab strip (TabStrip.css); a half with no strip (its pane
@@ -1947,6 +1989,30 @@ button {
   font-size: var(--fs-xs);
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+/* the chat's session totals after the crumb (lib/sessionStats.ts): an item of its own, so it wraps out
+   of sight first, whole or not at all like the crumb. A phone's header line is the title's: there the
+   More menu says them */
+.context-session {
+  gap: var(--space-2);
+}
+
+.context-session-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.context-session-goal svg {
+  width: 1em;
+  height: 1em;
+}
+
+@media (max-width: 768px) {
+  .context-session {
+    display: none;
+  }
 }
 
 /* the PC's name is whole in the crumb, like the rest of it: the crumb fits or is not drawn.
@@ -2312,6 +2378,13 @@ button.header-session-count[aria-disabled="true"] {
   color: var(--text);
   font-family: var(--font-mono);
   white-space: pre-wrap;
+}
+
+/* the selected chat's totals and goal under the path (lib/sessionStats.ts), at every width */
+.header-more-session {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
 }
 
 /* From 769px the header is two zones. Over the sidebar, the sidebar's own top row (its toggle

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { DevicePairedEvent, Machine, MachineEvent, RelayPairingRequest } from "../../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, Machine, MachineEvent, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionEvents, paneSessionsMoving, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepMachineEvents } from "./machineEventStream.ts";
@@ -15,7 +15,7 @@ import type { AppLink } from "./deepLink.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { NotificationTarget } from "./notificationTarget.ts";
 import type { SelectionMark } from "./selectionMark.ts";
-import type { SplitState } from "./split.ts";
+import { otherTargets, type SplitState } from "./split.ts";
 import { deviceInUse, followsHerdrFocus, movingHerdrFocusOn } from "./followFocus.ts";
 import { pruneWaitingSends } from "./sentWaiting.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
@@ -216,7 +216,7 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
   return { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream };
 }
 
-export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, getTakeNotificationTargetRef }: {
+export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, setRemotePairings, setRemovedNotices, getTakeNotificationTargetRef }: {
   machineSessions: MachineSessionRegistry;
   locked: boolean | null;
   onRosterStream: (update: RosterStreamUpdate) => void;
@@ -251,6 +251,10 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
   setPairedNotices: Dispatch<SetStateAction<readonly DevicePairedEvent[]>>;
   /** relay pairings waiting for this PC's owner (components/RelayPairingPrompt.tsx) */
   setRelayPairings: Dispatch<SetStateAction<readonly RelayPairingRequest[]>>;
+  /** devices asking to join the account through this PC (components/AccountApprovals.tsx) */
+  setRemotePairings: Dispatch<SetStateAction<readonly RemotePairingRequest[]>>;
+  /** devices removed from this PC (components/DevicePairedNotice.tsx, DeviceRemovedNotice) */
+  setRemovedNotices: Dispatch<SetStateAction<readonly DeviceRemovedEvent[]>>;
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
   useCloseSessionsWhenLocked(machineSessions, locked);
@@ -265,6 +269,9 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
       // a device paired with this server: told once per enrollment, kept until read, the oldest giving way
       if (payload.type === "device-paired") { setPairedNotices((list) => withPairedNotice(list, payload)); return; }
       if (payload.type === "relay-pairings") { setRelayPairings(payload.pairings); return; }
+      if (payload.type === "remote-pairings") { setRemotePairings(payload.pairings); return; }
+      // a device removed from this PC: told once per removal, kept until read, the oldest giving way
+      if (payload.type === "device-removed") { setRemovedNotices((list) => withPairedNotice(list, payload)); return; }
       // A poll started before this event can carry an older roster or pane status.
       snapshotRequests.current.invalidate();
       if (payload.type === "machines") {
@@ -288,7 +295,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
           let changed = false;
           const next = list.map((m) => {
             if (m.id !== machine.id || !m.snapshot) return m;
-            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch);
+            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context);
             if (snapshot === m.snapshot) return m;
             changed = true;
             return { ...m, snapshot };
@@ -305,7 +312,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
       // is confirmed with its PC first, as a pane made here is (the selection effect below)
       if (message.type === "pane-focused" && followsHerdrFocus({
         enabled: followFocusRef.current, machineId: machine.id, paneId: message.pane_id, selection: selectionRef.current,
-        splitOther: splitShownRef.current ? splitRef.current?.other ?? null : null, linkPending: pendingLink.current !== null,
+        splitOthers: splitShownRef.current ? otherTargets(splitRef.current) : [], linkPending: pendingLink.current !== null,
         busy: deviceInUse(selectionRef.current), ownMove: movingHerdrFocusOn(machine.id),
       })) {
         selectionHint.current = null;

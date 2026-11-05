@@ -1,17 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
 import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
+import { setSidebarPins } from "../lib/sidebarPins.ts";
 import type { RowMenuItem } from "./RowMenu.tsx";
 import { PaneCanvas } from "./PaneCanvas.tsx";
 
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
 const APP_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core" });
-const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true, arrange: true } });
+const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true, arrange: true, worktrees: true } });
 
 const pane = (id: string, label?: string): HerdrPane =>
   ({ pane_id: id, workspace_id: "w1", tab_id: "t1", terminal_id: `${id}:term`, revision: 1, focused: id === "p1", agent_status: "idle", label }) as HerdrPane;
@@ -78,6 +79,13 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     expect(dividers()).toBe(1);
   });
 
+  it("offers no split on a core whose layout Ovis keeps for a pane in a tab of its own terminal (#2806)", async () => {
+    const own: SessionSnapshot = { ...snapshot, panes: [{ ...pane("p1", "named"), own_tab: true }, pane("p2")] };
+    const itemsOf = await draw(OVIS_CORE, own);
+    expect(itemsOf(own.panes[0] as HerdrPane)).toEqual(["rename", "clear-name", "zoom", "close"]);
+    expect(itemsOf(own.panes[1] as HerdrPane)).toEqual(["rename", "swap-focused", "split-right", "split-down", "zoom", "close"]);
+  });
+
   it("gives a lone tab with no row (a cramped phone) the row's menu, for the header's More menu, and no pane ellipsis", async () => {
     phone = true;
     const itemsOf = await draw(TUI);
@@ -128,6 +136,72 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     const itemsOf = await draw(TUI);
     expect(itemsOf(snapshot.panes[0] as HerdrPane)).not.toContain("new-terminal");
     expect(renderer!.root.findAll((node) => node.props.className === "pane-frame-head")).toHaveLength(2);
+  });
+
+  const zoomButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "icon-button pane-frame-zoom");
+  const frameOf = (id: string) => renderer!.root.find((node) => node.type === "section" && node.props["data-layout-pane"] === id);
+  const zoomed: SessionSnapshot = { ...snapshot, layouts: [{ ...snapshot.layouts[0]!, zoomed: true }] };
+
+  it("draws a Zoom pane button on each split pane's title, which zooms that pane (#2037)", async () => {
+    await draw(TUI);
+    expect(zoomButtons().map((button) => button.props["aria-label"])).toEqual(["Zoom pane", "Zoom pane"]);
+    const bodies: unknown[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_input: string | URL | Request, init?: RequestInit) => {
+      if (typeof init?.body === "string") bodies.push(JSON.parse(init.body));
+      return Response.json({ zoomed: true });
+    }, { preconnect: globalThis.fetch.preconnect }));
+    try {
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 0, currentTarget: { closest: () => null } }); });
+    } finally {
+      fetch.mockRestore();
+    }
+    expect(bodies).toEqual([{ pane_id: "p2", mode: "on" }]);
+  });
+
+  it("moves the typing into the pane whose zoom a mouse clicked, never leaving it in another pane (#2037)", async () => {
+    await draw(TUI);
+    const focused: string[] = [];
+    const frame = { querySelector: (selector: string) => selector === ".xterm-helper-textarea" ? { focus: () => focused.push("p2 terminal") } : null };
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ zoomed: true }), { preconnect: globalThis.fetch.preconnect }));
+    try {
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 1, currentTarget: { closest: () => frame } }); });
+      // a key that pressed the button leaves the focus on it
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 0, currentTarget: { closest: () => frame } }); });
+    } finally {
+      fetch.mockRestore();
+    }
+    expect(focused).toEqual(["p2 terminal"]);
+  });
+
+  it("keeps a zoomed pane's title row, with Unzoom pane, so the hidden panes are one click away (#2037)", async () => {
+    await draw(TUI, zoomed);
+    expect(frameOf("p1").props.className).not.toContain("is-single");
+    expect(zoomButtons().filter((button) => button.props["aria-label"] === "Unzoom pane")).toHaveLength(1);
+  });
+
+  it("draws no zoom button where panes are shown one at a time, or the Herdr app lays them out", async () => {
+    phone = true;
+    await draw(TUI);
+    expect(zoomButtons()).toHaveLength(0);
+    phone = false;
+    await act(async () => renderer?.unmount());
+    await draw(APP_CORE);
+    expect(zoomButtons()).toHaveLength(0);
+  });
+
+  it("offers no Close for a locked pinned agent, nor Close tab for the tab it is in (#2432)", async () => {
+    phone = true;
+    stored.set("ovis:settings", JSON.stringify({ agentLocks: true, lockedAgents: ["local:p1"] }));
+    setSidebarPins(["local:p1"]);
+    try {
+      const itemsOf = await draw(TUI);
+      expect(itemsOf(snapshot.panes[0] as HerdrPane)).toEqual(["pane:p1", "pane:p2", "rename", "clear-name", "new-terminal", "new-agent-tab", "rename-tab"]);
+      // the other pane of the tab still closes on its own; the tab, with the locked agent in it, does not
+      expect(itemsOf(snapshot.panes[1] as HerdrPane)).toContain("close");
+      expect(itemsOf(snapshot.panes[1] as HerdrPane)).not.toContain("close-tab");
+    } finally {
+      setSidebarPins([]);
+    }
   });
 
   it("leaves a core PC's panes to the Herdr app: Close pane stays, no divider is drawn", async () => {

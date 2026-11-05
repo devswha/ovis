@@ -1,5 +1,6 @@
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
+import { SETTINGS_COMPOSER_KO } from "./i18n/settings-composer.ko.ts";
 import { TERMINAL_KO } from "./i18n/terminal.ko.ts";
 import { COMPOSER_KO } from "./i18n/composer.ko.ts";
 import { CHAT_KO } from "./i18n/chat.ko.ts";
@@ -25,6 +26,34 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
+  "Attach files": "파일 첨부",
+  "Sign out": "로그아웃",
+
+  "Only for {pc}": "{pc}에만",
+  "Could not verify this device. It was declined: approve only a device you are signing in yourself.": "이 기기를 확인할 수 없어 거절했습니다. 직접 로그인 중인 기기만 승인하세요.",
+  "Account": "계정",
+  "Finish signing in in your browser.": "브라우저에서 로그인을 마치세요.",
+  "Signed in with {provider}": "{provider}로 로그인함",
+  "Signing in…": "로그인하는 중…",
+  "The sign-in did not finish. Try again.": "로그인을 끝내지 못했습니다. 다시 시도하세요.",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub를 열고 이 코드를 입력하세요. 이 페이지에서 직접 시작한 로그인일 때만 입력하세요.",
+  "Waiting for GitHub…": "GitHub 승인을 기다리는 중…",
+  "Open GitHub": "GitHub 열기",
+  "GitHub refused the sign-in.": "GitHub에서 로그인을 거절했습니다.",
+  "The code expired. Sign in again to get a new one.": "코드가 만료되었습니다. 다시 로그인해 새 코드를 받으세요.",
+  "This account service can't sign in a browser on this PC yet.": "이 계정 서비스는 아직 이 PC의 브라우저 로그인을 지원하지 않습니다.",
+  "Your sign-in ended. Sign in again to see every PC of your account.": "로그인이 끝났습니다. 계정의 PC를 모두 보려면 다시 로그인하세요.",
+  "The account service could not be reached. The PCs this device is paired with still work.": "계정 서비스에 연결할 수 없습니다. 이 기기와 연결된 PC는 그대로 쓸 수 있습니다.",
+  "Add {device}?": "{device} 추가할까요?",
+  "Through {pc} · joins your {n} PCs": "{pc}에서 온 요청 · PC {n}대에 추가됩니다",
+  "Pick the number on {device}": "{device} 화면의 숫자를 고르세요",
+  "Didn't ask for this? Deny it.": "요청한 적이 없다면 거절하세요.",
+  "Deny": "거부",
+  "never": "없음",
+  "just now": "방금",
+  "{n} min ago": "{n}분 전",
+  "{n} h ago": "{n}시간 전",
   "Remove": "제거",
   "Remove {name}": "{name} 제거",
   "Save": "저장",
@@ -81,6 +110,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "터미널 보기",
   "Show the chat": "채팅 보기",
   "Close this half": "이쪽 화면 닫기",
+  "Remove from the split": "분할에서 빼기",
+  "Resize the split": "분할 크기 조절",
   "Toggle sidebar (⌘⇧B)": "사이드바 토글 (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "채팅 기록 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "실시간 터미널 (⌘⇧J)",
@@ -106,6 +137,12 @@ const BASE: Record<string, string> = {
   "The other PC's answer could not be read": "다른 PC의 응답을 읽을 수 없습니다",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
+  "Goal: {objective}": "목표: {objective}",
+  "Transcript size unknown": "대화 기록 크기 알 수 없음",
+  "Transcript {size}": "대화 기록 {size}",
+  "Work time unknown": "작업 시간 알 수 없음",
+  "Worked at least {duration}": "최소 {duration} 작업",
+  "Worked {duration}": "{duration} 작업함",
   "Share link": "링크 공유",
   "Copy address": "주소 복사",
   "Link copied": "링크를 복사했습니다",
@@ -167,6 +204,7 @@ const BASE: Record<string, string> = {
   // ---- command palette ----
   "Refresh": "새로 고침",
   "Search panes and actions": "패널과 동작 검색",
+  "Search conversation": "대화 검색",
 
   // ---- new workspace ----
   "Browse": "찾아보기",
@@ -202,6 +240,7 @@ const BASE: Record<string, string> = {
   "Submit": "제출",
   "Recommended": "추천",
   "Agents": "에이전트",
+  "Show {name}": "{name} 표시",
   "Check again": "다시 확인",
   "Setup guide": "설정 안내",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
@@ -317,10 +356,13 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "패널 교환이 거부되었습니다: {reason}",
   "The panes are in different tabs.": "패널이 서로 다른 탭에 있습니다.",
   "Choose two different panes.": "서로 다른 두 패널을 선택하세요.",
+  "The pane moved to the right instead.": "패널이 대신 오른쪽으로 옮겨졌습니다.",
+  "The pane moved below instead.": "패널이 대신 아래쪽으로 옮겨졌습니다.",
   "A pane is no longer available.": "패널을 더 이상 사용할 수 없습니다.",
   "There is no pane on that side.": "해당 방향에 패널이 없습니다.",
   "Split pane right": "패널을 오른쪽으로 분할",
   "Split pane down": "패널을 아래로 분할",
+  "Zoom or unzoom pane": "패널 확대 또는 해제",
   "Plan: {done} of {total} done": "계획: {total}개 중 {done}개 완료",
   "Plan": "계획",
   "Something went wrong": "문제가 발생했습니다",
@@ -365,12 +407,32 @@ const BASE: Record<string, string> = {
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name}이(가) 릴레이로 연결하려고 합니다. 그 화면에 다음 숫자가 보일 때만 승인하세요:",
   "Decline": "거절",
   "differs": "다름",
+  "this PC": "이 PC",
+  "It matches": "같습니다",
+  "Does {name}'s screen show this ID?": "{name} 화면에 이 ID가 보이나요?",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "PC는 설정 → 폰 및 기기의 코드 아래에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
+  "ID of the PC this code found": "이 코드로 찾은 PC의 ID",
+  "A code has ten letters and digits, like 7K3QD-M2XHA.": "코드는 7K3QD-M2XHA처럼 영문과 숫자 열 자입니다.",
+  "No PC shows this code. Check it, or show a new one on the PC.": "이 코드를 보여 주는 PC가 없습니다. 코드를 확인하거나 PC에서 새 코드를 띄우세요.",
+  "That code did not work. Check it and try again; after three wrong tries the PC needs a new code.": "그 코드가 맞지 않습니다. 확인하고 다시 시도하세요. 세 번 틀리면 PC에서 새 코드가 필요합니다.",
+  "That code ran out. Show a new one on the PC.": "코드가 만료됐습니다. PC에서 새 코드를 띄우세요.",
+  "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "다른 기기가 이 코드를 시도 중이거나 너무 많이 시도됐습니다. 잠시 기다리거나 PC에서 새 코드를 띄우세요.",
+  "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "이 앱이 페어링할 수 있는 PC의 응답이 아닙니다. PC에서 새 코드를 띄우거나 QR 코드를 스캔하세요.",
+  "The relay could not be reached. Check this device's connection, then try again.": "릴레이에 연결할 수 없습니다. 이 기기의 연결을 확인한 뒤 다시 시도하세요.",
+  "Reset": "재설정",
+  "Group name": "그룹 이름",
+  "Remove group {group}": "{group} 그룹 삭제",
+  "New group": "새 그룹",
+  "Add group": "그룹 추가",
+  "No group": "그룹 없음",
+  "Context {percent}% left": "컨텍스트 {percent}% 남음",
+  "{used} of {window} tokens": "{window} 토큰 중 {used}",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const KO_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO },
+  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO },
   terminal: TERMINAL_KO,
   composer: COMPOSER_KO,
   chat: CHAT_KO,

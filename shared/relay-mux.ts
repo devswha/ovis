@@ -39,6 +39,29 @@ export type FrameType = typeof FrameType[keyof typeof FrameType];
  * digits (shared/relay-pair-sas.ts): PAIR_REQUEST, PAIR_CHALLENGE, PAIR_REVEAL and PAIR_CONFIRM.
  */
 export const PAIR_SAS_FEATURE = "pair-sas";
+/** The PC has `/api/account/*` and applies account records (docs/account.md, "Negotiation"). */
+export const ACCOUNT_FEATURE = "account";
+/** What a comparison asks for, offered with `pair-sas` (at most one) and shown in the approval prompt. */
+export const PAIR_INTENT_PC = "pair-intent-pc";
+export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
+/**
+ * The optional mux feature by which a phone says it takes WebSocket messages up to
+ * MAX_LARGE_WS_MESSAGE_BYTES (a large session's snapshot, #2773), not only the v1 limit. A phone
+ * offers it in HELLO; a PC that reads it sends such messages to that phone, and to no other. It is
+ * never selected in WELCOME, which may go out before HELLO is read, and v1 limits stay as they are.
+ */
+export const LARGE_WS_MESSAGES = "large-ws-messages";
+/**
+ * The optional mux feature by which a phone says it takes the `x-server-time` response header (the PC's
+ * clock as it answered a conversation read, src/lib/sentWaiting.ts). A phone without it refuses a
+ * header it does not list, so a PC sends it only to a phone that offered this in HELLO.
+ */
+export const SERVER_TIME_HEADER = "server-time-header";
+/**
+ * A 4 MiB outgoing queue (relay-mux-engine.ts) holds one such message and, behind it, the 1 MiB a PC's
+ * core still sends to a client while it drains (server/output-window.ts OUTPUT_HARD_BYTES).
+ */
+export const MAX_LARGE_WS_MESSAGE_BYTES = 3 * 1024 * 1024;
 export const HTTP_END_FLAGS = { STOPPED: 0x0001 } as const;
 export const WS_DATA_FLAGS = { START: 0x0001, END: 0x0002, TEXT: 0x0004 } as const;
 
@@ -80,6 +103,8 @@ export const RESPONSE_HEADERS = [
   "content-type", "content-length", "content-range", "accept-ranges", "etag",
   "last-modified", "cache-control", "content-disposition", "retry-after", "x-request-id",
   "content-security-policy", "x-content-type-options", "cross-origin-resource-policy", "referrer-policy",
+  // only to a peer that offered SERVER_TIME_HEADER
+  "x-server-time",
 ] as const;
 /** The only read-only routes a browser resource may load through a shell worker. */
 export const RELAY_RESOURCE_ROUTES = ["fs/file", "fs/favicon", "pane/conversation/image"] as const;
@@ -384,7 +409,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
 
 function wsFragment(flags: number, data: Uint8Array, total: unknown): Payloads[0x22] {
   if (flags & WS_DATA_FLAGS.START) {
-    const length = integer(total, 0, LIMITS_V1.max_ws_message_bytes);
+    // the engine holds each message to what its peer takes (LARGE_WS_MESSAGES) before this
+    const length = integer(total, 0, MAX_LARGE_WS_MESSAGE_BYTES);
     requireProtocol(data.byteLength <= length && (!!(flags & WS_DATA_FLAGS.END) ? data.byteLength === length : data.byteLength < length), "Invalid first fragment length");
     requireProtocol(data.byteLength > 0 || ((flags & 3) === 3 && length === 0), "Empty nonfinal fragment");
     return { total_message_bytes: length, data };

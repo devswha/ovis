@@ -3,11 +3,13 @@ import { ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch, His
 
 import "./Sidebar.css";
 
-import type { AgentStatus, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentStatus, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
+import { renamesWorkspace } from "../lib/layoutTargets.ts";
 import { useAppLayout, useMachineApi, useMachineId, useReorderCoordinator } from "../lib/machineContext.tsx";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
+import { usePaneLocked } from "../lib/paneLocks.ts";
 import type { AppActions } from "../lib/actions.ts";
 import { indicatorGlyph, knownStatus, rollupStatus, STATUS_WORD } from "../lib/status.ts";
 import { AgentMark } from "./AgentMark.tsx";
@@ -19,6 +21,7 @@ import { focusWorkspaceListToggle } from "../lib/focus.ts";
 import { folderName, shortPathTitle, stripPaneChrome, tabTitle, taskRowLines } from "../lib/paneName.ts";
 import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { contextLeftPercent, formatTokens } from "../lib/compose.ts";
 import { userErrorMessage } from "../lib/userError.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
 import { useSidebarActivity } from "../lib/sidebarActivity.tsx";
@@ -30,7 +33,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { watchTouchReorder } from "../lib/touchReorder.ts";
-import { placeBlock, workspaceMoves, worktreeGroups as groupWorktrees } from "../lib/workspaceOrder.ts";
+import { isBackgroundWorkspace, placeBlock, splitBackgroundGroups, workspaceMoves, worktreeGroups as groupWorktrees } from "../lib/workspaceOrder.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 import { paneMark, sidebarAgents, workspaceAgentLabels } from "../lib/sidebarAgents.ts";
@@ -47,6 +50,16 @@ export function storedWorktreeCollapsed(machineId: string, repoKeys: string[]): 
     for (const key of repoKeys) if (localStorage.getItem(worktreeCollapsedKey(machineId, key)) === "1") collapsed.add(key);
   } catch { /* storage denied: nothing is folded */ }
   return collapsed;
+}
+
+/** the fold of a PC's background workspaces, kept on this device; it starts folded */
+const backgroundFoldKey = (machineId: string) => `ovis:workspaces-background-collapsed:${machineId}`;
+export function storedBackgroundFolded(machineId: string): boolean {
+  try {
+    return localStorage.getItem(backgroundFoldKey(machineId)) !== "0";
+  } catch {
+    return true;
+  }
 }
 
 export { paneTitle };
@@ -152,6 +165,28 @@ export function PlanBadge({ plan }: { plan?: PlanSummary }) {
   );
 }
 
+/**
+ * What is left of the pane's context: the composer's ring, its words and its threshold (red at 20%
+ * left or less), so the two never disagree; a window nothing names draws nothing, as the ring does.
+ */
+export function ContextBadge({ context }: { context?: PaneContext | undefined }) {
+  const t = useT();
+  const left = context ? contextLeftPercent(context) : null;
+  if (!context || left === null || context.window === null) return null;
+  const label = `${t("Context {percent}% left", { percent: left })} · ${t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) })}`;
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <span className={`context-count${left <= 20 ? " is-low" : ""}`} title={label} aria-label={label} data-testid="context-left">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle className="context-count-track" cx="8" cy="8" r={radius} />
+        <circle className="context-count-used" cx="8" cy="8" r={radius}
+          strokeDasharray={`${circumference * (100 - left) / 100} ${circumference}`} transform="rotate(-90 8 8)" />
+      </svg>{left}%
+    </span>
+  );
+}
+
 function cwdBasename(cwd: string | null | undefined): string {
   return cwd ? folderName(cwd) : "unknown directory";
 }
@@ -183,7 +218,25 @@ export function onRowContextMenu(event: MouseEvent<HTMLElement>, toggle: (anchor
 
 /** The row whose ⋯ menu is open: a workspace, seen through the pane its row shows. */
 interface MenuState { anchor: HTMLElement; point?: { x: number; y: number }; previousFocus?: HTMLElement | null; workspace: WorkspaceInfo; title: string; place: string }
-interface ConfirmState { title: string; body: string; action?: string; run: () => Promise<void>; escalation?: { label: string; code: string; run: () => Promise<void> } }
+/**
+ * What a close takes, read from a roster: the workspace, with a group close the repository's other
+ * workspaces as herdr finds them when it closes, and every pane in them by id.
+ */
+interface CloseScope { workspaceId: string; group: boolean; workspaces: string[]; panes: string[] }
+
+function closeScope(shown: SessionSnapshot | null, workspaceId: string, group: boolean): CloseScope | null {
+  const head = shown?.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+  if (!shown || !head) return null;
+  const repoKey = head.worktree?.repo_key;
+  const others = group && repoKey !== undefined ? shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && candidate.worktree?.repo_key === repoKey) : [];
+  const workspaces = [workspaceId, ...others.map((candidate) => candidate.workspace_id)].sort();
+  const panes = shown.panes.filter((pane) => workspaces.includes(pane.workspace_id)).map((pane) => pane.pane_id).sort();
+  return { workspaceId, group, workspaces, panes };
+}
+
+interface ConfirmState { title: string; body: string; action?: string; run: () => Promise<void>;
+  /** what the action closes as the user agreed to it (closeScope): it goes once the roster or a lock says otherwise */
+  closes?: CloseScope; escalation?: { label: string; code: string; run: () => Promise<void> } }
 
 export interface SidebarProps {
   snapshot: SessionSnapshot | null;
@@ -259,9 +312,35 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // opens it for the filter's time only, the saved fold untouched (lib/sidebarFilter.ts)
   const [filterFolds, setFilterFolds] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const filtering = filtered !== null;
-  useEffect(() => { if (!filtering) setFilterFolds((current) => current.size === 0 ? current : new Map()); }, [filtering]);
+  // Settings → Background workspaces apart: workspaces tagged role=background stand after the others, under
+  // a heading that folds them (kept per PC on this device); under a filter it opens, for the filter's time only
+  const backgroundApart = settings.sidebarBackgroundWorkspaces;
+  const [backgroundCollapsed, setBackgroundCollapsed] = useState(() => storedBackgroundFolded(machineId));
+  const [backgroundFilterFold, setBackgroundFilterFold] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (filtering) return;
+    setFilterFolds((current) => current.size === 0 ? current : new Map());
+    setBackgroundFilterFold(null);
+  }, [filtering]);
+  const backgroundFolded = filtering ? backgroundFilterFold ?? false : backgroundCollapsed;
+  const toggleBackground = (): void => {
+    if (filtering) { setBackgroundFilterFold(!backgroundFolded); return; }
+    setBackgroundCollapsed(!backgroundCollapsed);
+    try { localStorage.setItem(backgroundFoldKey(machineId), backgroundCollapsed ? "0" : "1"); } catch { /* storage denied: this page keeps it */ }
+  };
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  // a workspace holding a locked pinned agent (lib/paneLocks.ts) is closed or deleted from no menu here
+  const paneLocked = usePaneLocked(machineId);
+  const holdsLock = (workspaceIds: readonly string[]): boolean => snapshot?.panes.some((pane) => workspaceIds.includes(pane.workspace_id) && paneLocked(pane.pane_id)) === true;
+  // a close goes only over what the user agreed to: read again at each render, the one a confirm's click lands
+  // in too, and any workspace or pane come or gone, or a lock landed (from another browser), takes the
+  // confirmation away unsent
+  const stillAgreed = (agreed: CloseScope): boolean => {
+    const now = closeScope(snapshot, agreed.workspaceId, agreed.group);
+    return now !== null && JSON.stringify([now.workspaces, now.panes]) === JSON.stringify([agreed.workspaces, agreed.panes]) && !holdsLock(now.workspaces);
+  };
+  if (confirm?.closes && !stillAgreed(confirm.closes)) setConfirm(null);
   const [worktreeDialog, setWorktreeDialog] = useState<{ mode: WorktreeDialogMode; workspace: WorkspaceInfo } | null>(null);
   // worktrees are not offered to a watching device: one open when this device turns into one closes
   useEffect(() => { if (watching) setWorktreeDialog(null); }, [watching]);
@@ -349,12 +428,31 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // under a filter only the kept rows are drawn, in the same order, in the same groups and cards; pins, folds
   // and herdr's order are read from the whole roster as before, and a move waits until the filter is cleared
   const visibleGroups = useMemo(() => filtered === null ? shownGroups : { pinned: filterWorkspaceGroups(shownGroups.pinned, filtered.workspaces), rest: filterWorkspaceGroups(shownGroups.rest, filtered.workspaces) }, [shownGroups, filtered]);
+  // a folded background part still shows the workspace that is open and one whose agent asks a question
+  const inSight = (group: WorkspaceGroup<WorkspaceInfo>): boolean => [group.workspace, ...group.children].some((member) => member.workspace_id === viewedWorkspaceId
+    || (online && rollupStatus(roster.filter((pane) => pane.workspace_id === member.workspace_id).map((pane) => activity.status(machineId, pane))) === "blocked"));
+  const drawnGroup = (group: WorkspaceGroup<WorkspaceInfo>): boolean => roster.some((pane) => pane.workspace_id === group.workspace.workspace_id);
+  // a repository's worktrees file with it, also once a pin of the repository sets them apart as rows of their own
+  const worktreeIds = new Set(worktreeGroups.flatMap((group) => group.children.map((child) => child.workspace_id)));
+  type Parts = { people: WorkspaceGroup<WorkspaceInfo>[]; background: WorkspaceGroup<WorkspaceInfo>[]; shown: WorkspaceGroup<WorkspaceInfo>[] };
+  const parts = (groups: WorkspaceGroup<WorkspaceInfo>[]): Parts => {
+    if (!backgroundApart) return { people: groups, background: [], shown: [] };
+    const { people, background } = splitBackgroundGroups(groups, worktreeIds);
+    const drawn = background.filter(drawnGroup);
+    return { people, background: drawn, shown: backgroundFolded ? drawn.filter(inSight) : drawn };
+  };
+  const visibleParts = parts(visibleGroups.rest);
+  const movableParts = parts(shownGroups.rest);
   // the rows as drawn, filter and folds included, for the previous/next workspace steps (lib/adjacentTarget.ts)
-  const drawnRows = workspaceRows([...visibleGroups.pinned, ...visibleGroups.rest], (group) => worktreesFolded(group.workspace.worktree?.repo_key ?? "", group.children), viewedWorkspaceId ?? null).join("\n");
+  const drawnRows = workspaceRows([...visibleGroups.pinned, ...visibleParts.people, ...visibleParts.shown], (group) => worktreesFolded(group.workspace.worktree?.repo_key ?? "", group.children), viewedWorkspaceId ?? null).join("\n");
   useEffect(() => publishWorkspaceRows(machineId, drawnRows === "" ? [] : drawnRows.split("\n")), [machineId, drawnRows]);
   // a pinned head's worktrees remain outside the card, but cannot move away from their repository
   const fixedIds = useMemo(() => new Set([...pinnedGroupIds(worktreeGroups, pinnedIds, (workspace) => workspace.workspace_id)].filter((id) => !pinnedIds.includes(id))), [worktreeGroups, pinnedIds]);
-  const movableGroups = shownGroups.rest.filter((group) => !fixedIds.has(group.workspace.workspace_id));
+  // a row moves among the rows of its own part; a folded part's rows stay put, as under a filter, since a
+  // move there would also pass the rows the fold hides
+  const stillIds = new Set(backgroundFolded ? movableParts.background.flatMap((group) => [group.workspace, ...group.children].map((member) => member.workspace_id)) : []);
+  const movableGroups = [...movableParts.people, ...backgroundFolded ? [] : movableParts.background].filter((group) => !fixedIds.has(group.workspace.workspace_id));
+  const partOf = (group: WorkspaceGroup<WorkspaceInfo>): boolean => backgroundApart && isBackgroundWorkspace(group.workspace) && !worktreeIds.has(group.workspace.workspace_id);
   // a pin moves the row to the other list, so React draws it anew: the row that had the focus gets it back
   const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -449,9 +547,12 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => setWorktreeDialog({ mode: "create", workspace }) },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => setWorktreeDialog({ mode: "open", workspace }) },
     ] : [];
-    const deleteItems: RowMenuItem[] = linked && worktreesOffered ? [{
+    const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];
+    const scope = (group: boolean): CloseScope | undefined => closeScope(snapshot, workspace.workspace_id, group) ?? undefined;
+    const deleteItems: RowMenuItem[] = linked && worktreesOffered && !holdsLock([workspace.workspace_id]) ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({
+        closes: scope(false),
         title: t("Delete the checkout of {name}?", { name: workspace.label }),
         body: t("The folder at {path} is deleted and the workspace closes. The branch stays.", { path: workspace.worktree?.checkout_path ?? "" }),
         action: t("Delete"),
@@ -462,6 +563,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     }] : [];
     // a repository's other open workspaces go with it
     const closeItem: RowMenuItem = { id: "close", label: t("Close workspace"), icon: X, danger: true, divider: true, run: () => setConfirm({
+      closes: scope(sameRepo.length > 0),
       title: t("Close workspace {name}?", { name: workspace.label }),
       body: (worktrees.length > 0
         ? t(paneCount === 1
@@ -478,10 +580,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       pinned
         ? { id: "unpin-workspace", label: t("Unpin workspace"), icon: PinOff, run: () => togglePin(state) }
         : { id: "pin-workspace", label: t("Pin workspace"), icon: Pin, run: () => togglePin(state) },
-      ...(!renameOffered ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
+      ...(!renameOffered || !renamesWorkspace(workspace.workspace_id) ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
       // the folder's earlier sessions, listed for the agent of the pane the row opens
       ...(historyOffered && !watching ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory({ machineId, workspaceId: workspace.workspace_id, agent: (panes.length > 0 ? currentPane(workspace, panes) : null)?.agent ?? null }) }] : []),
-      { ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false },
+      ...(holdsLock(closes) ? [] : [{ ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false }]),
       ...worktreeItems, ...deleteItems,
       ...(worktrees.length > 0 && repoKey ? [{ id: "fold", label: t(folded ? "Expand" : "Collapse"), icon: folded ? ChevronRight : ChevronDown, run: () => toggleWorktrees(repoKey, folded) }] : []),
     ];
@@ -570,7 +672,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const groupIndex = movableGroups.findIndex((group) => group.workspace.workspace_id === workspaceId);
     if (groupIndex >= 0) {
       const target = movableGroups[groupIndex + direction];
-      return target ? placeBlock(workspaceOrder, groupIds(movableGroups[groupIndex]!), groupIds(target), side) : null;
+      return target && partOf(target) === partOf(movableGroups[groupIndex]!) ? placeBlock(workspaceOrder, groupIds(movableGroups[groupIndex]!), groupIds(target), side) : null;
     }
     const parent = movableGroups.find((group) => group.children.some((child) => child.workspace_id === workspaceId));
     if (!parent) return null;
@@ -608,7 +710,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const sourceGroup = movableGroups.find((group) => group.workspace.workspace_id === sourceId);
     if (sourceGroup) {
       const targetGroup = movableGroups.find((group) => group.workspace.workspace_id === targetId || group.children.some((child) => child.workspace_id === targetId));
-      if (!targetGroup || targetGroup === sourceGroup) return null;
+      if (!targetGroup || targetGroup === sourceGroup || partOf(targetGroup) !== partOf(sourceGroup)) return null;
       const movingDown = workspaceOrder.indexOf(sourceId) < workspaceOrder.indexOf(targetGroup.workspace.workspace_id);
       return placeBlock(workspaceOrder, groupIds(sourceGroup), groupIds(targetGroup), movingDown ? "after" : "before");
     }
@@ -621,7 +723,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // a finger's drag lands where the mouse's does: the same groups, the same index for herdr
   const touchHandlers = useRef<Parameters<typeof watchTouchReorder>[1] | null>(null);
   touchHandlers.current = {
-    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && arrange,
+    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && !stillIds.has(id) && filtered === null && arrange,
     onLift: (id) => { setMenu(null); setTouchDrag({ source: id, over: id }); },
     onOver: (id) => setTouchDrag((current) => current && { ...current, over: id }),
     onDrop: (id, target) => {
@@ -700,7 +802,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const foldedCount = collapsed ? children.filter((child) => !roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)).length : 0;
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;
     // a row that cannot move still drags its pane into half of the pane area; on herdr-core only the move is off
-    const placed = fixedIds.has(workspace.workspace_id) || filtered !== null;
+    const placed = fixedIds.has(workspace.workspace_id) || stillIds.has(workspace.workspace_id) || filtered !== null;
     const fixed = placed || !arrange;
     const filterNote = context && selected ? <span className="sidebar-filter-note">{t("Selected")}</span> : null;
     const menuOpen = menu?.workspace.workspace_id === workspace.workspace_id;
@@ -841,7 +943,14 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
             <p className="sidebar-pinned-label" aria-hidden="true"><span><Pin />{t("Pinned")}</span></p>
             <ul className="workspace-list workspace-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{visibleGroups.pinned.map(renderGroup)}</ul>
           </>}
-          <ul className="workspace-list">{visibleGroups.rest.map(renderGroup)}</ul>
+          <ul className="workspace-list">{visibleParts.people.map(renderGroup)}</ul>
+          {visibleParts.background.length > 0 && <>
+            <button type="button" className="workspace-background-toggle" aria-expanded={!backgroundFolded} aria-controls={`${rosterId}-background`} onClick={toggleBackground}>
+              {backgroundFolded ? <ChevronRight className="workspace-background-caret" aria-hidden="true" /> : <ChevronDown className="workspace-background-caret" aria-hidden="true" />}
+              <span>{t("Background workspaces")}</span><span className="workspace-background-count">{visibleParts.background.length}</span>
+            </button>
+            <ul className="workspace-list workspace-list-background" id={`${rosterId}-background`} aria-label={t("Background workspaces")}>{visibleParts.shown.map(renderGroup)}</ul>
+          </>}
           {inlineError && inlineError.workspaceId === undefined && (
             <p className="sidebar-inline-error" role="alert">{inlineError.message}{inlineError.detail !== null && <><br /><code>{inlineError.detail}</code></>}</p>
           )}

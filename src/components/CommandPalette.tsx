@@ -1,6 +1,7 @@
+import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, X } from "lucide-react";
+import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, Globe, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, TextSearch, X } from "lucide-react";
 
 import "./CommandPalette.css";
 
@@ -24,6 +25,8 @@ import { autoTabLabel, tabLabel } from "../lib/tabName.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
+import { localPageAddress, panelUrl } from "../lib/webPanel.ts";
+import { paneCovered } from "../lib/panePresentation.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -324,8 +327,10 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       { id: "split-right-open", label: t("Split pane right and open it"), icon: Columns2, run: () => splitPane("right", true) },
       { id: "split-down-open", label: t("Split pane down and open it"), icon: Rows2, run: () => splitPane("down", true) },
     ] satisfies PaletteAction[] : []),
-    ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, run: () => zoomPane(zoom) }] : []),
+    ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, shortcut: "zoom-pane" as const, run: () => zoomPane(zoom) }] : []),
     { id: "view", label: t(view === "chat" ? "Switch to terminal" : "Switch to chat"), icon: SwitchCamera, shortcut: "toggle-view", run: actions.toggleView },
+    // the selected pane's chat, older pages included (ChatView's ConversationSearch)
+    ...(actions.searchConversation ? [{ id: "search-conversation", label: t("Search conversation"), icon: TextSearch, run: actions.searchConversation }] : []),
     { id: "sidebar", label: t("Toggle sidebar"), icon: PanelLeft, shortcut: "toggle-sidebar", run: actions.toggleSidebar },
     // the sidebar's Filter field, also where Settings → Appearance → Sidebar filter leaves it out
     { id: "filter-sidebar", label: t("Filter workspaces and agents"), icon: ListFilter, run: actions.openSidebarFilter },
@@ -335,6 +340,8 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ...(actions.enableNotifications ? [{ id: "notifications", label: t("Enable notifications"), icon: Bell, run: actions.enableNotifications }] : []),
     ...(actions.openFiles ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: actions.openFiles }] : []),
     ...(online ? [{ id: "browse-folders", label: t("Browse folders"), icon: FolderSearch, keepOpen: true, run: () => browseTo(browseStart ?? home ?? "~") }] : []),
+    // starts the address a page this PC serves is typed as (below), the port left to type
+    ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
   ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, online, browseTo, browseStart, home]);
 
@@ -355,12 +362,11 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const aliasesByAction = useMemo(() => actionAliases(t), [t]);
   // the selected one-pane tab to another workspace of its PC, one row each, found by a query only as Settings pages are
   const selectedWorkspace = selectedPane?.workspace_id ?? null;
-  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || tabPanes !== 1 || !moveOffered ? [] : (snapshot?.workspaces ?? [])
-    .filter((entry) => entry.workspace_id !== selectedWorkspace)
+  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || selectedWorkspace === null || tabPanes !== 1 || !moveOffered ? [] : moveDestinations(snapshot?.workspaces ?? [], selectedPane, selectedWorkspace)
     .map((entry) => ({ id: `move-tab-${entry.workspace_id}`, label: t("Move tab to {workspace}", { workspace: entry.label }), icon: FolderInput,
       // a refusal is said over the pane (App): the palette has closed by then
       run: () => { void actions.moveTabToWorkspace({ machineId, tabId: selectedTab, workspaceId: entry.workspace_id, notice: true }).catch(() => undefined); } })),
-  [actions, moveOffered, machineId, selectedTab, selectedWorkspace, snapshot?.workspaces, t, tabPanes]);
+  [actions, moveOffered, machineId, selectedTab, selectedWorkspace, selectedPane, snapshot?.workspaces, t, tabPanes]);
 
   const allPanes = useMemo(() => machines.flatMap((machine) => machine.state === "connected" ? machine.snapshot?.panes ?? [] : []), [machines]);
   const multiMachine = machines.length > 1;
@@ -395,6 +401,18 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       const names = listing ? browseEntries(listing.directories, folder.filter) : [];
       if (listing && names.length > 0) list.push({ id: "folder-list", heading: t("Folders"), machineName, branch: null, placeNamesWorkspace: false, rows: names.map((name) => ({ kind: "folder", id: `dir:${name}`, label: name, path: childPath(listing.path, name), detail: null, icon: Folder })) });
       return list;
+    }
+    // an address on this PC leads the list, the page opened in the web panel (as VS Code's Simple
+    // Browser takes one); not one the panel refuses (lib/webPanel.ts panelUrl), the app itself included.
+    // A status filter is about panes: it leaves the page out, as it does the actions. So does a dialog
+    // under the palette (a popup file, Files, Settings, Earlier sessions…): the page would open beneath
+    // it, where no link of a pane opens one. A page popup it replaces is no such dialog
+    const { openLocalPage } = actions;
+    const page = openLocalPage === null || (!actionsOnly && filter !== "all") || paneCovered(".command-palette, .web-panel-popup") ? null : localPageAddress(text, window.location);
+    if (openLocalPage !== null && page !== null && panelUrl(page, window.location) !== null) {
+      const { host, pathname, search, hash } = new URL(page);
+      const rest = `${pathname}${search}${hash}`;
+      list.push({ id: "local-page", heading: t("Page on this PC"), branch: null, placeNamesWorkspace: false, rows: [{ kind: "action", action: { id: "open-local-page", label: t("Open {address}", { address: `${host}${rest === "/" ? "" : rest}` }), icon: Globe, run: () => openLocalPage(page) } }] });
     }
     if (!actionsOnly) {
       const panes = rankMachinePanes(text, machines, filter, branches, t);

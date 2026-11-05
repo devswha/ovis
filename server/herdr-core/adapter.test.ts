@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveBeside, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
-import { paintedScreen, type SeenObserver, startHerdrCoreAdapter } from "./adapter.ts";
+import { type AdapterOptions, paintedScreen, type SeenObserver, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
 import { encodeFrame, FRAME_CLOSE, FRAME_DATA, HcConnection, HcError, type HcTransport, makeFrameReader } from "./connection.ts";
+import { MachineScopedConnection } from "./machine-scope.ts";
+import { adapterAddress } from "./pipe.ts";
+import type { HerdrPane } from "../../shared/protocol.ts";
+import type { ProcessRow } from "../windows-processes.ts";
 import type { HcTerminal } from "./snapshot.ts";
 
 type Handler = (params: Record<string, unknown>) => unknown;
@@ -123,7 +127,8 @@ for (const method of ["call", "open"] as const) {
     }
   });
 }
-async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver) {
+/** `machine`: the adapter of that other machine's server (machine-scope.ts), as machine-entry.ts starts it; `pc`: the PC it runs on, in place of this one */
+async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver, machine?: string, pc: Pick<AdapterOptions, "platform" | "processTable"> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
   const socket = join(dir, "herdr.sock");
   const cores: FakeCore[] = [];
@@ -131,20 +136,27 @@ async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {
     "terminal.list": () => ({ terminals, hidden_finished: 0 }),
     "doc.get": () => ({ value: LAYOUT, version: 1 }),
     "terminal.get": (params) => {
-      const found = terminals.find((entry) => entry.address === params["terminal"]);
+      // as hc: a machine's id in an address names the same terminal as its name, which the record keeps
+      const asked = machine === undefined ? params["terminal"] : String(params["terminal"]).replace(`${machine}-id/`, `${machine}/`);
+      const found = terminals.find((entry) => entry.address === asked);
       if (!found) throw new Error(`no terminal ${String(params["terminal"])}`);
       return found;
     },
     "terminal.attach": () => ({ channel: cores.at(-1)!.channel(), terminal: terminals[0] }),
     "terminal.keys": () => ({ turn: 0 }),
+    "machine.list": () => ({ machines: machine === undefined ? [] : [{ name: machine, id: `${machine}-id`, host: machine, state: "connected", target: machine, version: "0.1.17" }] }),
     ...extra,
   };
-  const hc = new HcConnection(() => {
+  const spawn = () => {
     const core = new FakeCore(handlers);
     cores.push(core);
     return core;
-  });
-  const adapter = await startHerdrCoreAdapter(hc, socket, observeSeen);
+  };
+  const hc = machine === undefined ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine, `${machine}-id`);
+  // OpenCode's store, as these tests title its sessions: each by its id's end, but two twins
+  const opencodeStore = [..."first second third short".split(" ").map((title) => [`ses_${title}`, title]), ["ses_twinA", "twin"], ["ses_twinB", "twin"]];
+  const opencodeTitled = (title: string) => opencodeStore.flatMap(([id, named]) => `OC | ${named}` === title ? [id!] : []);
+  const adapter = await startHerdrCoreAdapter(hc, socket, observeSeen, { otherMachine: machine !== undefined, opencodeTitled, ...pc });
   cleanups.push(() => { adapter.stop(); hc.close(); rmSync(dir, { recursive: true, force: true }); });
   return { socket, cores, hc };
 }
@@ -162,15 +174,15 @@ describe("herdr-core adapter", () => {
 
   it("says it is herdr-core, so the browser offers only what herdr-core can do", async () => {
     const { socket } = await setup([terminal("t1")]);
-    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false, arrange: false } });
+    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false, arrange: false, worktrees: false } });
   });
 
   it("offers Ovis's own layout calls only on a core whose Herdr app document was never written", async () => {
     const { socket } = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }) });
-    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false, worktrees: true });
     // splits, zoom and order need a core that writes documents, as its hello says
     const writes = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }), "doc.set": () => ({ version: 1 }) });
-    expect((await ping(writes.socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true });
+    expect((await ping(writes.socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true, worktrees: true });
   });
 
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
@@ -528,6 +540,72 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     expect((await sessionSnapshot(socket)).panes[0]!.agent_status).toBe("idle");
   });
 
+  it("binds an OpenCode pane to the named session its terminal title shows, through rest, a background tab, a switch and its exit", async () => {
+    const opencode = (state: string) => ({ app: "opencode", state });
+    const t1 = terminal("t1", { title: "OC | first", status: opencode("working"), records: { ses_first: opencode("working") } });
+    const { socket } = await setup([t1]);
+    const session = async () => (await sessionSnapshot(socket)).panes[0]!.agent_session ?? null;
+    const reported = (value: string) => ({ agent: "opencode", source: "herdr:opencode", kind: "id", value });
+    expect(await session()).toEqual(reported("ses_first"));
+    // OpenCode clears a session's record once it rests: the pane still shows it
+    t1.status = opencode("idle");
+    t1.records = {};
+    expect(await session()).toEqual(reported("ses_first"));
+    // a background tab's session working alone takes nothing from the one on screen
+    t1.status = opencode("working");
+    t1.records = { ses_second: opencode("working") };
+    expect(await session()).toEqual(reported("ses_first"));
+    // switched to that tab, resting: the title says so
+    t1.status = opencode("idle");
+    t1.records = {};
+    t1.title = "OC | second";
+    expect(await session()).toEqual(reported("ses_second"));
+    // the home screen, a session this terminal never named, or one whose title another session has too, shows none
+    t1.title = "OpenCode";
+    expect(await session()).toBeNull();
+    t1.title = "OC | third";
+    expect(await session()).toBeNull();
+    t1.records = { ses_twinA: opencode("working") };
+    t1.title = "OC | twin";
+    expect(await session()).toBeNull();
+    // once OpenCode is gone, the next one in the terminal shows nothing it named before
+    t1.title = "OC | first";
+    t1.status = null;
+    expect(await session()).toBeNull();
+    t1.status = opencode("idle");
+    expect(await session()).toBeNull();
+  });
+
+  it("remembers an OpenCode session a status event named, for a turn that ended before any snapshot", async () => {
+    let channel = 0;
+    const t1 = terminal("t1", { title: "OC | short", status: { app: "opencode", state: "idle" } });
+    const { socket, cores } = await setup([t1], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [t1] };
+      },
+    });
+    const statuses: unknown[] = [];
+    const started = Promise.withResolvers<void>();
+    const told = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: "t1" }], {
+      onEvent: (frame) => { if (statuses.push(frame.data?.["agent_status"]) === 2) told.resolve(); },
+      onStarted: () => started.resolve(),
+      onClose() {},
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores[0]!;
+    const pending = { ses_short: { app: "opencode", state: "working" } };
+    core.notify(channel, "event", { seq: 2, type: "status", terminal: "t1", data: { status: { app: "opencode", state: "working" }, records: pending } });
+    core.notify(channel, "event", { seq: 3, type: "status", terminal: "t1", data: { status: { app: "opencode", state: "idle" }, records: {} } });
+    // told only as a status of its own, so the two before it have been heard
+    core.notify(channel, "event", { seq: 4, type: "status", terminal: "t1", data: { status: { app: "opencode", state: "blocked" }, records: {} } });
+    await told.promise;
+    expect(statuses).toEqual(["working", "blocked"]);
+    expect((await sessionSnapshot(socket)).panes[0]!.agent_session).toEqual({ agent: "opencode", source: "herdr:opencode", kind: "id", value: "ses_short" });
+  });
+
   it("fails what waited on a line to hc that ended, and opens a new one for the next call", async () => {
     const { socket, cores } = await setup([terminal("t1")]);
     await sessionSnapshot(socket);
@@ -536,6 +614,26 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     const snapshot = await sessionSnapshot(socket);
     expect(snapshot.panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
     expect(cores.length).toBe(2);
+  });
+
+  it("answers connect_failed while hc cannot be started, and starts it for the next request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
+    const socket = adapterAddress(dir);
+    let started = false;
+    const hc = new HcConnection(() => {
+      // as spawnHcConnect says of a program it cannot run
+      if (!started) throw new HcError("closed", "hc could not be started");
+      return new FakeCore({ "terminal.list": () => ({ terminals: [terminal("t1")], hidden_finished: 0 }), "doc.get": () => ({ value: LAYOUT, version: 1 }) });
+    });
+    const adapter = await startHerdrCoreAdapter(hc, socket);
+    cleanups.push(() => { adapter.stop(); hc.close(); rmSync(dir, { recursive: true, force: true }); });
+    // a snapshot asks three calls and hc's hello at once, a ping hello and two calls: all of them
+    // fail, and a rejection nobody hears fails this test, as it ends a running server
+    const refused = { code: "connect_failed", message: "hc could not be started" };
+    await expect(sessionSnapshot(socket)).rejects.toMatchObject(refused);
+    await expect(ping(socket)).rejects.toMatchObject(refused);
+    started = true;
+    expect((await sessionSnapshot(socket)).panes.map((pane) => pane.pane_id)).toEqual(["t1"]);
   });
 
   for (const newline of ["", "\n"]) {
@@ -601,6 +699,118 @@ describe("herdr-core adapter, new and closed terminals", () => {
   }
   /** a core no Herdr app arranges: its layout document was never written */
   const NO_DOC = { "doc.get": () => ({ value: null, version: 0 }) };
+
+  /** a repository with one commit on `main`, in a folder of the test's own, and git run in it */
+  function repository() {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ovis-hc-worktree-")));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const repo = join(dir, "app");
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    expect(git("init", "-q", "-b", "main", repo).exitCode).toBe(0);
+    writeFileSync(join(repo, "README.md"), "worktree fixture\n");
+    expect(git("-C", repo, "add", "README.md").exitCode).toBe(0);
+    expect(git("-C", repo, "commit", "-q", "-m", "fixture").exitCode).toBe(0);
+    return { dir, repo, git };
+  }
+  /** a core Ovis lays out whose terminals keep the labels it writes */
+  async function labeling(start: HcTerminal[]) {
+    const ready = await living(start, {
+      ...NO_DOC,
+      "terminal.label": (params) => {
+        const found = start.find((entry) => entry.address === params["terminal"])!;
+        found.labels = { ...found.labels, ...(params["labels"] as Record<string, string>) };
+        return found;
+      },
+    });
+    return ready;
+  }
+
+  it("makes, lists, opens and removes a worktree with git on a core Ovis lays out, grouped under the repository's workspace", async () => {
+    const { dir, repo } = repository();
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    expect((await ping(socket)).layout?.worktrees).toBeTrue();
+
+    const listed = await worktreeList("S", socket);
+    expect(listed.source).toMatchObject({ repo_root: repo, repo_name: "app", source_checkout_path: repo, source_workspace_id: "S" });
+    expect(listed.worktrees).toEqual([expect.objectContaining({ path: repo, branch: "main", is_linked_worktree: false, open_workspace_id: "S" })]);
+
+    const checkout = join(dir, "checkouts", "feature-x");
+    const created = await worktreeCreate({ workspaceId: "S", branch: "feature/x", path: checkout }, socket);
+    expect(existsSync(join(checkout, "README.md"))).toBeTrue();
+    expect(created).toMatchObject({ type: "worktree_created", workspace: { label: "feature-x" }, worktree: { path: checkout, branch: "feature/x", is_linked_worktree: true, open_workspace_id: created.workspace.workspace_id } });
+    const facts = (await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.is_linked_worktree, workspace.worktree?.repo_root]);
+    expect(facts).toEqual([["S", false, repo], [created.workspace.workspace_id, true, repo]]);
+
+    const again = await worktreeOpen({ workspaceId: "S", path: checkout }, socket);
+    expect(again).toMatchObject({ type: "worktree_opened", already_open: true, workspace: { workspace_id: created.workspace.workspace_id } });
+    // as herdr: the repository's workspace closes over its worktrees only when the group is meant
+    await expect(workspaceClose("S", socket)).rejects.toMatchObject({ code: "workspace_group_close_required" });
+
+    writeFileSync(join(checkout, "unsaved.txt"), "dirty\n");
+    await expect(worktreeRemove(created.workspace.workspace_id, false, socket)).rejects.toMatchObject({ code: "dirty_worktree_requires_force" });
+    expect(existsSync(checkout)).toBeTrue();
+    expect(await worktreeRemove(created.workspace.workspace_id, true, socket)).toMatchObject({ type: "worktree_removed", path: checkout, forced: true });
+    expect(existsSync(checkout)).toBeFalse();
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.workspace_id)).toEqual(["S"]);
+  });
+
+  it("keeps to what git and the layout say: nested repositories, moved checkouts, quoted paths and the app's cores", async () => {
+    const { dir, git } = repository();
+    // a folder git quotes in its line output: the -z listing names it as it is
+    const repo = join(dir, "앱");
+    expect(Bun.spawnSync(["mv", join(dir, "app"), repo]).exitCode).toBe(0);
+    const nested = join(repo, "nested");
+    expect(git("init", "-q", "-b", "main", nested).exitCode).toBe(0);
+    // the nested repository's workspace comes first: it is no checkout of the outer one
+    const { socket } = await labeling([
+      terminal("t1", { cwd: nested, labels: { "herdr.space": "N", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "U" } }),
+    ]);
+    expect((await worktreeList("S", socket)).source).toMatchObject({ repo_root: repo, source_checkout_path: repo, source_workspace_id: "S" });
+    const created = await worktreeCreate({ workspaceId: "S", branch: "moved", path: join(dir, "old") }, socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.repo_root ?? null])).toEqual([["N", null], ["S", repo], [created.workspace.workspace_id, repo]]);
+    // a checkout moved away and another put where it was: neither is deleted for the old workspace
+    expect(git("-C", repo, "worktree", "move", join(dir, "old"), join(dir, "new")).exitCode).toBe(0);
+    await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "other", join(dir, "old")).exitCode).toBe(0);
+    await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect([existsSync(join(dir, "new", "README.md")), existsSync(join(dir, "old", "README.md"))]).toEqual([true, true]);
+    // removed outside Ovis and added again at the same path: git reuses the name of its git folder, not the folder
+    const again = await worktreeCreate({ workspaceId: "S", branch: "first", path: join(dir, "again") }, socket);
+    expect(git("-C", repo, "worktree", "remove", join(dir, "again")).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "second", join(dir, "again")).exitCode).toBe(0);
+    await expect(worktreeRemove(again.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(existsSync(join(dir, "again", "README.md"))).toBeTrue();
+    // an existing branch is checked out as it is, whatever base was asked
+    expect(git("-C", repo, "branch", "kept").exitCode).toBe(0);
+    expect(await worktreeCreate({ workspaceId: "S", branch: "kept", base: "main", path: join(dir, "kept") }, socket)).toMatchObject({ worktree: { branch: "kept" } });
+
+    // where the Herdr app arranges the core, ping offers no worktrees and the calls are refused
+    const app = await living([terminal("t1", { cwd: repo })]);
+    expect((await ping(app.socket)).layout?.worktrees).toBeFalse();
+    await expect(worktreeCreate({ workspaceId: "s1", branch: "app", path: join(dir, "app-wt") }, app.socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(existsSync(join(dir, "app-wt"))).toBeFalse();
+  });
+
+  it("refuses a worktree from a linked checkout and a folder outside git, as herdr does", async () => {
+    const { dir, repo, git } = repository();
+    const linked = join(dir, "linked");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "linked", linked).exitCode).toBe(0);
+    const { socket, runs } = await labeling([
+      terminal("t1", { cwd: linked, labels: { "herdr.space": "L", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: dir, labels: { "herdr.space": "P", "herdr.tab": "U" } }),
+    ]);
+    await expect(worktreeCreate({ workspaceId: "L", branch: "other", path: join(dir, "other") }, socket)).rejects.toMatchObject({ code: "linked_worktree_source" });
+    expect((await worktreeList("L", socket)).source).toMatchObject({ source_checkout_path: linked, source_workspace_id: null });
+    await expect(worktreeList("P", socket)).rejects.toMatchObject({ code: "not_git_worktree" });
+    expect(existsSync(join(dir, "other"))).toBeFalse();
+    // a repository with no commit yet: git's refusal, which the route turns into repository_without_commits
+    expect(git("init", "-q", "-b", "main", join(dir, "empty")).exitCode).toBe(0);
+    const empty = await labeling([terminal("t1", { cwd: join(dir, "empty"), labels: { "herdr.space": "E", "herdr.tab": "T" } })]);
+    await expect(worktreeCreate({ workspaceId: "E", branch: "first", path: join(dir, "first") }, empty.socket)).rejects.toMatchObject({ code: "worktree_create_failed", message: expect.stringMatching(/invalid reference: HEAD\b/u) });
+    expect(existsSync(join(dir, "first"))).toBeFalse();
+    expect([...runs, ...empty.runs]).toEqual([]);
+  });
 
   it("keeps a renamed workspace's name on a new tab, so it stays when the tab it was given in closes", async () => {
     const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T", "ovis.workspace": "Named" } })], NO_DOC);
@@ -707,11 +917,14 @@ describe("herdr-core adapter, new and closed terminals", () => {
 });
 
 describe("herdr-core adapter, agents", () => {
+  /** A core whose panes run POSIX shells, whatever this PC is: what runs in them is hc's to say, never a process table's. */
+  const posix = (terminals: HcTerminal[], extra: Record<string, Handler> = {}, platform: NodeJS.Platform = "linux") => setup(terminals, extra, undefined, undefined, { platform, processTable: () => { throw new Error("no process table off Windows"); } });
+
   it("starts an agent by typing its kind and quoted arguments into the pane's idle shell, and answers once it is in front", async () => {
     const shell = { pid: 10, name: "bash" };
     const agent = { pid: 11, name: "claude" };
     const record = terminal("t1", { cols: 90, rows: 20, pid: 10, argv: ["/bin/bash"], foreground: shell });
-    const { socket, cores } = await setup([record], {
+    const { socket, cores } = await posix([record], {
       // hc's foreground: the shell until the line was typed, then the agent
       "terminal.get": () => ({ ...record, foreground: cores[0]!.typed.length > 0 ? agent : shell }),
     });
@@ -735,11 +948,11 @@ describe("herdr-core adapter, agents", () => {
       return { record, holder, get };
     };
     const node = sequence([{ pid: 11, name: "node", argv: ["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"] }]);
-    const started = await setup([node.record], { "terminal.get": node.get });
+    const started = await posix([node.record], { "terminal.get": node.get });
     node.holder.cores = started.cores;
     await agentStart({ name: "claude-1", kind: "claude", paneId: "t1" }, started.socket);
     const missing = sequence([{ pid: 12, name: "python3", argv: ["/usr/bin/python3", "/usr/lib/command-not-found", "--", "amp"] }, shell]);
-    const failed = await setup([missing.record], { "terminal.get": missing.get });
+    const failed = await posix([missing.record], { "terminal.get": missing.get });
     missing.holder.cores = failed.cores;
     await expect(agentStart({ name: "amp-1", kind: "amp", paneId: "t1" }, failed.socket)).rejects.toMatchObject({ code: "agent_start_failed" });
   });
@@ -748,7 +961,7 @@ describe("herdr-core adapter, agents", () => {
     const shell = { pid: 10, name: "bash" };
     const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[]; agentUp: boolean } = { cores: [], agentUp: false };
-    const ready = await setup([record], { "terminal.get": () => ({ ...record, foreground: holder.agentUp ? { pid: 11, name: "claude" } : shell }) });
+    const ready = await posix([record], { "terminal.get": () => ({ ...record, foreground: holder.agentUp ? { pid: 11, name: "claude" } : shell }) });
     holder.cores = ready.cores;
     const starting = agentStart({ name: "claude-1", kind: "claude", paneId: "t1" }, ready.socket);
     let started = false;
@@ -765,14 +978,14 @@ describe("herdr-core adapter, agents", () => {
     const shell = { pid: 10, name: "bash" };
     const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
     const holder: { cores: FakeCore[] } = { cores: [] };
-    const ready = await setup([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "cursor-agent" } : shell }) });
+    const ready = await posix([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "cursor-agent" } : shell }) });
     holder.cores = ready.cores;
     await agentStart({ name: "cursor-1", kind: "cursor", paneId: "t1" }, ready.socket);
     expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'cursor-agent'\r");
   });
 
   it("refuses a pane with a program in front, a kind that is no command, and an argument with a control character", async () => {
-    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 12, name: "vim" } })]);
+    const { socket, cores } = await posix([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 12, name: "vim" } })]);
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
     await expect(agentStart({ name: "x", kind: "rm -rf /", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: ["a\u0015touch /tmp/x\r"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
@@ -782,7 +995,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("types into no pane whose own program is not a shell, even with that program in front of itself", async () => {
     // a terminal the app started as a program: hc reports it in front of itself, like a shell
-    const { socket, cores } = await setup([
+    const { socket, cores } = await posix([
       terminal("t1", { pid: 10, argv: ["claude"], foreground: { pid: 10, name: "claude", argv: ["claude"] } }),
       // a template or a line: dash runs it as its child and stays in front under its own pid
       terminal("t2", { pid: 20, argv: ["sh", "-c", "claude"], foreground: { pid: 20, name: "sh", argv: ["sh", "-c", "claude"] } }),
@@ -794,7 +1007,7 @@ describe("herdr-core adapter, agents", () => {
   });
 
   it("types into no shell that exec'd a non-plain shell, and checks fish's quoting on the shell in front", async () => {
-    const { socket, cores } = await setup([
+    const { socket, cores } = await posix([
       terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "bash", argv: ["bash", "-c", "read line"] } }),
       terminal("t2", { pid: 20, argv: ["/bin/bash"], foreground: { pid: 20, name: "fish", argv: ["fish"] } }),
     ]);
@@ -805,7 +1018,7 @@ describe("herdr-core adapter, agents", () => {
 
   it("refuses a backslash fish would read differently", async () => {
     const fish = { pid: 20, name: "fish", argv: ["/usr/bin/fish"] };
-    const { socket, cores } = await setup([terminal("t2", { pid: 20, argv: ["/usr/bin/fish"], foreground: fish })]);
+    const { socket, cores } = await posix([terminal("t2", { pid: 20, argv: ["/usr/bin/fish"], foreground: fish })]);
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t2", args: ["C:\\dir"] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     expect(cores[0]!.typed).toEqual([]);
   });
@@ -814,14 +1027,41 @@ describe("herdr-core adapter, agents", () => {
     const login = { pid: 10, name: "zsh", argv: ["-zsh", "-l"] };
     const record = terminal("t1", { pid: 10, argv: ["-zsh", "-l"], foreground: login });
     const holder: { cores: FakeCore[] } = { cores: [] };
-    const ready = await setup([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "claude" } : login }) });
+    const ready = await posix([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "claude" } : login }) });
     holder.cores = ready.cores;
     await agentStart({ name: "y", kind: "claude", paneId: "t1" }, ready.socket);
     expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'claude'\r");
   });
 
+  it("takes a program for a shell by its exact name off Windows: in another case, as an .exe or after a backslash it is none", async () => {
+    // with a program in front, a shell is busy and any other pane no shell to start in
+    const panes = [["/bin/BASH", "agent_pane_unsupported"], ["Zsh", "agent_pane_unsupported"], ["bash.exe", "agent_pane_unsupported"], ["/opt/odd\\bash", "agent_pane_unsupported"], ["/usr/bin/pwsh", "agent_pane_unsupported"], ["cmd.exe", "agent_pane_unsupported"], ["/bin/bash", "agent_pane_busy"], ["-zsh", "agent_pane_busy"]] as const;
+    for (const platform of ["linux", "darwin"] as const) {
+      for (const [program, code] of panes) {
+        const { socket, cores } = await posix([terminal("t1", { pid: 10, argv: [program], foreground: { pid: 12, name: "vim" } })], {}, platform);
+        await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code });
+        expect(cores[0]!.typed).toEqual([]);
+      }
+    }
+  });
+
+  it("reads a program's path at a / alone and in its own case off Windows, and types the same line on macOS", async () => {
+    for (const [name, started] of [["/opt/claude/run", true], ["/opt/Claude/run", false], ["C:\\tools\\claude.exe", false]] as const) {
+      const shell = { pid: 10, name: "bash" };
+      const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
+      const holder: { cores: FakeCore[]; looks: number } = { cores: [], looks: 0 };
+      // the program in front, then the shell back: only a program named for the agent is a start
+      const ready = await posix([record], { "terminal.get": () => ({ ...record, foreground: !holder.cores[0]?.typed.length ? shell : holder.looks++ === 0 ? { pid: 11, name } : shell }) }, "darwin");
+      holder.cores = ready.cores;
+      const start = agentStart({ name: "x", kind: "claude", paneId: "t1" }, ready.socket);
+      if (started) await start;
+      else await expect(start).rejects.toMatchObject({ code: "agent_start_failed" });
+      expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'claude'\r");
+    }
+  });
+
   it("types into no shell that has become another program with exec, its pid unchanged", async () => {
-    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "claude", argv: ["claude"] } })]);
+    const { socket, cores } = await posix([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 10, name: "claude", argv: ["claude"] } })]);
     await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
     expect(cores[0]!.typed).toEqual([]);
   });
@@ -832,28 +1072,157 @@ describe("herdr-core adapter, agents", () => {
     expect(kinds).toContain("claude");
     expect(kinds).toContain("codex");
     expect(kinds).not.toContain("omo");
+    expect(kinds).toContain("cmd");
+  });
+});
+
+describe("herdr-core adapter, agents on Windows", () => {
+  const POWERSHELL = "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  // what hc runs for a terminal started with no program (a live record, hc 0.1.17; its hook cut short)
+  const HC_SHELL = ["powershell.exe", "-NoExit", "-Command", "$global:__hc_prompt = $function:prompt; function global:prompt { $p = & $global:__hc_prompt; $p }"];
+  const row = (pid: number, parent: number, path: string, commandLine = `"${path}"`): ProcessRow => ({ pid, parent, path, commandLine });
+  // the pane's shell, and the console hosts below it, which are no program it runs
+  const idle = [row(10, 9, POWERSHELL, `"${POWERSHELL}" -NoExit -Command x`), row(12, 10, "C:\\WINDOWS\\system32\\conhost.exe", "\\??\\C:\\WINDOWS\\system32\\conhost.exe 0xffffffff -ForceV1"), row(15, 10, "C:\\Users\\u\\conpty\\OpenConsole.exe")];
+  // named as its file is: Windows takes a program's name in any case
+  const claude = row(11, 10, "C:\\Users\\u\\.local\\bin\\Claude.exe", "\"C:\\Users\\u\\.local\\bin\\Claude.exe\" --model x");
+
+  /**
+   * A pane whose own program is `argv`, at `path`, which hc names in front of itself whatever runs
+   * in it, as it does on Windows; this PC's process table is `table` for what was typed so far.
+   */
+  async function windows(argv: string[], table: (typed: string) => ProcessRow[] | Promise<ProcessRow[]>, path = POWERSHELL) {
+    let cores: FakeCore[] = [];
+    const typed = () => cores[0]?.typed.map((write) => write.text).join("") ?? "";
+    const front = { pid: 10, name: path.split("\\").pop()!, argv: [path, ...argv.slice(1)] };
+    const ready = await setup([terminal("t1", { cwd: "C:\\work", pid: 10, argv, foreground: front })], {}, undefined, undefined, { platform: "win32", processTable: async () => await table(typed()) });
+    cores = ready.cores;
+    return { ...ready, typed };
+  }
+
+  it("offers the agents Ovis knows by kind, leaving the ones Ovis starts itself to the server", async () => {
+    const { socket, typed } = await windows(HC_SHELL, () => idle);
+    const kinds = (await agentManifests(socket)).manifests.map((manifest) => manifest.agent);
+    expect(kinds).toContain("claude");
+    expect(kinds).toContain("codex");
+    expect(kinds).not.toContain("omo");
+    // Command Code's command `cmd` is cmd.exe here: not offered, and not started when asked
+    expect(kinds).not.toContain("cmd");
+    await expect(agentStart({ name: "x", kind: "cmd", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    expect(typed()).toBe("");
   });
 
-  it("offers no agent on Windows, and types no start into its PowerShell, which the start cannot quote for", async () => {
-    const { socket, cores } = await setup([terminal("t1", { argv: ["pwsh.exe", "-NoExit", "-Command", "x"] })]);
-    // one request line straight to the adapter: herdr's client would take the Unix socket for a Windows pipe name
-    const ask = (method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve, reject) => {
-      let text = "";
-      void Bun.connect({ unix: socket, socket: {
-        open: (connection) => { connection.write(`${JSON.stringify({ id: "w", method, params })}\n`); },
-        data: (_connection, chunk) => { text += chunk.toString(); if (text.includes("\n")) resolve(JSON.parse(text) as Record<string, unknown>); },
-        connectError: (_connection, error) => reject(error),
-      } });
-    });
-    const platform = process.platform;
-    Object.defineProperty(process, "platform", { value: "win32" });
-    try {
-      expect(await ask("server.agent_manifests", {})).toMatchObject({ result: { manifests: [] } });
-      expect(await ask("agent.start", { pane_id: "t1", kind: "claude" })).toMatchObject({ error: { code: "agent_pane_unsupported" } });
-    } finally {
-      Object.defineProperty(process, "platform", { value: platform });
+  it("starts an agent in hc's own PowerShell by typing a call, and answers once it runs below the shell", async () => {
+    const { socket, typed } = await windows(HC_SHELL, (line) => line ? [...idle, claude] : idle);
+    // one Windows PowerShell 5.1 would split is refused, and nothing is typed for it
+    await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: ['"fix the bug"'] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    // and one cmd would run part of, were the agent a .cmd file
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1", args: ['fix "a&echo ran&b" now'] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    expect(typed()).toBe("");
+    await agentStart({ name: "claude-1", kind: "claude", paneId: "t1", args: ["--model", "say \"hi\"", ""] }, socket);
+    // no Ctrl-U, which PowerShell would type into the line; the quote and the empty argument go as
+    // Windows PowerShell must give them for the agent to read them back
+    expect(typed()).toBe(`& 'claude' '--model' 'say \\"hi\\"' '""'\r`);
+  });
+
+  it("types into no pane whose own program runs a program: the app's own, a script, cmd /c, and no cmd that expands !", async () => {
+    for (const argv of [["powershell.exe", "-NoExit", "-Command", "& 'claude'"], ["powershell.exe", "-File", "start.ps1"], ["cmd.exe", "/d", "/c", "claude"], ["cmd.exe", "/q/k", "claude"], ["CMD.EXE", "/R", "x"], ["cmd.exe", "/V:ON"], ["claude.exe"]]) {
+      const { socket, typed } = await windows(argv, () => idle);
+      await expect(agentStart({ name: "x", kind: "codex", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_unsupported" });
+      expect(typed()).toBe("");
     }
-    expect(cores.flatMap((core) => core.typed)).toEqual([]);
+  });
+
+  it("types into no POSIX shell on Windows: Git Bash's MSYS would rewrite an argument, and WSL's agent is in no Windows table", async () => {
+    for (const path of ["C:\\Program Files\\Git\\usr\\bin\\bash.exe", "C:\\WINDOWS\\system32\\bash.exe"]) {
+      const { socket, typed } = await windows([path, "--login", "-i"], () => idle, path);
+      await expect(agentStart({ name: "x", kind: "codex", paneId: "t1", args: ["/review the diff"] }, socket)).rejects.toMatchObject({ code: "agent_pane_unsupported" });
+      expect(typed()).toBe("");
+    }
+  });
+
+  it("waits while the shell runs a program below it, while the table cannot be read, and until hc names the shell in front", async () => {
+    for (const table of [[...idle, row(13, 10, "C:\\Program Files\\Git\\cmd\\git.exe", "git fetch")], []]) {
+      const { socket, typed } = await windows(HC_SHELL, () => table);
+      await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
+      expect(typed()).toBe("");
+    }
+    const { socket, cores } = await setup([terminal("t1", { pid: 10, argv: HC_SHELL })], {}, undefined, undefined, { platform: "win32", processTable: async () => idle });
+    await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });
+    expect(cores[0]!.typed).toEqual([]);
+  });
+
+  it("counts an agent run through node as started, and a program that ends without it as a failed start", async () => {
+    const node = row(13, 10, "C:\\Program Files\\nodejs\\node.exe", "\"C:\\Program Files\\nodejs\\node.exe\" C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js");
+    const started = await windows(HC_SHELL, (line) => line ? [...idle, node] : idle);
+    await agentStart({ name: "codex-1", kind: "codex", paneId: "t1" }, started.socket);
+    // npm's .ps1 shim names the script with forward slashes
+    const shimmed = row(13, 10, "C:\\Program Files\\nodejs\\node.exe", "\"C:\\Program Files\\nodejs\\node.exe\" C:\\Users\\u\\AppData\\Roaming\\npm/node_modules/@openai/codex/bin/codex.js");
+    const throughShim = await windows(HC_SHELL, (line) => line ? [...idle, shimmed] : idle);
+    await agentStart({ name: "codex-1", kind: "codex", paneId: "t1" }, throughShim.socket);
+    // an npm shim runs below the shell, and ends with no agent come up
+    const shim = row(14, 10, "C:\\WINDOWS\\system32\\cmd.exe", "C:\\WINDOWS\\system32\\cmd.exe /c \"C:\\Users\\u\\AppData\\Roaming\\npm\\amp.cmd\"");
+    let looks = 0;
+    // the second look cannot read the table, which says nothing either way
+    const failed = await windows(HC_SHELL, (line) => line ? [[...idle, shim], [], idle][Math.min(looks++, 2)]! : idle);
+    await expect(agentStart({ name: "amp-1", kind: "amp", paneId: "t1" }, failed.socket)).rejects.toMatchObject({ code: "agent_start_failed" });
+    expect(looks).toBe(3);
+  });
+
+  it("types cmd's line and PowerShell 7's, and refuses an argument cmd or PowerShell 7 would not pass unchanged", async () => {
+    const shells = [
+      // the name unquoted: a .cmd shim found on the PATH under a quoted name reads the current folder as its own
+      { argv: ["cmd.exe"], path: "C:\\WINDOWS\\system32\\cmd.exe", refused: "%PATH%", line: 'claude "--model" "a b"\r' },
+      { argv: ["pwsh.exe", "-NoLogo"], path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", refused: "say \"hi\"", line: "& 'claude' '--model' 'a b'\r" },
+      // hc's own, where PowerShell 7 is on the PATH
+      { argv: ["pwsh.exe", ...HC_SHELL.slice(1)], path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", refused: "", line: "& 'claude' '--model' 'a b'\r" },
+      // Windows takes a name and a switch in any case
+      { argv: [POWERSHELL.toUpperCase(), "-nologo", "-NOEXIT"], path: POWERSHELL, refused: '"fix the bug"', line: "& 'claude' '--model' 'a b'\r" },
+    ];
+    for (const shell of shells) {
+      const { socket, typed } = await windows(shell.argv, (line) => line ? [...idle, claude] : idle, shell.path);
+      await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: [shell.refused] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+      expect(typed()).toBe("");
+      await agentStart({ name: "claude-1", kind: "claude", paneId: "t1", args: ["--model", "a b"] }, socket);
+      expect(typed()).toBe(shell.line);
+    }
+  });
+
+  it("holds what is typed behind the start line while it reads the table, and not while the start waits for its agent", async () => {
+    const reading = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<void>();
+    let up = false;
+    const { socket, typed } = await windows(HC_SHELL, async (line) => {
+      if (line) return up ? [...idle, claude] : idle;
+      reading.resolve();
+      await read.promise;
+      return idle;
+    });
+    const starting = agentStart({ name: "claude-1", kind: "claude", paneId: "t1" }, socket);
+    let started = false;
+    void starting.then(() => { started = true; });
+    await reading.promise;
+    const early = paneSendText("t1", "early", socket);
+    read.resolve();
+    await early;
+    expect(typed()).toBe("& 'claude'\rearly");
+    // typed while the agent is not up yet: it goes in, and the start is still waiting
+    await paneSendText("t1", "late", socket);
+    expect(typed()).toBe("& 'claude'\rearlylate");
+    expect(started).toBe(false);
+    up = true;
+    await starting;
+  });
+
+  it("offers and starts no agent on another machine: this PC's table says nothing of its shell, whichever it runs", async () => {
+    let reads = 0;
+    for (const [argv, name] of [[HC_SHELL, "powershell.exe"], [["/bin/bash"], "bash"]] as const) {
+      const { socket, cores } = await setup([terminal("lab/t1", { pid: 41, argv: [...argv], foreground: { pid: 41, name } })], {}, undefined, "lab", { platform: "win32", processTable: async () => { reads += 1; return idle; } });
+      expect((await agentManifests(socket)).manifests).toEqual([]);
+      await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_unsupported" });
+      await expect(agentStart({ name: "x", kind: "claude", paneId: "t9" }, socket)).rejects.toMatchObject({ code: "pane_not_found" });
+      expect(cores.flatMap((core) => core.typed)).toEqual([]);
+    }
+    expect(reads).toBe(0);
   });
 });
 });
@@ -908,6 +1277,16 @@ describe("herdr-core adapter, Ovis's layout document", () => {
   const labeled = (address: string, space = "S", tab = "T") => terminal(address, { labels: { "herdr.space": space, "herdr.tab": tab } });
   const rects = async (socket: string) => Object.fromEntries((await sessionSnapshot(socket)).layouts[0]!.panes.map((pane) => [pane.pane_id, pane.rect]));
 
+  it("marks as its own tab exactly the panes it refuses to split: a helper's and Other terminals' (#2806)", async () => {
+    const { socket } = await core([labeled("t1"), terminal("t5", { parent: "t1" }), terminal("t6")]);
+    const panes = (await sessionSnapshot(socket)).panes as HerdrPane[];
+    expect(panes.map((pane) => [pane.pane_id, pane.own_tab])).toEqual([["t1", undefined], ["t5", true], ["t6", true]]);
+    for (const pane of panes.filter((candidate) => candidate.own_tab)) {
+      await expect(herdrRpc("pane.split", { target_pane_id: pane.pane_id, direction: "right" }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    }
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+  });
+
   it("splits right then down as one tree, laid out top down whatever size the viewers make the terminals (#2812)", async () => {
     const { socket, terminals, store } = await core([labeled("t1")]);
     expect((await herdrRpc<{ pane: { pane_id: string; tab_id: string } }>("pane.split", { target_pane_id: "t1", direction: "right" }, socket)).pane).toMatchObject({ pane_id: "t2", tab_id: "T" });
@@ -957,6 +1336,36 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     expect((await sessionSnapshot(socket)).layouts[0]).toMatchObject({ zoomed: false });
   });
 
+  it("moves a pane beside another of its tab in one edit of the document, on every side (#1819)", async () => {
+    const { socket, store } = await core([labeled("t1")]);
+    await herdrRpc("pane.split", { target_pane_id: "t1", direction: "right" }, socket);
+    const writes = store.writes.length;
+    // below t2, t2's half of the tab: herdr-core moves within a tab, so no tab of its own in between
+    expect(await paneMoveBeside("t1", "t2", "down", socket)).toEqual({ changed: true, reason: null });
+    expect(store.writes).toHaveLength(writes + 1);
+    expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 1000, height: 500 }, t1: { x: 0, y: 500, width: 1000, height: 500 } });
+    await paneMoveBeside("t1", "t2", "up", socket);
+    expect(await rects(socket)).toEqual({ t1: { x: 0, y: 0, width: 1000, height: 500 }, t2: { x: 0, y: 500, width: 1000, height: 500 } });
+    await paneMoveBeside("t1", "t2", "right", socket);
+    expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 500, height: 1000 }, t1: { x: 500, y: 0, width: 500, height: 1000 } });
+    await paneMoveBeside("t1", "t2", "left", socket);
+    expect(await rects(socket)).toEqual({ t1: { x: 0, y: 0, width: 500, height: 1000 }, t2: { x: 500, y: 0, width: 500, height: 1000 } });
+    // a zoomed tab shows every pane again, the moved one with them
+    await herdrRpc("pane.zoom", { pane_id: "t2", mode: "on" }, socket);
+    await paneMoveBeside("t1", "t2", "down", socket);
+    expect((await sessionSnapshot(socket)).layouts[0]).toMatchObject({ zoomed: false });
+  });
+
+  it("moves a pane beside another tab's pane in no tab of its own and refuses where the Herdr app arranges", async () => {
+    const { socket, store } = await core([labeled("t1"), labeled("t2"), labeled("t3", "S", "U")]);
+    expect(await paneMoveBeside("t1", "t3", "right", socket)).toEqual({ changed: false, reason: "cross_tab" });
+    await expect(herdrRpc("pane.move", { pane_id: "t1", destination: { type: "tab", tab_id: "U", target_pane_id: "t3", split: "right" } }, socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(store.writes).toEqual([]);
+    store.docs.set("herdr-app", { value: { spaces: [] }, version: 1 });
+    await expect(paneMoveBeside("t1", "t2", "down", socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(store.writes).toEqual([]);
+  });
+
   it("reorders workspaces and tabs, Other terminals staying last", async () => {
     const { socket } = await core([labeled("t1", "A", "A1"), labeled("t2", "A", "A2"), labeled("t3", "B", "B1"), terminal("t4")]);
     await herdrRpc("workspace.move", { workspace_id: "B", insert_index: 0 }, socket);
@@ -1004,7 +1413,7 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     const foreign = documents();
     foreign.docs.set("ovis-layout", { value: { schema: 2 }, version: 3 });
     const refused = await core([labeled("t1")], foreign);
-    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false, worktrees: true });
     await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, refused.socket)).rejects.toMatchObject({ code: "unsupported" });
     expect(refused.terminals.map((held) => held.address)).toEqual(["t1"]);
     // two writers came first: the shell runs, and the answer says where it went
@@ -1033,5 +1442,99 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     expect((await paneGet("t1", socket)).label).toBe("logs");
     await herdrRpc("pane.rename", { pane_id: "t1", label: null }, socket);
     expect((await paneGet("t1", socket)).label).toBe("shell");
+  });
+});
+
+describe("another machine of the core, as its own PC (#2497)", () => {
+  // as hc lists them: this PC's own t5, lab's t1 and its helper t2, and t1 of another machine
+  const listed = () => [terminal("t5", { cwd: "/here" }), terminal("lab/t1", { cwd: "/there", pid: 41, foreground: { name: "bash", pid: 41 } }), terminal("lab/t2", { parent: "lab/t1" }), terminal("vps/t1")];
+  const LAB_LAYOUT = { spaces: [{ id: "lab-s1", name: "lab work", tabs: [{ id: "lab-s1t1", name: "", root: { type: "row", id: "r", children: [{ type: "block", id: "b1", content: { terminal: "t1" } }] } }] }] };
+
+  it("shows only that machine's terminals, by its own addresses, laid out by its own document", async () => {
+    const { socket, cores } = await setup(listed(), { "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }) }, undefined, "lab");
+    const snapshot = await sessionSnapshot(socket);
+    expect(snapshot.workspaces.map((w) => w.label)).toEqual(["lab work"]);
+    expect(snapshot.panes.map((p) => [p.pane_id, p.cwd, p.parent_pane_id ?? null])).toEqual([["t1", "/there", null], ["t2", "/home/u", "t1"]]);
+    expect(cores[0]!.calls.filter((call) => call.method === "doc.get").map((call) => call.params["on"])).toEqual(["lab-id", "lab-id"]);
+  });
+
+  it("reaches each terminal by its address on the core, and starts a new one there", async () => {
+    let started: Record<string, unknown> = {};
+    const { socket, cores } = await setup(listed(), {
+      "terminal.run": (params) => {
+        started = params;
+        return terminal("lab/t9", { labels: params["labels"] as Record<string, string> });
+      },
+    }, undefined, "lab");
+    await paneSendKeys("t1", ["Up"], socket);
+    expect(cores[0]!.calls.find((call) => call.method === "terminal.keys")?.params).toEqual({ terminal: "lab-id/t1", keys: ["up"] });
+    const failure = await paneSendText("vps/t1", "x", socket).then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(failure).toBe("pane_not_found");
+    await workspaceCreate({ label: "new" }, socket).catch(() => null);
+    expect(started["on"]).toBe("lab-id");
+  });
+
+  it("reaches no other machine that took its name after a rename", async () => {
+    // lab was renamed, and vps took the name lab: its id is not lab's
+    const { socket, cores } = await setup(listed(), { "machine.list": () => ({ machines: [{ name: "lab", id: "vps-id", host: "vps", state: "connected", target: "vps", version: "0.1.17" }] }) }, undefined, "lab");
+    const failure = await paneSendText("t1", "x", socket).then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(failure).toBe("connect_failed");
+    expect(cores[0]!.typed).toEqual([]);
+    expect(cores[0]!.calls.filter((call) => call.method !== "machine.list" && call.method !== "hello")).toEqual([]);
+  });
+
+  it("tells no process of that machine, and opens no checkout here", async () => {
+    const { socket } = await setup(listed(), {}, undefined, "lab");
+    expect(await paneProcessInfo("t1", socket)).toEqual({ pane_id: "t1", shell_pid: null, foreground_process_group_id: null, foreground_processes: [] });
+    expect((await ping(socket)).layout?.worktrees).toBe(false);
+    const refused = await worktreeList("lab-s1", socket).then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(refused).toBe("unsupported");
+  });
+
+  it("offers and starts an agent there from Linux or macOS by what hc says runs in its shell", async () => {
+    for (const platform of ["linux", "darwin"] as const) {
+      const shell = { pid: 41, name: "bash" };
+      const record = terminal("lab/t1", { pid: 41, argv: ["/bin/bash"], foreground: shell });
+      const holder: { cores: FakeCore[] } = { cores: [] };
+      const ready = await setup([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 42, name: "claude" } : shell }) }, undefined, "lab", { platform, processTable: () => { throw new Error("no process table off Windows"); } });
+      holder.cores = ready.cores;
+      expect((await agentManifests(ready.socket)).manifests.map((manifest) => manifest.agent)).toContain("claude");
+      await agentStart({ name: "x", kind: "claude", paneId: "t1" }, ready.socket);
+      expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'claude'\r");
+    }
+  });
+
+  it("streams that machine's events as its own, and none of this PC's or another machine's", async () => {
+    let channel = 0;
+    const { socket, cores } = await setup(listed(), {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: listed() };
+      },
+    }, undefined, "lab");
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.created" }, { type: "layout.updated" }, { type: "pane.agent_status_changed", pane_id: "t1" }], {
+      onEvent: (frame) => frames.push(frame),
+      onStarted: () => started.resolve(),
+      onClose: () => ended.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores.at(-1)!;
+    core.notify(channel, "event", { seq: 2, type: "status", terminal: "t1", data: { status: { app: "codex", state: "working" } } });
+    core.notify(channel, "event", { seq: 3, type: "created", terminal: "vps/t3", data: { address: "vps/t3", state: "live", turn: 0 } });
+    core.notify(channel, "event", { seq: 4, type: "doc", data: { name: "herdr-app", version: 2 } });
+    core.notify(channel, "event", { seq: 5, type: "status", terminal: "lab/t1", data: { status: { app: "codex", state: "working" } } });
+    core.notify(channel, "event", { seq: 6, type: "doc", machine: "lab", data: { name: "herdr-app", version: 2 } });
+    core.notify(channel, "event", { seq: 7, type: "created", terminal: "lab/t4", data: { address: "lab/t4", state: "live", turn: 0, parent: "lab/t1" } });
+    core.notify(channel, "missed", { seq: 8, terminals: [] });
+    await ended.promise;
+    expect(frames).toEqual([
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "working", agent: "codex" } },
+      { event: "layout.updated", data: { type: "layout_updated" } },
+      { event: "pane.created", data: { type: "pane_created", pane_id: "t4" } },
+    ]);
   });
 });

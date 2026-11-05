@@ -1,5 +1,6 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
+import { SETTINGS_COMPOSER_JA } from "./i18n/settings-composer.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
 import { CHAT_JA } from "./i18n/chat.ja.ts";
@@ -27,6 +28,34 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
+  "Attach files": "ファイルを添付",
+  "Sign out": "サインアウト",
+
+  "Only for {pc}": "{pc} のみ",
+  "Could not verify this device. It was declined: approve only a device you are signing in yourself.": "このデバイスを確認できなかったため拒否しました。自分でサインインしているデバイスだけを承認してください。",
+  "Account": "アカウント",
+  "Finish signing in in your browser.": "ブラウザーでサインインを完了してください。",
+  "Signed in with {provider}": "{provider} でサインイン中",
+  "Signing in…": "サインイン中…",
+  "The sign-in did not finish. Try again.": "サインインが完了しませんでした。もう一度お試しください。",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub を開いてこのコードを入力してください。このページで自分で始めたサインインのときだけ入力してください。",
+  "Waiting for GitHub…": "GitHub の承認を待っています…",
+  "Open GitHub": "GitHub を開く",
+  "GitHub refused the sign-in.": "GitHub でサインインが拒否されました。",
+  "The code expired. Sign in again to get a new one.": "コードの有効期限が切れました。もう一度サインインして新しいコードを受け取ってください。",
+  "This account service can't sign in a browser on this PC yet.": "このアカウントサービスは、この PC のブラウザーでのサインインにまだ対応していません。",
+  "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
+  "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
+  "Add {device}?": "{device} を追加しますか？",
+  "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
+  "Pick the number on {device}": "{device} に表示されている数字を選んでください",
+  "Didn't ask for this? Deny it.": "心当たりがなければ拒否してください。",
+  "Deny": "拒否",
+  "never": "なし",
+  "just now": "たった今",
+  "{n} min ago": "{n} 分前",
+  "{n} h ago": "{n} 時間前",
   "Remove": "削除",
   "Remove {name}": "{name} を削除",
   "Save": "保存",
@@ -83,6 +112,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "ターミナルを表示",
   "Show the chat": "チャットを表示",
   "Close this half": "この半分を閉じる",
+  "Remove from the split": "分割から外す",
+  "Resize the split": "分割のサイズを変更",
   "Toggle sidebar (⌘⇧B)": "サイドバーの切り替え (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "チャット履歴 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "ライブターミナル (⌘⇧J)",
@@ -108,6 +139,12 @@ const BASE: Record<string, string> = {
   "The other PC's answer could not be read": "別の PC の応答を読み取れませんでした",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
+  "Goal: {objective}": "目標: {objective}",
+  "Transcript size unknown": "記録のサイズは不明",
+  "Transcript {size}": "記録 {size}",
+  "Work time unknown": "作業時間は不明",
+  "Worked at least {duration}": "{duration} 以上作業",
+  "Worked {duration}": "{duration} 作業",
   "Share link": "リンクを共有",
   "Copy address": "アドレスをコピー",
   "Link copied": "リンクをコピーしました",
@@ -169,6 +206,7 @@ const BASE: Record<string, string> = {
   // ---- command palette ----
   "Refresh": "更新",
   "Search panes and actions": "ペインと操作を検索",
+  "Search conversation": "会話を検索",
 
   // ---- new workspace ----
   "Browse": "参照",
@@ -204,6 +242,7 @@ const BASE: Record<string, string> = {
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
+  "Show {name}": "{name} を表示",
   "Check again": "再確認",
   "Setup guide": "セットアップガイド",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
@@ -319,10 +358,13 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "ペインの入れ替えが拒否されました: {reason}",
   "The panes are in different tabs.": "ペインが別々のタブにあります。",
   "Choose two different panes.": "異なる2つのペインを選んでください。",
+  "The pane moved to the right instead.": "ペインは代わりに右側へ移動しました。",
+  "The pane moved below instead.": "ペインは代わりに下側へ移動しました。",
   "A pane is no longer available.": "ペインは利用できなくなりました。",
   "There is no pane on that side.": "その方向にペインはありません。",
   "Split pane right": "ペインを右に分割",
   "Split pane down": "ペインを下に分割",
+  "Zoom or unzoom pane": "ペインのズームまたは解除",
   "Plan: {done} of {total} done": "計画: {total} 件中 {done} 件完了",
   "Plan": "計画",
   "Something went wrong": "問題が発生しました",
@@ -367,12 +409,32 @@ const BASE: Record<string, string> = {
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} がリレー経由でペアリングしようとしています。その画面に次の数字が表示されている場合だけ承認してください:",
   "Decline": "拒否",
   "differs": "不一致",
+  "this PC": "このPC",
+  "It matches": "一致しています",
+  "Does {name}'s screen show this ID?": "{name} の画面にこの ID が表示されていますか？",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "PC は「設定 → スマートフォンとデバイス」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
+  "ID of the PC this code found": "このコードで見つかった PC の ID",
+  "A code has ten letters and digits, like 7K3QD-M2XHA.": "コードは 7K3QD-M2XHA のような英数字 10 文字です。",
+  "No PC shows this code. Check it, or show a new one on the PC.": "このコードを表示している PC はありません。確認するか、PC で新しいコードを表示してください。",
+  "That code did not work. Check it and try again; after three wrong tries the PC needs a new code.": "そのコードでは接続できませんでした。確認してもう一度お試しください。3 回間違えると PC で新しいコードが必要です。",
+  "That code ran out. Show a new one on the PC.": "コードの期限が切れました。PC で新しいコードを表示してください。",
+  "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "別のデバイスがこのコードを試しているか、試行が多すぎます。少し待つか、PC で新しいコードを表示してください。",
+  "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "このアプリがペアリングできる PC からの応答ではありません。PC で新しいコードを表示するか、QR コードを読み取ってください。",
+  "The relay could not be reached. Check this device's connection, then try again.": "リレーに接続できませんでした。このデバイスの接続を確認してから、もう一度お試しください。",
+  "Reset": "リセット",
+  "Group name": "グループ名",
+  "Remove group {group}": "グループ {group} を削除",
+  "New group": "新しいグループ",
+  "Add group": "グループを追加",
+  "No group": "グループなし",
+  "Context {percent}% left": "コンテキスト残り {percent}%",
+  "{used} of {window} tokens": "{used} / {window} トークン",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA },
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,
