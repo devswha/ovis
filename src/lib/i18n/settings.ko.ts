@@ -124,6 +124,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "이 기기에서 사이드바 목록 위에 필터 입력란을 보여 줍니다. 끄면 명령 팔레트의 워크스페이스와 에이전트 필터로 엽니다.",
   "Context left on agent rows": "에이전트 행에 남은 컨텍스트",
   "On this device, show the context ring from the chat's composer on each agent row, for the agents whose context window is known (Claude Code and Codex). It turns red at 20% left or less.": "이 기기에서 채팅 입력칸의 컨텍스트 링을 각 에이전트 행에도 보여 줍니다. 컨텍스트 창 크기를 알 수 있는 에이전트(Claude Code, Codex)만 표시하며, 20% 이하로 남으면 빨간색이 됩니다.",
+  "Agents under workspaces": "워크스페이스 아래에 에이전트",
+  "On this device, list each workspace's agents under it in the PCs list, so every PC shows its workspaces and the agents running in them. The Agents list stays as it is.": "이 기기에서 PC 목록의 각 워크스페이스 아래에 그 워크스페이스의 에이전트를 보여 줍니다. PC마다 워크스페이스와 그 안에서 실행 중인 에이전트를 한눈에 볼 수 있습니다. 에이전트 목록은 그대로 남습니다.",
   "Agents order": "에이전트 정렬",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "활동순은 응답을 기다리는 에이전트를 맨 위에 두고, 그다음 가장 최근에 바뀐 순서로 놓습니다. herdr 자체의 순서는 바뀌지 않습니다",
   "Workspaces": "워크스페이스순",

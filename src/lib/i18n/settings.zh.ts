@@ -124,6 +124,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "在此设备的侧边栏列表上方显示筛选框。关闭时，可从命令面板的“筛选工作区和代理”打开。",
   "Context left on agent rows": "在代理行显示剩余上下文",
   "On this device, show the context ring from the chat's composer on each agent row, for the agents whose context window is known (Claude Code and Codex). It turns red at 20% left or less.": "在此设备上，把聊天输入框的上下文圆环也显示在每个代理行上，仅限能得知上下文窗口大小的代理（Claude Code 和 Codex）。剩余 20% 或更少时变为红色。",
+  "Agents under workspaces": "在工作区下显示代理",
+  "On this device, list each workspace's agents under it in the PCs list, so every PC shows its workspaces and the agents running in them. The Agents list stays as it is.": "在此设备上，于电脑列表中每个工作区下方列出其代理，让每台电脑显示其工作区以及在其中运行的代理。代理列表保持不变。",
   "Agents order": "代理排序",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "按活动排序会把等待回应的代理放在最上面，其余按最近变化排序；herdr 自身的顺序不会改变",
   "Workspaces": "工作区顺序",

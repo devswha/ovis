@@ -124,6 +124,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "このデバイスで、サイドバーの一覧の上に絞り込み欄を表示します。オフのときは、コマンドパレットの「ワークスペースとエージェントを絞り込む」で開きます。",
   "Context left on agent rows": "エージェント行に残りのコンテキスト",
   "On this device, show the context ring from the chat's composer on each agent row, for the agents whose context window is known (Claude Code and Codex). It turns red at 20% left or less.": "このデバイスで、チャット入力欄のコンテキストリングを各エージェント行にも表示します。コンテキストウィンドウの大きさがわかるエージェント（Claude Code と Codex）だけに表示され、残りが 20% 以下になると赤くなります。",
+  "Agents under workspaces": "ワークスペースの下にエージェント",
+  "On this device, list each workspace's agents under it in the PCs list, so every PC shows its workspaces and the agents running in them. The Agents list stays as it is.": "このデバイスで、PC 一覧の各ワークスペースの下にそのエージェントを表示します。PC ごとにワークスペースと、その中で動いているエージェントがわかります。エージェント一覧はそのまま残ります。",
   "Agents order": "エージェントの並び順",
   "Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed": "アクティビティ順では、応答待ちのエージェントを一番上に、その後は最近変化した順に並べます。herdr 自体の順序は変わりません",
   "Workspaces": "ワークスペース順",
