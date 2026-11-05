@@ -8,13 +8,15 @@
  * exact fields, its id matching its name); anything else is skipped, and so is a history reached
  * through a linked folder. A read has hard caps, since the chip asks again every few seconds: the
  * folder listing stops after 2,000 entries or 200 ms, at most the hundred most recently written
- * topics are read within a budget of bytes read and of words kept, a topic keeps its first 200
- * follow-ups, and the answer stays under a megabyte. `more` says a cap left something out. A record
- * is kept until its file changes. Statuses are shown as saved:
+ * topics are read, a topic file over 2 MiB is skipped and one request reads at most 4 MiB (parsing is
+ * what costs, even of the pictures the answer drops), a topic keeps its first 200 follow-ups, and the
+ * answer stays under a megabyte. `more` says a cap left something out. Each file is read through one
+ * descriptor, never following a link or opening anything but a regular file, and never past its cap.
+ * A record is kept until its file changes. Statuses are shown as saved:
  * a reader cannot tell a topic still being answered from one whose writer stopped. Pictures attached
  * to a question are not sent. The dispatcher in index.ts runs the access gate first.
  */
-import { lstatSync, opendirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { OmpBtwExchange, OmpBtwHistory, OmpBtwTopic } from "../shared/protocol.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
@@ -24,8 +26,11 @@ const MAX_FOLLOW_UPS = 200;
 const MAX_SCAN_ENTRIES = 2000;
 const MAX_SCAN_MS = 200;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-/** a topic whose question carries pictures is larger than its words: the files read in one request, by size */
-const MAX_READ_BYTES = 32 * 1024 * 1024;
+/** a topic whose question carries pictures is larger than its words: one file, and the files read in one request */
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_READ_BYTES = 4 * 1024 * 1024;
+/** read-only, never through a link, and never waiting on a pipe put where a topic file was */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 /** the words kept and answered for one history, cached records included */
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_TITLE_BYTES = 4096;
@@ -34,6 +39,26 @@ const MAX_CACHED_HISTORIES = 16;
 type Stamp = { size: number; mtimeMs: number; ctimeMs: number; ino: number };
 type Cached = Stamp & { topic: Omit<OmpBtwTopic, "title"> | null; text: number; cut: boolean };
 type Read = { topic: Omit<OmpBtwTopic, "title"> | null; cut: boolean };
+
+/** A regular file's text, through one descriptor and never past `limit` bytes: null when it is no regular file, "big" past the limit. */
+function readBounded(path: string, limit: number): string | null | "big" {
+  let fd: number;
+  try { fd = openSync(path, OPEN_FLAGS); } catch { return null; }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return null;
+    if (stat.size > limit) return "big";
+    // one byte more than it said: a file that grew since is past its cap
+    const buffer = Buffer.alloc(stat.size + 1);
+    let read = 0;
+    for (let got = 1; got > 0 && read < buffer.length; read += got) got = readSync(fd, buffer, read, buffer.length - read, null);
+    return read > stat.size ? "big" : buffer.toString("utf8", 0, read);
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
 const same = (a: Stamp, b: Stamp): boolean => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.ino === b.ino;
 const textOf = (topic: Omit<OmpBtwTopic, "title"> | null): number => topic === null ? 0
   : [topic, ...topic.follow_ups].reduce((sum, exchange) => sum + exchange.question.length + exchange.answer.length + (exchange.error?.length ?? 0), 0);
@@ -56,10 +81,13 @@ function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
   return { question, answer, status: status as OmpBtwExchange["status"], error: error ?? null, at: new Date(createdAt).toISOString() };
 }
 
-function topicOf(path: string, id: string): Read {
+function topicOf(path: string, id: string, limit: number): Read | "big" {
   const none = { topic: null, cut: false };
+  const text = readBounded(path, limit);
+  if (text === "big") return "big";
+  if (text === null) return none;
   try {
-    const record = row(JSON.parse(readFileSync(path, "utf8")));
+    const record = row(JSON.parse(text));
     if (record === null || record["id"] !== id || !(record["leafId"] === null || typeof record["leafId"] === "string")) return none;
     const head = exchangeOf(record, TOPIC_KEYS);
     const all = record["followUps"] === undefined ? [] : Array.isArray(record["followUps"]) ? record["followUps"] : null;
@@ -68,35 +96,41 @@ function topicOf(path: string, id: string): Read {
     if (head === null || all === null || followUps === null || followUps.some((entry) => entry === null)) return none;
     return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS };
   } catch {
-    // removed between the listing and the read, or not JSON: OMP would not load it either
+    // not JSON, or not a record OMP would load
     return none;
   }
 }
 
-function titleOf(path: string): string | null {
-  try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.size > MAX_TITLE_BYTES) return null;
-    const title = readFileSync(path, "utf8").trim();
-    return title.length > 0 ? title.slice(0, 300) : null;
-  } catch {
-    return null;
-  }
+/** OMP's title for a topic, and `cut` when a cap shortened or dropped it */
+function titleOf(path: string): { title: string | null; cut: boolean } {
+  const text = readBounded(path, MAX_TITLE_BYTES);
+  if (text === "big") return { title: null, cut: true };
+  const title = text?.trim() ?? "";
+  return { title: title.length > 0 ? title.slice(0, 300) : null, cut: title.length > 300 };
 }
 
 const folder = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
 
-/** A folder's entry names, up to MAX_SCAN_ENTRIES or MAX_SCAN_MS; `stopped` when a cap ended the listing. */
-function listed(directory: string): { names: string[]; stopped: boolean } {
+type Listed = Stamp & { name: string; id: string };
+/** A folder's topic files and their stamps, up to MAX_SCAN_ENTRIES entries or MAX_SCAN_MS, stats included; `stopped` when a cap ended it. */
+function listed(directory: string): { files: Listed[]; stopped: boolean } {
   const dir = opendirSync(directory);
   const began = performance.now();
-  const names: string[] = [];
+  const files: Listed[] = [];
   try {
-    for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
-      names.push(entry.name);
-      if (names.length >= MAX_SCAN_ENTRIES || performance.now() - began >= MAX_SCAN_MS) return { names, stopped: dir.readSync() !== null };
+    for (let entry = dir.readSync(), seen = 1; entry !== null; entry = dir.readSync(), seen++) {
+      const id = ENTRY.exec(entry.name)?.[1];
+      if (id !== undefined) {
+        try {
+          const stat = lstatSync(join(directory, entry.name));
+          if (stat.isFile()) files.push({ name: entry.name, id, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino });
+        } catch {
+          // removed since the listing
+        }
+      }
+      if (seen >= MAX_SCAN_ENTRIES || performance.now() - began >= MAX_SCAN_MS) return { files, stopped: dir.readSync() !== null };
     }
-    return { names, stopped: false };
+    return { files, stopped: false };
   } finally {
     dir.closeSync();
   }
@@ -108,27 +142,17 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
   if (!transcript.endsWith(".jsonl")) return none;
   const artifacts = transcript.slice(0, -".jsonl".length);
   const directory = join(artifacts, "btw-history");
-  let names: string[];
+  let matched: Listed[];
   let more = false;
   try {
     if (!folder(artifacts) || !folder(directory)) throw new Error("no history folder");
     const listing = listed(directory);
-    names = listing.names;
+    matched = listing.files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     more = listing.stopped;
   } catch {
     cache.delete(directory);
     return none;
   }
-  const matched = names.flatMap((name) => {
-    const id = ENTRY.exec(name)?.[1];
-    if (id === undefined) return [];
-    try {
-      const stat = lstatSync(join(directory, name));
-      return stat.isFile() ? [{ name, id, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, ino: stat.ino }] : [];
-    } catch {
-      return [];
-    }
-  }).sort((a, b) => b.mtimeMs - a.mtimeMs);
   if (matched.length > MAX_TOPICS) more = true;
   const files = matched.slice(0, MAX_TOPICS);
   const known = cache.get(directory);
@@ -140,9 +164,11 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
     let entry: Cached;
     if (before && same(before, file)) entry = before;
     else {
-      if (file.size > budget) { more = true; continue; }
+      if (file.size > MAX_FILE_BYTES || file.size > budget) { more = true; continue; }
+      const read = topicOf(join(directory, file.name), file.id, Math.min(MAX_FILE_BYTES, budget));
+      if (read === "big") { more = true; continue; }
       budget -= file.size;
-      const { topic, cut } = topicOf(join(directory, file.name), file.id);
+      const { topic, cut } = read;
       entry = { size: file.size, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, topic, text: textOf(topic), cut };
     }
     // the most recently written first: once the words reach the bound, older topics are left out and not kept
@@ -154,7 +180,12 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
   cache.delete(directory);
   cache.set(directory, kept);
   if (cache.size > MAX_CACHED_HISTORIES) cache.delete(cache.keys().next().value!);
-  const topics = [...kept.values()].flatMap(({ topic }) => topic === null ? [] : [{ ...topic, title: titleOf(join(directory, `entry-${topic.id}.title`)) }]);
+  const topics = [...kept.values()].flatMap(({ topic }) => {
+    if (topic === null) return [];
+    const { title, cut } = titleOf(join(directory, `entry-${topic.id}.title`));
+    if (cut) more = true;
+    return [{ ...topic, title }];
+  });
   // OMP's own order: newest first, then by id
   topics.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   // the answer stays under its cap: a topic that does not fit is left out, and the list says so

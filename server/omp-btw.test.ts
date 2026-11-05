@@ -140,7 +140,23 @@ describe("GET /api/pane/btw hard caps", () => {
     const { bytes, body } = await answer(transcript);
     expect(bytes).toBeLessThanOrEqual(1024 * 1024);
     expect(body.more).toBe(true);
-    expect(body.topics.map((found) => found.id)).toEqual(["x"]);
+  });
+
+  it("keeps a topic's first 200 follow-ups and says there are more", async () => {
+    const { transcript, folder } = history("long-thread");
+    writeFileSync(join(folder, "entry-y.json"), JSON.stringify({ ...topic("y", 1), followUps: Array.from({ length: 1000 }, (_, index) => exchange(`q${index}`, "a", index)) }));
+    const { body } = await answer(transcript);
+    expect(body.topics.map((found) => [found.id, found.follow_ups.length])).toEqual([["y", 200]]);
+    expect(body.more).toBe(true);
+  });
+
+  it("skips a topic file too large to parse cheaply, such as a million discarded pictures, and says so", async () => {
+    const { transcript, folder } = history("pictures");
+    writeFileSync(join(folder, "entry-p.json"), JSON.stringify({ ...topic("p", 2), images: Array.from({ length: 1_000_000 }, () => ({})) }));
+    writeFileSync(join(folder, "entry-q.json"), JSON.stringify(topic("q", 1)));
+    const { body } = await answer(transcript);
+    expect(body.topics.map((found) => found.id)).toEqual(["q"]);
+    expect(body.more).toBe(true);
   });
 
   it("stops listing a folder of thousands of topic files, and says it stopped", async () => {

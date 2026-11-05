@@ -52,6 +52,8 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   // another pane or PC: its own topics, never these
   useEffect(() => { setTopics([]); setMore(false); setOpen(false); setShown(null); setFailed(false); }, [paneId, machineId]);
   useEffect(() => { if (!open) setShown(null); }, [open]);
+  // nothing left to list: the list goes with the chip, and its Escape and Back with it
+  useEffect(() => { if (open && topics.length === 0 && !more) setOpen(false); }, [open, topics.length, more]);
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -73,10 +75,16 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   }, [fetchPaneBtw, paneId, open]);
   useEffect(() => {
     if (!open) return;
-    const outside = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    // a picture or diagram opened from an answer is a dialog over the page (ImageLightbox, MermaidLightbox):
+    // pressing in it, or Escape while it is up, is that dialog's, and the list stays open under it
+    const overDialog = (): boolean => [...document.querySelectorAll('[aria-modal="true"]')].some((dialog) => !root.current?.contains(dialog));
+    const outside = (event: PointerEvent): void => {
+      if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
     // Escape closes the list and goes no further: in the message box it would also stop the agent's turn
     const escape = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || overDialog()) return;
       event.stopPropagation();
       // the list unmounts with the topic that held the focus: hand it back to the chip
       if (root.current?.contains(document.activeElement)) toggle.current?.focus();
@@ -102,7 +110,7 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
     return () => observer.disconnect();
   }, [open]);
 
-  if (topics.length === 0) return null;
+  if (topics.length === 0 && !more) return null;
   const name = t(topics.length === 1 ? "{n} side conversation" : "{n} side conversations", { n: topics.length });
   const now = Date.now();
   // a complete answer says nothing more; any other saved state is said, as OMP's history says it

@@ -94,6 +94,15 @@ test("says some side conversations are left out when the PC capped its answer", 
   expect(text()).toContain("Some side conversations are left out");
 });
 
+test("keeps the chip and its note when the PC left every topic out", async () => {
+  jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ topics: [], more: true }), globalThis.fetch));
+  await act(async () => { renderer = create(pane()); });
+  const chip = renderer!.root.findAllByType("button");
+  expect(chip).toHaveLength(1);
+  await act(async () => chip[0]!.props.onClick());
+  expect(text()).toContain("Some side conversations are left out");
+});
+
 test("gives up a read that never answers at its deadline and asks again", async () => {
   // The HTTP boundary holds every request open until the client aborts it.
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(
