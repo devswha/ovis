@@ -159,6 +159,18 @@ const FOLD_KEY = "ovis:agents-collapsed";
 /** the fold of the background agents' part, kept the same way; it starts folded on every screen */
 const BACKGROUND_FOLD_KEY = "ovis:agents-background-collapsed";
 
+/** Settings → Fold helpers under their agent: the agents whose helpers this device lists in full, each by its pin key; every other agent's start folded */
+const HELPERS_OPEN_KEY = "ovis:agents-helpers-open";
+
+function loadOpenHelpers(): string[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(HELPERS_OPEN_KEY) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((key): key is string => typeof key === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function initialBackgroundFold(): boolean {
   try {
     return window.localStorage.getItem(BACKGROUND_FOLD_KEY) !== "0";
@@ -355,18 +367,70 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     });
     return lines;
   };
+  // Settings → Fold helpers under their agent (this device): an agent's helpers fold under one line after its row,
+  // except one that needs the reader and the selected one; the filter shows what it kept, folding nothing
+  const foldHelpers = settings.foldHelpers && !filter.active;
+  const [openHelpers, setOpenHelpers] = useState(loadOpenHelpers);
   // the pinned card keeps the pin order, where a helper need not follow its agent: no row steps in there.
   // Each state group is a list of its own: a helper steps in only under its agent in the same group.
-  const { restDepths, restLines } = useMemo(() => {
+  const { restDepths, restLines, helpersOf, foldedHelpers } = useMemo(() => {
     const restDepths = new Map<AgentRow, number>();
     const restLines = new Map<AgentRow, { more: boolean; through: boolean }>();
+    // each agent row with the helpers drawn right under it, and the helpers its fold hides
+    const helpersOf = new Map<AgentRow, AgentRow[]>();
+    const foldedHelpers = new Set<AgentRow>();
     for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [parts.people], parts.background]) {
       const listDepths = depths(list);
       for (const [row, depth] of listDepths) restDepths.set(row, depth);
-      for (const [row, line] of treeLines(list, listDepths)) restLines.set(row, line);
+      if (foldHelpers) {
+        let agent: AgentRow | undefined;
+        for (const row of list) {
+          if ((listDepths.get(row) ?? 0) === 0) { agent = row; continue; }
+          if (agent === undefined) continue;
+          helpersOf.set(agent, [...helpersOf.get(agent) ?? [], row]);
+          const open = openHelpers.includes(sidebarPinKey(agent.machine.id, agent.entry.pane.pane_id));
+          const selected = row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId;
+          if (!open && !selected && agentGroup(rowStatus(row)) !== "blocked") foldedHelpers.add(row);
+        }
+      }
+      // the tree lines join the rows in sight
+      const shown = list.filter((row) => !foldedHelpers.has(row));
+      for (const [row, line] of treeLines(shown, listDepths)) restLines.set(row, line);
     }
-    return { restDepths, restLines };
-  }, [parts, groups, named]);
+    return { restDepths, restLines, helpersOf, foldedHelpers };
+  }, [parts, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
+  const toggleHelpers = (key: string): void => {
+    // the agents gone from the list leave with this change, so the kept list never outgrows the roster
+    const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
+    const next = openHelpers.includes(key) ? openHelpers.filter((held) => held !== key) : [...openHelpers.filter((held) => live.has(held)), key];
+    setOpenHelpers(next);
+    try { window.localStorage.setItem(HELPERS_OPEN_KEY, JSON.stringify(next)); } catch { /* private mode: this page keeps it */ }
+  };
+  // the line under an agent that folds its helpers: how many, and a dot for each state among them that asks for a look
+  const helpersLine = (agentRow: AgentRow, helpers: readonly AgentRow[], hidden: boolean) => {
+    const key = sidebarPinKey(agentRow.machine.id, agentRow.entry.pane.pane_id);
+    const open = openHelpers.includes(key);
+    const states = helpers.map((row) => agentGroup(rowStatus(row)));
+    const blockedCount = states.filter((state) => state === "blocked").length;
+    const workingCount = states.filter((state) => state === "working").length;
+    // its tree line runs on to the helpers in sight under it
+    const more = helpers.some((row) => !foldedHelpers.has(row));
+    return <li className="agent-helpers" key={`helpers:${key}`} data-helpers-of={key} data-more={more ? "" : undefined} hidden={hidden || undefined}>
+      <button type="button" className="agent-helpers-toggle" aria-expanded={open} title={t("Helpers of {title}", { title: rowTitle(agentRow.entry) })} onClick={() => toggleHelpers(key)}>
+        {open ? <ChevronDown className="agent-section-caret" aria-hidden="true" /> : <ChevronRight className="agent-section-caret" aria-hidden="true" />}
+        <span className="agent-helpers-name">{t("Helpers")}</span>
+        {blockedCount > 0 && <span className="agent-named-group-dot" data-state="blocked" title={t("{count} need you", { count: blockedCount })}><span className="visually-hidden">{t("{count} need you", { count: blockedCount })}</span></span>}
+        {workingCount > 0 && <span className="agent-named-group-dot" data-state="working" title={t("{count} working", { count: workingCount })}><span className="visually-hidden">{t("{count} working", { count: workingCount })}</span></span>}
+        <span className="agent-section-count">{helpers.length}</span>
+      </button>
+    </li>;
+  };
+  // a list's rows, each agent followed by its helpers line while the helpers fold; `hidden` is a fold above them all
+  const listItems = (list: readonly AgentRow[], hidden = false) => list.flatMap((row) => {
+    const item = agentItem(row, hidden || foldedHelpers.has(row));
+    const helpers = helpersOf.get(row);
+    return helpers === undefined ? [item] : [item, helpersLine(row, helpers, hidden)];
+  });
 
   const agentItem = (row: AgentRow, hidden = false) => {
     const { machine, entry } = row;
@@ -463,15 +527,15 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // the rows of the list's people part: in named groups, in state groups, or as they come
   const peopleItems = named !== null
     // with every row in no group, the list draws no heading at all, as today
-    ? named.length === 1 && named[0]!.name === null ? named[0]!.rows.map((row) => agentItem(row))
+    ? named.length === 1 && named[0]!.name === null ? listItems(named[0]!.rows)
       : named.flatMap(({ name, rows: groupRows }) => {
         const groupFolded = !filter.active && groupFolds.includes(name ?? "");
-        return [namedGroupLabel(name, groupRows), ...groupRows.map((row) => agentItem(row, groupFolded))];
+        return [namedGroupLabel(name, groupRows), ...listItems(groupRows, groupFolded)];
       })
     : groups ? groups.flatMap(({ group, rows: groupRows }) => [
       <li className="agent-group-label" key={`group:${group}`} data-group={group} aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></li>,
-      ...groupRows.map((row) => agentItem(row)),
-    ]) : parts.people.map((row) => agentItem(row));
+      ...listItems(groupRows),
+    ]) : listItems(parts.people);
   const runPin = (state: PinMenu): void => {
     // where the menu hands the focus back (lib RowMenu): the ⋯ itself unless the right-click said otherwise
     const back = state.previousFocus === undefined ? state.anchor : state.previousFocus;
@@ -515,7 +579,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
                 <span>{t("Background agents")}</span><span className="agent-section-count">{parts.background.length}</span>
               </button>
             </li>,
-            ...parts.background.map((row) => agentItem(row, backgroundFolded)),
+            ...listItems(parts.background, backgroundFolded),
           ]]}
         </ul>}
       </>}
