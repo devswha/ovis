@@ -49,7 +49,8 @@ import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, c
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
-import { servingCore } from "./herdr-core/runtime.ts";
+import { coreSocket } from "./herdr-core/discovery.ts";
+import { coreSocketPath, servingCore } from "./herdr-core/runtime.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
@@ -1453,23 +1454,31 @@ function hcAttachWord(argv: readonly string[] | null | undefined): string | null
   return (program === "hc" || program === "herdr-core") && /^[A-Za-z0-9]+$/.test(argv[2]!) ? argv[2]! : null;
 }
 
-/** The HC_* entries of a process's environment as it started (Linux /proc, macOS sysctl), sorted; null when it cannot be read. */
-function hcEnvironment(pid: number): string[] | null {
-  const environ = process.platform === "linux" ? processEnviron(pid) : process.platform === "darwin" ? darwinProcess.environment(pid)?.split("\0") ?? null : null;
-  return environ?.filter((entry) => entry.startsWith("HC_")).sort() ?? null;
+/** A process's environment as it started (Linux /proc, macOS sysctl), the first value of each name; null when it cannot be read. */
+function startEnvironment(pid: number): Record<string, string> | null {
+  const entries = process.platform === "linux" ? processEnviron(pid) : process.platform === "darwin" ? darwinProcess.environment(pid)?.split("\0") ?? null : null;
+  const env: Record<string, string> = {};
+  for (const entry of entries ?? []) {
+    const at = entry.indexOf("=");
+    if (at > 0 && !Object.hasOwn(env, entry.slice(0, at))) env[entry.slice(0, at)] = entry.slice(at + 1);
+  }
+  // an environment read empty is a process gone or not ours to read
+  return Object.keys(env).length === 0 ? null : env;
 }
 
 /**
- * Whether an `hc attach` client reaches the core that started its terminal: hc names itself in each
- * terminal's environment (HC_SOCKET, HC_SESSION), and a client goes to whatever core its own HC_*
- * name, which another core's terminal numbers (t1, t2...) would repeat. Only the shell's very HC_*
- * entries, HC_SOCKET among them, prove it.
+ * Whether an `hc attach` client reaches the core this server serves: a client goes to whatever core its
+ * own environment names (HC_SOCKET, HC_SESSION, its runtime and config folders), where the terminal
+ * numbers (t1, t2...) repeat. Its socket, found from that environment as hc finds it, must be this
+ * server's core's; an environment that cannot be read follows nothing.
  */
-function clientOfOwnCore(client: number, shell: number | null | undefined): boolean {
-  if (typeof shell !== "number") return false;
-  const own = hcEnvironment(shell);
-  const used = hcEnvironment(client);
-  return own !== null && used !== null && own.some((entry) => /^HC_SOCKET=./.test(entry)) && own.join("\0") === used.join("\0");
+function reachesOwnCore(client: number): boolean {
+  const env = startEnvironment(client);
+  if (env === null) return false;
+  const theirs = coreSocket({ env }).path;
+  const ours = coreSocketPath();
+  if (theirs === ours) return true;
+  try { return realpathSync(theirs) === realpathSync(ours); } catch { return false; }
 }
 
 /**
@@ -1498,7 +1507,7 @@ async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = 
   const leader = info?.foreground_processes?.[0];
   if (!servingCore() || leader === undefined || typeof leader.pid !== "number") return [];
   const word = viewed ? null : hcAttachWord(leader.argv);
-  if (word !== null) return clientOfOwnCore(leader.pid, shell) ? claudeProcesses(word, undefined, true) : [];
+  if (word !== null) return reachesOwnCore(leader.pid) ? claudeProcesses(word, undefined, true) : [];
   return (await jobClaude(leader.pid)) ?? [];
 }
 
