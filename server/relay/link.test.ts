@@ -128,6 +128,47 @@ for (const warm of [false, true]) {
   });
 }
 
+it("tries a warm socket again after a pause when opening one throws", async () => {
+  const fixture = relayFixture();
+  fixtures.push(fixture);
+  const clock = new TestClock();
+  const identity = loadRelayIdentity(fixture.stateDir);
+  const online = deferred<void>();
+  const attempts: (string | null)[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response(null, { status: 400 }); },
+    websocket: {
+      open(socket) {
+        socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame);
+      },
+      message(socket) { socket.send(JSON.stringify({ type: "sync", connection_ids: [], warm: "ab".repeat(16) })); },
+    },
+  });
+  const link = new RelayLink({
+    relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port,
+    clock, random: () => 0.5, onState: (phase) => { if (phase === "online") online.resolve(); },
+    connect: (url) => {
+      const warm = new URL(url).searchParams.get("warm");
+      attempts.push(warm);
+      if (warm && attempts.filter(Boolean).length === 1) throw new Error("Network unavailable");
+      return new WebSocket(url);
+    },
+  });
+  try {
+    link.start();
+    await bounded(online.promise);
+    expect(attempts).toEqual([null, "ab".repeat(16)]);
+    clock.advance(999);
+    expect(attempts).toHaveLength(2);
+    clock.advance(1);
+    expect(attempts).toEqual([null, "ab".repeat(16), "ab".repeat(16)]);
+  } finally {
+    await link.stop();
+    await server.stop(true);
+  }
+});
+
 it("gives up on a warm socket the relay stopped answering and opens another, without waiting for its close", async () => {
   const fixture = relayFixture();
   fixtures.push(fixture);

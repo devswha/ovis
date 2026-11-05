@@ -58,7 +58,8 @@ async function bench(): Promise<void> {
   let localWs = "";
   if (EMULATE > 0) {
     const { startBunRelay } = await import("../relay/bun.ts");
-    const relayed = startBunRelay({ port: 0 });
+    // every socket comes from 127.0.0.1: a long run would pass production's per-address budget
+    const relayed = startBunRelay({ port: 0, limits: { perAddressPerMinute: 10_000, globalPerMinute: 10_000 } });
     type Pipe = { peer?: import("bun").Socket<Pipe>; queue: { at: number; data: Uint8Array }[]; timer?: ReturnType<typeof setTimeout>; early: Uint8Array[] };
     // one ordered queue per direction, each chunk released rtt/2 after it arrived
     const forward = (from: Pipe, data: Uint8Array) => {
@@ -100,6 +101,8 @@ async function bench(): Promise<void> {
   const samples: Sample[] = [];
   const restore = () => { for (const [file, bytes] of own) writeFileSync(join(root, file), bytes); };
   process.on("exit", restore);
+  // a signal with no listener ends the process without "exit": arm A's files would stay in the tree
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => { restore(); process.exit(130); });
 
   for (const [run, arm] of ARMS.entries()) {
     restore();

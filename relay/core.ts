@@ -54,6 +54,11 @@ export const MAX_PENDING = 4;
 export const MAX_PROVING = 16;
 /** proven warm sockets one server_id may keep waiting for a client; past it the oldest is closed */
 export const MAX_WARM = 1;
+/**
+ * A warm socket silent this long (the PC pings it every 10 s) is not handed to a client: the PC may have
+ * given it up while its close has not arrived, and the client would wait out its handshake deadline.
+ */
+export const WARM_QUIET_MS = 25_000;
 /** the largest frame passed on, in bytes; Ovis frames stay under about 22 KiB */
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 /** a client's frames held until its data socket attaches: at most this many... */
@@ -358,7 +363,12 @@ export class Room<S extends object> {
     this.setDeadline(socket, info, now + (controlled ? HANDSHAKE_MS : OFFLINE_WAIT_MS));
     this.host.send(socket, JSON.stringify({ type: "assigned", connection_id: connectionId }));
     const generation = peers.find((peer) => peer.info.role === "control")?.info.generation;
-    const warm = generation ? peers.find((peer) => peer.info.role === "warm" && peer.info.generation === generation) : undefined;
+    let warm = generation ? peers.find((peer) => peer.info.role === "warm" && peer.info.generation === generation) : undefined;
+    // one the PC stopped keeping alive may be gone on its side (half-open): the client is announced instead
+    if (warm && now - Math.max(this.lastSeen.get(warm.socket) ?? warm.info.seen, this.host.keepaliveAt?.(warm.socket) ?? 0) >= WARM_QUIET_MS) {
+      this.end(warm.socket, CLOSE.GOING_AWAY, "warm socket went quiet");
+      warm = undefined;
+    }
     if (!warm) return this.tellControls({ type: "connected", connection_id: connectionId });
     // the PC's warm socket becomes this client's data socket, saved as such before any frame passes
     this.host.setInfo(warm.socket, { role: "data", connection_id: connectionId, seen: now, buffered: false });
