@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, ClipboardPaste, Keyboard, PanelBottomClose, PanelBottomOpen } from "lucide-react";
 
 import "./KeyBar.css";
@@ -273,7 +273,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
     window.addEventListener("resize", place);
     return () => { observer.disconnect(); window.removeEventListener("resize", place); };
   }, []);
-  const rowItems = keyBarRowItems(items, expanded);
+  const rowItems = useMemo(() => keyBarRowItems(items, expanded), [items, expanded]);
   // the edge of the scrolling row with keys out of view fades (KeyBar.css reads the attributes):
   // measured before the first paint, then on scroll and whenever the row or a key changes size, at
   // most once a frame

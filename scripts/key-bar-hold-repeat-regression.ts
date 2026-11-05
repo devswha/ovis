@@ -20,6 +20,7 @@ const keyBarItems: KeyBarItem[] = [
   { type: "modifier", modifier: "ctrl" },
   { type: "key", key: "ArrowLeft" },
   ...["ArrowUp", "ArrowDown", "ArrowRight", "Tab", "Enter", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "F1", "F2", "F3", "F4"].map((key): KeyBarItem => ({ type: "key", key })),
+  { type: "key", key: "ArrowRight", modifiers: { ctrl: false, alt: true, shift: false } },
 ];
 
 type InputFrame =
@@ -246,6 +247,20 @@ try {
         assert.deepEqual(leftKeys(await framesSince(page, before)), ["ctrl+left", "ctrl+left", "ctrl+left"], "every auto-repeat carries Ctrl");
         assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "letting the hardware key up lets Ctrl go");
         console.log("PASS a hardware key's auto-repeat keeps Ctrl held for one key until the key is let up");
+
+        // 6d. A held saved combination sends its own chord and leaves a Ctrl held for one key alone.
+        await ctrl.tap();
+        const altRight = bar.getByRole("button", { name: "Press Alt+Right", exact: true });
+        before = (await framesOf(page)).length;
+        await hold(page, cdp, altRight, HOLD_MS);
+        const comboKeys = sentKeys(await framesSince(page, before));
+        assert.ok(comboKeys.length >= 5 && comboKeys.every((key) => key === "alt+right"), `the saved Alt+Right repeats as itself: ${JSON.stringify(comboKeys)}`);
+        assert.equal(await ctrl.getAttribute("data-latch"), "once", "releasing a held saved combination leaves Ctrl held for one key");
+        await ctrl.tap();
+        await ctrl.tap();
+        assert.equal(await ctrl.getAttribute("aria-pressed"), "false");
+        await bar.evaluate((row) => { row.scrollLeft = 0; });
+        console.log(`PASS a held saved combination repeats its own chord (${comboKeys.length} keys) and leaves a once-held Ctrl alone`);
 
         // 7. Probe the cancelable contextmenu while the arrow is physically held, not after it.
         await hold(page, cdp, left, KEY_REPEAT_DELAY_MS + KEY_REPEAT_INTERVAL_MS, async () => {
