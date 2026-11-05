@@ -338,6 +338,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/pane/artifacts?pane_id= -> { artifacts: ClaudeArtifact[] } (the pages a Claude Code
  *         pane's session published with its Artifact tool, newest first; empty for any other pane or
  *         one whose session is not known yet)
+ *  GET    /api/pane/btw?pane_id=        -> { topics: OmpBtwTopic[] } (the side conversations an OMP
+ *         pane's session saved with /btw, newest first; empty for any other pane or one without any)
  *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex or OmO session
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
@@ -640,6 +642,22 @@ export interface ClaudeArtifact {
   url: string;
   title: string | null;
   at: string | null;
+}
+
+/** One question of an OMP `/btw` side conversation and its answer, as OMP saved it; `at` is when it was asked. */
+export interface OmpBtwExchange {
+  question: string;
+  answer: string;
+  status: "running" | "complete" | "cancelled" | "error" | "interrupted";
+  error: string | null;
+  at: string;
+}
+
+/** One OMP `/btw` topic: its first question, the follow-ups asked in it, and the title OMP gave it if any. */
+export interface OmpBtwTopic extends OmpBtwExchange {
+  id: string;
+  title: string | null;
+  follow_ups: OmpBtwExchange[];
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */
