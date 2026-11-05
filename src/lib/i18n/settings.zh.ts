@@ -1,7 +1,5 @@
 /**
- * Simplified Chinese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * Simplified Chinese for the keys only the settings files use: components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx, components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_ZH: Record<string, string> = {
@@ -315,7 +313,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Increase interface font size": "增大界面字号",
   "This is the demo. Go back to the app's list of PCs to open yours.": "这是演示。回到应用的电脑列表即可打开你自己的电脑。",
   "This app shows {address}. Go back to its list of PCs to open another.": "此应用正在显示 {address}。回到电脑列表可打开其他电脑。",
-  // Settings, Phone & devices: Access
   "Access": "访问",
   "The server did not answer, so these facts are unavailable. Nothing from an earlier check is shown. This page asks again by itself; if this message stays, check that the server is running and that this device can reach it.": "服务器没有响应，因此无法显示这些信息。不会显示之前检查的结果。此页面会自动重新检查；如果此消息一直存在，请确认服务器正在运行，并且此设备可以连接到它。",
   "This server does not report these facts. Updating it adds them.": "此服务器不提供这些信息。更新服务器后即可显示。",
@@ -351,7 +348,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "agents hooks claude codex install": "Agent 钩子 claude codex 安装",
   "onboarding first run getting started welcome": "入门 首次运行 开始使用 欢迎",
   "Agent integrations": "代理集成",
-  // the hosted relay shell's rows (lib/relay/shell.tsx)
   "This page shows one PC. The front page lists every PC this phone is paired with.": "此页面只显示一台电脑。首页列出与此手机配对的所有电脑。",
   "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "删除此手机对应这台电脑的密钥。重新配对需要电脑上新的二维码。",
   "Forget this PC?": "忘记这台电脑？",

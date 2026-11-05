@@ -1,7 +1,5 @@
 /**
- * Japanese for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * Japanese for the keys only the settings files use: components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx, components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_JA: Record<string, string> = {
@@ -315,7 +313,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Increase interface font size": "インターフェースの文字サイズを大きく",
   "This is the demo. Go back to the app's list of PCs to open yours.": "これはデモです。アプリのPC一覧に戻って、ご自分のPCを開いてください。",
   "This app shows {address}. Go back to its list of PCs to open another.": "このアプリは {address} を表示しています。PC一覧に戻ると別のPCを開けます。",
-  // Settings, Phone & devices: Access
   "Access": "アクセス",
   "The server did not answer, so these facts are unavailable. Nothing from an earlier check is shown. This page asks again by itself; if this message stays, check that the server is running and that this device can reach it.": "サーバーが応答しないため、この情報は表示できません。以前の確認結果は表示しません。このページは自動でもう一度確認します。このメッセージが消えない場合は、サーバーが動いているか、このデバイスからサーバーに接続できるかを確認してください。",
   "This server does not report these facts. Updating it adds them.": "このサーバーはこの情報を返しません。サーバーを更新すると表示されます。",
@@ -351,7 +348,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "agents hooks claude codex install": "エージェント フック claude codex インストール",
   "onboarding first run getting started welcome": "オンボーディング 初回 はじめに ようこそ",
   "Agent integrations": "エージェント連携",
-  // the hosted relay shell's rows (lib/relay/shell.tsx)
   "This page shows one PC. The front page lists every PC this phone is paired with.": "このページは1台のPCを表示します。トップページにこのスマホとペアリング済みのすべてのPCが並びます。",
   "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "このPC用のこのスマホのキーを削除します。再度ペアリングするにはPCの新しいQRコードが必要です。",
   "Forget this PC?": "このPCを削除しますか？",

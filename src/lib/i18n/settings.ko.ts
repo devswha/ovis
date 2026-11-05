@@ -1,7 +1,5 @@
 /**
- * Korean for the keys only the settings files use:
- * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
- * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * Korean for the keys only the settings files use: components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx, components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SETTINGS_KO: Record<string, string> = {
@@ -315,7 +313,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Increase interface font size": "인터페이스 글자 크기 키우기",
   "This is the demo. Go back to the app's list of PCs to open yours.": "데모 화면입니다. 앱의 PC 목록으로 돌아가 내 PC를 여세요.",
   "This app shows {address}. Go back to its list of PCs to open another.": "이 앱은 {address}를 보여 주고 있습니다. PC 목록으로 돌아가 다른 PC를 열 수 있습니다.",
-  // Settings, Phone & devices: Access
   "Access": "접근",
   "The server did not answer, so these facts are unavailable. Nothing from an earlier check is shown. This page asks again by itself; if this message stays, check that the server is running and that this device can reach it.": "서버가 응답하지\u00a0않아 이 정보를 볼\u00a0수\u00a0없습니다. 이전 확인 결과는 숨깁니다. 이 페이지가 알아서 다시 확인합니다. 이 메시지가 계속 보이면 서버가 켜져\u00a0있는지, 이 기기에서 서버에 접속되는지 확인하세요.",
   "This server does not report these facts. Updating it adds them.": "이 서버는 이 정보를 알려\u00a0주지\u00a0않습니다. 서버를 업데이트하면 표시됩니다.",
@@ -351,7 +348,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "agents hooks claude codex install": "에이전트 훅 claude codex 설치",
   "onboarding first run getting started welcome": "온보딩 처음 실행 시작하기 환영",
   "Agent integrations": "에이전트 통합",
-  // the hosted relay shell's rows (lib/relay/shell.tsx)
   "This page shows one PC. The front page lists every PC this phone is paired with.": "이 페이지는 PC 한 대를 보여줍니다. 첫 페이지에 이 폰과 페어링된 모든 PC가 나옵니다.",
   "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "이 PC에 대한 이 폰의 키를 삭제합니다. 다시 페어링하려면 PC의 새 QR 코드가 필요합니다.",
   "Forget this PC?": "이 PC를 잊을까요?",
