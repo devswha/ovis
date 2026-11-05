@@ -93,7 +93,9 @@ const RS_DATA_IMAGE_ITERATOR = 22, RS_DATA_IMAGE_PLACEMENTS_GENERATION = 23;
 const ROW_DATA_CELLS = 3, ROW_DATA_CELLS_RAW = 5;
 const CELLS_STYLE = 2, CELLS_BG = 5, CELLS_FG = 6, CELLS_GRAPHEMES_UTF8 = 9;
 const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 13, OPT_COLOR_PALETTE = 14;
-const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28;
+const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE_DEFAULT = 33, OPT_MODE = 34;
+/** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
+const MODE_GRAPHEME_CLUSTER = 2027;
 const DATA_KITTY_GRAPHICS = 30;
 const SCROLL_BOTTOM = 1, SCROLL_DELTA = 2;
 const IMAGE_ID = 2, IMAGE_GENERATION = 3, IMAGE_LAYER = 4, IMAGE_Z = 5, IMAGE_COL = 6, IMAGE_ROW = 7, IMAGE_OFFSET_X = 10, IMAGE_OFFSET_Y = 11;
@@ -191,6 +193,9 @@ export class GhosttyVt {
     this.images = take(exports.ghostty_render_state_image_iterator_new(0, this.slot), "image_iterator_new");
     this.view().setBigUint64(this.scratch, IMAGE_STORAGE_BYTES, true);
     this.check(exports.ghostty_terminal_set(this.terminal, OPT_KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
+    // xterm (terminalWidths.ts) and herdr give a whole grapheme one cell, two columns for an emoji
+    // sequence; libghostty does that only with mode 2027 on, here also after a reset
+    this.setGraphemeClusters(OPT_MODE_DEFAULT);
     this.setScrollback(0);
   }
 
@@ -216,7 +221,30 @@ export class GhosttyVt {
       this.input = this.x.ghostty_wasm_alloc(this.inputCap);
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
-    this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
+    // xterm ignores a program's own 2027 off (CSI ? ... 2027 ... l): so does the layer, which turns it
+    // back on right after the sequence, or the two grids drift apart
+    let start = 0;
+    for (let at = bytes.indexOf(0x32); at !== -1; at = bytes.indexOf(0x32, at + 1)) {
+      if (bytes[at + 1] !== 0x30 || bytes[at + 2] !== 0x32 || bytes[at + 3] !== 0x37) continue;
+      let end = at + 4;
+      while (end < bytes.length && (bytes[end] === 0x3b || (bytes[end]! >= 0x30 && bytes[end]! <= 0x39))) end++;
+      if (bytes[end] !== 0x6c) continue;
+      this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, end + 1 - start);
+      this.setGraphemeClusters(OPT_MODE);
+      start = end + 1;
+      at = end;
+    }
+    if (start < bytes.length) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, bytes.length - start);
+    // a sequence split across two writes is off only until the end of the first
+    this.setGraphemeClusters(OPT_MODE);
+  }
+
+  private setGraphemeClusters(option: number): void {
+    // GhosttyTerminalModeConfig { uint16_t mode; bool value }
+    const dv = this.view();
+    dv.setUint16(this.scratch + 1000, MODE_GRAPHEME_CLUSTER, true);
+    dv.setUint8(this.scratch + 1002, 1);
+    this.check(this.x.ghostty_terminal_set(this.terminal, option, this.scratch + 1000), "grapheme clusters");
   }
 
   reset(): void {
