@@ -109,6 +109,33 @@ test("a draft outlives the editor it was typed in until it is saved or cancelled
   expect(root.findByType("textarea").props.value).toBe("a\n");
 });
 
+test("a save answering after its editor was closed leaves a draft typed since alone, and the page asks before a reload while one is kept", async () => {
+  const listeners = new Set<string>();
+  Object.assign(globalThis.window, { addEventListener: (type: string) => listeners.add(type), removeEventListener: (type: string) => listeners.delete(type) });
+  let answer: (response: Response) => void = () => {};
+  const seen = pc([Response.json(opened("a\n", "r1"))], () => { throw new Error("unused"); });
+  setTransport({ ...nativeTransport, fetch: async (_input, init) => {
+    if (init?.method === "PUT") return new Promise<Response>((resolve) => { answer = resolve; });
+    seen.reads += 1;
+    return Response.json(opened("a\n", "r1"));
+  } });
+  let root = await render(() => {});
+  await type(root, "first\n");
+  await press(root, "Save");
+  await act(async () => button(root, "Save").props.onClick());
+  await act(async () => renderer?.unmount());
+  expect(listeners.has("beforeunload")).toBe(true);
+  root = await render(() => {});
+  await type(root, "second\n");
+  await act(async () => renderer?.unmount());
+  await act(async () => { answer(Response.json({ path: "/work/notes.md", revision: "r2", size: 6, modified: "2026-11-05T00:00:01.000Z" })); });
+  await settle();
+  root = await render(() => {});
+  expect(root.findByType("textarea").props.value).toBe("second\n");
+  await press(root, "Cancel");
+  expect(listeners.has("beforeunload")).toBe(false);
+});
+
 test("Cancel leaves without saving", async () => {
   const seen = pc([Response.json(opened("a\n", "r1"))], () => Response.json({}));
   const done: boolean[] = [];

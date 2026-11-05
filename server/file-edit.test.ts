@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, mkdirSync, openSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,7 +7,8 @@ import { dlopen, FFIType } from "bun:ffi";
 
 import type { Access } from "./access.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
-import { MAX_TEXT_SAVE_BODY_BYTES, textEditAllowed, textSaveHooks } from "./file-edit.ts";
+import { copyFileAttributes } from "./file-attributes.ts";
+import { MAX_TEXT_SAVE_BODY_BYTES, textEditAllowed, textSaveHooks, withSaveLock } from "./file-edit.ts";
 import { setFilePoolOptions } from "./file-pool.ts";
 import { runFileTask } from "./file-tasks.ts";
 import * as herdr from "./herdr/client.ts";
@@ -117,6 +118,35 @@ describe("editing a text file (#771)", () => {
     expect(before).not.toBeNull();
     expect((await save(listed, sha("listed\n"), "x\n")).status).toBe(200);
     expect(read(listed, "system.posix_acl_access")).toBe(before);
+    // a folder that passes an access list on to new files: the saved file takes none the file did not have
+    mkdirSync(join(folder, "shared"));
+    expect(Bun.spawnSync(["setfacl", "-d", "-m", "u:nobody:r--", join(folder, "shared")]).exitCode).toBe(0);
+    const plain = file("shared/plain.md", "plain\n");
+    expect(Bun.spawnSync(["setfacl", "-b", plain]).exitCode).toBe(0);
+    expect(read(plain, "system.posix_acl_access")).toBeNull();
+    expect((await save(plain, sha("plain\n"), "y\n")).status).toBe(200);
+    expect(read(plain, "system.posix_acl_access")).toBeNull();
+  });
+
+  it("does not take a failed attribute read for a file without any", () => {
+    const target = file("target.md", "t\n");
+    const fd = openSync(target, "r+");
+    try { expect(copyFileAttributes(-1, fd)).toBe(false); } finally { closeSync(fd); }
+  });
+
+  it("lets one save run at a time across file threads, and refuses one that waits too long", () => {
+    const lock = new Int32Array(new SharedArrayBuffer(4));
+    expect(withSaveLock(lock, () => Atomics.load(lock, 0))).toBe(1);
+    expect(Atomics.load(lock, 0)).toBe(0);
+    Atomics.store(lock, 0, 1);
+    expect(() => withSaveLock(lock, () => "ran", 20)).toThrow(expect.objectContaining({ status: 503, code: "file_busy" }));
+    Atomics.store(lock, 0, 0);
+  });
+
+  it("answers a save to a file removed since it was opened with a conflict", async () => {
+    const gone = file("removed.md", "removed\n");
+    rmSync(gone);
+    expect(await error(await save(gone, sha("removed\n"), "x\n"))).toEqual([409, "stale_revision"]);
   });
 
   it("gives a CRLF file back with LF and saves it with CRLF again, its BOM kept", async () => {

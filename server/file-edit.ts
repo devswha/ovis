@@ -154,8 +154,16 @@ function refusedWrite(error: unknown): unknown {
 export function saveEditableText(input: string, cwd: string, revision: string, text: string): TextSaved {
   if (!/^[0-9a-f]{64}$/.test(revision)) throw new TextEditRefused(400, "invalid_revision", "revision is the SHA-256 the file was read with");
   if (text.includes("\r") || text.includes("\0") || LONE_SURROGATE.test(text)) throw new TextEditRefused(400, "invalid_text", "text has LF line endings and no NUL or unpaired surrogate");
-  const { root, requested } = locate(input, cwd);
-  const current = readCurrent(requested, root);
+  let located: { root: string; requested: string; current: ReturnType<typeof readCurrent> };
+  try {
+    const { root, requested } = locate(input, cwd);
+    located = { root, requested, current: readCurrent(requested, root) };
+  } catch (error) {
+    // a file gone since it was opened is a change like any other: the editor offers to reload
+    if (error instanceof TextEditRefused && error.code === "not_found") throw new TextEditRefused(409, "stale_revision", "The file was moved or removed since it was opened");
+    throw error;
+  }
+  const { root, current } = located;
   const stale = (now: Uint8Array) => new TextEditRefused(409, "stale_revision", "The file changed since it was opened", sha256(now));
   if (sha256(current.bytes) !== revision) throw stale(current.bytes);
   const { lineEndings } = decode(current.bytes);
@@ -189,10 +197,10 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     try {
       if (BigInt(fstatSync(fd).gid) !== current.stat.gid) fchownSync(fd, uid, Number(current.stat.gid));
       for (let written = 0; written < bytes.length;) written += writeSync(fd, bytes, written, bytes.length - written);
-      // the mode last: a write (and a change of group) clears set-id bits given before it
-      fchmodSync(fd, Number(current.stat.mode & 0o7777n));
-      // after the mode, which an access list's own entries must agree with
       if (!copyFileAttributes(original, fd, platform())) throw new TextEditRefused(403, "access_list", "This file's access list could not be kept; edit it in the terminal");
+      // the mode last: a write (and a change of group) clears set-id bits given before it, and with an
+      // access list its group bits are the list's mask, which the file's own mode already agrees with
+      fchmodSync(fd, Number(current.stat.mode & 0o7777n));
       fsyncSync(fd);
     } finally { closeSync(fd); }
     textSaveHooks.beforeRename?.();
@@ -214,6 +222,27 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     if (temp !== null) try { unlinkSync(join(anchor, temp)); } catch { /* never created, or already gone */ }
     if (original !== -1) closeSync(original);
     if (folderFd !== null) closeSync(folderFd);
+  }
+}
+
+/** How long a save waits for the one before it, whichever file thread that one is on. */
+export const SAVE_LOCK_WAIT_MS = 10_000;
+
+/**
+ * Runs `run` holding `lock` (0 free, 1 held), shared by every file thread: a save the server
+ * stopped waiting for (its deadline passed) still holds it until it really ends, so two saves never
+ * overlap between their revision check and their rename. Past `waitMs` the save is refused (503).
+ */
+export function withSaveLock<T>(lock: Int32Array<SharedArrayBuffer>, run: () => T, waitMs = SAVE_LOCK_WAIT_MS): T {
+  const until = Date.now() + waitMs;
+  while (Atomics.compareExchange(lock, 0, 0, 1) !== 0) {
+    const left = until - Date.now();
+    if (left <= 0) throw new TextEditRefused(503, "file_busy", "Another save is still running on this PC; try again in a moment");
+    Atomics.wait(lock, 0, 1, left);
+  }
+  try { return run(); } finally {
+    Atomics.store(lock, 0, 0);
+    Atomics.notify(lock, 0);
   }
 }
 

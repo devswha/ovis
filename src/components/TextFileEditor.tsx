@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { EditableText } from "../../shared/files.ts";
 import { ApiError } from "../lib/api.ts";
@@ -13,6 +13,16 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
  */
 const drafts = new Map<string, { file: EditableText; draft: string }>();
 const draftKey = (machineId: string, path: string): string => `${machineId}\u0000${path}`;
+
+/** A reload or a closed tab would lose every draft kept: while one is, the browser asks first. */
+const askBeforeUnload = (event: BeforeUnloadEvent): void => event.preventDefault();
+function keepDraft(key: string, kept: { file: EditableText; draft: string } | null): void {
+  const had = drafts.size > 0;
+  if (kept === null) drafts.delete(key);
+  else drafts.set(key, kept);
+  if (!had && drafts.size > 0) window.addEventListener("beforeunload", askBeforeUnload);
+  if (had && drafts.size === 0) window.removeEventListener("beforeunload", askBeforeUnload);
+}
 
 /** Whether text typed into `path` on `machineId` waits to be saved, for the viewer to open its editor again. */
 export function hasDraft(machineId: string, path: string): boolean {
@@ -63,7 +73,7 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
       setState({ kind: "editing" });
       return;
     }
-    drafts.delete(key);
+    keepDraft(key, null);
     setState({ kind: "opening" });
     fetchEditableText(path, paneId).then((opened) => {
       if (!live) return;
@@ -80,19 +90,17 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
   useEffect(() => onChanged(changed), [changed, onChanged]);
   useEffect(() => {
     if (file === null) return;
-    if (changed) drafts.set(key, { file, draft });
-    else drafts.delete(key);
+    keepDraft(key, changed ? { file, draft } : null);
   }, [key, file, draft, changed]);
-  // a reload or a closed tab would lose it: the browser asks first
+  // a save that answers after this editor went away tells nobody
+  const mounted = useRef(true);
   useEffect(() => {
-    if (!changed) return;
-    const ask = (event: BeforeUnloadEvent): void => event.preventDefault();
-    window.addEventListener("beforeunload", ask);
-    return () => window.removeEventListener("beforeunload", ask);
-  }, [changed]);
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   /** Leaves the editor; `saved` or not, nothing typed is kept. */
   const finish = (saved: boolean): void => {
-    drafts.delete(key);
+    keepDraft(key, null);
     onChanged(false);
     onDone(saved);
   };
@@ -101,9 +109,13 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
     if (file === null) return;
     setState({ kind: "saving" });
     try {
-      await saveEditableText({ pane_id: paneId, path: file.path, revision: file.revision, text: draft });
-      finish(true);
+      const submitted = draft;
+      await saveEditableText({ pane_id: paneId, path: file.path, revision: file.revision, text: submitted });
+      if (mounted.current) finish(true);
+      // the editor was closed meanwhile: only the draft this save wrote goes, not one typed since in another
+      else if (drafts.get(key)?.draft === submitted) keepDraft(key, null);
     } catch (reason) {
+      if (!mounted.current) return;
       const code = reason instanceof ApiError ? reason.code : null;
       setState(code === "stale_revision" ? { kind: "conflict" } : { kind: "refused", code, opened: true });
     }
