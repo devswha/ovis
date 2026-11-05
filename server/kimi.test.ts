@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, openSync, closeSync, realpathSy
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { forgetTranscriptState, MAX_PAGE_PROMPTS, transcriptPage } from "./conversation.ts";
+import { forgetTranscriptState, MAX_PAGE_PROMPTS, TRANSCRIPT_WINDOW_BYTES, transcriptPage } from "./conversation.ts";
 import { kimiWireForPane, parseKimiTranscript } from "./kimi.ts";
 import { processStartedAt } from "./process-start.ts";
 import { TOOL_OUTPUT_CHARS } from "./tool-output.ts";
@@ -188,6 +188,35 @@ it("lets go of an idle Kimi's session once the user switches to another one with
   expect(kimiWireForPane("w7:p1", [process.pid], home)).toBe(wire("session_b"));
 });
 
+it("sees a switch typed while the old lock lingers, or written in two pieces", () => {
+  const { home, wire, lock } = kimiHome("session_a", "session_b");
+  const cwd = "/work";
+  writeFileSync(join(wire("session_a"), "..", "..", "..", "state.json"), JSON.stringify({ id: "session_a", version: 2, cwd }));
+  const history = join(home, ".kimi-code", "user-history", `${createHash("md5").update(cwd).digest("hex")}.jsonl`);
+  mkdirSync(join(history, ".."), { recursive: true });
+  writeFileSync(history, jsonl([{ content: "hello" }]));
+  const lockA = join(home, ".kimi-code", "locks", "sessions", "session_a.lock");
+  lock("session_a", liveLock());
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  // /sessions picked while the turn's lock still lingers: that lock proves nothing of the switch
+  appendFileSync(history, jsonl([{ content: "/sessions" }]));
+  const typed = new Date(Date.now() + 500);
+  utimesSync(history, typed, typed);
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  rmSync(lockA);
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  // a lock taken after it is the new session's
+  lock("session_a", { ...liveLock(), startedAt: Date.now() + 1_000 });
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  rmSync(lockA);
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  // a line the CLI is still writing is read once it ends
+  appendFileSync(history, '{"content":"/resu');
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  appendFileSync(history, 'me session_b"}\n');
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+});
+
 it("ignores a lock a crashed process left behind, another host's and a broken one", () => {
   const { home, lock } = kimiHome("session_old", "session_far");
   // written before this pid's process started: a dead process's, its pid since reused
@@ -264,6 +293,36 @@ it("drops a prompt /undo took back from an older page", () => {
   const all = [...shown(newest)];
   for (let page = newest, pages = 0; page.cursor && pages < 5; pages += 1) { page = transcriptPage("kimi-transcript", path, { before: page.cursor, history_id: page.history_id }); all.unshift(...shown(page)); }
   expect(all).toEqual(["turn 0", "turn 1", "turn 2", "turn 3", "turn 4", "after"]);
+});
+
+it("drops what an undo still without its newline took back from every page", () => {
+  const { wire } = kimiHome("session_n");
+  const path = wire("session_n");
+  const prompt = (text: string) => ({ type: "context.append_message", message: { role: "user", origin: { kind: "user" }, content: text } });
+  const turns = Array.from({ length: MAX_PAGE_PROMPTS + 10 }, (_, i) => prompt(`turn ${i}`));
+  writeFileSync(path, jsonl(turns) + JSON.stringify({ type: "context.undo", count: turns.length - 5 }));
+  const shown = (page: ReturnType<typeof transcriptPage>) => page.turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text : "").join(""));
+  const newest = transcriptPage("kimi-transcript", path);
+  const all = [...shown(newest)];
+  for (let page = newest, pages = 0; page.cursor && pages < 5; pages += 1) { page = transcriptPage("kimi-transcript", path, { before: page.cursor, history_id: page.history_id }); all.unshift(...shown(page)); }
+  expect(all).toEqual(["turn 0", "turn 1", "turn 2", "turn 3", "turn 4"]);
+});
+
+it("never takes back another prompt for one too long to read across a window", () => {
+  const { wire } = kimiHome("session_w");
+  const path = wire("session_w");
+  const prompt = (text: string) => JSON.stringify({ type: "context.append_message", message: { role: "user", origin: { kind: "user" }, content: text } }) + "\n";
+  const keep = prompt("keep");
+  // a 100 KiB prompt that starts just before the scan's first window ends
+  const pad = JSON.stringify({ type: "padding", text: "x".repeat(TRANSCRIPT_WINDOW_BYTES - keep.length - 70_000 - 40) }) + "\n";
+  writeFileSync(path, keep + pad + prompt("y".repeat(100 * 1024)) + jsonl([{ type: "context.undo", count: 1 }]) + prompt("after"));
+  const shown = (page: ReturnType<typeof transcriptPage>) => page.turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text.slice(0, 5) : "").join(""));
+  const newest = transcriptPage("kimi-transcript", path);
+  const all = [...shown(newest)];
+  for (let page = newest, pages = 0; page.cursor && pages < 5; pages += 1) { page = transcriptPage("kimi-transcript", path, { before: page.cursor, history_id: page.history_id }); all.unshift(...shown(page)); }
+  // the long prompt the undo took back stays shown rather than "keep" going in its place
+  expect(all[0]).toBe("keep");
+  expect(all.at(-1)).toBe("after");
 });
 
 it("pages at every prompt the parser shows, an image-only one too", () => {

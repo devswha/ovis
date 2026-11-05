@@ -692,6 +692,8 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     // screenshot can still be where the session's branch forks
     if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) {
       if (scan.pictures && scan.pictures.blind === null) scan.pictures.blind = base + offset;
+      // it may have been a prompt: a Kimi /undo counting back over it would take back another
+      if (scan.undo) scan.undo.anchors = [];
       carry = Buffer.alloc(0);
       skipping = true;
     }
@@ -710,8 +712,14 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // A valid final JSON object is visible before its newline; rescan it on append.
   stream.floor = !skipping && carry.length > 0 && isClear(carry) ? stream.length - carry.length : scan.floor;
   if (stream.floor > 0) stream.id += `-clear-${stream.floor.toString(36)}`;
-  // what a Kimi /undo took back reads as off the branch too
-  const forks = branch ? claudeForks(branch) : scan.undo?.undone ?? [];
+  // what a Kimi /undo took back reads as off the branch too, the final record's before its newline
+  let undone = scan.undo?.undone ?? [];
+  if (scan.undo && !skipping && carry.length > 0) {
+    const final = { anchors: [...scan.undo.anchors], undone: [...undone] };
+    followKimiUndo(final, carry, stream.length - carry.length, stream.length);
+    undone = final.undone;
+  }
+  const forks = branch ? claudeForks(branch) : undone;
   const hidden = forks.filter(([, end]) => end > stream.floor);
   if (hidden.length > 0) {
     stream.hidden = hidden;
