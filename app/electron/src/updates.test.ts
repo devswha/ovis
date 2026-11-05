@@ -49,8 +49,9 @@ describe("updatePlan", () => {
     expect(updatePlan({ ...packaged, channel: "stable" })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "default" });
     // a build without a feed stays off, and OVIS_UPDATE_URL stays the feed on beta
     expect(updatePlan({ ...packaged, builtWithFeed: false, channel: "beta" }).enabled).toBe(false);
-    // no Windows build is published to the beta feed: a Windows app on beta keeps the release feed
-    expect(updatePlan({ ...packaged, platform: "win32", channel: "beta" })).toEqual({ enabled: true, feed: null, channel: "beta", installer: "default" });
+    // no Windows build is published to the beta feed: a Windows app on beta keeps the release feed and its
+    // stable channel, since asking the release feed for beta.yml finds nothing
+    expect(updatePlan({ ...packaged, platform: "win32", channel: "beta" })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "default" });
     expect(updatePlan({ ...packaged, channel: "beta", env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })).toEqual({ enabled: true, feed: "https://updates.example/desktop", channel: "beta", installer: "default" });
   });
 });
