@@ -69,8 +69,11 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     let metricsAt = 0;
     // output timing: the first output after a quiet spell reads at the busy cadence, only sustained output slows down
     let outputAt = -Infinity, burstFrom = -Infinity;
-    // strict: a page held on zero-history metrics, which runs only on metrics read after the latest output
-    let heldPage: { direction: -1 | 1; at: number; strict: boolean } | null = null;
+    // until when a wheel or swipe keeps the poll off the follow pace: its output may come after the read it woke
+    let gestureUntil = 0;
+    // pages asked for on stale metrics (steps: their sum, signed like a direction); strict: one was held on
+    // zero-history metrics, so they run only on metrics read after the latest output
+    let heldPage: { steps: number; at: number; strict: boolean } | null = null;
     let heldLines: { lines: number; at: number } | null = null;
     let data: PaneFindResponse | null = null;
     let lastKey = "";
@@ -157,10 +160,12 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         // also the box: a pane shown again by its visibility style, not its size, gets no ResizeObserver call
         paint();
         // a page held on stale metrics runs on the first read after the latest output, while it is recent
-        if (heldPage && (output === outputVersion || (!heldPage.strict && heldPage.at <= startedAt))) {
+        if (heldPage && validScroll(metrics) && (output === outputVersion || (!heldPage.strict && heldPage.at <= startedAt))) {
           const held = heldPage;
           heldPage = null;
-          if (Date.now() - held.at < HELD_PAGE_MS) scrollPage(held.direction, true);
+          if (Date.now() - held.at < HELD_PAGE_MS) {
+            for (let step = 0; step < Math.abs(held.steps); step++) scrollPage(held.steps > 0 ? 1 : -1, true);
+          }
         }
         if (heldLines && output === outputVersion && validScroll(metrics)) {
           const held = heldLines; heldLines = null;
@@ -172,11 +177,22 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       } finally {
         pending = false;
         // an idle pane at the bottom backs off; output, a scroll, a resize, moved metrics or coming back into view resets it
-        if (alive) schedule(scrollPollDelay(dirty, idle++, readMetrics, following()));
+        // a held page or line scroll retries at the busy cadence, well inside its hold
+        if (alive) schedule(scrollPollDelay(dirty || !!heldPage || !!heldLines, idle++, readMetrics, following()));
       }
     };
     // only output moved since the last read, and it has been arriving for a while: a view at the bottom reads at the follow pace
-    const following = () => !urgent && !query && !heldPage && !heldLines && Date.now() - burstFrom >= SCROLL_POLL_SETTLE_MS;
+    const following = () => {
+      const now = Date.now();
+      return !urgent && !query && !heldPage && !heldLines && now >= gestureUntil && now - burstFrom >= SCROLL_POLL_SETTLE_MS;
+    };
+    /** Holds a page until a fresh read; presses add up, so two quick pages still move two. */
+    const holdPage = (direction: -1 | 1, strict: boolean) => {
+      const now = Date.now();
+      const live = heldPage && now - heldPage.at < HELD_PAGE_MS ? heldPage : null;
+      heldPage = { steps: (live?.steps ?? 0) + direction, at: now, strict: strict || !!live?.strict };
+      dirty = true; idle = 0; schedule(0);
+    };
     const wake = () => { dirty = true; urgent = true; idle = 0; schedule(); };
     const flush = async () => {
       if (writing || desired === null || !alive || viewportIntent.isSearching()) return;
@@ -218,7 +234,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (validScroll(metrics) && metrics.max_offset_from_bottom === 0) {
         // keys for the program only on metrics read after its latest output: it may just have left
         // its alternate screen, and the shell behind it has history to scroll instead
-        if (metricsOutput !== outputVersion) { heldPage = { direction, at: Date.now(), strict: true }; dirty = true; schedule(0); return; }
+        if (metricsOutput !== outputVersion) { holdPage(direction, true); return; }
         onApplicationPage?.(direction);
         return;
       }
@@ -226,7 +242,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       // them up to 2 s apart): the program may have entered its alternate screen since, so read before
       // choosing herdr's scroll over the program's page keys
       if (!fresh && validScroll(metrics) && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS) {
-        heldPage = { direction, at: Date.now(), strict: false }; dirty = true; idle = 0; schedule(0); return;
+        holdPage(direction, false); return;
       }
       if (validScroll(metrics)) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) - direction * pageScrollDistance(metrics.viewport_rows, 1, PAGE_OVERLAP_ROWS));
       // no metrics (a failed read): ask for a fresh read now rather than at the next poll
@@ -244,7 +260,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     };
     if (lineScroll) lineScroll.current = scrollLines;
     const unregisterCancellation = viewportIntent.registerScrollCancellation(() => {
-      desired = null; heldLines = null; version++;
+      desired = null; heldLines = null; heldPage = null; version++;
       previewRef.current = null;
       clearHits();
     });
@@ -260,8 +276,9 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     const rendered = terminal.onRender(paintHits);
     // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
     // that left the bottom: read at the busy cadence, not the follow pace
-    terminal.element?.addEventListener("wheel", wake, { passive: true, capture: true });
-    terminal.element?.addEventListener("touchmove", wake, { passive: true, capture: true });
+    const gesture = () => { gestureUntil = Date.now() + SCROLL_POLL_SETTLE_MS; wake(); };
+    terminal.element?.addEventListener("wheel", gesture, { passive: true, capture: true });
+    terminal.element?.addEventListener("touchmove", gesture, { passive: true, capture: true });
     const resized = terminal.onResize(() => { version++; clearHits(); setScroll(null); wake(); paint(); });
     const visibility = () => {
       if (document.visibilityState === "hidden") { if (timer !== null) clearTimeout(timer); timer = null; clearHits(); }
@@ -283,8 +300,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (timer !== null) clearTimeout(timer);
       parsed.dispose(); rendered.dispose(); resized.dispose(); observer.disconnect();
       mount?.removeEventListener("scroll", paint);
-      terminal.element?.removeEventListener("wheel", wake, { capture: true });
-      terminal.element?.removeEventListener("touchmove", wake, { capture: true });
+      terminal.element?.removeEventListener("wheel", gesture, { capture: true });
+      terminal.element?.removeEventListener("touchmove", gesture, { capture: true });
       document.removeEventListener("visibilitychange", visibility);
       refreshRef.current = () => {}; writeRef.current = () => {};
     };
