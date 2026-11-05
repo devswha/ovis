@@ -1502,6 +1502,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   /** the turn a search's pick opens the chat at (revealTurn), until its row is in; bumped for each pick */
   const revealing = useRef<{ match: ConversationSearchMatch; done: (result: RevealResult) => void } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
+  /** the last newest-page read failed: a pick waiting on it learned nothing (revealTurn) */
+  const newestFailed = useRef(false);
   const stopRestore = useRef<(() => void) | null>(null);
   const [pollKey, setPollKey] = useState(0);
   /**
@@ -1682,6 +1684,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const previousAnswer = lastAnswer.current ?? undefined;
       const page = { ...(heldFrom.current === null ? {} : { from: heldFrom.current }), history_id: previousAnswer?.history_id, prompts: pagePrompts, fresh: readKey !== validatedPresentation.current, signal };
        let generation = olderGeneration.current;
+      newestFailed.current = false;
       try {
         let conversation;
         try {
@@ -1790,6 +1793,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         // a read given up for a reconnect is no failure: the read after it answers
         if (cancelled || generation !== olderGeneration.current || (cause instanceof DOMException && cause.name === "AbortError")) return;
         // a failed read proves nothing to wait on: the failure shows and the backstop retries it
+        newestFailed.current = true;
         setStale(false);
         setLoaded(true);
         setError(userFailure(cause));
@@ -2558,7 +2562,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const generation = olderGeneration.current;
     if (pickAhead(read, match)) {
       await conversationRefresh.refreshed();
-      return olderGeneration.current === generation ? reveal() : "missing";
+      if (olderGeneration.current !== generation) return "missing";
+      return newestFailed.current ? "failed" : reveal();
     }
     if (pickSettled(read, match)) return reveal();
     for (let before = olderCursor; typeof before === "string";) {

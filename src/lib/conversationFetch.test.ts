@@ -1111,6 +1111,16 @@ describe("conversation invalidation refresh", () => {
     expect(answered).toBe(false);
     reads[1]!.resolve();
     await asked;
+    // a read a reconnect gives up answers through the read that replaces it
+    answered = false;
+    const replaced = refresh.refreshed().then(() => { answered = true; });
+    await settleRefresh();
+    refresh.restart();
+    await settleRefresh();
+    expect(reads).toHaveLength(4);
+    expect(answered).toBe(false);
+    reads[3]!.resolve();
+    await replaced;
     // a screen that goes answers what it was asked for: nothing waits on a read that never comes
     const stopped = refresh.refreshed();
     refresh.stop();

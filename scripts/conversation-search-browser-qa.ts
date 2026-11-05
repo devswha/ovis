@@ -33,6 +33,8 @@ const TURNS = Array.from({ length: PROMPTS * 2 }, (_, index): ConversationTurn =
 const [call, said] = TURNS.at(-1)!.parts as [ConversationTurn["parts"][number], { kind: "text"; text: string }];
 const RETRIED: ConversationTurn = { ...TURNS.at(-1)!, parts: [call, { kind: "text", text: `${said.text} Retried.` }], text_rows: [TURNS.length + 1] };
 let retried = false;
+/** the newest page answers 503, as a bridge that lost its store for a moment */
+let newestFails = false;
 const reads: { before: string | null; prompts: string | null }[] = [];
 
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -60,6 +62,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const size = 2 * Number(url.searchParams.get("prompts") ?? 50);
     const end = before === null ? TURNS.length : Number(before.slice(2));
     const start = Math.max(0, end - size);
+    if (before === null && newestFails) return Response.json({ error: { code: "unavailable", message: "store" } }, { status: 503 });
     const newest = before === null && retried ? [RETRIED] : [];
     return Response.json({ source: "claude-transcript", history_id: "h1", cursor: start === 0 ? null : `t:${start}`, turns: [...TURNS.slice(start, end), ...newest], metadata: { model: null, reasoning_effort: null } });
   }
@@ -153,6 +156,11 @@ try {
     await dialog(page).getByRole("option").click();
     await dialog(page).getByText("This message is no longer in the conversation.").waitFor();
     assert.ok(reads.slice(firstRead).some((read) => read.before === null), JSON.stringify(reads.slice(firstRead)));
+    // a newest read that fails tells nothing: the pick says so, rather than that the message is gone
+    newestFails = true;
+    await dialog(page).getByRole("option").click();
+    await dialog(page).getByText("Couldn't load the earlier messages.").waitFor();
+    newestFails = false;
     await page.keyboard.press("Escape");
     await dialog(page).waitFor({ state: "detached" });
     retried = true;

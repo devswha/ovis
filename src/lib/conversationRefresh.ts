@@ -35,6 +35,7 @@ export class ConversationRefresh {
     this.invalidated = false;
     this.newestAt = -Infinity;
     this.read = read;
+    for (const done of this.waiters.splice(0)) done();
   }
 
   /** Whether the bridge pushes this pane's transcript changes; without, the backstop is the poll. */
@@ -70,7 +71,10 @@ export class ConversationRefresh {
     void this.drain();
   }
 
-  /** A newest read now, answered once a newest read begun after this call has ended (or the screen went). */
+  /**
+   * A newest read now, answered once a newest read begun after this call has ended (or the screen
+   * went); a read a reconnect gave up on answers through the read that replaces it.
+   */
   refreshed(): Promise<void> {
     if (this.read === null) return Promise.resolve();
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -162,7 +166,8 @@ export class ConversationRefresh {
         finally {
           scope.removeEventListener("abort", end);
           if (this.current === current) this.current = null;
-          for (const done of waiters) done();
+          if (current.signal.aborted && !scope.aborted) this.waiters.unshift(...waiters);
+          else for (const done of waiters) done();
         }
       }
     } finally {
