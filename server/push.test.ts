@@ -14,6 +14,7 @@ import { DeviceStore } from "./devices.ts";
 import { createPushService, handlePushRequest, parseSubscription, type PushService } from "./push.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { privateStateFs } from "./private-state.ts";
+import { parseInteractivePrompt } from "./prompt.ts";
 
 /**
  * The server half of web push, end to end against a fake push service that decrypts
@@ -1508,9 +1509,15 @@ describe("answer buttons on a question's alert (#2916)", () => {
     options: [{ label: "Allow once", description: null }, { label: "Deny", description: null }],
     multi_select: false, custom_option_index: null, ...overrides,
   });
+  /** `shown` as a reader got it off a screen that shows it whole: a Claude panel under its rule */
+  const onScreen = (shown: InteractivePrompt) => ({ prompt: shown, screen: drawn(shown) });
+  const drawn = (shown: InteractivePrompt, between: string[] = []) => [
+    "─".repeat(40), ...(shown.title === shown.question ? [] : [` ${shown.title}`]), ...(shown.body ?? "").split("\n").filter(Boolean).map((line) => `   ${line}`),
+    ...between, ` ${shown.question}`, ...shown.options.map((option, index) => ` ${index === 0 ? "❯" : " "} ${index + 1}. ${option.label}`), "", " Esc to cancel",
+  ].join("\n");
   const alertFor = async (shown: InteractivePrompt | null, options: Partial<Parameters<typeof createPushService>[0]> = {}) => {
     fake.received.length = 0;
-    const push = subscribed({ lookupPrompt: async () => shown, ...options });
+    const push = subscribed({ lookupPrompt: async () => shown && onScreen(shown), ...options });
     push.seed([pane("w1:p1", "working", "omp")]);
     await push.onStatus("w1:p1", "blocked");
     expect(fake.received).toHaveLength(1);
@@ -1526,7 +1533,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
 
   it("says what the buttons answer: the prompt's title, question and the first lines it shows", async () => {
     fake.received.length = 0;
-    const push = subscribed({ lookupPrompt: async () => prompt({ title: "Bash command", question: "Do you want to proceed?", body: "rm -rf build\nDelete the build directory" }) });
+    const push = subscribed({ lookupPrompt: async () => onScreen(prompt({ title: "Bash command", question: "Do you want to proceed?", body: "rm -rf build\nDelete the build directory" })) });
     push.seed([pane("w1:p1", "working", "claude")]);
     await push.onStatus("w1:p1", "blocked");
     expect(fake.received[0]!.payload.body).toBe("Bash command\nDo you want to proceed?\nrm -rf build\nDelete the build directory");
@@ -1534,7 +1541,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
 
   it("keeps every line of what is approved, a repeated one too", async () => {
     fake.received.length = 0;
-    const push = subscribed({ lookupPrompt: async () => prompt({ title: "Bash command", question: "Do you want to proceed?", body: "cd ..\ncd ..\nrm -rf project" }) });
+    const push = subscribed({ lookupPrompt: async () => onScreen(prompt({ title: "Bash command", question: "Do you want to proceed?", body: "cd ..\ncd ..\nrm -rf project" })) });
     push.seed([pane("w1:p1", "working", "claude")]);
     await push.onStatus("w1:p1", "blocked");
     expect(fake.received[0]!.payload.body).toBe("Bash command\nDo you want to proceed?\ncd ..\ncd ..\nrm -rf project");
@@ -1550,7 +1557,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
         const id = `prompt-${++read}`;
         // the first read is slow: it ends only after the second asking was told
         if (read === 1) { started.resolve(); await slow.promise; }
-        return prompt({ id });
+        return onScreen(prompt({ id }));
       } });
     push.subscribe(fake.subscription);
     push.seed([pane("w1:p1", "working", "omp")]);
@@ -1569,7 +1576,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
     const slow = deferred();
     const started = deferred();
     const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
-      lookupPrompt: async () => { started.resolve(); await slow.promise; return prompt(); } });
+      lookupPrompt: async () => { started.resolve(); await slow.promise; return onScreen(prompt()); } });
     push.subscribe(fake.subscription, { input: true, done: "always" });
     push.seed([pane("w1:p1", "working", "omp")]);
     await push.onStatus("w1:p1", "blocked");
@@ -1579,6 +1586,40 @@ describe("answer buttons on a question's alert (#2916)", () => {
     slow.resolve();
     await push.settled();
     expect(fake.received.map((r) => r.payload.body)).toEqual(["work finished"]);
+  });
+
+  it("offers buttons only for what the screen shows whole, verbatim, whichever reader read it", async () => {
+    const shown = prompt({ title: "Bash command", question: "Do you want to proceed?", body: "echo safe" });
+    const none = { prompt_id: undefined, actions: undefined };
+    const read = (screen: string | undefined) => alertFor(null, { lookupPrompt: async () => ({ prompt: shown, ...(screen === undefined ? {} : { screen }) }) });
+    expect((await read(drawn(shown))).actions).toHaveLength(2);
+    // a line the reader left out of the body (Claude's `Tip:` filter took a line of the command)
+    expect(await read(drawn(shown, ["   Tip:; rm -rf production"]))).toEqual(none);
+    // a line over the body the reader's window did not take: nothing over it says the prompt begins there
+    expect(await read(drawn(shown).replace(" Bash command", " Bash command\n   rm -rf production"))).toEqual(none);
+    // a marker between the body and the question (Claude's older approval keeps only the lines over it)
+    expect(await read(drawn(shown, [" This command requires approval"]))).toEqual(none);
+    // the body begins at the top of the screen: the rest of it may have scrolled away
+    expect(await read(drawn(shown).split("\n").slice(2).join("\n"))).toEqual(none);
+    // an option row that is not where the card says
+    expect(await read(drawn(shown).replace("2. Deny", "2. Maybe\n    3. Deny"))).toEqual(none);
+    // a prompt not read off a screen at all
+    expect(await read(undefined)).toEqual(none);
+  });
+
+  it("gives no buttons for the screens Claude's reader takes only part of (#2916 review)", async () => {
+    const none = { prompt_id: undefined, actions: undefined };
+    const real = (screen: string) => alertFor(null, { lookupPrompt: async () => ({ prompt: parseInteractivePrompt("claude", screen)!, screen }) });
+    // the newer panel, whole: buttons
+    const whole = ["─".repeat(40), " Bash command", "", "   echo safe", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "", " Esc to cancel"];
+    expect((await real(whole.join("\n"))).actions).toHaveLength(2);
+    // its `Tip:` filter dropping a line of the command
+    expect(await real([...whole.slice(0, 4), "   Tip:; rm -rf production", ...whole.slice(4)].join("\n"))).toEqual(none);
+    // the older approval: its body is only the few lines over its marker
+    expect(await real([" Bash command", "", "   rm -rf production", "", "   echo one", "", "   echo two", "", "   echo three", "", "   echo four", "",
+      " This command requires approval", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "", " Esc to cancel"].join("\n"))).toEqual(none);
+    // a long command scrolled past the panel's top: only its tail is on the screen
+    expect(await real(["   │ rm -rf production", "   │ echo tail", "   ╌╌╌╌╌╌╌╌╌╌╌╌", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "", " Esc to cancel"].join("\n"))).toEqual(none);
   });
 
   it("keeps today's alert for a prompt the buttons cannot answer whole", async () => {
@@ -1610,7 +1651,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
   it("asks for the prompt only for this PC's panes", async () => {
     fake.received.length = 0;
     let asked = 0;
-    const push = subscribed({ lookupPrompt: async () => { asked += 1; return prompt(); } });
+    const push = subscribed({ lookupPrompt: async () => { asked += 1; return onScreen(prompt()); } });
     push.seed([pane("w1:p1", "working", "omp")], "pc-2", "Laptop");
     await push.onStatus("w1:p1", "blocked", "pc-2");
     expect(asked).toBe(0);

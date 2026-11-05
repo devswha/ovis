@@ -79,6 +79,7 @@ import {
   shouldNotifyStatus,
   statusNotificationBody,
 } from "../shared/notify-policy.ts";
+import { cleanLine, isDivider, parsedByPublicPrompt } from "./dialogs/shared.ts";
 import { badRequest, jsonResponse, setRequestRoute } from "./http.ts";
 import { isLoopbackHost } from "./access.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -223,8 +224,8 @@ export interface PushServiceOptions {
    * waits for. Falls back to what was last seeded.
    */
   lookupPane?: (paneId: string) => Promise<{ title: string; agent_kind?: string } | undefined>;
-  /** The prompt this PC's pane shows now, read when a question's alert fires, for its answer buttons (promptActions). */
-  lookupPrompt?: (paneId: string, signal: AbortSignal) => Promise<InteractivePrompt | null>;
+  /** The prompt this PC's pane shows now and the screen it was read from (absent for one not read off a screen), read when a question's alert fires, for its answer buttons (promptActions). */
+  lookupPrompt?: (paneId: string, signal: AbortSignal) => Promise<{ prompt: InteractivePrompt; screen?: string } | null>;
   /** whether a subscription's device may answer a prompt (not one paired to watch only): only it gets the buttons */
   canAnswer?: (deviceId: string | null | undefined) => boolean;
   /** This PC's name, as the roster gives it to devices (server/machines.ts): what an older `pcs_off` names it by */
@@ -320,17 +321,43 @@ export function statusMessage(paneId: string, title: string, status: AgentStatus
 
 /**
  * The buttons an alert for `prompt` carries: each option, when the prompt is one choice between at
- * most two short options (Allow / Deny, Yes / No) that nothing else goes with. A plan, a menu, a
- * form of several questions, a typed answer or a queued question opens the pane instead.
+ * most two short options (Allow / Deny, Yes / No) that nothing else goes with, and `screen` shows
+ * all of what it is about (shownWhole). A plan, a menu, a form of several questions, a typed answer,
+ * a queued question, or a prompt not read off a screen opens the pane instead.
  */
-export function promptActions(prompt: InteractivePrompt | null): PushAction[] | null {
+export function promptActions(prompt: InteractivePrompt | null, screen?: string): PushAction[] | null {
   if (!prompt || (prompt.kind !== "approval" && prompt.kind !== "question")) return null;
+  // omp cut its own question short on the screen: what the alert would show is cut too
+  if (screen === undefined || !shownWhole(prompt, screen) || parsedByPublicPrompt.get(prompt)?.ompQuestionCut) return null;
   if (prompt.multi_select || prompt.custom_option_index !== null || prompt.queued !== undefined || prompt.checks_with_text) return null;
   if (prompt.steps !== undefined || prompt.answers !== undefined || prompt.can_step_back || prompt.can_step_next) return null;
   if (prompt.options.length === 0 || prompt.options.length > 2) return null;
   // an option whose meaning is in its description is not answered by its label alone
   if (prompt.options.some((option) => option.label.trim() === "" || option.label.length > ACTION_LABEL_MAX || option.description)) return null;
   return prompt.options.map((option, index) => ({ option_index: index, label: option.label.trim() }));
+}
+
+/**
+ * Whether the alert's text is the prompt as the screen shows it, verbatim: the body's lines are the
+ * screen's lines right over the question, in order, with nothing between (a line a reader left out,
+ * a key hint, a marker); over them is the prompt's title or a divider, so nothing of it is above the
+ * screen or above a window the reader cut; under the question come the options, one line each. Any
+ * line a reader dropped, filtered, joined or cut fails this, whichever agent's reader it is: a button
+ * must approve only what the alert shows.
+ */
+export function shownWhole(prompt: InteractivePrompt, screen: string): boolean {
+  const lines = screen.split("\n").map(cleanLine).filter((line) => line !== "");
+  const body = (prompt.body ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const question = prompt.question.trim();
+  // the asking nearest the bottom: what the screen asks now
+  const at = lines.lastIndexOf(question);
+  if (at < 0) return false;
+  if (!prompt.options.every((option, index) => lines[at + 1 + index]?.includes(option.label.trim()))) return false;
+  const start = at - body.length;
+  // the screen's first line has nothing over it to say it is where the prompt begins
+  if (start < 1 || !body.every((line, index) => lines[start + index] === line)) return false;
+  const over = lines[start - 1]!;
+  return over === prompt.title.trim() || isDivider(over);
 }
 
 /**
@@ -734,11 +761,12 @@ export function createPushService(options: PushServiceOptions): PushService {
     if (!options.lookupPrompt) return null;
     const signal = AbortSignal.timeout(PROMPT_LOOKUP_MS);
     try {
-      const prompt = await Promise.race([
+      const read = await Promise.race([
         options.lookupPrompt(paneId, signal),
         new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null), { once: true })),
       ]);
-      const actions = promptActions(prompt);
+      const prompt = read?.prompt ?? null;
+      const actions = promptActions(prompt, read?.screen);
       const body = prompt && actions ? promptSummary(prompt) : null;
       return prompt && actions && body !== null ? { promptId: prompt.id, body, actions } : null;
     } catch {

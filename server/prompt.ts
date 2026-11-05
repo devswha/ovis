@@ -1322,16 +1322,14 @@ async function withPlanFile(prompt: InteractivePrompt | null, transcript: string
 }
 
 /**
- * The prompt the pane shows now, as GET /api/pane/prompt reads it (without a plan's file): what a
- * question's alert offers as buttons (server/push.ts promptActions). Null when none stands, or the read
- * is not one an answer could be checked against.
+ * The prompt the pane shows now, as GET /api/pane/prompt reads it (without a plan's file), and the screen
+ * it was read from: what a question's alert offers as buttons (server/push.ts promptActions, which checks
+ * the one against the other). Null when none stands, or the read is not one an answer could be checked against.
  */
-export async function currentPrompt(paneId: string, options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState; signal?: AbortSignal }): Promise<InteractivePrompt | null> {
+export async function currentPrompt(paneId: string, options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState; signal?: AbortSignal }): Promise<{ prompt: InteractivePrompt; screen?: string } | null> {
   const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState, options.signal);
   if (read.stale || read.inputUnverified || !read.prompt) return null;
-  // a card that shows only part of what it is about is never answered from an alert, which shows even less
-  const parsed = parsedByPublicPrompt.get(read.prompt);
-  return parsed?.cutOff || parsed?.ompQuestionCut ? null : read.prompt;
+  return { prompt: read.prompt, ...(read.screen === undefined ? {} : { screen: read.screen }) };
 }
 
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {

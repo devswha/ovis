@@ -151,12 +151,6 @@ export type ParsedPrompt = InteractivePrompt & {
   /** Installed questionnaire editor contents; absent outside its guarded input mode. */
   piQuestionnaireInput?: string;
   piQuestionnaireInputRows?: string[];
-  /**
-   * the card may show only part of what it is about: Claude's approval of a command scrolled past its panel, and its
-   * older approval ("This command requires approval"), whose body is only the lines over that marker. An alert never
-   * offers to answer one (server/prompt.ts currentPrompt)
-   */
-  cutOff?: true;
   /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */

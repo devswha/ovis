@@ -64,7 +64,7 @@ writeFileSync(out, "");
 `;
 
 /**
- * Claude's command approval with two numbered rows: ↑/↓ move its `❯`, Enter or a row's number
+ * Claude's command approval with two numbered rows, its whole panel under its rule: ↑/↓ move its `❯`, Enter or a row's number
  * logs the row it picks.
  */
 const APPROVAL = `
@@ -73,7 +73,7 @@ const [out, spec] = process.argv.slice(2);
 const { rows } = JSON.parse(spec);
 let cursor = 0;
 const draw = () => process.stdout.write("\\u001b[2J\\u001b[H" + [
-  " Bash command", "", "   pwd", "", " This command requires approval", "", " Do you want to proceed?",
+  "─".repeat(40), " Bash command", "", "   pwd", "", " Do you want to proceed?",
   ...rows.map((row, index) => " " + (index === cursor ? "❯" : " ") + " " + (index + 1) + ". " + row), "", " Esc to cancel",
 ].join("\\r\\n"));
 process.stdin.setRawMode(true);
