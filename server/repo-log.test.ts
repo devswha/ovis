@@ -82,9 +82,10 @@ describe("GET /api/workspace/git/log", () => {
     expect(branch.next_skip).toBeNull();
   });
 
-  it("never fetches a commit a partial clone is missing: a read stays on this disk", async () => {
+  it("never fetches a commit a partial clone is missing, while a diff of its older commits still reads their contents", async () => {
     const remote = repository("log-promisor");
-    commit(remote, "shared", 1_700_000_000);
+    commit(remote, "older", 1_700_000_000);
+    commit(remote, "shared", 1_700_000_030);
     git(remote, ["config", "uploadpack.allowFilter", "true"]);
     git(remote, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
     const clone = join(scratch, "log-partial");
@@ -93,6 +94,8 @@ describe("GET /api/workspace/git/log", () => {
     expect(await codeOf(repoLog(clone, query({ oid: later })))).toBe("revision_not_found");
     expect(await codeOf(repoCommit(clone, query({ rev: later })))).toBe("revision_not_found");
     expect(Bun.spawnSync(["git", "-C", clone, "cat-file", "-e", later], { env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } }).exitCode).not.toBe(0);
+    const older = await repoDiffFile(clone, query({ scope: "commit", base: "HEAD~1", head: "HEAD", path: "a.txt" }));
+    expect(older.patch).toContain("\n-older\n+shared\n");
   });
 
   it("answers an empty page for a repository with no commit yet", async () => {
@@ -190,7 +193,18 @@ describe("GET /api/workspace/git/show", () => {
     expect(await codeOf(repoDiffFiles(root, query({ scope: "commit", base: first, head: EMPTY_TREE })))).toBe("revision_not_found");
   });
 
+  it("answers no base for a shallow clone's boundary commit, whose parent it does not have", async () => {
+    const shallow = join(scratch, "show-shallow");
+    git(scratch, ["clone", "-q", "--depth=1", `file://${root}`, shallow]);
+    const boundary = await repoCommit(shallow, query({ rev: "HEAD" }));
+    expect(boundary.commit.oid).toBe(merge);
+    expect(boundary.commit.parents).toEqual([]);
+    expect(boundary.base).toBeNull();
+  });
+
   it("cuts a long message at its cap and says so, and refuses what names no commit", async () => {
+    const whole = await repoCommit(root, query({ rev: first }), { maxMessageBytes: "root commit".length });
+    expect([whole.message, whole.message_truncated]).toEqual(["root commit", false]);
     const cut = await repoCommit(root, query({ rev: merge }), { maxMessageBytes: 12 });
     expect(cut.message).toBe("Merge side\n\n");
     expect(cut.message_truncated).toBe(true);

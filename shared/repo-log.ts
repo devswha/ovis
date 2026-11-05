@@ -10,7 +10,7 @@ export interface RepoPerson {
 
 export interface RepoCommit {
   oid: string;
-  /** full hashes, the first parent first; empty for a root commit */
+  /** full hashes, the first parent first; empty for a root commit, and for a shallow clone's boundary commit */
   parents: string[];
   author: RepoPerson;
   committer: RepoPerson;
@@ -78,8 +78,9 @@ export interface RepoCommitDetail {
   message_truncated: boolean;
   /**
    * what this commit's changes are read against with the diff routes (`scope=commit&base=<base>&head=<oid>`):
-   * its first parent, or for a root commit the empty tree's hash, which those routes take as a base
+   * its first parent, or for a root commit the empty tree's hash, which those routes take as a base;
+   * null for a shallow clone's boundary commit, whose parent this clone does not have
    */
-  base: string;
+  base: string | null;
   limits: { max_message_bytes: number };
 }

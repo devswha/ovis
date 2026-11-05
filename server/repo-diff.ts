@@ -51,6 +51,12 @@ export interface RepoDiffOptions {
   maxListBytes?: number;
   maxPatchBytes?: number;
   maxRefs?: number;
+  /**
+   * Never fetch an object a partial clone is missing (git 2.44+ honours this). The history routes
+   * set it: a commit or message is there or it is not. The diff routes leave it off, as a patch of
+   * an older commit in a blobless clone needs its contents fetched.
+   */
+  noLazyFetch?: boolean;
 }
 
 /** A refusal in the API's own words: it never carries git's stderr. */
@@ -67,6 +73,7 @@ export interface Context {
   maxListBytes: number;
   maxPatchBytes: number;
   maxRefs: number;
+  noLazyFetch: boolean;
 }
 
 export function contextOf(options: RepoDiffOptions): Context {
@@ -77,18 +84,18 @@ export function contextOf(options: RepoDiffOptions): Context {
     maxListBytes: options.maxListBytes ?? REPO_DIFF_MAX_LIST_BYTES,
     maxPatchBytes: options.maxPatchBytes ?? REPO_DIFF_MAX_PATCH_BYTES,
     maxRefs: options.maxRefs ?? REPO_DIFF_MAX_REFS,
+    noLazyFetch: options.noLazyFetch ?? false,
   };
 }
 
-function gitEnvironment(): Record<string, string> {
+function gitEnvironment(noLazyFetch: boolean): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     // a repository the server itself was started inside (a hook, a test runner) is not the one asked about
     if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR" || name === "GIT_EXTERNAL_DIFF" || name === "GIT_PAGER") continue;
     env[name] = value;
   }
-  // a partial clone would otherwise fetch a missing object from its remote (git 2.44+ honours this)
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", LC_ALL: "C" };
+  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...(noLazyFetch ? { GIT_NO_LAZY_FETCH: "1" } : {}), LC_ALL: "C" };
 }
 
 /** One git process in `cwd`: stdout up to `maxBytes`, killed at the deadline or once it prints more. */
@@ -97,7 +104,7 @@ export async function runGit(context: Context, cwd: string, args: string[], maxB
   const argv = [context.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "core.fsmonitor=", "-c", "color.ui=never", "-C", cwd, ...args];
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try {
-    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: gitEnvironment() });
+    proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: gitEnvironment(context.noLazyFetch) });
   } catch {
     throw new RepoDiffError("git_unavailable", "git could not be started on this PC", 503);
   }

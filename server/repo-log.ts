@@ -1,5 +1,8 @@
 import type { RepoBranch, RepoBranches, RepoCommit, RepoCommitDetail, RepoLog } from "../shared/protocol.ts";
 import { errorResponse, jsonResponse } from "./http.ts";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { type Context, EMPTY_TREE_OIDS, type GitRun, MAX_REFNAME_BYTES, OID, RepoDiffError, type RepoDiffOptions, checkRevision, contextOf, repositoryOf, resolveRevision, runGit } from "./repo-diff.ts";
 
 /**
@@ -18,6 +21,8 @@ export const REPO_COMMIT_MAX_MESSAGE_BYTES = 64 * 1024;
 export interface RepoLogOptions extends RepoDiffOptions {
   maxMessageBytes?: number;
 }
+
+const historyContext = (options: RepoLogOptions): Context => contextOf({ ...options, noLazyFetch: true });
 
 /** No signature is checked (that runs gpg), and the text is UTF-8 whatever the repository's log encoding. */
 const LOG_FLAGS = ["--no-color", "--no-decorate", "--no-show-signature", "--encoding=UTF-8", "-z"];
@@ -76,7 +81,7 @@ function checkLog(run: GitRun): void {
 
 /** GET /api/workspace/git/log */
 export async function repoLog(cwd: string, params: URLSearchParams, options: RepoLogOptions = {}): Promise<RepoLog> {
-  const context = contextOf(options);
+  const context = historyContext(options);
   const limit = countOf(params, "limit", "invalid_limit", 1, REPO_LOG_MAX_LIMIT, DEFAULT_LIMIT);
   const skip = countOf(params, "skip", "invalid_skip", 0, MAX_SKIP, 0);
   const pinned = params.get("oid") ?? "";
@@ -143,7 +148,7 @@ function branchesOf(output: string): RepoBranch[] {
 
 /** GET /api/workspace/git/branches */
 export async function repoBranches(cwd: string, options: RepoLogOptions = {}): Promise<RepoBranches> {
-  const context = contextOf(options);
+  const context = historyContext(options);
   const repository = await repositoryOf(context, cwd);
   const root = repository.root;
   // the last --sort is the first key: newest commit first, then by name
@@ -166,8 +171,20 @@ export async function repoBranches(cwd: string, options: RepoLogOptions = {}): P
 }
 
 /** GET /api/workspace/git/show */
+/** A shallow clone's boundary commit: git shows it with no parents, though it has some this clone does not. */
+async function shallowBoundary(context: Context, root: string, oid: string): Promise<boolean> {
+  const path = await runGit(context, root, ["rev-parse", "--git-path", "shallow"], 16 * 1024);
+  if (path.code !== 0) throw new RepoDiffError("git_failed", "git could not read this repository's history", 500);
+  try {
+    return readFileSync(resolve(root, path.stdout.replace(/\r?\n$/, "")), "utf8").split("\n").includes(oid);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 export async function repoCommit(cwd: string, params: URLSearchParams, options: RepoLogOptions = {}): Promise<RepoCommitDetail> {
-  const context = contextOf(options);
+  const context = historyContext(options);
   const maxMessageBytes = options.maxMessageBytes ?? REPO_COMMIT_MAX_MESSAGE_BYTES;
   const rev = params.get("rev") ?? "";
   if (rev === "") throw new RepoDiffError("invalid_revision", "rev must name one commit: a hash, a branch, a tag or an expression such as HEAD~1", 400);
@@ -176,21 +193,32 @@ export async function repoCommit(cwd: string, params: URLSearchParams, options: 
   const oid = await resolveRevision(context, root, "rev", rev);
   const [fields, body, refs] = await Promise.all([
     runGit(context, root, ["log", ...LOG_FLAGS, COMMIT_FORMAT, "--max-count=1", "--end-of-options", oid, "--"], context.maxListBytes),
-    runGit(context, root, ["log", ...LOG_FLAGS.filter((flag) => flag !== "-z"), "--format=%B", "--max-count=1", "--end-of-options", oid, "--"], maxMessageBytes),
+    // one byte more than the cap: git ends the message with a newline, which is not part of it (`format:` adds no other)
+    runGit(context, root, ["log", ...LOG_FLAGS.filter((flag) => flag !== "-z"), "--pretty=format:%B", "--max-count=1", "--end-of-options", oid, "--"], maxMessageBytes + 1),
     refsAt(context, root, [oid]),
   ]);
   checkLog(fields);
   checkLog(body);
   const [read] = commitsOf(fields.stdout);
   if (read === undefined) throw new RepoDiffError("too_large", "this commit is too large to read", 500);
+  let message = body.stdout.replace(/\n+$/, "");
+  let cut = body.overflow;
+  if (cut) {
+    // a message cut at its cap may end inside a character, which decodes as U+FFFD
+    message = body.stdout.replace(/\uFFFD+$/u, "");
+    while (Buffer.byteLength(message) > maxMessageBytes) message = message.slice(0, -1);
+  } else if (Buffer.byteLength(message) > maxMessageBytes) {
+    cut = true;
+    while (Buffer.byteLength(message) > maxMessageBytes) message = message.slice(0, -1);
+  }
+  const boundary = read.parents.length === 0 && await shallowBoundary(context, root, oid);
   return {
     repository,
     commit: { ...read, refs: refs.refs.get(oid) ?? [] },
     refs_truncated: !refs.complete,
-    // a message cut at its cap may end inside a character, which decodes as U+FFFD
-    message: body.overflow ? body.stdout.replace(/\uFFFD+$/u, "") : body.stdout.replace(/\n+$/, ""),
-    message_truncated: body.overflow,
-    base: read.parents[0] ?? (oid.length === 64 ? EMPTY_TREE_OIDS[1]! : EMPTY_TREE_OIDS[0]!),
+    message,
+    message_truncated: cut,
+    base: read.parents[0] ?? (boundary ? null : oid.length === 64 ? EMPTY_TREE_OIDS[1]! : EMPTY_TREE_OIDS[0]!),
     limits: { max_message_bytes: maxMessageBytes },
   };
 }
