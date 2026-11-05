@@ -22,6 +22,8 @@ const FILES_SCRIPT = `<script>(${(() => {
   window.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.pathname.endsWith("/workspace/directories") && (init?.method ?? "GET") === "GET") {
+      // the demo serves its own PC's folders; a second PC's is drawn here
+      if (url.pathname.includes("/machines/laptop/")) return Response.json({ path: "/home/laptop", parent: "/home", home: "/home/laptop", directories: [], truncated: false, files: [{ name: "LAPTOP_ONLY.txt", size: 8 }] });
       const listing = await (await demoFetch(input, init)).json();
       return Response.json({ ...listing, files: [{ name: "README.md", size: 64 }, { name: "package.json", size: 120 }] });
     }
@@ -108,6 +110,12 @@ async function desktop(browser: Browser, theme: "light" | "dark"): Promise<void>
     await palette.getByRole("option", { name: "Browse files" }).click();
     await viewer.waitFor({ state: "detached" });
     await panel.getByText("~/.herdr/worktrees/checkout-api", { exact: true }).waitFor();
+
+    // the sidebar stays usable beside it: the same pane id on another PC lists that PC's folder
+    await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+    await page.locator(`[data-machine="laptop"][data-pane="${panes.web}"]`).first().click();
+    await panel.getByText("LAPTOP_ONLY.txt").waitFor();
+    assert.equal(await panel.getByText("README.md").count(), 0, "no row of the last PC's folder is left");
 
     // the header button closes it again
     await button.click();

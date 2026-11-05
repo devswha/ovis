@@ -8,6 +8,7 @@ import { RepoChanges } from "./RepoChanges.tsx";
 import type { RepoDiffFile } from "../../shared/protocol.ts";
 import { useT } from "../lib/i18n.ts";
 import { useMachineId } from "../lib/machineContext.tsx";
+import { subscribeFilesFolder } from "../lib/paletteFolders.ts";
 import type { RepoComparison } from "../lib/repoDiff.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -62,6 +63,8 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, viewing, docked]);
+  // the palette's Open in Files names a folder for the browser: kept beside the pane on another tab, it shows Browse
+  useEffect(() => subscribeFilesFolder(() => setTab("browse")), []);
   const show = (next: Tab): void => {
     setTab(next);
     if (next === "changes") setChangesVisited(true);
@@ -85,8 +88,8 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
     <div className="modal-body">
       {/* the dialog stays open across a pane switch (Next pane): the browser starts over on the new
           pane's folder, as Changes reads the new pane, instead of listing the pane it was opened on */}
-      <div hidden={tab !== "browse"}><DirectoryBrowser key={paneId} start={start} onOpenFile={onOpenFile} onFolder={(path) => { folder.current = { pane: paneId, path }; }} /></div>
-      {changesVisited && <div hidden={tab !== "changes"}><RepoChanges paneId={paneId} directory={start} onOpenDiff={onOpenDiff} /></div>}
+      <div hidden={tab !== "browse"}><DirectoryBrowser key={`${machineId}:${paneId}`} start={start} onOpenFile={onOpenFile} onFolder={(path) => { folder.current = { pane: paneId, path }; }} /></div>
+      {changesVisited && <div hidden={tab !== "changes"}><RepoChanges key={`${machineId}:${paneId}`} paneId={paneId} directory={start} onOpenDiff={onOpenDiff} /></div>}
       {/* one panel per PC and pane: an answer or a merge still on its way for the last pane never lands in this one */}
       {prVisited && <div hidden={tab !== "pr"}><PullRequestPanel key={`${machineId}:${paneId}`} paneId={paneId} directory={start} /></div>}
     </div>
