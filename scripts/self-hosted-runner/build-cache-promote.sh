@@ -94,6 +94,17 @@ TAKEN="$OUTBOXES/.taken"
 mkdir -p "$TAKEN" && chmod 0700 "$TAKEN"
 take() { [ -f "$1" ] && [ ! -L "$1" ] && mv -T "$1" "$2" 2>/dev/null && [ -f "$2" ] && [ ! -L "$2" ]; }
 
+# A refusal is remembered, so a job claiming again and again costs no GitHub calls (this user's token
+# also registers the runners): the run and attempt for a day, and its slot for ten minutes, whatever
+# run the slot's next claims name. Only refusals: an untrusted run's jobs never claim (build-cache.ts
+# mayWrite), so one that does is abnormal, and a slot held off only builds without the cache.
+REFUSED="$OUTBOXES/.refused"
+mkdir -p "$REFUSED" && chmod 0700 "$REFUSED"
+find "$REFUSED" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null || true
+refused_before() {
+  [ -e "$REFUSED/run-$2-$3" ] || [ -n "$(find "$REFUSED" -maxdepth 1 -type f -name "slot-$1" -mmin -10 -print -quit 2>/dev/null)" ]
+}
+
 promoted=0
 for name in "$@"; do
   outbox="$OUTBOXES/$name"
@@ -124,8 +135,14 @@ for name in "$@"; do
       read -r run attempt < "$work/claim" || true
     fi
     if [[ "$run" =~ ^[0-9]{1,20}$ && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$key" ] &&
-      [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
-      if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
+      [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ]; then
+      if refused_before "$name" "$run" "$attempt"; then
+        log "refused $key from $name: run $run or this slot was refused before"
+      elif trusted "$name" "$run" "$attempt"; then
+        if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
+      else
+        touch "$REFUSED/run-$run-$attempt" "$REFUSED/slot-$name"
+      fi
     fi
     # whatever it is (a directory named like a claim included): it must not stop the other slots
     rm -rf "$claim" "$tar" "$work" 2>/dev/null || true

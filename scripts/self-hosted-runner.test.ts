@@ -791,7 +791,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -847,7 +847,22 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
-      const result = spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const result = pass();
+      // later passes, each after the job claimed again (the claim's run and attempt), each for another build
+      const callsBefore: number[] = [];
+      later.forEach((again, i) => {
+        const other = String(i).padStart(64, "f");
+        spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
+        writeFileSync(join(outbox, `${other}.claim`), again);
+        callsBefore.push(existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean).length : 0);
+        // the slot's ten minutes are over
+        if (slotHeldOffUntilNow) {
+          const old = new Date(Date.now() - 20 * 60_000);
+          for (const name of readdirSync(join(outboxes, ".refused")).filter((name) => name.startsWith("slot-"))) utimesSync(join(outboxes, ".refused", name), old, old);
+        }
+        pass();
+      });
       const entry = join(root, "entries", key);
       return {
         status: result.status,
@@ -857,6 +872,7 @@ esac
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
         ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
+        callsBefore,
       };
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", dir]);
@@ -898,6 +914,33 @@ esac
     expect(run.ghCalls.filter((call) => call.includes("/jobs"))).toHaveLength(1);
     expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
     expect(run.outbox).toHaveLength(6);
+  });
+
+  it("asks GitHub about a refused run once: its claims after that are refused without a call", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n", "7 1\n", "7 1\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.callsBefore[0]).toBeGreaterThan(0);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+    expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
+  });
+
+  it("holds off a slot whose claim was refused, whatever run its next claims name", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n", "9 1\n", "7 2\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+  });
+
+  it("remembers a refused run for longer than it holds off its slot", () => {
+    const same = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true);
+    expect(same.ghCalls).toHaveLength(same.callsBefore[0]!);
+    const other = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"], true);
+    expect(other.ghCalls.length).toBeGreaterThan(other.callsBefore[0]!);
+  });
+
+  it("goes on asking about trusted runs: only refusals are remembered", () => {
+    const run = promote({}, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"]);
+    expect(run.entries).toHaveLength(2);
+    expect(run.ghCalls.length).toBeGreaterThan(run.callsBefore[0]!);
   });
 
   it("refuses a build holding a file named like the manifest", () => {
