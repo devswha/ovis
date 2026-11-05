@@ -188,6 +188,8 @@ export class RelayTransport implements Transport {
     for (const waiting of this.renewing) {
       if (generation > waiting.after) { this.renewing.delete(waiting); waiting.up(); }
     }
+    // a renew asked while this attempt was on its way: it may have signed with the old key, so the next one signs again
+    if (this.renewing.size > 0) channel.close();
   }
 
   /** What the PC said of itself on the latest admission: a reconnect after its update names the new version. */
