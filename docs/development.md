@@ -1072,7 +1072,8 @@ queued and running jobs of every workflow that target those labels. When that co
 pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
-JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline. `release.yml`
+JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
+`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). `release.yml`
 stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
@@ -1083,9 +1084,11 @@ self-hosted runners for every same-repository run: Detect changes, the herdr-cor
 the Integration and browser summary in `ci.yml`, `pr-title.yml`, `remote-bundles.yml`'s Windows
 bundle, and `pages.yml`'s site build and deploy (after successful same-repository main push CI, or
 on a manual dispatch with reusable CI validation). Their `runs-on` sends a fork pull request to
-`ubuntu-24.04` before it reads any variable, then takes the repository variable `CI_LIGHT_LABELS`,
+`ubuntu-24.04` before it reads any variable; a push to main then takes `CI_MAIN_SELF_HOSTED_LABELS`
+when it is set (on a push or a run started from main), so main's Detect changes never waits behind pull requests; otherwise the job takes the repository variable `CI_LIGHT_LABELS`,
 else `CI_SELF_HOSTED_LABELS`, else `["self-hosted","self-hosted-ovis"]`; `"ubuntu-24.04"` in
-either variable keeps them hosted. `scripts/light-runner-workflow.test.ts` fails when a job a pull
+either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input, and
+`scripts/ci-runner-route.sh` leaves them out of the busy count, since each holds a runner for seconds. `scripts/light-runner-workflow.test.ts` fails when a job a pull
 request runs can reach a self-hosted runner without that guard or the route below.
 
 A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over

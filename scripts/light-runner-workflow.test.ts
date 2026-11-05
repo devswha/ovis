@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseWorkflow, root, type Job } from "./shell-workflow-rules.ts";
 
@@ -7,7 +7,7 @@ import { parseWorkflow, root, type Job } from "./shell-workflow-rules.ts";
 // in GitHub's hosted queue, but a fork pull request's job must never reach that pool: the guard comes
 // first, so a fork gets ubuntu-24.04 whatever the repository variables say.
 const FORK_GUARD = "github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04'";
-const LIGHT = `\${{ ${FORK_GUARD} || fromJSON(vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}`;
+const LIGHT = `\${{ ${FORK_GUARD} || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}`;
 // ci.yml's heavy Linux jobs: scripts/ci-runner-route.sh keeps forks hosted (scripts/ci-runner-route.test.ts)
 const ROUTED = "${{ fromJSON(needs.changes.outputs.linux) }}";
 const HOSTED = /^(ubuntu|windows|macos)-[\w.-]+$/;
@@ -47,14 +47,31 @@ function forkSafe(job: Job & { strategy?: { matrix?: { include?: { os?: unknown 
     const include = job.strategy?.matrix?.include ?? [];
     return include.length > 0 && include.every((entry) => typeof entry.os === "string" && HOSTED.test(entry.os)) ? "hosted matrix" : null;
   }
-  // a job that never runs for a pull request may take any runner
-  return /github\.event_name != 'pull_request'/.test(job.if ?? "") ? "not on pull requests" : null;
+  // a job that never runs for a pull request may take any runner: its condition must require that
+  const condition = job.if ?? "";
+  return /^(.+ && )?github\.event_name != 'pull_request'( && .+)?$/.test(condition) && !condition.includes("||") ? "not on pull requests" : null;
 }
 
 describe("self-hosted runners and fork pull requests", () => {
   test("the light runner expression sends fork pull requests to ubuntu-24.04 before reading any variable", () => {
     expect(LIGHT.indexOf(FORK_GUARD)).toBe(4);
     expect(LIGHT.indexOf("vars.")).toBeGreaterThan(LIGHT.indexOf(FORK_GUARD));
+  });
+
+  test("ci.yml's routed Linux label comes from scripts/ci-runner-route.sh", () => {
+    const ci = workflows.find(({ name }) => name === "ci.yml")!.workflow;
+    const changes = ci.jobs.changes!;
+    expect(changes.outputs?.linux).toBe("${{ steps.route.outputs.linux }}");
+    expect(changes.steps?.find((step) => step.id === "route")?.run).toBe('bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"');
+  });
+
+  test("ci-runner-route.sh leaves out of its busy count exactly the light jobs a pull request runs", () => {
+    const names = workflows
+      .filter(({ name }) => pullRequestWorkflows.has(name))
+      .flatMap(({ workflow }) => Object.entries(workflow.jobs).filter(([, job]) => job["runs-on"] === LIGHT).map(([id, job]) => (job as Job & { name?: string }).name ?? id));
+    const route = readFileSync(join(root, "scripts/ci-runner-route.sh"), "utf8");
+    const listed = JSON.parse(/^light_job_names='(.+)'$/m.exec(route)![1]!) as string[];
+    expect(listed.toSorted()).toEqual(names.toSorted());
   });
 
   test("some job uses the light runner expression", () => {
