@@ -251,6 +251,11 @@ describe("pickedTurn", () => {
       { kind: "text", text: lead }, { kind: "text", text: "needle progress", phase: "commentary" }, { kind: "text", text: "needle target", ...(last === undefined ? {} : { phase: last }) }] });
     const target = searchTurns([noted(undefined)], searchPattern("needle")!)[0]!;
     expect(pickedTurn([noted("commentary"), user("again"), noted(undefined)], target)).toBe("several");
+    // nor when the words ran from a part now a note into an answer
+    const spans = (note: boolean): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [
+      { kind: "text", text: lead }, { kind: "text", text: "needle", ...(note ? { phase: "commentary" as const } : {}) }, { kind: "text", text: "target" }] });
+    const spanned = searchTurns([spans(false)], searchPattern("needle target")!)[0]!;
+    expect(pickedTurn([spans(true), user("again"), spans(false)], spanned)).toBe("several");
     // an older server's match has no digest: none is opened, as before
     const { text_digest: _, ...old } = second!;
     expect(pickedTurn(turns, old)).toBe("several");
