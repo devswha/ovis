@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
+import type { MarkdownDocument, PaneDocuments } from "../shared/files.ts";
 import { fileTask } from "./file-pool.ts";
 
 const CACHE_MS = 5_000;
@@ -175,6 +176,24 @@ export async function paneFiles(cwd: string, query = "", limit = 20): Promise<st
     .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
     .slice(0, boundedLimit)
     .map((item) => item.path);
+}
+
+const MARKDOWN_NAME = /\.(?:md|markdown)$/i;
+/** How many Markdown names one listing looks at (each is a stat on a file thread), and how many it answers with. */
+export const MAX_MARKDOWN_CANDIDATES = 2_000;
+export const MAX_MARKDOWN_DOCUMENTS = 500;
+
+/**
+ * GET /api/pane/docs: the Markdown files of the inventory @-mentions search (git's listing, or the
+ * bounded walk), newest first. Their sizes and times are read on a file thread, so a slow disk
+ * holds only this request.
+ */
+export async function paneDocuments(cwd: string): Promise<PaneDocuments> {
+  const names = (await inventory(cwd)).filter((path) => MARKDOWN_NAME.test(path));
+  const documents = await fileTask<MarkdownDocument[]>({ op: "documents", cwd, paths: names.slice(0, MAX_MARKDOWN_CANDIDATES) });
+  // ISO times of one form compare as text
+  documents.sort((left, right) => left.modified === right.modified ? left.path.localeCompare(right.path) : left.modified < right.modified ? 1 : -1);
+  return { root: cwd, documents: documents.slice(0, MAX_MARKDOWN_DOCUMENTS), truncated: names.length > MAX_MARKDOWN_CANDIDATES || documents.length > MAX_MARKDOWN_DOCUMENTS };
 }
 
 const walked = new Map<string, { expires: number; files: string[] }>();

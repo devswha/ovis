@@ -16,6 +16,30 @@ export interface FileInfo {
   kind: FileKind;
 }
 
+/** One Markdown file of GET /api/pane/docs. */
+export interface MarkdownDocument {
+  /** relative to the listing's `root`, `/`-separated */
+  path: string;
+  size: number;
+  /** ISO time of the last change */
+  modified: string;
+}
+
+/**
+ * GET /api/pane/docs?pane_id=: the Markdown files (`.md`, `.markdown`) under the pane's folder,
+ * newest first, found as GET /api/pane/files finds paths (git's tracked and untracked files that
+ * are not ignored, or the bounded walk outside a repository). Read only: each opens through
+ * /api/fs/file as `root` + `/` + `path`. At most `MAX_MARKDOWN_CANDIDATES` names are looked at and
+ * `MAX_MARKDOWN_DOCUMENTS` listed; `truncated` says when either cap left some out. 400
+ * missing_pane_id; 403 read_only for a watching device, as /api/pane/files.
+ */
+export interface PaneDocuments {
+  /** the pane's folder, absolute */
+  root: string;
+  documents: MarkdownDocument[];
+  truncated: boolean;
+}
+
 /**
  * GET /api/fs/favicon?root=: the icon the project in folder `root` keeps, or null. The PC looks
  * through every place a project keeps one (`FAVICON_CANDIDATES` in server/project-favicon.ts),
