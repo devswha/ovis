@@ -429,7 +429,8 @@ export function createServer(
         const listener = Bun.serve<SocketData>({
           hostname: address, port, maxRequestBodySize: BUN_BODY_CEILING, tls: { cert: certificate.cert, key: certificate.key },
           fetch: (request, bunServer) => privateLanPeer(bunServer.requestIP(request)?.address)
-            ? handleRequest(request, { ...socketContext(bunServer), lanHttps: true })
+            // the port is the main listener's: Portal and /api/access route plain http to it, never to this TLS one
+            ? handleRequest(request, { ...socketContext(bunServer), get port() { return server.port; }, lanHttps: true })
             : new Response("forbidden", { status: 403 }),
           websocket: core.websocket,
         });

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { forgetAuthAttempts } from "./auth.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { createServer } from "./index.ts";
-import { lanHttpsCertificate, lanHttpsConfig, privateLanPeer, selfSignedCertificate } from "./lan-https.ts";
+import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, selfSignedCertificate } from "./lan-https.ts";
 
 const dirs: string[] = [];
 const tempDir = (): string => {
@@ -126,6 +126,25 @@ describe("the LAN HTTPS listener", () => {
       // pinned to that certificate alone: the handshake verifies against it and nothing else; this test's loopback peer is then refused
       const response = await fetch(`https://127.0.0.1:${listener.port}/api/health`, { tls: { ca: cert } });
       expect(response.status).toBe(403);
+    } finally {
+      app.stop();
+    }
+  });
+
+  // a peer on a private network needs a private address on this host: a CI runner has one, a bare sandbox may not
+  it.skipIf(privateLanAddresses().length === 0)("lets a private peer in with the token, and tells it the main listener's port", async () => {
+    const address = privateLanAddresses()[0]!;
+    const stateDir = tempDir();
+    const app = createServer({ ...base, stateDir, token: "the-token", lanHttps: { port: 0, host: address } });
+    try {
+      const listener = app.lanHttps;
+      if (listener === null) throw new Error("expected the LAN HTTPS listener");
+      const ca = readFileSync(join(stateDir, "lan-https", "cert.pem"), "utf8");
+      const access = (authorization?: string) => fetch(`https://${address}:${listener.port}/api/access`, { tls: { ca }, headers: authorization ? { authorization } : {} });
+      expect((await access()).status).toBe(401);
+      const answer = await access("Bearer the-token");
+      expect(answer.status).toBe(200);
+      expect(((await answer.json()) as { port: number }).port).toBe(app.port);
     } finally {
       app.stop();
     }
