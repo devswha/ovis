@@ -152,7 +152,8 @@ export function useDictation(options: DictationOptions): Dictation {
   const composing = useRef(false);
   const held = useRef<VoiceText[]>([]);
   const onText = useCallback((result: VoiceText): void => {
-    if (composing.current) held.current.push(result);
+    // behind what is still held, so a polish never lands before the raw text it rewrites
+    if (composing.current || held.current.length > 0) held.current.push(result);
     else apply(result);
   }, [apply]);
 

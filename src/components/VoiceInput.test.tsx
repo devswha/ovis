@@ -163,7 +163,7 @@ describe("useDictation", () => {
       text: () => element.value,
       /** what the browser raises: one keystroke of an IME is compositionupdate and input together */
       raise: (...types: Array<"compositionstart" | "compositionupdate" | "input" | "compositionend">) => { for (const type of types) element.dispatchEvent(new Event(type)); },
-      say: (text: string) => { say({ text, phase: "raw", take: 1 }); },
+      say: (text: string, phase: VoiceText["phase"] = "raw") => { say({ text, phase, take: 1 }); },
       wait: (ms: number) => { jest.advanceTimersByTime(ms); },
     };
   }
@@ -202,5 +202,18 @@ describe("useDictation", () => {
     box.raise("input");
     box.say("third");
     expect(box.text()).toBe("first dictation second part third");
+  });
+
+  it("keeps a polished transcript behind its held raw text when the keyboard marks a word before the release", async () => {
+    const box = await field();
+    box.raise("compositionstart", "compositionupdate", "input");
+    box.say("second part");
+    box.raise("compositionend");
+    box.raise("compositionstart", "compositionupdate");
+    box.say("Second part.", "polished");
+    box.wait(0);
+    box.raise("compositionend");
+    box.wait(0);
+    expect(box.text()).toBe("first dictation Second part.");
   });
 });
