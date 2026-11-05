@@ -118,10 +118,9 @@
 }
 
 /* a group is found by a setting it holds (SettingsControls.tsx SettingsRow) or by its title: it is
-   drawn with what goes with those settings (a form, a status line), never its note; a group or a page
+   drawn with its note and what goes with those settings (a form, a status line); a group or a page
    with nothing found, and what a page holds outside its groups, stay on the page itself */
 .settings-search-page > :not(.settings-section, .settings-search-page-title),
-.settings-search-results .settings-note,
 .settings-search-results .settings-section:not([data-found]):not(:has(> .settings-card > [data-setting])),
 .settings-search-page:not(:has(> [data-found], > .settings-section > .settings-card > [data-setting])) {
   display: none;

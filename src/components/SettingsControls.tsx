@@ -50,11 +50,12 @@ export function SettingsGroup({ title, note, className, section, children }: { t
 /**
  * One setting. `wide` marks a control that needs the whole line on a phone (three or more
  * segments, a text field): the row stacks there, and stays one line everywhere else. `keywords`:
- * more words a search finds it by, for a row that stands in for another while a step is answered.
+ * more words a search finds it by, for a row opened by another. `held`: a row in the middle of a
+ * step (a recording, a confirmation) stays in a search whatever its words have become.
  */
-export function SettingsRow({ label, description, keywords, htmlFor, wide = false, children }: { label: string; description?: ReactNode; keywords?: string; htmlFor?: string; wide?: boolean; children: ReactNode }) {
+export function SettingsRow({ label, description, keywords, held = false, htmlFor, wide = false, children }: { label: string; description?: ReactNode; keywords?: string; held?: boolean; htmlFor?: string; wide?: boolean; children: ReactNode }) {
   const words = useContext(SettingsQuery);
-  if (words.length > 0 && !matchesSettingsQuery(words, label, description, keywords)) return null;
+  if (!held && words.length > 0 && !matchesSettingsQuery(words, label, description, keywords)) return null;
   return (
     <div className={wide ? "settings-row is-wide" : "settings-row"} data-setting="">
       <div className="settings-row-text">

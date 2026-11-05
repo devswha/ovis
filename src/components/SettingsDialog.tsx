@@ -349,13 +349,14 @@ function InterfaceFontRows() {
   const preset = uiFontPreset(settings.uiFontFamily);
   const [customOpen, setCustomOpen] = useState(preset === "custom");
   const custom = customOpen || preset === "custom";
+  const interfaceFontDescription = t("Menus, lists, dialogs and the sidebar; the chat's text follows it until it has a font of its own. The terminal and code keep theirs. System is this device's own interface font.");
   const choose = (next: UiFontPreset | "custom"): void => {
     setCustomOpen(next === "custom");
     if (next !== "custom") update({ uiFontFamily: UI_FONT_PRESET_FAMILY[next] });
   };
   return (
     <>
-      <SettingsRow label={t("Interface font")} description={t("Menus, lists, dialogs and the sidebar; the chat's text follows it until it has a font of its own. The terminal and code keep theirs. System is this device's own interface font.")} htmlFor="settings-ui-font">
+      <SettingsRow label={t("Interface font")} description={interfaceFontDescription} htmlFor="settings-ui-font">
         <SettingsSelect id="settings-ui-font" value={custom ? "custom" : preset} onChange={(event) => choose(event.target.value as UiFontPreset | "custom")}>
           <option value="default">{t("Default")}</option>
           <option value="system">{t("System")}</option>
@@ -364,7 +365,7 @@ function InterfaceFontRows() {
         </SettingsSelect>
       </SettingsRow>
       {custom && (
-        <SettingsRow label={t("Custom interface font")} description={t("Comma-separated, tried in order, in front of the default. A font this device does not have falls back to the default.")} wide>
+        <SettingsRow label={t("Custom interface font")} description={t("Comma-separated, tried in order, in front of the default. A font this device does not have falls back to the default.")} keywords={`${t("Interface font")} ${interfaceFontDescription}`} wide>
           <FontFamilyInput value={settings.uiFontFamily} label={t("Custom interface font")} placeholder={UI_FONT_PLACEHOLDER} onCommit={(uiFontFamily) => update({ uiFontFamily })} />
         </SettingsRow>
       )}
@@ -907,7 +908,7 @@ function ShortcutsPage() {
           const unbound = defaultKeys.length === 0;
           const rowText = recording?.id === shortcut.id ? (recording.problem ?? t("Press the new shortcut, or Escape to cancel.")) : confirming ? riskText(confirming.risk, compactKeys(bindingDisplayKeys(confirming.value))) : selectedRisk ? riskText(selectedRisk, compactKeys(displayedKeys)) : undefined;
           return (
-            <SettingsRow key={shortcut.id} label={t(shortcut.label)} wide={shortcut.id !== "voice"} description={rowText === undefined ? undefined : <span role="status">{rowText}</span>}>
+            <SettingsRow key={shortcut.id} label={t(shortcut.label)} held={recording?.id === shortcut.id || confirming !== null} wide={shortcut.id !== "voice"} description={rowText === undefined ? undefined : <span role="status">{rowText}</span>}>
               {shortcut.id === "voice" ? <span className="settings-keys">{formatKeys(shortcut.keys).map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span> : (
                 <span className="settings-shortcut-control">
                 <button type="button" className="btn settings-shortcut-record" ref={(button) => { if (button) recordButtons.current.set(shortcut.id, button); else recordButtons.current.delete(shortcut.id); }} aria-pressed={recording?.id === shortcut.id} aria-label={t("Record shortcut for {name}", { name: t(shortcut.label) })} onClick={() => { setPending(null); setRecording(recording?.id === shortcut.id ? null : { id: shortcut.id, problem: null }); }}>{recording?.id === shortcut.id ? t("Press keys…") : t("Record")}</button>
@@ -1151,7 +1152,7 @@ export function AddRelayPc() {
   if (found !== null) {
     const pc = found.name ?? t("this PC");
     return (
-      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} keywords={t("Add a PC through the relay")} wide>
+      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} held wide>
         <div className="relay-pc-found">
           <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
           <div className="relay-pc-actions">
@@ -1454,6 +1455,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   // Settings' search: every page's rows that hold all the words typed, each where it can be changed
   // at once, under its page's name, as Zed's and VS Code's settings searches show them
   const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const words = useMemo(() => settingsQueryWords(query), [query]);
   const searching = words.length > 0 && !keyBarOpen && (!narrow || page === null);
   const openFromSearch = (id: SettingsPage): void => { setQuery(""); openPage(id); };
@@ -1563,8 +1565,11 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       // out of the key bar editor first, then out of a search, wherever the focus is in it; from
       // any page, a phone's included, it closes the dialog
       if (keyBarOpen) setKeyBarOpen(false);
-      else if (query !== "") setQuery("");
-      else onClose();
+      else if (query !== "") {
+        setQuery("");
+        // the result that held the focus goes with the search: the field keeps it
+        searchRef.current?.focus();
+      } else onClose();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -1614,6 +1619,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
             <div className="settings-search">
               <Search aria-hidden="true" />
               <input
+                ref={searchRef}
                 type="search"
                 className="input settings-search-input"
                 value={query}

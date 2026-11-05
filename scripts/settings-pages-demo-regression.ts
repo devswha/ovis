@@ -503,6 +503,13 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await results.getByRole("switch", { name: "Sound", exact: true }).focus();
       await page.keyboard.press("Escape");
       assert.equal(await search.inputValue(), "", `${width}px: Escape on a result empties the search`);
+      assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: the field takes the focus back`);
+
+      // a row a found row opens is found with it: Custom from a description match shows its field
+      await search.fill("menus dialogs");
+      await results.getByRole("combobox", { name: "Interface font", exact: true }).selectOption("custom");
+      await results.getByRole("textbox", { name: "Custom interface font", exact: true }).waitFor();
+      await results.getByRole("combobox", { name: "Interface font", exact: true }).selectOption("default");
       assert.equal(await page.locator(".settings-dialog").count(), 1, `${width}px: and keeps Settings open`);
 
       // the key bar editor opened from a search sits over the Terminal page: Back steps out to it, not out of Settings
