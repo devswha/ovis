@@ -82,6 +82,8 @@ export class AccountMailbox {
   /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
+  /** When a pull last read the mailbox to its end without an error. */
+  private drainedAt: number | null = null;
   error: string | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pulling: Promise<number> | undefined;
@@ -105,10 +107,12 @@ export class AccountMailbox {
   gates(): AddGates {
     return {
       enrolling: () => this.options.holds?.enrolling() ?? false,
-      held: (key) => this.pendingError !== null || this.waiting().length >= PENDING_MAX
-        || this.waiting().some((record) => removedKey(record) === key) || (this.options.holds?.holds(key) ?? false),
+      held: (key) => this.pendingError !== null || this.waiting().some((record) => removedKey(record) === key) || (this.options.holds?.holds(key) ?? false),
     };
   }
+
+  /** Every add is held back here, whatever its key: the waiting records cannot be read, or removes were lost to a full queue. */
+  holdsEveryAdd(): boolean { return this.pendingError !== null || (this.options.holds?.full() ?? false); }
 
   /** The keys of the removes waiting here: /api/account/status lists them as `blocked`. */
   waitingRemoveKeys(): string[] {
@@ -119,8 +123,17 @@ export class AccountMailbox {
 
   /** Pulls now unless a pull is under way; how many records changed something. Never throws. */
   pull(): Promise<number> {
-    this.pulling ??= this.drain().finally(() => { this.pulling = undefined; });
+    this.pulling ??= this.exclusively(() => this.drain()).finally(() => { this.pulling = undefined; });
     return this.pulling;
+  }
+
+  /** The waiting records are retried by one run at a time (a pull, or settle), so none of them is ever out of the gate's sight. */
+  private turn: Promise<unknown> = Promise.resolve();
+
+  private exclusively<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.turn.then(run, run);
+    this.turn = next.catch(() => undefined);
+    return next;
   }
 
   start(): void {
@@ -149,18 +162,26 @@ export class AccountMailbox {
     return fresh();
   }
 
-  /** A pull a request asked for: waits for one under way, else pulls, at most once every 10 seconds. */
-  async freshen(): Promise<void> {
+  /**
+   * A pull a request asked for: waits for one under way, else pulls, at most once every 10 seconds.
+   * True only when a pull read the whole mailbox without an error within those 10 seconds, so nothing
+   * the service holds for this PC is left unread (docs/account.md, "PC API" `?fresh=1`).
+   */
+  async freshen(): Promise<boolean> {
     if (this.pulling) await this.pulling;
     else if (Date.now() - this.lastAskedPull >= ASKED_PULL_MS) {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
+    return this.error === null && this.drainedAt !== null && Date.now() - this.drainedAt < ASKED_PULL_MS;
   }
 
   /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
-  async settle(): Promise<number> {
-    if (this.pulling) await this.pulling;
+  settle(): Promise<number> {
+    return this.exclusively(() => this.settleNow());
+  }
+
+  private async settleNow(): Promise<number> {
     const identity = this.options.identity();
     if (!identity || this.pendingError !== null || this.pending.length === 0) return 0;
     const early = this.pending.splice(0);
@@ -205,8 +226,14 @@ export class AccountMailbox {
     const waiting = this.waiting();
     const text = JSON.stringify(record);
     if (waiting.some((kept) => JSON.stringify(kept) === text)) return true;
-    if (this.pendingError !== null || waiting.length >= PENDING_MAX) return false;
+    if (this.pendingError !== null) return false;
     const next = [...this.pending, record];
+    // full: a waiting add makes room (it can come again); with none, the remove is undecided and its sender tries again
+    if (waiting.length >= PENDING_MAX) {
+      const add = next.findIndex((kept) => removedKey(kept) === null);
+      if (add === -1) return false;
+      next.splice(add, 1);
+    }
     // on disk first, with the ones a pull is retrying, so a stop (or a failed write) loses none of them
     if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...this.draining, ...next]);
     this.pending = next;
@@ -242,6 +269,9 @@ export class AccountMailbox {
       this.trim(early);
       if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending]);
     };
+    let complete = false;
+    // a pull that stops short or fails leaves no earlier whole read standing
+    this.drainedAt = null;
     try {
       const admissions = new Map<string, number>();
       await retry();
@@ -249,15 +279,19 @@ export class AccountMailbox {
         // past the last page read, one more call only acknowledges it; what it returns waits for the next pull
         const { entries, waiting } = await this.page(identity, account, ack);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
-        if (entries.length === 0 || page === MAX_PAGES) break;
+        if (entries.length === 0) { complete = true; break; }
+        if (page === MAX_PAGES) break;
         for (let start = 0; start < entries.length; start += ACCOUNT_RECORDS_MAX) {
           const batch = entries.slice(start, start + ACCOUNT_RECORDS_MAX).map(({ record }) => record);
-          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), this.gates());
+          // a remove waiting on its signer joins `early` at once, so an add for its key later in the page meets it
+          const keep = (record: unknown) => {
+            const text = JSON.stringify(record);
+            if (!early.some((kept) => JSON.stringify(kept) === text)) early.push(record);
+            return true;
+          };
+          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), this.gates(), keep);
           applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
-          outcomes.forEach((outcome, index) => {
-            const text = JSON.stringify(batch[index]);
-            if (waits(outcome) && !early.some((kept) => JSON.stringify(kept) === text)) early.push(batch[index]);
-          });
+          outcomes.forEach((outcome, index) => { if (waits(outcome)) keep(batch[index]); });
         }
         // before this page is acknowledged (with the next request), retry what waited on a signer, and keep the rest on disk
         await retry();
@@ -272,6 +306,7 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
+      if (complete) this.drainedAt = Date.now();
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
@@ -292,8 +327,9 @@ export class AccountMailbox {
       if (removedKey(early[index]) === null) { early.splice(index, 1); over--; } else index++;
     }
     if (over <= 0) return;
-    early.splice(0, over);
+    // the latch is on disk before any remove is dropped: a failed write drops none
     this.options.holds?.overflow();
+    early.splice(0, over);
   }
 
   private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[] }> {

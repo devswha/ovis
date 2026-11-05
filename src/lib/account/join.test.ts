@@ -157,7 +157,8 @@ describe("enrolling a PC this device brings into the account", () => {
   async function setUp() {
     const service = new FakeAccountService();
     // Y collects its mailbox from the same service, which is when it retries records waiting on their signer
-    const [x, y] = [pc(), pc({ accountService: { url: SERVICE, fetch: service.fetch } })];
+    // both PCs collect their mailboxes from the fake service, never the real one
+    const [x, y] = [pc({ accountService: { url: SERVICE, fetch: service.fetch } }), pc({ accountService: { url: SERVICE, fetch: service.fetch } })];
     const phone = new MemoryDeviceStore();
     const accountStore = memoryAccountStore();
     const key = await accountStore.key();
@@ -237,6 +238,51 @@ describe("enrolling a PC this device brings into the account", () => {
     expect([enrolled.finished, enrolled.checked, enrolled.of]).toEqual([false, 0, 1]);
     expect(((await pcAccountStatus(pcFetch(await connect(y, onY)))) as unknown as { enrolling?: boolean })).toBeDefined();
     expect((await (await pcFetch(await connect(y, onY))("/api/account/status")).json() as { enrolling: boolean }).enrolling).toBe(true);
+  });
+
+  it("does not count a PC whose mailbox read failed as checked", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const stale = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      return path.startsWith("/api/account/status") ? Response.json({ ...await answer.json() as object, fresh: false }) : answer;
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: stale }] });
+    expect([enrolled.finished, enrolled.checked]).toEqual([false, 0]);
+  });
+
+  it("relays its removes but sends no add when only PCs from before enrollments answered, and ends the new PC's wait", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const older = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const { fresh: _fresh, ...rest } = await answer.json() as Record<string, unknown>;
+      return Response.json(rest);
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: older }] });
+    expect([enrolled.finished, enrolled.admitted]).toEqual([true, []]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+    expect(y.f.app.context.services.accountHolds.enrolling()).toBe(false);
+  });
+
+  it("sends no add, and holds every one, when a PC it read lost removal evidence", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const blind = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      return path.startsWith("/api/account/status") ? Response.json({ ...await answer.json() as object, blocked_all: true }) : answer;
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: blind }] });
+    expect(enrolled.admitted).toEqual([]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+    expect(y.f.app.context.services.accountHolds.full()).toBe(true);
   });
 
   it("brings the devices another PC lists into the new PC, and introduces the new PC to them there", async () => {

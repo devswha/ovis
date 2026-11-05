@@ -205,9 +205,13 @@ Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as r
 that made a row, or the approver's own for a row its remote approval made. `blocked` lists every key
 an add cannot bring in here: every tombstone (signed or not), every key a waiting remove names, and
 every key an enrollment held ([Enrolling a PC](#enrolling-a-pc)). `enrolling` is true while the PC
-waits for its first member's enrollment. A client trusts none of them before it checks it (below).
+waits for its first member's enrollment. `blocked_all` is true when the PC holds every add back
+(removal evidence was lost to a full queue, or its waiting records cannot be read): then `blocked`
+may not name every key it keeps out, and a client enrolling another PC sends that PC no add and
+`held_full`. A client trusts none of them before it checks it (below).
 With `?fresh=1` the PC first pulls its mailbox (at most once every 10 seconds, as a join that
-missed does), so a remove waiting there is counted; `mailbox.last_pull_at` says whether it did.
+missed does), so a remove waiting there is counted, and adds `fresh`: true only when a pull in the
+last 10 seconds read the whole mailbox without an error.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -232,19 +236,25 @@ take it, its outcome is `account_unavailable` instead, and the client sends it a
 refused `enrolling` while the PC waits for its first member's enrollment, and `removal_pending`
 while its key is held ([Enrolling a PC](#enrolling-a-pc)).
 
-`POST /api/account/enroll` `{ "account": "acct_1", "records": [<remove or add>, …], "held": ["<key>", …] }`:
-what a member sends a PC it brought into the account. The request's own device must already be a
-member of `account` (it links itself first). At most 512 records and 4096 held keys. Same answer
-as `records`, in the order sent; the PC applies them in its own order (below).
+`POST /api/account/enroll` `{ "account": "acct_1", "records": [<remove or add>, …], "held": ["<key>", …], "held_full": false, "last": true }`:
+what a member sends a PC it brought into the account, over the relay session of a device that is
+already a member of `account` (it links itself first). At most 512 records and 4096 held keys;
+`held_full` says there were more (every add is then refused from then on); `last: false` says more
+parts follow, or an earlier part had a remove the PC could not decide (the client then sends the
+whole enrollment again on its next connection). Within one request, an add for the key of a remove
+the PC could not keep is held back too. Same answer as `records`, in the order sent; the PC applies them in its own order
+(below).
 
 ### Enrolling a PC
 
-The link that gives a PC its first member also starts its **enrollment barrier**
-(`account-enrolling.json`, written before the link): until a member's `enroll` succeeds, no `add`
-applies here from `records` or the mailbox. One from the mailbox waits in `account-pending.json`
-and is tried again after the enrollment. A link that is refused lifts the barrier it started. There
-is no timeout: a client that never enrolls leaves the account's adds waiting, and its devices join
-this PC by comparing digits instead.
+A link sent while the PC has no account starts its **enrollment barrier**
+(`account-enrolling.json`, written before the link, naming the linking device): until that device's
+last `enroll` part answers every remove (none `account_unavailable`), no `add` applies here from
+`records` or the mailbox. One from the mailbox waits in `account-pending.json` and is tried again
+after the enrollment. An `enroll` from any other member applies its records but ends no wait. A
+refused link leaves the barrier (with no account here no add applies anyway); the next first link
+takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,
+and its devices join this PC by comparing digits instead.
 
 An enrollment applies, whatever the order sent:
 
@@ -257,8 +267,8 @@ An enrollment applies, whatever the order sent:
 4. then the barrier lifts, and the adds that waited for it are tried in turn.
 
 At every step an `add` is refused `removal_pending` when its key is held: a waiting remove names it
-(whatever that remove's signer), an enrollment held it, the waiting queue is full or cannot be read,
-or waiting removes were ever pushed out of a full queue. A key already on a row is not affected (its
+(whatever that remove's signer, including one earlier in the same batch), an enrollment held it,
+the waiting queue cannot be read, or waiting removes were ever pushed out of a full queue. A key already on a row is not affected (its
 add is `unchanged`), so a pairing done on this PC settles it.
 
 What a client keeps: on each connection to a PC of its account it reads that PC's `removals` and
@@ -269,7 +279,11 @@ signed by a key the PC made up, and it signs nothing for any of them.
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it first reads every other PC of the account it
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
-none of them answers it sends nothing and tries again on its next connection. Then, over a
+none of them answers it sends nothing and tries again on its next connection. A PC whose answer
+is not `fresh` does not count. When only PCs from before enrollments answer (no `fresh` at all),
+it sends their removals and its own, but no add, and ends the new PC's wait: the account's devices
+then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
+`enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
 
 - the `remove`s it signed itself and the ones it kept;
@@ -373,11 +387,13 @@ is what authenticates the PC.
 - **Reset relay identity** removes every relay device, members included, so the PC leaves the
   account; a client adds it again by pairing with its new identity, after the client's usual "this
   PC's identity changed" notice.
+- `account-enrolling.json` and `account-held.json` that will not parse are not empty: every add is
+  refused, and a link or enrollment answers `account_unavailable`, until they are restored or removed.
 - A record refused only because its signer is not a member yet (a `remove` that arrived before its
   signer's own `add`), or an `add` held back ([Enrolling a PC](#enrolling-a-pc)), is kept in
   `account-pending.json` and tried again on every pull, a restart included, until it applies. At
-  most 1000 wait: past that the oldest adds go first, and if a remove has to go, every add is refused
-  from then on (`account-held.json` says `full`; remove that file to lift it). A pending file that
+  most 1000 wait: past that the oldest adds go first (a relayed remove makes room by dropping a
+  waiting add), and if a remove has to go, every add is refused from then on (`account-held.json` says `full`; remove that file to lift it). A pending file that
   will not parse is not an empty one: adds are refused and the mailbox pulls nothing until it is
   restored.
 - The PC collects its mailbox from `OVIS_ACCOUNT_SERVICE_URL` (https, or http on loopback only;

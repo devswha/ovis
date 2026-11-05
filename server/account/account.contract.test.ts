@@ -42,6 +42,8 @@ async function accountKey(): Promise<AccountKey> {
 }
 
 const issued = () => new Date().toISOString();
+/** a P-256 key in account form, for a held key that names no device here */
+const SPKI_HELD = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEohc9drfTsvgAQFPdfyJRNVK8kwTU5TT1EGzwz2pYouZoYlXQEUOwFcKAsplXf9r8jjWDrG4tVcnnqT2-bIq4Ig";
 
 const sign = (record: UnsignedAccountRecord, key: AccountKey) => signAccountRecord(record, key.keys.privateKey);
 
@@ -274,6 +276,50 @@ test("a remove waiting for its signer keeps that key's adds out on every path; o
   expect(store.isTombstoned(mac.spki)).toBe(true);
 });
 
+test("an add right behind a remove for its key in one batch meets that remove waiting for its signer", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const [other, mac] = [await accountKey(), await accountKey()];
+  const results = (await post(link, "/api/account/records", { records: [await remove(other, mac.spki), await add(key, mac.spki)] })).body.results;
+  expect(results?.map(({ outcome, code }) => code ?? outcome)).toEqual(["signer_not_member", "removal_pending"]);
+  expect(f.app.context.services.devices.hasKey(mac.spki)).toBe(false);
+});
+
+test("only the member whose link brought the PC in ends its wait, and only with the last part of its enrollment", async () => {
+  const f = fixture();
+  const legacy = await relayDevice(f);
+  const key = await accountKey();
+  expect((await post(await signedIn(f, legacy), "/api/account/link", { record: await linkRecord(legacy, key) })).status).toBe(200);
+  const linker = await signedIn(f, { keys: key.keys, publicKey: key.spki, id: legacy.id });
+  // a second device links while the first still reads the account's other PCs
+  const second = await relayDevice(f);
+  const secondKey = await accountKey();
+  expect((await post(await signedIn(f, second), "/api/account/link", { record: await linkRecord(second, secondKey) })).status).toBe(200);
+  const other = await signedIn(f, { keys: secondKey.keys, publicKey: secondKey.spki, id: second.id });
+  const holds = f.app.context.services.accountHolds;
+  expect((await post(other, "/api/account/enroll", { account: ACCOUNT, records: [] })).status).toBe(200);
+  expect(holds.enrolling()).toBe(true);
+  expect((await post(linker, "/api/account/enroll", { account: ACCOUNT, records: [], last: false })).status).toBe(200);
+  expect(holds.enrolling()).toBe(true);
+  expect((await post(linker, "/api/account/enroll", { account: ACCOUNT, records: [] })).status).toBe(200);
+  expect(holds.enrolling()).toBe(false);
+});
+
+test("a fresh status says so only after the PC read its whole mailbox without an error", async () => {
+  let failing = true;
+  const service = new FakeAccountService();
+  const flaky = async (request: Request) => failing ? Response.json({ error: { code: "unavailable" } }, { status: 503 }) : service.fetch(request);
+  const f = fixture({ accountService: { url: "https://account.test", fetch: flaky } });
+  rotateRelayIdentity(f.stateDir);
+  const { link } = await member(f);
+  const read = async () => await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean };
+  expect((await read()).fresh).toBe(false);
+  failing = false;
+  // a pull is asked for at most once every 10 seconds: a later one is the timer's
+  await f.app.context.services.accountMailbox.pull();
+  expect((await read()).fresh).toBe(true);
+});
+
 test("keys an enrollment holds stay out of every later path, while a device already here keeps its row", async () => {
   const f = fixture();
   const { key, link } = await member(f);
@@ -332,6 +378,70 @@ test("waiting records that cannot be read, or removes pushed out of a full queue
   await mailbox.pull();
   expect(holds.holds(joining.spki)).toBe(true);
   expect(new AccountHolds({ heldPath: join(f.stateDir, "account-held.json") }).holds(joining.spki)).toBe(true);
+});
+
+test("an add right behind a remove the full queue could not keep is held back too", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const pendingPath = join(f.stateDir, "account-pending.json");
+  const stranger = await accountKey();
+  writeFileSync(pendingPath, JSON.stringify(await Promise.all(Array.from({ length: PENDING_MAX }, async () => remove(stranger, (await accountKey()).spki)))), { mode: 0o600 });
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => undefined, service: "https://account.test", pendingPath });
+  const mac = await accountKey();
+  const outcomes = await applyAccountRecords(f.app.context.services.devices, [await remove(stranger, mac.spki), await add(key, mac.spki)], SERVER_ID, Date.now(), mailbox.gates(), (record) => mailbox.wait(record));
+  expect(outcomes.map((outcome) => outcome.outcome === "refused" ? outcome.code : outcome.outcome)).toEqual(["account_unavailable", "removal_pending"]);
+  void link;
+});
+
+test("a retry after an enrollment and a mailbox pull at the same time never lose sight of a waiting remove", async () => {
+  const service = new FakeAccountService();
+  const f = fixture({ accountService: { url: "https://account.test", fetch: service.fetch } });
+  const identity = rotateRelayIdentity(f.stateDir);
+  const { key } = await member(f);
+  const stranger = await accountKey();
+  const target = await accountKey();
+  const pendingPath = join(f.stateDir, "account-pending.json");
+  const fillers = await Promise.all(Array.from({ length: 900 }, async () => remove(stranger, (await accountKey()).spki)));
+  writeFileSync(pendingPath, JSON.stringify([...fillers, await remove(stranger, target.spki)]), { mode: 0o600 });
+  const token = service.issueToken(ACCOUNT);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
+  await service.fetch(new Request("https://account.test/v1/records", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ server_ids: [identity.server_id], record: await add(key, target.spki) }) }));
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test", fetch: service.fetch, pendingPath });
+  await Promise.all([mailbox.settle(), mailbox.pull()]);
+  expect(f.app.context.services.devices.hasKey(target.spki)).toBe(false);
+});
+
+test("a barrier file that cannot be read never lets the held keys be written over", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-holds-"));
+  try {
+    const [enrollingPath, heldPath] = [join(dir, "account-enrolling.json"), join(dir, "account-held.json")];
+    new AccountHolds({ heldPath }).hold([SPKI_HELD]);
+    writeFileSync(enrollingPath, "{not json", { mode: 0o600 });
+    const broken = new AccountHolds({ enrollingPath, heldPath });
+    expect(broken.holds("any")).toBe(true);
+    expect(() => broken.hold([])).toThrow();
+    rmSync(enrollingPath);
+    expect(new AccountHolds({ enrollingPath, heldPath }).holds(SPKI_HELD)).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a full queue makes room for a relayed remove by dropping a waiting add, never a remove", async () => {
+  const f = fixture();
+  const { key } = await member(f);
+  const pendingPath = join(f.stateDir, "account-pending.json");
+  const stranger = await accountKey();
+  const adds = await Promise.all(Array.from({ length: PENDING_MAX }, async () => add(stranger, (await accountKey()).spki)));
+  writeFileSync(pendingPath, JSON.stringify(adds), { mode: 0o600 });
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => undefined, service: "https://account.test", pendingPath });
+  const relayed = await remove(stranger, (await accountKey()).spki);
+  expect(mailbox.wait(relayed)).toBe(true);
+  const kept = JSON.parse(readFileSync(pendingPath, "utf8")) as unknown[];
+  expect(kept).toHaveLength(PENDING_MAX);
+  expect(kept).toContainEqual(relayed);
+  // a full queue of waiting adds does not hold every other add back
+  const joining = await accountKey();
+  expect((await applyAccountRecords(f.app.context.services.devices, [await add(key, joining.spki)], SERVER_ID, Date.now(), mailbox.gates()))[0]?.outcome).toBe("applied");
 });
 
 test("a watch device reaches none of the account routes", async () => {
