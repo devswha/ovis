@@ -1417,6 +1417,17 @@ describe("the Claude under a Windows pane's shell", () => {
     expect(await paneClaudeSource(found, dir, "win32", async () => rows)).toEqual({ state: "ambiguous" });
   });
 
+  it("never hands over from a `claude attach` client, nor passes one over below a launcher: it names its session by its job", async () => {
+    const dir = home();
+    const attach = row(LAUNCHER, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED - 1_000);
+    record(join(dir, ".claude"), INNER);
+    // an attach client the shell started, with a recorded Claude below it
+    expect(await pids(dir, [chain[0]!, attach, chain[3]!])).toEqual([LAUNCHER]);
+    // a launcher whose children are an attach client and a recorded Claude: neither can be told the one in front
+    const attached = row(6700, LAUNCHER, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED + 1_000);
+    expect(await pids(dir, [...chain, attached])).toEqual([INNER, 6700]);
+  });
+
   it("hands over only from a Claude with no record file: one with a torn or leftover record stays, though a Claude below it holds one", async () => {
     const nested = row(6600, 6400, CLAUDE_EXE, `"${CLAUDE_EXE}" -p hi`, STARTED + 3_000);
     const rows = [...chain, nested];

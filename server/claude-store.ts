@@ -73,12 +73,15 @@ function nearestOf<T extends { pid: number }>(rows: readonly ProcessRow[], claud
  * did not start, whatever their records say (the callers check them, and refuse a store that cannot
  * be told). Only a file's presence counts: a torn or leftover record still marks the Claude that
  * runs the session, so a Claude that one started (`claude -p`) never takes its place, and a Claude
- * beside it with no record (a `claude attach` client) is still told apart from none.
+ * beside it with no record is still told apart from none. A `claude attach` client writes no record
+ * and names its session by its job: it counts as one that has a record, so it never hands over and
+ * is never passed over.
  */
 async function windowsLaunchedClaude(entry: { pid: number; argv: string[] }, rows: readonly ProcessRow[], home: string): Promise<{ pid: number; argv: string[] }[]> {
   const inner = descendantProcesses(rows, entry.pid).filter(isClaudeProcess);
-  if (inner.length === 0 || await hasRecordFile(home, entry.pid)) return [entry];
-  const recorded = await Promise.all(inner.map((claude) => hasRecordFile(home, claude.pid)));
+  const named = (claude: { pid: number; argv: string[] }) => claudeAttachArgs(claude.argv) !== null || hasRecordFile(home, claude.pid);
+  if (inner.length === 0 || await named(entry)) return [entry];
+  const recorded = await Promise.all(inner.map(named));
   const holders = inner.filter((_, index) => recorded[index]);
   return holders.length > 0 ? nearestOf(rows, holders) : [entry];
 }
