@@ -79,8 +79,9 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--text);
 }
 
-/* The filter over both lists (MachineSidebar.tsx): its word, then one field the height of a row, in the rows'
-   gutter, and its clear inside the field's trailing cell. It never grows: a long query scrolls inside the field. */
+/* The filter over both lists (MachineSidebar.tsx): one field the height of a row, in the rows' gutter, its glass
+   inside the field's leading cell and its clear inside the trailing one, and no word beside it: the placeholder
+   says what it filters. It never grows: a long query scrolls inside the field. */
 .sidebar-filter {
   position: relative;
   display: flex;
@@ -90,17 +91,15 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: var(--space-2) var(--side-gutter) 0;
 }
 
-/* the field's label stays in view whatever is typed: the section head's words (Agents) */
-.sidebar-filter-label {
-  flex: none;
+/* the glass sits in the field's leading cell, out of the pointer's way: a press on it lands in the field */
+.sidebar-filter-glass {
+  position: absolute;
+  top: calc(var(--space-2) + (var(--side-row) - var(--icon-size)) / 2);
+  left: calc(var(--side-gutter) + (var(--side-row) - var(--icon-size)) / 2);
+  width: var(--icon-size);
+  height: var(--icon-size);
   color: var(--text-dim);
-  font-size: var(--fs-input);
-  line-height: var(--lh-tight);
-}
-
-/* the size of the field's own text beside it, as .input steps down on a wide screen */
-@media (min-width: 641px) {
-  .sidebar-filter-label { font-size: var(--fs-md); }
+  pointer-events: none;
 }
 
 .sidebar-filter-input {
@@ -108,6 +107,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   min-width: 0;
   height: var(--side-row);
   padding-right: var(--side-row);
+  padding-left: var(--side-row);
   text-overflow: ellipsis;
 }
 
@@ -709,9 +709,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   100% { opacity: 1; }
 }
 
-/* background tasks still running, and a pane's plan: a number beside the state, quieter than it */
+/* background tasks still running, a pane's plan and its context left: a number beside the state, quieter than it */
 .background-count,
-.plan-count {
+.plan-count,
+.context-count {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -724,7 +725,8 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 }
 
 .background-count svg,
-.plan-count svg {
+.plan-count svg,
+.context-count svg {
   width: var(--space-3);
   height: var(--space-3);
 }
@@ -893,4 +895,24 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .plan-count.is-done svg {
   color: var(--status-done);
+}
+
+/* the composer's context ring at the badges' size (Composer.css .composer-context): plain until little is left */
+.context-count-track,
+.context-count-used {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.context-count-track {
+  stroke: var(--border-strong);
+}
+
+.context-count-used {
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+
+.context-count.is-low {
+  color: var(--status-blocked);
 }

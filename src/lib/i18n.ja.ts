@@ -112,6 +112,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "ターミナルを表示",
   "Show the chat": "チャットを表示",
   "Close this half": "この半分を閉じる",
+  "Remove from the split": "分割から外す",
+  "Resize the split": "分割のサイズを変更",
   "Toggle sidebar (⌘⇧B)": "サイドバーの切り替え (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "チャット履歴 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "ライブターミナル (⌘⇧J)",
@@ -240,6 +242,7 @@ const BASE: Record<string, string> = {
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
+  "Show {name}": "{name} を表示",
   "Check again": "再確認",
   "Setup guide": "セットアップガイド",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
@@ -424,6 +427,8 @@ const BASE: Record<string, string> = {
   "New group": "新しいグループ",
   "Add group": "グループを追加",
   "No group": "グループなし",
+  "Context {percent}% left": "コンテキスト残り {percent}%",
+  "{used} of {window} tokens": "{used} / {window} トークン",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

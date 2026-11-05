@@ -110,6 +110,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "터미널 보기",
   "Show the chat": "채팅 보기",
   "Close this half": "이쪽 화면 닫기",
+  "Remove from the split": "분할에서 빼기",
+  "Resize the split": "분할 크기 조절",
   "Toggle sidebar (⌘⇧B)": "사이드바 토글 (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "채팅 기록 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "실시간 터미널 (⌘⇧J)",
@@ -238,6 +240,7 @@ const BASE: Record<string, string> = {
   "Submit": "제출",
   "Recommended": "추천",
   "Agents": "에이전트",
+  "Show {name}": "{name} 표시",
   "Check again": "다시 확인",
   "Setup guide": "설정 안내",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
@@ -422,6 +425,8 @@ const BASE: Record<string, string> = {
   "New group": "새 그룹",
   "Add group": "그룹 추가",
   "No group": "그룹 없음",
+  "Context {percent}% left": "컨텍스트 {percent}% 남음",
+  "{used} of {window} tokens": "{window} 토큰 중 {used}",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

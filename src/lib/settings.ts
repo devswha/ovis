@@ -89,6 +89,13 @@ export interface Settings {
   /** the Filter field above the sidebar's lists (components/MachineSidebar.tsx); off, the command palette's
    *  Filter workspaces and agents still opens it for the time it holds words or the focus */
   sidebarFilter: boolean;
+  /** the composer's context ring on each agent row of the sidebar (components/Sidebar.tsx ContextBadge); off until chosen */
+  sidebarContext: boolean;
+  /** an agent's helpers folded under its row in the Agents list (components/AgentSidebar.tsx); off until chosen */
+  foldHelpers: boolean;
+  /** CPU, memory and the fullest disk under each open PC in the sidebar (components/MachineStats.tsx); null until
+   *  chosen on this device, which shows it while two or more PCs are connected (pcLoadOn) */
+  pcLoad: boolean | null;
   /** The Agents list's order. Activity is display-only: herdr's own order never changes. */
   agentOrder: AgentOrder;
   /** this device lists the agents above the workspaces, in groups by state (lib/agentRoster.ts groupAgentRows); off, the list is as agentOrder says */
@@ -130,9 +137,6 @@ export interface Settings {
   /** draw the pictures a pane program prints as sixel or iTerm2 inline images (lib/terminalImages.ts); off by
    *  default. Only herdr-core passes them on: herdr redraws a pane from its own grid, which keeps no pictures. */
   terminalImages: boolean;
-  /** a pane is drawn by libghostty over its xterm (lib/ghostty/overlay.ts), with Kitty graphics pictures on herdr-core:
-   *  herdr's own server redraws a pane from its grid, which keeps no pictures */
-  terminalGhostty: boolean;
   /** on a touch screen, an Attach files button in the terminal's input line and a key in the key bar while typing
    *  straight into the grid pick files to store beside the pane (POST /api/pane/image); off by default */
   terminalAttachButton: boolean;
@@ -152,9 +156,14 @@ export interface Settings {
   /** a desktop tab out of use for a moment detaches its pane (PaneTerminal's release) and only watches it, so herdr's own
    *  window keeps the pane at its size; paused where the server cannot watch. Off: the tab keeps the pane and its size. */
   releasePaneAway: boolean;
+  /** the split view takes more than two panes, in rows and columns, and its boundaries move (lib/split.ts);
+   *  off: two halves side by side, as before */
+  splitGrid: boolean;
   /** this device opens the pane herdr's own focus moves to (a `pane-focused` frame from the selected PC), as
    *  herdr's window does after `herdr tab focus` or a click there; off: only this device's own picks move it */
   followHerdrFocus: boolean;
+  /** a mouse resting on the collapsed sidebar's toggle shows the sidebar over the pane for a moment (lib/sidebarPeek.ts, #2588) */
+  sidebarPeek: boolean;
   /** chat text size in px (its body text; the rest scales with it); null follows the interface size */
   chatFontSize: number | null;
   /** fonts tried before the UI font in the chat's prose (code stays mono), as a CSS font-family list; "" keeps the UI font */
@@ -245,8 +254,12 @@ export interface Settings {
   voicePolishTerminal: boolean;
   /** the file viewer wraps long lines instead of scrolling sideways */
   wrapCode: boolean;
+  /** off by default: the file viewer offers Edit for a text file in the pane's folder, saved after a confirm (#771) */
+  editTextFiles: boolean;
   /** the width of a Markdown preview: the chat's lane (--chat-w), centered, or the viewer's width */
   markdownWidth: MarkdownWidth;
+  /** a Markdown preview lists its headings beside the text (a drawer on a narrow viewer), marking the one being read (#636). Off by default. */
+  markdownOutline: boolean;
   /** a repository diff as one column of old and new lines, or the two side by side (a phone shows one column either way) */
   diffStyle: DiffStyle;
   /** where a file opens from the chat, terminal or Files: the popup, or beside the pane on a wide window (lib/filePresentation.ts) */
@@ -270,15 +283,15 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, voiceEngine, the agent groups, the
+ * keyBarExpanded, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, splitGrid, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, foldHelpers, pcLoad, voiceEngine, the agent groups, the
  * interface font, the file text size, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
-  | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "terminalAttachButton"
-  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase">;
+  | "followHerdrFocus" | "sidebarPeek" | "splitGrid" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "foldHelpers" | "pcLoad" | "historyPrompts"
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
+  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "markdownOutline" | "fileFontSize" | "fileFontBase" | "editTextFiles">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -357,8 +370,6 @@ export const SETTING_SCOPE = {
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
   // a phone has less memory for decoded pictures than a desk
   terminalImages: "device",
-  // a phone's browser has less memory for the module and decoded pictures than a desk
-  terminalGhostty: "device",
   // a phone's picker, not a desk's drop
   terminalAttachButton: "device",
   // a phone's soft keyboard is no desk's
@@ -369,6 +380,10 @@ export const SETTING_SCOPE = {
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
+  // a wide desk splits its pane area into rows and columns where a laptop keeps two halves
+  splitGrid: "device",
+  // a desk's mouse, which a phone has not
+  sidebarPeek: "device",
   chatFontSize: "device", chatFontFamily: "device", fileFontSize: "device", fileFontBase: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
@@ -380,13 +395,19 @@ export const SETTING_SCOPE = {
   composerBtw: "device",
   // a desk with a keyboard may do without the field a phone keeps, as with the PCs it shows (lib/hiddenMachines.ts)
   sidebarFilter: "device",
+  // a phone's narrow rows may do without the ring a desk shows, as with the filter
+  sidebarContext: "device",
+  // a phone's short list may fold the helpers a desk lists, as with the ring
+  foldHelpers: "device",
+  // a phone's narrow sidebar may do without the line a desk keeps, as with the filter
+  pcLoad: "device",
   // a phone may group its agents by state while a desk keeps herdr's order, as with the filter
   agentGroups: "device", agentGroupSort: "device",
   keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertInApp: "device", alertSound: "device",
   paletteLight: "device", paletteDark: "device", statusIndicators: "device",
   voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device",
   // Viewer layout follows this screen, as chatWidth does.
-  wrapCode: "device", markdownWidth: "device", diffStyle: "device", fileOpen: "device", filesPanel: "device", webLinks: "device", reuseExternalLinkTab: "device",
+  wrapCode: "device", editTextFiles: "device", markdownWidth: "device", markdownOutline: "device", diffStyle: "device", fileOpen: "device", filesPanel: "device", webLinks: "device", reuseExternalLinkTab: "device",
   // a new agent starts the same way whichever device opened it
   claudeLaunchMode: "shared", codexLaunchMode: "shared",
 } as const satisfies Record<keyof Settings, "shared" | "device">;
@@ -406,6 +427,9 @@ export const DEFAULT_SETTINGS: Settings = {
   density: "comfortable",
   sidebarRows: "one",
   sidebarFilter: true,
+  sidebarContext: false,
+  foldHelpers: false,
+  pcLoad: null,
   agentOrder: "workspace",
   agentGroups: false,
   agentGroupSort: "wait",
@@ -426,14 +450,14 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalFontFamily: "",
   paneClipboard: true,
   terminalImages: false,
-  // on by default, on herdr-core and herdr's own server alike; a device that turned it off keeps it off
-  terminalGhostty: true,
   terminalAttachButton: false,
   terminalKeyboardOnRequest: false,
   terminalFoldKeyBar: false,
   terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
+  splitGrid: false,
+  sidebarPeek: false,
   chatFontSize: null,
   fileFontSize: null,
   fileFontBase: null,
@@ -474,7 +498,9 @@ export const DEFAULT_SETTINGS: Settings = {
   voicePolishChat: true,
   voicePolishTerminal: false,
   wrapCode: false,
+  editTextFiles: false,
   markdownWidth: "readable",
+  markdownOutline: false,
   diffStyle: "unified",
   fileOpen: "popup",
   filesPanel: false,
@@ -614,6 +640,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     density: density === "compact" || density === "comfortable" ? density : DEFAULT_SETTINGS.density,
     sidebarRows: record["sidebarRows"] === "one" || record["sidebarRows"] === "two" ? record["sidebarRows"] : DEFAULT_SETTINGS.sidebarRows,
     sidebarFilter: typeof record["sidebarFilter"] === "boolean" ? record["sidebarFilter"] : DEFAULT_SETTINGS.sidebarFilter,
+    sidebarContext: typeof record["sidebarContext"] === "boolean" ? record["sidebarContext"] : DEFAULT_SETTINGS.sidebarContext,
+    foldHelpers: typeof record["foldHelpers"] === "boolean" ? record["foldHelpers"] : DEFAULT_SETTINGS.foldHelpers,
+    pcLoad: typeof record["pcLoad"] === "boolean" ? record["pcLoad"] : null,
     agentOrder: record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
     agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,
     agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
@@ -650,13 +679,14 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
     terminalImages: record["terminalImages"] === true,
-    terminalGhostty: record["terminalGhostty"] !== false,
     terminalAttachButton: record["terminalAttachButton"] === true,
     terminalKeyboardOnRequest: record["terminalKeyboardOnRequest"] === true,
     terminalFoldKeyBar: record["terminalFoldKeyBar"] === true,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
+    splitGrid: record["splitGrid"] === true,
+    sidebarPeek: record["sidebarPeek"] === true,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),
     chatWidth: CHAT_WIDTHS.includes(record["chatWidth"] as ChatWidth) ? record["chatWidth"] as ChatWidth : DEFAULT_SETTINGS.chatWidth,
     enterSends: typeof record["enterSends"] === "boolean" ? record["enterSends"] : null,
@@ -694,7 +724,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     voicePolishChat: typeof record["voicePolishChat"] === "boolean" ? record["voicePolishChat"] : DEFAULT_SETTINGS.voicePolishChat,
     voicePolishTerminal: typeof record["voicePolishTerminal"] === "boolean" ? record["voicePolishTerminal"] : DEFAULT_SETTINGS.voicePolishTerminal,
     wrapCode: typeof record["wrapCode"] === "boolean" ? record["wrapCode"] : DEFAULT_SETTINGS.wrapCode,
+    editTextFiles: typeof record["editTextFiles"] === "boolean" ? record["editTextFiles"] : DEFAULT_SETTINGS.editTextFiles,
     markdownWidth: MARKDOWN_WIDTHS.find((width) => width === record["markdownWidth"]) ?? DEFAULT_SETTINGS.markdownWidth,
+    markdownOutline: record["markdownOutline"] === true,
     diffStyle: DIFF_STYLES.find((style) => style === record["diffStyle"]) ?? DEFAULT_SETTINGS.diffStyle,
     fileOpen: FILE_OPEN_TARGETS.find((target) => target === record["fileOpen"]) ?? DEFAULT_SETTINGS.fileOpen,
     filesPanel: typeof record["filesPanel"] === "boolean" ? record["filesPanel"] : DEFAULT_SETTINGS.filesPanel,
@@ -744,6 +776,19 @@ function readSidebarFilter(): boolean {
     return typeof value === "boolean" ? value : DEFAULT_SETTINGS.sidebarFilter;
   } catch {
     return DEFAULT_SETTINGS.sidebarFilter;
+  }
+}
+
+/** Settings → Remote PCs → PC load in the sidebar, kept in a key of its own for the same reason; null until chosen. */
+export const PC_LOAD_STORAGE_KEY = "ovis:pc-load";
+
+function readPcLoad(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(PC_LOAD_STORAGE_KEY);
+    const value: unknown = raw === null ? null : JSON.parse(raw);
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
   }
 }
 
@@ -845,14 +890,14 @@ export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
 /** Settings > Terminal > Pictures in the terminal, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
-/** Settings > Terminal > Draw with libghostty, in a key of its own for the same reason: off until chosen. */
-export const TERMINAL_GHOSTTY_STORAGE_KEY = "ovis:terminal-ghostty";
 /** Settings > Terminal > Attach files button, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_ATTACH_BUTTON_STORAGE_KEY = "ovis:terminal-attach-button";
 /** Settings > Terminal > Keyboard only from the key bar, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY = "ovis:terminal-keyboard-on-request";
 /** Settings > Terminal > Fold the key bar, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_FOLD_KEY_BAR_STORAGE_KEY = "ovis:terminal-fold-key-bar";
+/** Settings > File viewer > Markdown outline, in a key of its own for the same reason: off until chosen. */
+export const MARKDOWN_OUTLINE_STORAGE_KEY = "ovis:markdown-outline";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
 /** Settings > Chat > Files beside the pane, kept in a key of its own for the same reason: off until chosen. */
@@ -861,6 +906,10 @@ export const FILES_PANEL_STORAGE_KEY = "ovis:files-panel";
 export const COMPOSER_PASTE_SEND_STORAGE_KEY = "ovis:composer-paste-send";
 /** Settings > Chat > Composer > Side conversations chip, kept in a key of its own for the same reason: off until chosen. */
 export const COMPOSER_BTW_STORAGE_KEY = "ovis:composer-btw";
+/** Settings > Appearance > Context left on agent rows, kept in a key of its own for the same reason: off until chosen. */
+export const SIDEBAR_CONTEXT_STORAGE_KEY = "ovis:sidebar-context";
+/** Settings > Appearance > Fold helpers under their agent, kept in a key of its own for the same reason: off until chosen. */
+export const FOLD_HELPERS_STORAGE_KEY = "ovis:fold-helpers";
 
 function readChatFold(key: string, fallback: boolean): boolean {
   try {
@@ -898,6 +947,11 @@ function coarsePointer(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 }
 
+/** Whether the sidebar shows each open PC's load: as chosen on this device, else while two or more PCs are connected. */
+export function pcLoadOn(settings: Pick<Settings, "pcLoad">, machines: readonly { state: string }[]): boolean {
+  return settings.pcLoad ?? machines.filter((machine) => machine.state === "connected").length >= 2;
+}
+
 /** Whether Enter (Return) sends from the composer: the device's choice, else not on a touch screen. */
 export function enterSendsOn(settings: Pick<Settings, "enterSends">, touch: boolean): boolean {
   return settings.enterSends ?? !touch;
@@ -908,17 +962,19 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), ...readFileFont(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), pcLoad: readPcLoad(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), ...readFileFont(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
     reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
     filesPanel: readChatFold(FILES_PANEL_STORAGE_KEY, DEFAULT_SETTINGS.filesPanel),
     composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
     composerBtw: readChatFold(COMPOSER_BTW_STORAGE_KEY, DEFAULT_SETTINGS.composerBtw),
+    sidebarContext: readChatFold(SIDEBAR_CONTEXT_STORAGE_KEY, DEFAULT_SETTINGS.sidebarContext),
+    foldHelpers: readChatFold(FOLD_HELPERS_STORAGE_KEY, DEFAULT_SETTINGS.foldHelpers),
     terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages),
-    terminalGhostty: readChatFold(TERMINAL_GHOSTTY_STORAGE_KEY, DEFAULT_SETTINGS.terminalGhostty),
     terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
     terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
-    terminalFoldKeyBar: readChatFold(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar) };
+    terminalFoldKeyBar: readChatFold(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
+    markdownOutline: readChatFold(MARKDOWN_OUTLINE_STORAGE_KEY, DEFAULT_SETTINGS.markdownOutline) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -929,11 +985,12 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, historyPrompts, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
     window.localStorage.setItem(SIDEBAR_FILTER_STORAGE_KEY, JSON.stringify(sidebarFilter));
+    window.localStorage.setItem(PC_LOAD_STORAGE_KEY, JSON.stringify(pcLoad));
     window.localStorage.setItem(AGENT_GROUPS_STORAGE_KEY, JSON.stringify(agentGroups));
     window.localStorage.setItem(AGENT_GROUP_SORT_STORAGE_KEY, JSON.stringify(agentGroupSort));
     window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
@@ -947,11 +1004,13 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(FILES_PANEL_STORAGE_KEY, JSON.stringify(filesPanel));
     window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
     window.localStorage.setItem(COMPOSER_BTW_STORAGE_KEY, JSON.stringify(composerBtw));
+    window.localStorage.setItem(SIDEBAR_CONTEXT_STORAGE_KEY, JSON.stringify(sidebarContext));
+    window.localStorage.setItem(FOLD_HELPERS_STORAGE_KEY, JSON.stringify(foldHelpers));
     window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
-    window.localStorage.setItem(TERMINAL_GHOSTTY_STORAGE_KEY, JSON.stringify(terminalGhostty));
     window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
     window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
     window.localStorage.setItem(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, JSON.stringify(terminalFoldKeyBar));
+    window.localStorage.setItem(MARKDOWN_OUTLINE_STORAGE_KEY, JSON.stringify(markdownOutline));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
