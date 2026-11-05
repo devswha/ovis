@@ -258,6 +258,10 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       schedule(scrollPollDelay(true, 0, scrollRef.current, following()));
     });
     const rendered = terminal.onRender(paintHits);
+    // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
+    // that left the bottom: read at the busy cadence, not the follow pace
+    terminal.element?.addEventListener("wheel", wake, { passive: true, capture: true });
+    terminal.element?.addEventListener("touchmove", wake, { passive: true, capture: true });
     const resized = terminal.onResize(() => { version++; clearHits(); setScroll(null); wake(); paint(); });
     const visibility = () => {
       if (document.visibilityState === "hidden") { if (timer !== null) clearTimeout(timer); timer = null; clearHits(); }
@@ -279,6 +283,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (timer !== null) clearTimeout(timer);
       parsed.dispose(); rendered.dispose(); resized.dispose(); observer.disconnect();
       mount?.removeEventListener("scroll", paint);
+      terminal.element?.removeEventListener("wheel", wake, { capture: true });
+      terminal.element?.removeEventListener("touchmove", wake, { capture: true });
       document.removeEventListener("visibilitychange", visibility);
       refreshRef.current = () => {}; writeRef.current = () => {};
     };

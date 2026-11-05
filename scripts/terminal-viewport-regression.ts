@@ -224,7 +224,8 @@ try {
       // fixed wait: proving the follow pace over a window the busy cadence would fill with 16 reads
       await Bun.sleep(4000);
       const followReads = metricsReads.filter((at) => at > followFrom).length;
-      assert.ok(followReads <= 4, `a view following output at the bottom reads metrics at the follow pace, read ${followReads} times in 4 s`);
+      // the follow pace is 2 s, and a read that saw no output in flight backs off by 1 s instead
+      assert.ok(followReads <= 6, `a view following output at the bottom reads metrics at the follow pace, read ${followReads} times in 4 s`);
       // A page on metrics that output has overtaken reads them again first: the program may have entered its alternate screen.
       await until(async () => Date.now() - metricsReads.at(-1)! > 400, "the follow pace leaves the metrics older than the busy cadence");
       const sent: string[] = [];
