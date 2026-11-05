@@ -10,6 +10,7 @@
  * chat falls back to the terminal: no picking by creation time or newest mtime, on any OS.
  */
 import { closeSync, openSync, opendirSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
@@ -115,14 +116,62 @@ function programOf(pid: number): string | null {
   try { return `${started}\0${readFileSync(`/proc/${pid}/cmdline`, "utf8")}`; } catch { return null; }
 }
 
+/** The most input history read at once: more typed since the last proof is no answer. */
+const HISTORY_BYTES = 1024 * 1024;
+
+/**
+ * The input history of the folder a session runs in, as Kimi keeps it
+ * (`user-history/<md5(cwd)>.jsonl`, one `{ content }` line per input, slash commands too), and how
+ * long it is now; undefined when the session names no folder.
+ */
+function historyOf(sessionDir: string, home: string): { path: string; size: number } | undefined {
+  let cwd: unknown;
+  try {
+    const state = join(sessionDir, "state.json");
+    if (statSync(state).size > HISTORY_BYTES) return undefined;
+    cwd = (JSON.parse(readFileSync(state, "utf8")) as { cwd?: unknown } | null)?.cwd;
+  } catch { return undefined; }
+  if (typeof cwd !== "string" || cwd === "") return undefined;
+  const path = join(home, ".kimi-code", "user-history", `${createHash("md5").update(cwd, "utf8").digest("hex")}.jsonl`);
+  let size = 0;
+  try { size = statSync(path).size; } catch { /* nothing typed in this folder yet */ }
+  return { path, size };
+}
+
+/** A command that moves a Kimi to another session: picking an existing one writes nothing to it. */
+const SWITCH_COMMAND = /^\/(?:sessions|resume|new|clear)(?:\s|$)/;
+
+/**
+ * Whether nothing typed into the folder since `history` was taken switches sessions; the history
+ * then reads as of now. A history cut short, unreadable or grown past HISTORY_BYTES is no answer.
+ */
+function noSwitchSince(history: { path: string; size: number }): boolean {
+  let fd: number;
+  try { fd = openSync(history.path, "r"); } catch { return history.size === 0; }
+  try {
+    const size = statSync(history.path).size;
+    if (size < history.size || size - history.size > HISTORY_BYTES) return false;
+    const bytes = Buffer.alloc(size - history.size);
+    if (readSync(fd, bytes, 0, bytes.length, history.size) !== bytes.length) return false;
+    for (const line of bytes.toString("utf8").split("\n")) {
+      let content: unknown;
+      try { content = (JSON.parse(line) as { content?: unknown } | null)?.content; } catch { continue; }
+      if (typeof content === "string" && SWITCH_COMMAND.test(content.trim())) return false;
+    }
+    history.size = size;
+    return true;
+  } catch { return false; } finally { closeSync(fd); }
+}
+
 /**
  * The last session proven for each pane, and the program that held it. The CLI lets go of its lock
  * a few seconds after a turn ends and opens its log only to append, so an idle Kimi proves nothing;
  * while that same program still runs in the pane, holds no other session, no other process has
- * locked this one and the folder has started no session since, its last session is still the one
- * it shows.
+ * locked this one, the folder has started no session since and nobody has typed /sessions or
+ * /resume there (which switch to an existing session without a write or a lock until its next
+ * prompt), its last session is still the one it shows.
  */
-const proven = new Map<string, { path: string; pid: number; program: string; store: number }>();
+const proven = new Map<string, { path: string; pid: number; program: string; store: number; history?: { path: string; size: number } }>();
 
 /**
  * The wire log these processes own: the session they prove now, else the one the same live program
@@ -136,7 +185,7 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
     let store: number | null = null;
     try { store = statSync(dirname(dirname(dirname(dirname(proof.path))))).mtimeMs; } catch { /* gone: nothing to keep */ }
     if (program === null || store === null) proven.delete(paneId);
-    else proven.set(paneId, { ...proof, program, store });
+    else proven.set(paneId, { ...proof, program, store, history: historyOf(dirname(dirname(dirname(proof.path))), home) });
     return proof.path;
   }
   const last = proven.get(paneId);
@@ -147,6 +196,7 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
   try { statSync(join(home, ".kimi-code", "locks", "sessions", `${basename(session)}.lock`)); return null; } catch { /* nobody holds it */ }
   // a session the folder got since (`/new`) may be the one this Kimi has switched to before it writes
   try { if (statSync(dirname(session)).mtimeMs !== last.store) return null; } catch { return null; }
+  if (last.history !== undefined && !noSwitchSince(last.history)) return null;
   proven.set(paneId, last);
   return last.path;
 }
@@ -182,6 +232,32 @@ export function kimiPrompt(record: unknown): ConversationPart[] | null {
   if (typeof originKind === "string" && originKind !== "user") return null;
   const text = kimiUserText(message.content);
   return text === null ? [] : [{ kind: "text", text }];
+}
+
+/**
+ * What `/undo` took back in a wire log, followed as the file is scanned: where each prompt it can
+ * take back starts, and the byte ranges it took back. Kimi never rewrites the log: a
+ * `context.undo` record (with `count`, after the `agent.switched` record newer CLIs write beside it)
+ * withdraws the last `count` prompts the user sent and everything after the first of them, but
+ * never past a compaction or a clear. The pages read those ranges as blank lines, as a Claude rewind's.
+ */
+export interface KimiUndo { anchors: number[]; undone: [number, number][] }
+
+const KIMI_UNDO_MARKS = ['"context.append_message"', '"context.undo"', '"context.apply_compaction"', '"context.clear"'];
+
+/** follows the undo over one record, the bytes [start, end) of the log */
+export function followKimiUndo(undo: KimiUndo, line: Buffer, start: number, end: number): void {
+  if (!KIMI_UNDO_MARKS.some((mark) => line.includes(mark))) return;
+  let record: { type?: unknown; count?: unknown; message?: { origin?: { inTurn?: unknown } } } | null;
+  try { record = JSON.parse(line.toString("utf8")) as typeof record; } catch { return; }
+  if (record === null || typeof record !== "object") return;
+  if (record.type === "context.apply_compaction" || record.type === "context.clear") undo.anchors = [];
+  else if (record.type === "context.undo") {
+    const count = record.count;
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > undo.anchors.length) return;
+    undo.undone.push([undo.anchors[undo.anchors.length - count]!, end]);
+    undo.anchors.length -= count;
+  } else if (kimiPrompt(record) !== null && record.message?.origin?.inTurn !== true) undo.anchors.push(start);
 }
 
 /** The ISO time of a record's millisecond epoch, null when it is not a sane epoch. */
