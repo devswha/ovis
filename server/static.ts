@@ -62,7 +62,9 @@ function cacheControlFor(pathname: string): string {
  * - `script-src 'self'`: both entry points are Vite modules (index.html), nothing in the
  *   app evaluates a string, and there is no inline handler attribute. This is the
  *   directive that matters: KaTeX output and the agent marks are the two places that put
- *   third-party HTML into the page.
+ *   third-party HTML into the page. `'wasm-unsafe-eval'` lets the page compile WebAssembly
+ *   and nothing else (no eval, no string to script): the terminal's sixel decoder
+ *   (@xterm/addon-image, Settings -> Pictures in the terminal) is a module bundled in the app.
  * - `style-src 'self' 'unsafe-inline'`: inline style attributes are how measured layout
  *   reaches the DOM (AgentPicker, RowMenu, Droplet, UsageMeters), and KaTeX writes one on
  *   every expression it cannot render. It is also load-bearing for the terminal itself:
@@ -98,7 +100,7 @@ function cacheControlFor(pathname: string): string {
  */
 const CSP_DIRECTIVES = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -127,7 +129,8 @@ export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
  * 'unsafe-inline'` and `font-src 'self' data:` among them, stays for the reasons given above.
  */
 const SHELL_SOURCES: Record<string, string> = {
-  "connect-src": "'self' wss:",
+  // the account service the shell signs in to (docs/account.md); a self-hosted one is not added yet
+  "connect-src": "'self' wss: https://account.ovis.sh",
   "media-src": "'self' blob:",
   "frame-src": "'self' blob:",
 };
@@ -150,6 +153,15 @@ export function shellContentSecurityPolicy(connect: readonly string[] = []): str
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;
 
 /** The policy for a request from `origin` (requestOrigin): its host's other ports may be framed. */
+/** The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is https, else none. */
+export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"]): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /^[a-z0-9.-]+(?::[0-9]+)?$/i.test(url.host) ? url.origin : null;
+  } catch { return null; }
+}
+
 export function contentSecurityPolicy(origin?: string): string {
   let host: string | null = null;
   try {
@@ -157,8 +169,13 @@ export function contentSecurityPolicy(origin?: string): string {
   } catch {
     host = null;
   }
-  if (host === null || !FRAMEABLE_HOST.test(host)) return CONTENT_SECURITY_POLICY;
-  return CSP_DIRECTIVES.map((directive) => directive === "frame-src 'self'" ? `frame-src 'self' http://${host}:* https://${host}:*` : directive).join("; ");
+  const frameable = host !== null && FRAMEABLE_HOST.test(host);
+  const account = accountServiceOrigin();
+  return CSP_DIRECTIVES.map((directive) => {
+    if (directive === "frame-src 'self'" && frameable) return `frame-src 'self' http://${host}:* https://${host}:*`;
+    if (directive === "connect-src 'self'" && account !== null) return `connect-src 'self' ${account}`;
+    return directive;
+  }).join("; ");
 }
 
 /**

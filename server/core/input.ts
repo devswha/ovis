@@ -8,7 +8,7 @@ import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import { paneAgentOf } from "../pane-context.ts";
 import type { TerminalSighting } from "./terminals.ts";
 import type { ClientMessage } from "../../shared/protocol.ts";
-import { isMouseReport, typingGuards } from "../input-guard.ts";
+import { isMouseReport, isTerminalReply, typingGuards } from "../input-guard.ts";
 import { HerdrError, paneRead, paneSendKeys, paneSendText } from "../herdr/client.ts";
 import { secretPrompt, validSecret } from "../../shared/secret-prompt.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
@@ -16,6 +16,8 @@ import { mirrorInput } from "../mirror-input.ts";
 
 /** Keys that may wait to join one `pane.send_keys` while herdr answers the one before (a held arrow repeats ~30/s). */
 const MAX_WAITING_KEYS = 256;
+/** One terminal answer: a CSI report (parameters, intermediates, final byte), an OSC reply or a DCS string. */
+const REPLY_RE = /^\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|P[^\x1b]*\x1b\\)$/;
 /** An insert that waited this long behind earlier input is refused rather than typed late (as SUBMIT_DEADLINE_MS for a message). */
 const INSERT_DEADLINE_MS = 45_000;
 
@@ -147,11 +149,18 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       // pty write only queues the ESC in the sidecar, so it goes the message's own way (send_text)
       // in the pane's turn. Plain typing, a terminal ESC included, keeps the pty's FIFO order.
       const stop = message.stop === true && message.text === "\u001b";
-      if (paneQueues.has(message.pane_id) || stop) {
+      // the viewer's terminal answering a query (a herdr-core attach's own, or the program's) is no one
+      // typing: it goes to the attach it answers, which takes out what was its own; typed through herdr
+      // behind queued input, the program would read those answers as keystrokes. Tagged by a client, so
+      // only what one answer looks like: a single CSI report, OSC reply or DCS string, nothing around it.
+      const reply = !stop && message.automatic === true && REPLY_RE.test(message.text);
+      if ((paneQueues.has(message.pane_id) && !reply) || stop) {
         const text = message.text;
         // a click or a wheel (a click replayed behind a held arrow) is the attach's own mouse:
-        // herdr encodes it for the program's mouse mode, send_text would type its bytes (#667)
-        const mouse = isMouseReport(text);
+        // herdr encodes it for the program's mouse mode, send_text would type its bytes (#667).
+        // The terminal's answers to its attach's questions go to that attach too, or they are typed (#2816):
+        // only what the browser's terminal made itself, so a paste of the same bytes is still typed
+        const viaAttach = isMouseReport(text) || (message.automatic === true && isTerminalReply(text));
         // typed into the attach it saw: one that ended meanwhile (and was attached again) takes none of it
         const roles = connectionOf(client).roles;
         const allowed = () => mayType(client) && connectionOf(client).roles === roles && typingGuards.queuedTyping(sighting.facts());
@@ -163,8 +172,8 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           // nothing typed outlives its connection
           if (!clients.has(client)) return;
           authorizeSocket(client);
-          if (mouse) {
-            if (!allowed() || !sighting.write(text)) { inputFailed(); return; }
+          if (viaAttach) {
+            if (!allowed() || !sighting.write(text, message.automatic === true)) { inputFailed(); return; }
             typedIntoPty(text);
             receipt(true);
             return;

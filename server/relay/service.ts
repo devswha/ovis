@@ -1,17 +1,19 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { encodeOffer } from "../../shared/relay-offer.ts";
+import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
-import { loadRelayIdentity, RelayIdentityError, rotateRelayIdentity } from "./identity.ts";
+import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { RelayLink } from "./link.ts";
 import type { RelayLinkOptions } from "./link.ts";
 import { RelayPairingApprovals } from "./pairing-approvals.ts";
+import { RelayPairCodes } from "./pair-code.ts";
 
 export interface RelayServiceOptions {
   readonly stateDir: string;
@@ -30,6 +32,11 @@ export interface RelayServiceOptions {
   readonly regionalRelays?: readonly string[];
   /** The round trip to a relay in ms, or null when it does not answer; `/health` over HTTPS by default. */
   readonly probe?: (relay: string, signal: AbortSignal) => Promise<number | null>;
+  /**
+   * The relay typed pairing codes meet on (server/relay/pair-code.ts): Ovis's global one, where the
+   * hosted app looks for them, when this PC is on it; none on a relay of its own. Tests name theirs.
+   */
+  readonly pairCodeRelay?: string;
 }
 
 /** A regional relay is advertised only when it answers in at most this share of the global one's round trip. */
@@ -78,6 +85,8 @@ export class RelayService {
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
+  /** the saved identity's server_id read before the relay started (serverId); null: there was none */
+  private saved: string | null | undefined;
   private enabled = false;
   private shuttingDown = false;
   private resetting = false;
@@ -86,6 +95,7 @@ export class RelayService {
   readonly app: string;
   /** Phones that compared digits with this PC and wait for the owner's approval. */
   readonly approvals = new RelayPairingApprovals();
+  private pairCodes: RelayPairCodes | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
@@ -99,6 +109,18 @@ export class RelayService {
         .map((relay) => relayEndpoint(relay, "wss:")).filter((relay) => relay !== this.relay);
   }
 
+  /** This PC's relay identity once the relay has started: what the account service knows it by (server/account/mailbox.ts). */
+  currentIdentity(): RelayIdentity | undefined {
+    if (this.identity) return this.identity;
+    // one already on disk (the relay off since a restart) still names the PC; none is ever made here
+    if (!existsSync(relayIdentityPath(this.options.stateDir))) return undefined;
+    try { return loadRelayIdentity(this.options.stateDir); } catch (error) {
+      if (error instanceof RelayIdentityError) return undefined;
+      throw error;
+    }
+  }
+
+
   /** The relay new pairing offers name: the regional one while its link is online, else the global one. */
   private get advertised(): string {
     return this.regionalRelay !== null && this.regionalPhase === "online" ? this.regionalRelay : this.relay;
@@ -107,6 +129,16 @@ export class RelayService {
   /** What a phone is told to save for this PC: the relay new offers name, then the global one it falls back to. */
   private relayHints(): readonly string[] {
     return [...new Set([this.advertised, this.relay])];
+  }
+
+  /**
+   * This PC's relay ID: the identity in use, else the one saved (read once), also while the relay is off, as a
+   * phone that subscribed to alerts through it still gets them. Undefined where it never had one.
+   */
+  serverId(): string | undefined {
+    if (this.identity) return this.identity.server_id;
+    if (this.saved === undefined) this.saved = savedServerId(this.options.stateDir) ?? null;
+    return this.saved ?? undefined;
   }
 
   /** Phase and error are the global link's: every phone can reach the PC there. */
@@ -225,6 +257,8 @@ export class RelayService {
     this.measuring = undefined;
     this.phase = "off";
     this.error = null;
+    // a code names this PC's key: it goes with the link
+    this.pairCodes?.cancel();
     this.ending = Promise.all([this.ending, link?.stop(), regional?.stop()]).then(() => undefined);
     return this.ending;
   }
@@ -240,6 +274,31 @@ export class RelayService {
   shutdown(): Promise<void> {
     this.shuttingDown = true;
     return this.disconnect();
+  }
+
+  /** The offer a QR code shows, for a given six-digit code. */
+  private offerFor(code: string): RelayOffer {
+    // the phone lists the PC under the name Ovis shows for it (server/machines.ts), not its scope URL
+    const name = hostname().slice(0, 64);
+    return { v: 1, server_id: this.identity!.server_id, server_public_key: this.identity!.public_key,
+      relay: this.advertised, code, ...(name ? { name } : {}) };
+  }
+
+  /**
+   * A code to type on the device being paired (server/relay/pair-code.ts), replacing any showing; null
+   * when this PC's relay has none (it is not Ovis's own).
+   */
+  async pairCode(): Promise<{ code: string; expires_at: string; server_id: string } | null> {
+    if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
+    if (relay === null) return null;
+    this.pairCodes ??= new RelayPairCodes({ relay, devices: this.services.devices, offer: (code) => this.offerFor(code), connect: this.options.connect });
+    return { ...await this.pairCodes.mint(), server_id: this.identity.server_id };
+  }
+
+  /** Takes the code showing off the relay. */
+  cancelPairCode(): void {
+    this.pairCodes?.cancel();
   }
 
   offer(): { url: string; expires_at: string } {

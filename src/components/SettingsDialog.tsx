@@ -29,7 +29,7 @@ import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiF
 import { canListInstalledFonts, filterFamilies, isMonospaceFamily, queryInstalledFonts } from "../lib/installedFonts.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
-import { LOCAL_MACHINE, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
+import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { addRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
@@ -45,6 +45,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
 import { statusText } from "./RelayPanel.tsx";
+import { AccountSection } from "./AccountSection.tsx";
 import { ConnectPhoneDialog, defaultRoute, relayOffered, type ConnectRoute } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -481,6 +482,9 @@ function ChatPage() {
         <SettingsRow label={t("Artifacts chip")} description={t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.")}>
           <Toggle label={t("Artifacts chip")} checked={settings.composerArtifacts} onChange={(composerArtifacts) => update({ composerArtifacts })} />
         </SettingsRow>
+        <SettingsRow label={t("Paste and send button")} description={t("A button in the empty message box sends the text copied on this device as a message.")}>
+          <Toggle label={t("Paste and send button")} checked={settings.composerPasteSend} onChange={(composerPasteSend) => update({ composerPasteSend })} />
+        </SettingsRow>
         {touch && (
           <SettingsRow label={t("Suggestion chip")} description={t("A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.")}>
             <Toggle label={t("Suggestion chip")} checked={settings.suggestionChip} onChange={(suggestionChip) => update({ suggestionChip })} />
@@ -570,6 +574,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Clipboard from a pane")} description={t("A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.")}>
         <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
       </SettingsRow>
+      <SettingsRow label={t("Pictures in the terminal")} description={t("Shows the pictures a program draws in a pane (imgcat, img2sixel, chafa) as sixel or iTerm2 images, on this device. Only on a PC that runs herdr-core, as the desktop app does: herdr does not pass pictures on. A picture is gone once the pane is drawn again.")}>
+        <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages} onChange={(terminalImages) => update({ terminalImages })} />
+      </SettingsRow>
       <SettingsRow label={t("Use alongside herdr's own window")} description={t("Turn this on if herdr is also open in a terminal window, on this PC or another. A second after you switch to another window, or after 10 seconds without typing or clicking in a terminal you type straight into, this tab only watches the pane, so herdr's window keeps the pane at its own size instead of this window's. Type or click in the terminal to type again: what you type goes in once it is back. While it watches, the pane is drawn at herdr's size and may not fill this window.")}>
         <Toggle label={t("Use alongside herdr's own window")} checked={settings.releasePaneAway} onChange={(releasePaneAway) => update({ releasePaneAway })} />
       </SettingsRow>
@@ -622,7 +629,8 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
 
 /**
  * Which PCs alert this device, the Host first: one turned off here sends it nothing, on any channel.
- * Shown with two PCs or more; kept by the PC's name (lib/alertFilters.ts).
+ * Shown with two PCs or more; kept by the PC's relay ID where it has one, else its name (shared/machines.ts
+ * pcAlertKey), and a PC an earlier version turned off by name stays off until turned on again.
  */
 function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   const t = useT();
@@ -631,12 +639,15 @@ function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   const listed = [...machines].sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"));
   return (
     <SettingsGroup title={t("Alerts from")} section="alert-pcs">
-      {listed.map((machine) => (
-        <SettingsRow key={machine.id} label={machine.name}>
-          <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(machine.name)}
-            onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((name) => name !== machine.name) : [...pcsOff, machine.name] })} />
-        </SettingsRow>
-      ))}
+      {listed.map((machine) => {
+        const key = pcAlertKey(machine);
+        return (
+          <SettingsRow key={machine.id} label={machine.name}>
+            <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(key) && !pcsOff.includes(machine.name)}
+              onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((item) => item !== key && item !== machine.name) : [...pcsOff, key] })} />
+          </SettingsRow>
+        );
+      })}
     </SettingsGroup>
   );
 }
@@ -1002,6 +1013,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
       </SettingsGroup>
 
       <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
+
+      <AccountSection />
 
       <SettingsGroup title={t("Devices")} section="devices">
         <div className="settings-item"><DevicesPanel onPair={() => setConnecting({ route: "code", startCode: true })} onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} /></div>
