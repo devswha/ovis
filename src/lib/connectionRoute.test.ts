@@ -21,12 +21,18 @@ describe("how this device reaches Ovis", () => {
     expect(route("pc.tail1e211e.ts.net", { ingress: "funnel" })).toBe("direct");
   });
 
+  it("is a MagicDNS name, Tailscale or Funnel, while the server has not said which way the request came", () => {
+    expect(route("pc.tail1e211e.ts.net")).toBe("tailscale-name");
+    expect(route("pc.tail1e211e.ts.net", { ingress: "unknown" })).toBe("tailscale-name");
+    expect(route("pc.tail1e211e.ts.net", { ingress: "tailscale" })).toBe("tailscale");
+  });
+
   it("is Tailscale when the server saw the request come through Tailscale serve, whatever name the page used", () => {
     expect(route("ovis.example.com", { ingress: "tailscale" })).toBe("tailscale");
   });
 
   it("reads a name with its trailing root dot as the same name", () => {
-    expect(route("pc.tail1e211e.ts.net.")).toBe("tailscale");
+    expect(route("pc.tail1e211e.ts.net.")).toBe("tailscale-name");
     expect(route("localhost.")).toBe("local");
     expect(route("pc.local.")).toBe("lan");
   });
@@ -37,7 +43,7 @@ describe("how this device reaches Ovis", () => {
   });
 
   it("is Tailscale on its address ranges and MagicDNS names, and not just outside them", () => {
-    for (const host of ["pc.tail1e211e.ts.net", "100.106.153.26", "100.64.0.1", "100.127.255.254", "[fd7a:115c:a1e0::1]"]) expect(route(host)).toBe("tailscale");
+    for (const host of ["100.106.153.26", "100.64.0.1", "100.127.255.254", "[fd7a:115c:a1e0::1]"]) expect(route(host)).toBe("tailscale");
     expect(route("100.63.0.1")).toBe("direct");
     expect(route("100.128.0.1")).toBe("direct");
   });

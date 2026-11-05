@@ -148,6 +148,7 @@ const BASE: Record<string, string> = {
   "Via the Ovis relay": "Ovis 릴레이를 거쳐 연결",
   "Via the Portal relay": "Portal 릴레이를 거쳐 연결",
   "Via Tailscale": "Tailscale을 거쳐 연결",
+  "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
   "Via the local network": "로컬 네트워크를 거쳐 연결",
   "Straight to this address": "이 주소로 바로 연결",
   "Reconnecting…": "재연결 중…",

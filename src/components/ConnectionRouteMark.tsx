@@ -25,6 +25,7 @@ export function ConnectionRouteMark({ portal, ingress }: { portal: boolean; ingr
     route === "relay" ? [RadioTower, t("relay"), t("Via the Ovis relay")]
     : route === "portal" ? [RadioTower, t("relay"), t("Via the Portal relay")]
     : route === "tailscale" ? [Network, "Tailscale", t("Via Tailscale")]
+    : route === "tailscale-name" ? [Network, "Tailscale", t("Via Tailscale, or Funnel from the internet")]
     : route === "lan" ? [Wifi, "LAN", t("Via the local network")]
     : route === "direct" ? [Globe, t("direct"), t("Straight to this address")]
     : [Monitor, t("local"), t("Via a loopback address: this PC, or a tunnel to it")];

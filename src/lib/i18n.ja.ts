@@ -150,6 +150,7 @@ const BASE: Record<string, string> = {
   "Via the Ovis relay": "Ovis リレー経由",
   "Via the Portal relay": "Portal リレー経由",
   "Via Tailscale": "Tailscale 経由",
+  "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
   "Via the local network": "ローカルネットワーク経由",
   "Straight to this address": "このアドレスへ直接",
   "Reconnecting…": "再接続しています…",

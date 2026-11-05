@@ -2026,8 +2026,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
 - Beside the chip, always shown, one quiet mark says how this device reaches Ovis (`.conn-route`,
   `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
-  `--text-dim` word, **relay** (the hosted shell, or a Portal sign-in), **Tailscale** (a MagicDNS
-  name or tailnet address), **LAN** (a private address or a local-only name), **direct** (any other
+  `--text-dim` word, **relay** (the hosted shell, or a Portal sign-in), **Tailscale** (a tailnet address, or a
+  request the server saw come through serve; a MagicDNS name alone says "Via Tailscale, or Funnel
+  from the internet", since the name serves both), **LAN** (a private address or a local-only name), **direct** (any other
   address, a bare machine name and a request the server saw come through Funnel included) or
   **local** (loopback: this PC, or a tunnel to another, which nothing can tell apart). The route,
   not the connection's state, is its title and accessible text ("Via Tailscale"); the chip tells the

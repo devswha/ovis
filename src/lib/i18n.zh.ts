@@ -152,6 +152,7 @@ const BASE: Record<string, string> = {
   "Via the Ovis relay": "经由 Ovis 中继",
   "Via the Portal relay": "经由 Portal 中继",
   "Via Tailscale": "经由 Tailscale",
+  "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
   "Reconnecting…": "正在重连…",

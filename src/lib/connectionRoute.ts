@@ -8,11 +8,10 @@
  */
 import type { ObservedIngress } from "../../shared/protocol.ts";
 
-export type ConnectionRoute = "relay" | "portal" | "local" | "tailscale" | "lan" | "direct";
+export type ConnectionRoute = "relay" | "portal" | "local" | "tailscale" | "tailscale-name" | "lan" | "direct";
 
-/** Tailscale's address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48, and its MagicDNS names */
+/** Tailscale's address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48 */
 function tailnetHost(host: string): boolean {
-  if (host.endsWith(".ts.net")) return true;
   const v4 = /^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
   if (v4 !== null) { const second = Number(v4[1]); return second >= 64 && second <= 127; }
   return host.startsWith("fd7a:115c:a1e0:");
@@ -40,6 +39,9 @@ export function connectionRoute(page: { relay: boolean; portal: boolean; ingress
   const host = page.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (/^127(?:\.\d{1,3}){3}$/.test(host) || host === "localhost" || host.endsWith(".localhost") || host === "::1") return "local";
   if (tailnetHost(host)) return "tailscale";
+  // a MagicDNS name is served to the tailnet and, through Funnel, to the internet: unless the server
+  // proved this request's way in (above), the name alone cannot tell which
+  if (host.endsWith(".ts.net")) return "tailscale-name";
   if (lanHost(host)) return "lan";
   return "direct";
 }
