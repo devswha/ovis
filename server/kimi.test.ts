@@ -202,6 +202,13 @@ it("sees a switch typed while the old lock lingers, or written in two pieces", (
   appendFileSync(history, jsonl([{ content: "/sessions" }]));
   const typed = new Date(Date.now() + 500);
   utimesSync(history, typed, typed);
+  // the session still written to since is at work: the switch was another Kimi's of the folder
+  const writing = new Date(Date.now() + 1_000);
+  utimesSync(wire("session_a"), writing, writing);
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  appendFileSync(history, jsonl([{ content: "/sessions" }]));
+  const typedAgain = new Date(Date.now() + 1_500);
+  utimesSync(history, typedAgain, typedAgain);
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
   rmSync(lockA);
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();

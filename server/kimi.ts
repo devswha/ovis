@@ -184,17 +184,22 @@ function historyEnd(path: string): number | null {
  * the proof does not postdate. Only a lock taken since the last proof does, by its next prompt: the
  * CLI writes the prompt to the history as it takes the lock (the same few milliseconds, either one
  * first), so the lock is no older than the history's last change. The lock the last proof saw
- * (a turn's lock lingers a few seconds) or an open log says nothing of it. The proof is then
- * `stale`: the history stays where it was, and the pane shows its terminal until such a lock.
+ * (a turn's lock lingers a few seconds) or an open log says nothing of it, unless the session's log
+ * has been written since: it is still at work (the switch was typed in another Kimi of the folder).
+ * The proof is then `stale`: the history stays where it was, and the pane shows its terminal until
+ * such a lock.
  */
-function historyAfterProof(path: string | undefined, previous: { path: string; size: number } | undefined, since: number | undefined, sinceBefore: number | undefined): { history?: { path: string; size: number }; stale: boolean } {
+function historyAfterProof(path: string | undefined, previous: { path: string; size: number } | undefined, since: number | undefined, sinceBefore: number | undefined, wire: string): { history?: { path: string; size: number }; stale: boolean } {
   if (path === undefined) return { stale: false };
   if (previous?.path === path) {
     const read = readHistory(path, previous.size);
     if (read !== null && !read.switched) return { history: { path, size: read.end }, stale: false };
     let changed = read?.changed;
     try { changed ??= statSync(path).mtimeMs; } catch { /* gone: what it held is unknown */ }
-    if (since === undefined || since === sinceBefore || changed === undefined || since + PROMPT_WRITE_MS < changed) return { history: previous, stale: true };
+    let written = -Infinity;
+    try { written = statSync(wire).mtimeMs; } catch { /* unknown: not written since */ }
+    const postdated = since !== undefined && since !== sinceBefore && changed !== undefined && since + PROMPT_WRITE_MS >= changed;
+    if (!postdated && !(changed !== undefined && written > changed)) return { history: previous, stale: true };
   }
   // a history that cannot be read now is read from nowhere: the binding then holds only while a lock proves it
   return { history: { path, size: historyEnd(path) ?? -1 }, stale: false };
@@ -224,7 +229,7 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
     if (program === null || store === null) proven.delete(paneId);
     else {
       const previous = proven.get(paneId);
-      const { history, stale } = historyAfterProof(historyPath(dirname(dirname(dirname(proof.path))), home), previous?.path === proof.path ? previous.history : undefined, proof.since, previous?.since);
+      const { history, stale } = historyAfterProof(historyPath(dirname(dirname(dirname(proof.path))), home), previous?.path === proof.path ? previous.history : undefined, proof.since, previous?.since, proof.path);
       proven.set(paneId, { path: proof.path, pid: proof.pid, since: proof.since, program, store, history });
       if (stale) return null;
     }
