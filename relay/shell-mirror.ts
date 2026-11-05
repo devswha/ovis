@@ -1,7 +1,7 @@
 /**
  * Keeps a regional copy of the hosted app (`app.ovis.sh`) on a relay box, for the regional app
  * address (`app-ap.ovis.sh`, shared/relay-regions.ts). Each run asks `app.ovis.sh` which commit it
- * serves (its build.json), finds the GitHub release built from that commit, checks the release's
+ * serves (its build.json), finds the GitHub release tagged on that commit, checks the release's
  * dist-shell.tar.gz against the SHA-256 published with it and against that commit, then checks
  * every file it would serve, byte for byte, against the same file fetched from `app.ovis.sh`, and
  * makes it current only if `app.ovis.sh` still serves that commit. A release asset replaced after
@@ -14,7 +14,7 @@
  * `<dir>/current` is the folder the web server serves; the last three releases stay beside it.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export const APP = "https://app.ovis.sh";
@@ -25,6 +25,9 @@ const PAGES_ONLY = new Set(["_headers", "_redirects"]);
 const COMPARE_AT_ONCE = 8;
 /** How long a commit no release was found for is not searched again (GitHub allows 60 unauthenticated calls an hour). */
 const MISS_MS = 60 * 60 * 1000;
+/** A run's lock older than this is from a run that was killed. */
+const LOCK_MS = 60 * 60 * 1000;
+const TAG_PAGES = 10;
 const REVISION = /^[0-9a-f]{40}$/;
 
 interface ReleaseAsset { readonly name: string; readonly browser_download_url: string }
@@ -70,8 +73,30 @@ async function tarUnpack(tarball: string, into: string): Promise<void> {
   await Bun.$`tar -xzf ${tarball} -C ${into} --no-same-owner --no-same-permissions`.quiet();
 }
 
-/** One run: brings `<dir>/current` to the build `app.ovis.sh` serves. */
+/** One run: brings `<dir>/current` to the build `app.ovis.sh` serves. Runs on one folder never overlap. */
 export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> {
+  mkdirSync(options.dir, { recursive: true });
+  const lock = join(options.dir, ".lock");
+  try { mkdirSync(lock); } catch {
+    // a run killed before its finally leaves the lock: past an hour it is taken as gone
+    if (Date.now() - statSync(lock).mtimeMs < LOCK_MS) throw new Error(`another run holds ${lock}`);
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock);
+  }
+  try { return await mirror(options); } finally { rmSync(lock, { recursive: true, force: true }); }
+}
+
+/** The tags on `commit`, from GitHub's tag list, a page at a time until one names it or the list ends. */
+async function tagsOf(fetcher: typeof fetch, commit: string): Promise<string[]> {
+  for (let page = 1; page <= TAG_PAGES; page++) {
+    const tags = await json(fetcher, `https://api.github.com/repos/${REPOSITORY}/tags?per_page=100&page=${page}`) as { name?: unknown; commit?: { sha?: unknown } }[];
+    const named = tags.filter((tag) => tag.commit?.sha === commit && typeof tag.name === "string" && /^[\w.@+-]+$/.test(tag.name)).map((tag) => tag.name as string);
+    if (named.length || tags.length < 100) return named;
+  }
+  return [];
+}
+
+async function mirror(options: MirrorOptions): Promise<MirrorResult> {
   const fetcher = options.fetch ?? fetch;
   const unpack = options.unpack ?? tarUnpack;
   const live = revisionOf(await json(fetcher, `${APP}/build.json`));
@@ -81,23 +106,30 @@ export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> 
     const last = JSON.parse(readFileSync(miss, "utf8")) as { revision?: unknown; at?: unknown };
     if (last.revision === live && typeof last.at === "number" && Date.now() - last.at < MISS_MS) throw new Error(`no release was built from ${live} at the last look`);
   } catch (error) { if (error instanceof Error && error.message.startsWith("no release")) throw error; }
-  const releases = await json(fetcher, `https://api.github.com/repos/${REPOSITORY}/releases?per_page=20`) as Release[];
-  for (const release of releases) {
+  const tags = await tagsOf(fetcher, live);
+  if (!tags.length) {
+    // no tag at all: a commit no release is coming for, so GitHub is spared until the hour is up
+    writeFileSync(miss, JSON.stringify({ revision: live, at: Date.now() }));
+    throw new Error(`no release was built from ${live}, the commit ${APP} serves`);
+  }
+  for (const tag of tags) {
+    const response = await fetcher(`https://api.github.com/repos/${REPOSITORY}/releases/tags/${encodeURIComponent(tag)}`,
+      { headers: { accept: "application/json", "user-agent": "ovis-shell-mirror" }, cache: "no-store" });
+    if (response.status === 404) continue;
+    if (!response.ok) throw new Error(`the release of ${tag} answered ${response.status}`);
+    const release = await response.json() as Release;
     const tarball = release.assets.find((asset) => asset.name === "dist-shell.tar.gz");
     const digest = release.assets.find((asset) => asset.name === "dist-shell.tar.gz.sha256");
-    if (!tarball || !digest || !/^[\w.@+-]+$/.test(release.tag_name)) continue;
-    const commit = await json(fetcher, `https://api.github.com/repos/${REPOSITORY}/commits/${encodeURIComponent(release.tag_name)}`) as { sha?: unknown };
-    if (commit.sha !== live) continue;
+    if (!tarball || !digest) continue;
     const expected = new TextDecoder().decode(await bytes(fetcher, digest.browser_download_url)).trim().split(/\s+/)[0] ?? "";
     const archive = await bytes(fetcher, tarball.browser_download_url);
     if (!/^[0-9a-f]{64}$/.test(expected) || createHash("sha256").update(archive).digest("hex") !== expected) {
-      throw new Error(`${release.tag_name}: dist-shell.tar.gz does not match its published SHA-256`);
+      throw new Error(`${tag}: dist-shell.tar.gz does not match its published SHA-256`);
     }
-    return install(options.dir, release.tag_name, live, archive, unpack, fetcher);
+    return install(options.dir, tag, live, archive, unpack, fetcher);
   }
-  mkdirSync(options.dir, { recursive: true });
-  writeFileSync(miss, JSON.stringify({ revision: live, at: Date.now() }));
-  throw new Error(`no release with a dist-shell.tar.gz was built from ${live}, the commit ${APP} serves`);
+  // tagged, but its shell is not attached yet (the Release run deploys Pages first): looked for again next run
+  throw new Error(`the release of ${live} (${tags.join(", ")}) has no dist-shell.tar.gz yet`);
 }
 
 function files(root: string, at = root): string[] {
@@ -135,15 +167,15 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
     await compareWithApp(staging, fetcher);
     // app.ovis.sh may have moved on while this run fetched: a copy is made current only while it serves the same
     if (revisionOf(await json(fetcher, `${APP}/build.json`)) !== revision) throw new Error(`${APP} changed while ${tag} was being checked`);
-    const target = join(releases, tag);
-    rmSync(target, { recursive: true, force: true });
-    renameSync(staging, target);
+    // a folder of its own, beside the one `current` may serve (the same tag installed again included)
+    const name = `${tag}+${Date.now().toString(36)}`;
+    renameSync(staging, join(releases, name));
     // swapped by a rename, so the web server never sees a missing `current`
     const link = join(dir, ".current-next");
     rmSync(link, { force: true });
-    symlinkSync(join("releases", tag), link);
+    symlinkSync(join("releases", name), link);
     renameSync(link, join(dir, "current"));
-    prune(dir, releases, tag);
+    prune(dir, releases, name);
     return { kind: "updated", tag, revision };
   } finally {
     rmSync(tarball, { force: true });
@@ -151,11 +183,11 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
   }
 }
 
-/** Keeps the newest KEEP releases by when they were installed, and always the current one. */
+/** Keeps the newest KEEP releases by when they were installed (the time in their folder's name), and always the current one. */
 function prune(dir: string, releases: string, current: string): void {
   const kept = readdirSync(releases, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => ({ name: entry.name, at: Bun.file(join(releases, entry.name, "build.json")).lastModified }))
+    .map((entry) => ({ name: entry.name, at: Number.parseInt(entry.name.split("+").at(-1) ?? "", 36) || 0 }))
     .sort((a, b) => b.at - a.at);
   const serving = existsSync(join(dir, "current")) ? readlinkSync(join(dir, "current")) : null;
   for (const [index, entry] of kept.entries()) {
