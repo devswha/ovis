@@ -299,8 +299,10 @@ export class Room<S extends object> {
   end(socket: S, code: number, reason: string): void {
     if (this.ended.has(socket)) return;
     const info = this.host.info(socket);
+    // an instance before an eviction ended it already
+    if (info?.ended) { this.ended.add(socket); return; }
     // marked before the close, while the socket can still keep it
-    if (info && !info.ended) this.host.setInfo(socket, { ...info, ended: true });
+    if (info) this.host.setInfo(socket, { ...info, ended: true });
     this.host.close(socket, code, reason);
     this.finish(socket, info);
   }
@@ -381,7 +383,8 @@ export class Room<S extends object> {
   message(socket: S, frame: Frame): void {
     if (this.ended.has(socket)) return;
     const info = this.host.info(socket);
-    if (!info) return;
+    // a frame the peer sent before an earlier instance closed it
+    if (!info || info.ended) return;
     if (info.proof) {
       // the first frame of a PC socket is its answer, compared in constant time; anything else, or late, is refused
       if (this.host.now() >= info.proof.expires || !verifyServerProof(frame, info.proof.expected)) return this.end(socket, CLOSE.SERVER_PROOF, "invalid or expired server proof");

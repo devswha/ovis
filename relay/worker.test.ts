@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
-import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, type Frame } from "./core.ts";
+import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
 import { RelayRoom, handle, usageKey, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
 
@@ -287,6 +287,14 @@ describe("relay Durable Object", () => {
     expect(points).toHaveLength(reported);
     expect(control.closedWith).toBeNull();
     expect(fake.state.alarm).toBe(start + 3 * IDLE_MS);
+    // a frame it sent before the close arrives late: it is not passed on, and nothing ends twice
+    const passed = pair.data.sent.length;
+    room.webSocketMessage(pair.client, "late");
+    room.webSocketMessage(pair.client, "x".repeat(MAX_MESSAGE_BYTES + 1));
+    expect(pair.data.sent).toHaveLength(passed);
+    expect(pair.client.closes).toBe(1);
+    expect(disconnected()).toBe(1);
+    expect(points).toHaveLength(reported);
     // the runtime finally gives up on it
     room.webSocketClose(pair.client, 1006, "", false);
     expect(disconnected()).toBe(1);
