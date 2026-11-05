@@ -84,7 +84,8 @@ The frame cap, frame/open token buckets, request ceiling, and WS-message ceiling
 remain enforced independently.
 
 Each HTTP inbound queue is at most 320 KiB; each WS inbound payload is at most
-1 MiB. Outgoing payload is at most 4 MiB across streams, with nonterminal streams
+1 MiB, plus the reservations of any large messages (`large-ws-messages`, up to
+3 MiB each) it holds, all within the 12 MiB bound. Outgoing payload is at most 4 MiB across streams, with nonterminal streams
 sharing at most 3 MiB. Metadata is at most 1 MiB and queued control is at most
 64 KiB. Even double-counting inbound reservations and their admitted payload,
 the mux accounting bound per endpoint/channel is:
