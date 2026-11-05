@@ -54,11 +54,13 @@ admit() {
   local tar="$1" key="$2" staging types
   types="$(timeout 60 tar -tvf "$tar" | cut -c1 | sort -u | tr -d '\n')" || return 1
   case "$types" in ''|*[!d-]*) log "refused $key: the build holds something other than files and directories"; return 1 ;; esac
+  # its own file of that name would be taken for the manifest
+  if timeout 60 tar -tf "$tar" | grep -qxE '(\./)?\.manifest'; then log "refused $key: the build holds a .manifest of its own"; return 1; fi
   staging="$(mktemp -d "$ENTRIES/.new-XXXXXX")" || return 1
   if timeout 60 tar -xf "$tar" -C "$staging" --no-same-owner --no-same-permissions &&
     [ -z "$(find "$staging" -mindepth 1 ! -type f ! -type d -print -quit)" ] &&
     (cd "$staging" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$ENTRIES/.manifest-$key" &&
-    mv "$ENTRIES/.manifest-$key" "$staging/.manifest" &&
+    [ ! -e "$staging/.manifest" ] && mv "$ENTRIES/.manifest-$key" "$staging/.manifest" &&
     chmod -R a+rX,go-w "$staging" &&
     mv -T "$staging" "$ENTRIES/$key" 2>/dev/null; then
     return 0
@@ -102,10 +104,19 @@ for name in "$@"; do
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && [ -d "$ENTRIES/$key" ]; then mkdir -p "$USED" && touch "$USED/$key"; fi
     rm -rf "$used" 2>/dev/null || true
   done
+  # One claim per outbox per pass (a job builds one commit): each costs GitHub calls on this user's
+  # token, which also registers the runners, so the rest are deleted unread.
+  judged=0
   for claim in "$outbox"/*.claim; do
     [ -e "$claim" ] || [ -L "$claim" ] || continue
     file="${claim##*/}" key="${file%.claim}" tar="$outbox/${file%.claim}.tar"
     run="" attempt=""
+    if [ "$judged" = 1 ]; then
+      rm -rf "$claim" "$tar" 2>/dev/null || true
+      if [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then mkdir "$outbox/judged-$key" 2>/dev/null || true; fi
+      continue
+    fi
+    judged=1
     work="$(mktemp -d "$TAKEN/XXXXXX")" || continue
     # only plain files, and small claims: a link could make this host user read or keep a file of its own
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$work/build.tar" && take "$claim" "$work/claim" &&

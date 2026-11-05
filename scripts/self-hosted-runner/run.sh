@@ -57,7 +57,9 @@ case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; e
 case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number up to --count" >&2; exit 2 ;; esac
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
 case "$CACHE_WAIT" in ''|*[!0-9]*|?????*) echo "--cache-wait must be a whole number of seconds" >&2; exit 2 ;; esac
-case "$BUILD_CACHE_MB" in ''|*[!0-9]*|0|??????*) echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2 ;; esac
+# 00 is zero too: past the digit check, as a number
+case "$BUILD_CACHE_MB" in ''|*[!0-9]*|??????*) echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2 ;; esac
+if [ "$((10#$BUILD_CACHE_MB))" -eq 0 ]; then echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2; fi
 # a GitHub login: letters, digits and single hyphens
 case "$BUILD_CACHE_WRITER" in *[!A-Za-z0-9-]*|-*|??????????????????????????????????????*) echo "--build-cache-writer must be a GitHub login" >&2; exit 2 ;; esac
 # What this host can take (CHECK_HOST_* in scripts/check.ts), for every runner container: read now,

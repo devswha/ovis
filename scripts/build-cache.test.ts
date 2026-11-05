@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { awaitBuild, cacheKey, deliver, evict, mayWrite, releaseLock, restore, store, takeLock } from "./build-cache.ts";
+import { awaitBuild, cacheKey, deliver, evict, mayWrite, refreshLock, releaseLock, restore, store, takeLock } from "./build-cache.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -116,6 +116,15 @@ describe("cacheKey", () => {
     expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
   });
 
+  it("never uses the cache while the commit tracks a link where the build reads", () => {
+    const root = checkout();
+    mkdirSync(join(root, "src"));
+    symlinkSync("/etc/hostname", join(root, "src/link"));
+    git(root, "add", "src/link");
+    git(root, "commit", "-q", "-m", "link");
+    expect(cacheKey(root, {}, [])).toEqual({ bypass: "a tracked link where the build reads" });
+  });
+
   it("does not use the cache outside a git checkout", () => {
     expect(cacheKey(temp("ovis-build-cache-nogit-"), {}, [])).toEqual({ bypass: "no git commit" });
   });
@@ -208,6 +217,14 @@ describe("store and restore", () => {
     expect(listed).toEqual(["./", "./assets/", "./assets/a.js", "./index.html"]);
   });
 
+  it("stores no build that holds a file named like the manifest", () => {
+    const root = temp("ovis-build-cache-own-manifest-");
+    const cache = join(root, "cache");
+    store(cache, "k", dist(root, { "index.html": "<p>", ".manifest": "the app's own" }), 1 << 30);
+    expect(existsSync(join(cache, "k"))).toBe(false);
+    expect(restore(cache, "k", join(root, "dist"))).toBe(false);
+  });
+
   it("keeps the first entry written for a key", () => {
     const root = temp("ovis-build-cache-first-");
     const cache = join(root, "cache");
@@ -256,12 +273,12 @@ describe("mayWrite", () => {
 describe("one build per key", () => {
   it("releases a lock without failing, even one another job put something unremovable in", () => {
     const dir = temp("ovis-build-cache-release-");
-    takeLock(dir, "k");
+    const token = takeLock(dir, "k")!;
     mkdirSync(join(dir, ".lock-k", "sub"));
     writeFileSync(join(dir, ".lock-k", "sub", "f"), "");
     chmodSync(join(dir, ".lock-k", "sub"), 0o000);
     try {
-      expect(() => releaseLock(dir, "k")).not.toThrow();
+      expect(() => releaseLock(dir, "k", token)).not.toThrow();
     } finally {
       chmodSync(join(dir, ".lock-k", "sub"), 0o755);
     }
@@ -275,7 +292,27 @@ describe("one build per key", () => {
     const started = Date.now();
     await awaitBuild(dir, "k", 30_000, { lock: join(dir, ".lock-k"), staleMs: 30_000 });
     expect(Date.now() - started).toBeLessThan(10_000);
-    expect(takeLock(dir, "k", 30_000)).toBe(true);
+    expect(takeLock(dir, "k", 30_000)).toBeTruthy();
+  });
+
+  it("releases or refreshes only the lock it holds, never one another job took over", () => {
+    const dir = temp("ovis-build-cache-owner-");
+    const first = takeLock(dir, "k");
+    expect(first).toBeTruthy();
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(join(dir, ".lock-k"), old, old);
+    const second = takeLock(dir, "k", 30_000);
+    expect(second).toBeTruthy();
+    expect(second).not.toBe(first);
+    releaseLock(dir, "k", first as string);
+    expect(existsSync(join(dir, ".lock-k"))).toBe(true);
+    utimesSync(join(dir, ".lock-k"), old, old);
+    refreshLock(dir, "k", first as string);
+    expect(statSync(join(dir, ".lock-k")).mtimeMs).toBeLessThan(Date.now() - 30_000);
+    refreshLock(dir, "k", second as string);
+    expect(statSync(join(dir, ".lock-k")).mtimeMs).toBeGreaterThan(Date.now() - 30_000);
+    releaseLock(dir, "k", second as string);
+    expect(existsSync(join(dir, ".lock-k"))).toBe(false);
   });
 
   it("tells a lock it could not make from one another job holds", () => {
@@ -286,14 +323,15 @@ describe("one build per key", () => {
 
   it("lets one job take a key's build, and another once it is released or left stale", () => {
     const cache = temp("ovis-build-cache-lock-");
-    expect(takeLock(cache, "k")).toBe(true);
-    expect(takeLock(cache, "k")).toBe(false);
-    expect(takeLock(cache, "other")).toBe(true);
-    releaseLock(cache, "k");
-    expect(takeLock(cache, "k")).toBe(true);
+    const token = takeLock(cache, "k");
+    expect(token).toBeTruthy();
+    expect(takeLock(cache, "k")).toBeNull();
+    expect(takeLock(cache, "other")).toBeTruthy();
+    releaseLock(cache, "k", token!);
+    expect(takeLock(cache, "k")).toBeTruthy();
     const old = new Date(Date.now() - 60_000);
     utimesSync(join(cache, ".lock-k"), old, old);
-    expect(takeLock(cache, "k", 30_000)).toBe(true);
+    expect(takeLock(cache, "k", 30_000)).toBeTruthy();
   });
 
   it("waits for the job building a key until its entry is stored", async () => {
@@ -310,9 +348,9 @@ describe("one build per key", () => {
 
   it("stops waiting once the building job gives up, or at its deadline", async () => {
     const cache = temp("ovis-build-cache-giveup-");
-    takeLock(cache, "k");
+    const token = takeLock(cache, "k")!;
     const waited = awaitBuild(cache, "k", 30_000, { lock: join(cache, ".lock-k") });
-    releaseLock(cache, "k");
+    releaseLock(cache, "k", token);
     await waited;
     takeLock(cache, "k");
     const started = Date.now();
@@ -343,7 +381,8 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
   const buildEnv = (cache: string | null, extra: Record<string, string> = {}): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...process.env };
     // the run's own GitHub Actions variables would turn the cache off outside a pull request run
-    for (const name of ["OVIS_BUILD_CACHE_DIR", "GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    // and a runner's own cache (its outbox, locks and writer) would take the fixture's builds
+    for (const name of Object.keys(env)) if (name.startsWith("OVIS_BUILD_CACHE_") || name === "GITHUB_ACTIONS" || name === "GITHUB_EVENT_NAME") delete env[name];
     Object.assign(env, extra);
     if (cache) env["OVIS_BUILD_CACHE_DIR"] = cache;
     return env;
@@ -389,8 +428,7 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
   it("builds a commit once when its jobs start together", async () => {
     const { root, runs } = project();
     const cache = join(temp("ovis-build-cache-dir-"), "cache");
-    const env: Record<string, string | undefined> = { ...process.env, OVIS_BUILD_CACHE_DIR: cache };
-    for (const name of ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    const env = buildEnv(cache);
     const jobs = [0, 1, 2, 3].map(() => {
       const copy = temp("ovis-build-cache-job-");
       git(copy, "clone", "-q", root, ".");
@@ -462,8 +500,7 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const base = temp("ovis-build-cache-refused-");
     const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
     for (const dir of [cache, outbox, locks]) mkdirSync(dir);
-    const env: Record<string, string | undefined> = { ...process.env, OVIS_BUILD_CACHE_DIR: cache, OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "120", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" };
-    for (const name of ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    const env = buildEnv(cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "120", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" });
     const job = Bun.spawn([process.execPath, script], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     const claimed = (): string | undefined => readdirSync(outbox).find((name) => name.endsWith(".claim"));
     const deadline = Date.now() + 30_000;

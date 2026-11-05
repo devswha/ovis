@@ -45,7 +45,12 @@ export function cacheKey(root: string, env: Record<string, string | undefined>, 
   if (status === null) return { bypass: "git status failed" };
   if (status !== "") return { bypass: "the checkout has uncommitted changes" };
   // files git ignores where Vite reads (public/ is copied whole): not the commit's either
-  const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "index.html", "vite.config.ts", "public", "scripts", "src", "shared"]);
+  const read = ["index.html", "vite.config.ts", "public", "scripts", "src", "shared"];
+  // a link git tracks is unchanged to git when what it points at changes, and Vite follows it
+  const staged = git(root, ["ls-files", "-s", "--", ...read]);
+  if (staged === null) return { bypass: "git ls-files failed" };
+  if (staged.split("\n").some((line) => line.startsWith("120000 "))) return { bypass: "a tracked link where the build reads" };
+  const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", ...read]);
   if (ignored === null) return { bypass: "git ls-files failed" };
   // the type declarations typecheck emits (shared/vendor/paseo-e2ee/dist) are never bundled
   if (ignored.split("\n").some((path) => path !== "" && !/^shared\/vendor\/[^/]+\/dist\/.+(?:\.d\.ts(?:\.map)?|\.tsbuildinfo)$/.test(path))) return { bypass: "ignored files where the build reads" };
@@ -137,6 +142,8 @@ const treeBytes = (dir: string): number => readdirSync(dir).reduce((total, name)
 export function store(cacheDir: string, key: string, dist: string, maxBytes: number): void {
   mkdirSync(cacheDir, { recursive: true });
   const entry = join(cacheDir, key);
+  // its own file of that name would be taken for the manifest: such a build is not cached
+  if (existsSync(join(dist, MANIFEST))) return;
   if (!existsSync(entry)) {
     const staging = mkdtempSync(join(cacheDir, `.new-${process.pid}-`));
     try {
@@ -192,30 +199,48 @@ export function evict(cacheDir: string, maxBytes: number): void {
  * Takes the build of `key` for this job (a directory made atomically), so the jobs of one commit that
  * start together do not all build it. A lock older than `staleMs` was left by a job that died: taken over.
  */
-/** Longer than a build under load takes, shorter than a waiter's default wait (300 s). */
+/** Longer than a build under load takes, shorter than a waiter's default wait (300 s); the holder refreshes it. */
 export const STALE_LOCK_MS = 240_000;
+const OWNER = "owner";
 
-export function takeLock(lockDir: string, key: string, staleMs = STALE_LOCK_MS): boolean {
+/**
+ * Takes the build of `key` for this job (a directory made atomically, holding a token of its own), so
+ * the jobs of one commit that start together do not all build it. A lock not refreshed for `staleMs`
+ * was left by a job that died: taken over. Returns the token, or null when another job holds it.
+ */
+export function takeLock(lockDir: string, key: string, staleMs = STALE_LOCK_MS): string | null {
   const lock = join(lockDir, `.lock-${key}`);
+  const token = `${process.pid}-${crypto.randomUUID()}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lock);
-      return true;
+      writeFileSync(join(lock, OWNER), token);
+      return token;
     } catch (error) {
       // a full or broken lock directory is no lock another job holds: build without waiting
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        if (Date.now() - statSync(lock).mtimeMs <= staleMs) return false;
+        if (Date.now() - statSync(lock).mtimeMs <= staleMs) return null;
         rmSync(lock, { recursive: true, force: true });
       } catch { /* released meanwhile: try again */ }
     }
   }
-  return false;
+  return null;
 }
 
-/** Never fails: another job can put something it cannot remove in the lock, which must not fail this build. */
-export function releaseLock(lockDir: string, key: string): void {
-  try { rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true }); } catch (error) {
+const holds = (lockDir: string, key: string, token: string): boolean => {
+  try { return readFileSync(join(lockDir, `.lock-${key}`, OWNER), "utf8") === token; } catch { return false; }
+};
+
+/** Keeps the lock this job holds from going stale while it builds and hands the build over. */
+export function refreshLock(lockDir: string, key: string, token: string): void {
+  const now = new Date();
+  try { if (holds(lockDir, key, token)) utimesSync(join(lockDir, `.lock-${key}`), now, now); } catch { /* gone: nothing to refresh */ }
+}
+
+/** Removes the lock if this job still holds it, never one another job took over. Never fails the build. */
+export function releaseLock(lockDir: string, key: string, token: string): void {
+  try { if (holds(lockDir, key, token)) rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true }); } catch (error) {
     console.log(`build cache: could not release the lock of ${key.slice(0, 12)} (${(error as Error).message})`);
   }
 }
@@ -255,6 +280,11 @@ function viteBuild(args: readonly string[]): number {
   return result.status ?? 1;
 }
 
+/** `vite build` without blocking this process, so the lock's heartbeat keeps running meanwhile. */
+async function viteBuildAsync(args: readonly string[]): Promise<number> {
+  return Bun.spawn([process.execPath, "--bun", "vite", "build", ...args], { stdio: ["inherit", "inherit", "inherit"] }).exited;
+}
+
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const cacheDir = process.env["OVIS_BUILD_CACHE_DIR"];
@@ -290,7 +320,7 @@ if (import.meta.main) {
     console.log(`build cache: miss ${name}; building (this run does not write the cache)`);
     process.exit(viteBuild(args));
   }
-  let owner = false;
+  let owner: string | null = null;
   try {
     mkdirSync(lockDir, { recursive: true });
     owner = takeLock(lockDir, key.key);
@@ -305,7 +335,8 @@ if (import.meta.main) {
     console.log(`build cache: could not lock ${name} (${(error as Error).message})`);
   }
   console.log(`build cache: miss ${name}; building`);
-  const code = viteBuild(args);
+  const heartbeat = owner ? setInterval(() => refreshLock(lockDir, key.key, owner!), 30_000) : undefined;
+  const code = await viteBuildAsync(args);
   // the checkout changed while Vite read it: this dist/ may not be the key's
   const after = code === 0 ? keyNow() : key;
   if (code === 0 && (!("key" in after) || after.key !== key.key)) console.log("build cache: the checkout changed during the build; not stored");
@@ -324,6 +355,7 @@ if (import.meta.main) {
   } else if (code === 0) {
     try { store(cacheDir, key.key, dist, maxBytes); } catch (error) { console.log(`build cache: could not store (${(error as Error).message})`); }
   }
-  if (owner) releaseLock(lockDir, key.key);
+  clearInterval(heartbeat);
+  if (owner) releaseLock(lockDir, key.key, owner);
   process.exit(code);
 }

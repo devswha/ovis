@@ -366,7 +366,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
-      expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
+      for (const mb of ["0", "00", "0000"]) expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", mb] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -791,7 +791,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n") {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -804,8 +804,15 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       writeFileSync(join(dist, "index.html"), "<p>");
       writeFileSync(join(dist, "assets/a.js"), "a");
       if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
+      if (ownManifest) writeFileSync(join(dist, ".manifest"), "the app's own");
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
       writeFileSync(join(outbox, `${key}.claim`), claim);
+      // more claims in the same outbox: a job flooding the launcher's GitHub quota
+      for (let i = 0; i < extraClaims; i++) {
+        const other = String(i).padStart(64, "e");
+        spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
+        writeFileSync(join(outbox, `${other}.claim`), "7 1\n");
+      }
       // an earlier slot whose job left a directory named like a claim
       if (junkSlot === "claim") mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
       // or a "tar" that is a directory this user cannot delete, as one of the runners' user is
@@ -830,6 +837,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       };
       for (const [name, value] of Object.entries(answers)) writeFileSync(join(dir, `${name}.json`), JSON.stringify(value));
       writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$2" >> "\${0%/bin/gh}/gh.log"
 case "$2" in
   repos/owner/repo/actions/runs/7/attempts/1/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
@@ -848,6 +856,7 @@ esac
         entries: readdirSync(join(root, "entries")),
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
+        ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
       };
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", dir]);
@@ -881,6 +890,18 @@ esac
     const run = promote({}, "files", "devswha", false, true);
     expect(run.used).toEqual(["c".repeat(64)]);
     expect(run.outbox).toEqual([`judged-${key}`]);
+  });
+
+  it("judges one claim per outbox per pass, and deletes the rest unread", () => {
+    const run = promote({}, "files", "devswha", false, false, "7 1\n", 5);
+    expect(run.entries).toHaveLength(1);
+    expect(run.ghCalls.filter((call) => call.includes("/jobs"))).toHaveLength(1);
+    expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
+    expect(run.outbox).toHaveLength(6);
+  });
+
+  it("refuses a build holding a file named like the manifest", () => {
+    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).entries).toEqual([]);
   });
 
   it("takes in the build of a push to the default branch", () => {
