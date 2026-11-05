@@ -78,6 +78,14 @@ describe("cacheKey", () => {
     expect("key" in cacheKey(root, {}, [])).toBe(true);
   });
 
+  it("is used in GitHub Actions only by pull request runs", () => {
+    const root = checkout();
+    expect("key" in cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request" }, [])).toBe(true);
+    for (const event of ["push", "workflow_dispatch", "pull_request_target", undefined]) {
+      expect(cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: event }, [])).toEqual({ bypass: "only pull request runs use it" });
+    }
+  });
+
   it("does not use the cache outside a git checkout", () => {
     expect(cacheKey(temp("ovis-build-cache-nogit-"), {}, [])).toEqual({ bypass: "no git commit" });
   });

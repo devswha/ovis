@@ -33,6 +33,9 @@ const git = (root: string, args: string[]): string | null => {
 const buildVariable = (name: string): boolean => name.startsWith("VITE_") || name === "NODE_ENV" || name === "HERDR_TEST_HOOKS";
 
 export function cacheKey(root: string, env: Record<string, string | undefined>, args: readonly string[]): Key {
+  // Jobs share the cache read-write, so one of them could plant an entry for another commit's key.
+  // Only pull request runs read it: main's pushes and release.yml's validation always build.
+  if (env["GITHUB_ACTIONS"] === "true" && env["GITHUB_EVENT_NAME"] !== "pull_request") return { bypass: "only pull request runs use it" };
   const head = git(root, ["rev-parse", "--verify", "HEAD^{commit}"])?.trim();
   if (!head) return { bypass: "no git commit" };
   const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]);
