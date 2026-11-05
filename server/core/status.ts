@@ -2,6 +2,7 @@
  * Pane status as clients and web push see it: the completion tracker, OmO's, GJC's and Claude's
  * own status, background waits, plans, the machine roster and the one collector that feeds them.
  */
+import { createAlertWebhook } from "../alert-webhook.ts";
 import { join } from "node:path";
 import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
@@ -84,13 +85,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   usage: UsageService;
   usageLogin: UsageLoginService;
 }) {
+  const canDeliver = (id: string | null | undefined): boolean => id === null || (id === undefined ? !devices.gated : devices.has(id));
+  const alertWebhook = createAlertWebhook({ stateDir: options.stateDir ?? defaultStateDir(), canDeliver });
   const push = createPushService({
     stateDir: options.stateDir ?? defaultStateDir(),
+    webhook: alertWebhook,
     serverId: options.serverId,
     timing: options.alertTiming,
     now: options.statusNow,
     loopbackHttp: options.pushLoopbackHttp === true,
-    canDeliver: (id) => id === null || (id === undefined ? !devices.gated : devices.has(id)),
+    canDeliver,
     // a device paired to watch gets the alert, never its answer buttons
     canAnswer: (id) => id === null || (id === undefined ? !devices.gated : devices.canDrive(id)),
     lookupPrompt: (paneId, signal) => currentPrompt(paneId, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: options.openCodeState, signal }),
@@ -640,5 +644,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
+  return { push, alertWebhook, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
 }
