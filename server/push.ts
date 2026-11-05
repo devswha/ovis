@@ -705,6 +705,11 @@ export function createPushService(options: PushServiceOptions): PushService {
   }
 
   const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId) === true;
+  /** whether the subscription, as it is now, wants this kind of alert from this PC: asked again as an alert goes out */
+  const wants = (subscription: PushSubscriptionRecord, kind: AlertKind, machineId: string): boolean => {
+    const prefs = subscription.alerts ?? DEFAULT_ALERTS;
+    return alertKindAllowed(prefs, kind) && alertPcAllowed(prefs, pcName(machineId));
+  };
 
   /** How long a device waits before this alert reaches it, or null: it does not want it. */
   function delayFor(prefs: AlertPrefs, status: AgentStatus, worked: number | null): number | null {
@@ -905,7 +910,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         // a device that dropped out meanwhile is not written to, nor one that does not want this kind
         const live = to.flatMap((subscription) => {
           const current = store().get(subscription.endpoint);
-          return current && current.device_id === subscription.device_id && alertKindAllowed(current.alerts ?? DEFAULT_ALERTS, kind) ? [current] : [];
+          return current && current.device_id === subscription.device_id && wants(current, kind, machineId) ? [current] : [];
         });
         if (live.length === 0) return;
         await broadcast({ ...statusMessage(paneId, title, status, kind), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, status === "blocked" ? "high" : "normal", live, true);
@@ -914,7 +919,9 @@ export function createPushService(options: PushServiceOptions): PushService {
 
     async onFailed(paneId, machineId = "local") {
       const key = paneStorageId(machineId, paneId);
-      if (muted(machineId, paneId)) return;
+      // only a pane at rest stopped: one the alerts take for working (its background work still runs) did not
+      const at = lastStatus.get(key);
+      if (at === "working" || at === "blocked" || muted(machineId, paneId)) return;
       const to = [...store().values()].filter((subscription) => {
         const prefs = subscription.alerts ?? DEFAULT_ALERTS;
         return alertKindAllowed(prefs, "error") && alertPcAllowed(prefs, pcName(machineId));
@@ -927,7 +934,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (options.inUse?.() || silenced() || muted(machineId, paneId)) return;
         const live = group.flatMap((subscription) => {
           const current = store().get(subscription.endpoint);
-          return current && current.device_id === subscription.device_id && alertKindAllowed(current.alerts ?? DEFAULT_ALERTS, "error") ? [current] : [];
+          return current && current.device_id === subscription.device_id && wants(current, "error", machineId) ? [current] : [];
         });
         if (live.length === 0) return;
         await broadcast({ ...failedMessage(paneId, title), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, "normal", live, true);

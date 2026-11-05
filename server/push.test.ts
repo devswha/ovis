@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import webpush from "web-push";
 
@@ -646,6 +646,20 @@ describe("alert timing and each device's choice", () => {
     await on.push.onFailed("w1:p1");
     await on.push.onStatus("w1:p1", "working");
     await on.push.settled();
+    expect(fake.received).toHaveLength(0);
+    // taken for working (its background work still runs): it did not stop, and no later change would call the alert off
+    await on.push.onFailed("w1:p1");
+    await on.push.settled();
+    expect(fake.received).toHaveLength(0);
+  });
+
+  it("asks a waiting alert's device again for the PC as the alert goes out", async () => {
+    const { push } = timed({ input: true, done: "off" });
+    await push.onStatus("w1:p1", "working");
+    await push.onStatus("w1:p1", "blocked");
+    // the device turned this PC off while the question waited
+    push.subscribe(fake.subscription, { input: true, done: "off", pcs_off: [hostname()] });
+    await push.settled();
     expect(fake.received).toHaveLength(0);
   });
 
