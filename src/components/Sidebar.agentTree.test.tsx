@@ -67,15 +67,15 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     fetchSpy?.mockRestore();
     setSidebarPins(pinsBefore);
     for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
     }
   });
 
-  async function draw({ online = true, selectedPaneId = "web:pi", filter = inactiveSidebarFilter() } = {}): Promise<void> {
+  async function draw({ online = true, selectedPaneId = "web:pi", filter = inactiveSidebarFilter(), shown = snapshot } = {}): Promise<void> {
     await act(async () => {
-    renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
-        createElement(Sidebar, { snapshot, online, selectedPaneId, actions }))));
+      renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
+        createElement(Sidebar, { snapshot: shown, online, selectedPaneId, actions }))));
     });
   }
   /** each workspace drawn and the agents listed under it, as [workspace, ...agent panes] */
@@ -105,6 +105,20 @@ describe("Settings > Appearance > Agents under workspaces (#773)", () => {
     expect(agentButton("web:pi").findAll((node) => node.props.className === "workspace-agent-place")).toEqual([]);
     await act(async () => agentButton("api:codex").props.onClick());
     expect(selected).toEqual(["api:codex"]);
+  });
+
+  it("says an agent's live name, so two agents of one title and tab tell apart", async () => {
+    stored.set("ovis:sidebar-agent-tree", "true");
+    const agent = (paneId: string, name: string) => ({ pane_id: paneId, agent: "claude", display_agent: "Claude Code", name, agent_status: "idle" as const, focused: false, revision: 1, workspace_id: "web", tab_id: "web:t1", terminal_id: `${paneId}:term` });
+    const twins: SessionSnapshot = {
+      ...snapshot,
+      panes: [...snapshot.panes, pane("web:other", "web", "t1", { agent: "pi", title: "styles" })],
+      agents: [agent("web:pi", "Maru"), agent("web:other", "Dori")],
+    };
+    await draw({ shown: twins });
+    expect(agentButton("web:pi").findAll((node) => node.props.className === "workspace-agent-place").map(text)).toEqual(["Maru"]);
+    expect(agentButton("web:other").findAll((node) => node.props.className === "workspace-agent-place").map(text)).toEqual(["Dori"]);
+    expect(agentButton("web:pi").props.title).toContain("Maru");
   });
 
   it("gives the selection's fill to the selected agent's row, not its workspace's", async () => {

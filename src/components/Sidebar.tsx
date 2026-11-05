@@ -738,14 +738,16 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const selected = pane.pane_id === selectedPaneId;
     const title = pane.label?.trim() || agent?.title?.trim() || pane.title?.trim() || displayPaneTitle(pane);
     const tabName = agentTabName(entry.tab, snapshot?.tabs.filter((tab) => tab.workspace_id === pane.workspace_id) ?? [], t);
-    const place = tabName !== null && tabName !== title ? tabName : null;
+    // the live name other tools address the agent by, as the Agents row says it: two agents of one title tell apart by it
+    const name = agent?.name?.trim() || null;
+    const place = [...new Set([name, tabName])].filter((part): part is string => part !== null && part !== title).join(" · ") || null;
     const kind = entry.agentLabel ?? entry.canonicalAgent;
     const mark = paneMark(entry);
     // under the filter a row it did not match is there for the selection, drawn as context as in the Agents list
     const context = filtered !== null && !filtered.matchedPanes.has(pane.pane_id);
     return <li key={pane.pane_id} className={`workspace-agent${selected ? " is-selected" : ""}${context ? " is-filter-context" : ""}`} data-agent-pane={pane.pane_id}>
       <button type="button" className="workspace-agent-select" disabled={!online} aria-current={selected ? "true" : undefined}
-        title={[...new Set([title, kind, place, pane.cwd].filter(Boolean))].join(" — ")}
+        title={[...new Set([title, kind, name, tabName, pane.cwd].filter(Boolean))].join(" — ")}
         draggable={online && !coarsePointer}
         // dropped on the pane area, the row opens its pane in half of it (lib/split.ts)
         onDragStart={(event) => {
