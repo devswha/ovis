@@ -198,6 +198,20 @@ describe("file threads", () => {
     await Promise.all([...running, ...waiting]);
   });
 
+  it("counts a Markdown listing as a scan, so listings never take the threads file tasks keep", async () => {
+    setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
+    const hold = gate();
+    const listing = (): FileTask => ({ op: "documents", cwd: root, paths: null });
+    const running = [fileTask(held(listing(), hold.buffer)), fileTask(held(listing(), hold.buffer))];
+    // two listings hold both scan threads: a third waits, as a commands scan would
+    const waiting = [fileTask(listing()), fileTask(scan())];
+    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 2 });
+    await fileTask({ op: "info", path: file });
+    expect(filePoolSize()).toEqual({ threads: 3, idle: 1, waiting: 2 });
+    hold.release();
+    await Promise.all([...running, ...waiting]);
+  });
+
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {
     setUp({ workers: 2, waiting: 0, deadlineMs: 150, longDeadlineMs: 150, scanDeadlineMs: 30_000 });
     const hold = gate();

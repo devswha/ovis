@@ -211,7 +211,7 @@ export const FILES_ZH: Record<string, string> = {
   "Markdown files": "Markdown 文件",
   "No Markdown files in this folder": "此文件夹中没有 Markdown 文件",
   "No matching documents": "没有匹配的文档",
-  "Only the newest {count} are listed.": "仅列出最新的 {count} 个。",
+  "Some Markdown files here are not listed.": "此文件夹中的部分 Markdown 文件未列出。",
   "This PC's bridge cannot list documents yet.": "此电脑的桥接还不能列出文档。",
   "Documents could not be loaded.": "无法加载文档列表。",
 };

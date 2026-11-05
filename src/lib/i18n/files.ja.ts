@@ -211,7 +211,7 @@ export const FILES_JA: Record<string, string> = {
   "Markdown files": "Markdown ファイル",
   "No Markdown files in this folder": "このフォルダに Markdown ファイルはありません",
   "No matching documents": "一致するドキュメントはありません",
-  "Only the newest {count} are listed.": "新しい {count} 件だけを表示しています。",
+  "Some Markdown files here are not listed.": "このフォルダの Markdown ファイルの一部は一覧に含まれていません。",
   "This PC's bridge cannot list documents yet.": "この PC のブリッジはまだドキュメント一覧に対応していません。",
   "Documents could not be loaded.": "ドキュメント一覧を読み込めませんでした。",
 };

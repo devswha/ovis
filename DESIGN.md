@@ -2053,15 +2053,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Documents list (`.md-docs`)
 - Settings > Chat > **Documents in Files** (a device setting, off by default) adds a fourth face to
   Files, **Documents**: the Markdown files (`.md`, `.markdown`) under the pane's folder, newest
-  first (GET /api/pane/docs, the listing @-mentions search). It is the folder browser's card and
+  first (GET /api/pane/docs: git's files that are not ignored, or a Markdown-only walk outside a
+  repository). It is the folder browser's card and
   rows (`.dir-browser`): the folder in mono cut from its start and a Refresh button on the bar, a
   **Filter documents** field (Escape clears it before it closes Files), then one row per file: its
   glyph, its name, the folder it is in (`.md-docs-folder`, dim mono, cut from its start, the first
   thing to give way) and when it changed (`.md-docs-time`, `lastSeen`'s words, the full time as
   its tooltip). A row opens the file viewer, which renders it with its outline. Nothing polls:
   Refresh reads it again. Empty, filtered-out, cut and refused lists say so in the list's own
-  words (`No Markdown files in this folder`, `No matching documents`, `Only the newest {count}
-  are listed.`, a bridge too old for the route).
+  words (`No Markdown files in this folder`, `No matching documents`, `Some Markdown files here
+  are not listed.`, a bridge too old for the route).
 - Four tabs do not fit beside the title and Close on a phone (480px or less) or a panel of 480px
   or less: there the tabs take the row under them, each a share of it, with tighter padding, and
   Close keeps the row's end where the narrow panel drops the title. Three tabs keep one row.

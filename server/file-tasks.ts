@@ -1,5 +1,5 @@
-import { constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { sep } from "node:path";
 
 import type { MarkdownDocument } from "../shared/files.ts";
 import type { FileInfo, OmoTask, SlashCommand } from "../shared/protocol.ts";
@@ -9,7 +9,7 @@ import { wholeClaudeSubagents } from "./claude-subagents.ts";
 import { paneCommands } from "./commands.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
-import { walkFiles } from "./files.ts";
+import { readMarkdownDocuments, walkFiles } from "./files.ts";
 import { readEditableText, TextEditRefused } from "./file-edit.ts";
 import type { EditableText } from "../shared/files.ts";
 
@@ -30,8 +30,8 @@ export type FileTask =
   /** a file the scratch fallback found, described from what was opened in `folder` (`describeWithin`); `opened` as for `open` */
   | { op: "describe"; path: string; folder: string; opened?: Int32Array<SharedArrayBuffer> }
   | { op: "walk"; cwd: string }
-  /** each of `paths` (relative to `cwd`) that is a file, with its size and last change (GET /api/pane/docs) */
-  | { op: "documents"; cwd: string; paths: string[] }
+  /** the Markdown files of `paths` (relative to `cwd`), or of a Markdown walk of `cwd` when null, with their sizes and times (GET /api/pane/docs); `budgetMs`: how long it reads (tests) */
+  | { op: "documents"; cwd: string; paths: string[] | null; budgetMs?: number }
   /** an Agy ledger's catalog (`agyCatalogOffThread`): its active step indices */
   | { op: "agy-catalog"; path: string }
   /** A Claude agent session's background-task list, read whole with the thread's own parser caches (`wholeClaudeSubagents`). */
@@ -83,7 +83,7 @@ export interface OpenedFile { size: number; range: [number, number] | "unsatisfi
 export const FAST_DISK_MS = 50;
 const PROBE_BYTES = 64 * 1024;
 
-export type FileTaskResult = FileInfo | FileInfo[] | MarkdownDocument[] | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
+export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
 
 export function runFileTask(task: FileTask): FileTaskResult {
   switch (task.op) {
@@ -92,7 +92,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "within": return within(task.paths, task.folder);
     case "describe": return describeWithin(task.path, task.folder, task.opened);
     case "walk": return walkFiles(task.cwd);
-    case "documents": return documents(task.cwd, task.paths);
+    case "documents": return readMarkdownDocuments(task.cwd, task.paths, task.budgetMs);
     case "agy-catalog": return [...agyCatalog(task.path)];
     case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
@@ -115,17 +115,6 @@ function within(paths: string[], folder: string): boolean {
     const root = realpathSync(folder) + sep;
     return paths.every((path) => realpathSync(path).startsWith(root));
   } catch { return false; }
-}
-
-function documents(cwd: string, paths: string[]): MarkdownDocument[] {
-  const found: MarkdownDocument[] = [];
-  for (const path of paths) {
-    try {
-      const stat = statSync(join(cwd, path));
-      if (stat.isFile()) found.push({ path, size: stat.size, modified: stat.mtime.toISOString() });
-    } catch { /* gone since it was listed, or unreadable: not listed */ }
-  }
-  return found;
 }
 
 function render(path: string, media: PageMedia | null, within: string | null): RenderedPage {

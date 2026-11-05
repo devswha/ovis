@@ -46,8 +46,8 @@ interface PoolOptions {
   longDeadlineMs: number;
   scanDeadlineMs: number;
   /**
-   * At most this many threads run a scan at once, a commands scan or a Claude task list's
-   * (`claude-tasks`) alike: a scan can hold its thread for many seconds, and the file routes keep
+   * At most this many threads run a scan at once, a commands scan, a Claude task list's
+   * (`claude-tasks`) or a Markdown listing's (`documents`) alike: a scan can hold its thread for many seconds, and the file routes keep
    * the others. A scan past that waits, and the tasks behind it still take a free thread.
    */
   scans: number;
@@ -184,12 +184,12 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
  * and counts, until it returns); any other task always.
  */
 function mayRun(task: FileTask): boolean {
-  if (task.op !== "commands" && task.op !== "claude-tasks") return true;
+  if (task.op !== "commands" && task.op !== "claude-tasks" && task.op !== "documents") return true;
   let scanning = 0;
   let taskScanning = 0;
   for (const thread of threads) {
     const op = thread.pending?.task.op;
-    if (op === "commands" || op === "claude-tasks") scanning += 1;
+    if (op === "commands" || op === "claude-tasks" || op === "documents") scanning += 1;
     if (op === "claude-tasks") taskScanning += 1;
   }
   return scanning < options.scans && (task.op !== "claude-tasks" || taskScanning < options.taskScans);

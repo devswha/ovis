@@ -211,7 +211,7 @@ export const FILES_KO: Record<string, string> = {
   "Markdown files": "마크다운 파일",
   "No Markdown files in this folder": "이 폴더에는 마크다운 파일이 없습니다",
   "No matching documents": "맞는 문서가 없습니다",
-  "Only the newest {count} are listed.": "최근 {count}개만 보여 줍니다.",
+  "Some Markdown files here are not listed.": "이 폴더의 마크다운 파일 중 일부는 목록에 없습니다.",
   "This PC's bridge cannot list documents yet.": "이 PC의 브리지는 아직 문서 목록을 보여 줄 수 없습니다.",
   "Documents could not be loaded.": "문서 목록을 불러오지 못했습니다.",
 };

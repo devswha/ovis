@@ -105,9 +105,9 @@ export function MarkdownDocuments({ paneId, onOpenFile }: MarkdownDocumentsProps
               </li>
             );
           })}
-          {listing !== null && listing.documents.length === 0 && <li className="dir-browser-note">{t("No Markdown files in this folder")}</li>}
+          {listing !== null && listing.documents.length === 0 && !listing.truncated && <li className="dir-browser-note">{t("No Markdown files in this folder")}</li>}
           {listing !== null && listing.documents.length > 0 && documents.length === 0 && <li className="dir-browser-note" role="status">{t("No matching documents")}</li>}
-          {listing?.truncated && <li className="dir-browser-note">{t("Only the newest {count} are listed.", { count: listing.documents.length.toLocaleString(currentLocale()) })}</li>}
+          {listing?.truncated && <li className="dir-browser-note">{t("Some Markdown files here are not listed.")}</li>}
         </ul>
       )}
     </div>

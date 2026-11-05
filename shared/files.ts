@@ -27,11 +27,12 @@ export interface MarkdownDocument {
 
 /**
  * GET /api/pane/docs?pane_id=: the Markdown files (`.md`, `.markdown`) under the pane's folder,
- * newest first, found as GET /api/pane/files finds paths (git's tracked and untracked files that
- * are not ignored, or the bounded walk outside a repository). Read only: each opens through
- * /api/fs/file as `root` + `/` + `path`. At most `MAX_MARKDOWN_CANDIDATES` names are looked at and
- * `MAX_MARKDOWN_DOCUMENTS` listed; `truncated` says when either cap left some out. 400
- * missing_pane_id; 403 read_only for a watching device, as /api/pane/files.
+ * newest first: in a repository git's tracked and untracked files that are not ignored, elsewhere a
+ * bounded walk that counts only Markdown files. Read only: each opens through /api/fs/file as
+ * `root` + `/` + `path`. Every file found is looked at and the newest `MAX_MARKDOWN_DOCUMENTS`
+ * (server/files.ts) listed; `truncated` says some were left out, by that cap, the walk's caps or the
+ * listing's time limit on a slow disk. 400 missing_pane_id; 403 read_only for a watching device,
+ * as /api/pane/files.
  */
 export interface PaneDocuments {
   /** the pane's folder, absolute */

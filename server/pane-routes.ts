@@ -144,7 +144,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const paneId = url.searchParams.get("pane_id");
     if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
     try {
-      return jsonResponse(await paneDocuments((await paneContext(paneId)).cwd));
+      return jsonResponse(await paneDocuments((await paneContext(paneId)).cwd, request.signal));
     } catch (error) {
       return errorResponse(error);
     }

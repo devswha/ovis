@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
-import { clearFileCache, filesNamed, GIT_LIST_DEADLINE_MS, GIT_LIST_MAX_BYTES, MAX_MARKDOWN_DOCUMENTS, paneDocuments, paneFiles, setGitListOptions } from "./files.ts";
+import { clearFileCache, filesNamed, GIT_LIST_DEADLINE_MS, GIT_LIST_MAX_BYTES, MAX_MARKDOWN_DOCUMENTS, paneDocuments, paneFiles, readMarkdownDocuments, setGitListOptions } from "./files.ts";
 
 const roots: string[] = [];
 /** what a test may set for the code under test to read; each is put back as it was */
@@ -250,6 +250,37 @@ describe("paneDocuments", () => {
     expect(listed.documents).toHaveLength(MAX_MARKDOWN_DOCUMENTS);
     expect(listed.documents[0]!.path).toBe(`n${MAX_MARKDOWN_DOCUMENTS}.md`);
     expect(listed.documents.some((document) => document.path === "n0.md")).toBe(false);
+  });
+
+  it("finds the newest file of a repository holding thousands, wherever its name sorts", async () => {
+    const root = fixture();
+    expect(Bun.spawnSync(["git", "init", "-q", root]).exitCode).toBe(0);
+    mkdirSync(join(root, "notes"));
+    for (let index = 0; index < 2_000; index += 1) {
+      writeFileSync(join(root, "notes", `a${String(index).padStart(5, "0")}.md`), "");
+      at(root, `notes/a${String(index).padStart(5, "0")}.md`, "2026-01-01T00:00:00.000Z");
+    }
+    writeFileSync(join(root, "zz-newest.md"), "new");
+    at(root, "README.md", "2026-01-01T00:00:00.000Z");
+    at(root, "zz-newest.md", "2026-11-05T00:00:00.000Z");
+    const listed = await paneDocuments(root);
+    expect(listed.documents[0]!.path).toBe("zz-newest.md");
+    expect(listed.truncated).toBe(true);
+  });
+
+  it("outside a repository, finds a note in a folder crowded with other files", async () => {
+    const root = fixture();
+    rmSync(join(root, "README.md"));
+    for (let index = 0; index < 1_000; index += 1) writeFileSync(join(root, `a${String(index).padStart(4, "0")}.txt`), "");
+    writeFileSync(join(root, "z-note.md"), "note");
+    expect(await paneDocuments(root)).toMatchObject({ documents: [{ path: "z-note.md" }], truncated: false });
+  });
+
+  it("stops reading at its time limit and says the list is cut", () => {
+    const root = fixture();
+    expect(readMarkdownDocuments(root, null, 0)).toEqual({ documents: [], cut: true });
+    expect(readMarkdownDocuments(root, ["README.md"], 0)).toEqual({ documents: [], cut: true });
+    expect(readMarkdownDocuments(root, ["README.md"])).toMatchObject({ documents: [{ path: "README.md" }], cut: false });
   });
 });
 
