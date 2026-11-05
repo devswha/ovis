@@ -298,8 +298,8 @@ export type ManageAction = "rename" | "toggle" | "setup" | "update" | "hide" | "
  * Manage PC's items for `machine`, and which of them wait. Setup and the bridge update are an SSH PC's alone. A PC
  * herdr manages is renamed, disconnected and removed in herdr, and a machine of herdr-core with hc machine or in the
  * Herdr app, so only what is still theirs here is offered: an SSH PC's setup and bridge update, and its place in this
- * sidebar. Setup and the bridge update need the PC enabled and its address; a rename, a connect or disconnect and a
- * removal wait while another of them runs (`busy`). `canHide`: another PC stays shown (lib/hiddenMachines.ts
+ * sidebar. Setup and the bridge update need the PC enabled and its address; a rename, a connect or disconnect, Hide
+ * and a removal wait while one of them runs (`busy`): Hide drops the row, and with it the guard on that request. `canHide`: another PC stays shown (lib/hiddenMachines.ts
  * canHideMachine).
  */
 export function manageActions(machine: Pick<Machine, "kind" | "herdr_profile_id" | "enabled" | "target" | "action_required">, { busy, canHide }: { busy: boolean; canHide: boolean }): { id: ManageAction; disabled: boolean }[] {
@@ -312,7 +312,7 @@ export function manageActions(machine: Pick<Machine, "kind" | "herdr_profile_id"
     if (machine.action_required !== "setup" && machine.action_required !== "connect") actions.push({ id: "setup", disabled: !reachable });
     if (machine.action_required !== "connect") actions.push({ id: "update", disabled: !reachable });
   }
-  if (canHide) actions.push({ id: "hide", disabled: false });
+  if (canHide) actions.push({ id: "hide", disabled: busy });
   if (own) actions.push({ id: "remove", disabled: busy });
   return actions;
 }

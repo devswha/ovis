@@ -234,6 +234,18 @@ async function withScenario(browser: Awaited<ReturnType<typeof chromium.launch>>
     await menuGeometry(page, manage, scenario);
     await capture(page, scenario, "menu");
     await renameGeometry(page, manage, scenario);
+    // Remove PC…'s confirm keeps its own Escape: a phone's drawer stays out under it (lib/useSidebarLayout.ts)
+    if (!scenario.desktopSidebar) {
+      const removeManage = await openMenu(page, remoteGroup, scenario);
+      await press(item(page, REMOVE_LABEL[scenario.language]!), scenario);
+      const dialog = page.locator(".confirm-dialog");
+      await dialog.waitFor();
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      assert.equal(await page.locator(".sidebar.is-open").isVisible(), true, `${scenario.name} Escape on Remove PC's confirm leaves the drawer out`);
+      assert.equal(await removeManage.evaluate((button) => document.activeElement === button), true, `${scenario.name} Escape on Remove PC's confirm gives the focus back to the manage button`);
+      assert.equal(await getHook(page, "calls.deleteAttempts"), 0, `${scenario.name} Escape on Remove PC's confirm sends no DELETE`);
+    }
 
     if (fullBehavior && !geometryOnly) {
       const observer = await page.evaluate(() => (window as unknown as { machineControlsFixture: { observe(): number } }).machineControlsFixture.observe());

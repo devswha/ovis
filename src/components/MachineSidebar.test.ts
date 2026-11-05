@@ -80,7 +80,9 @@ describe("Manage PC's menu", () => {
     expect(waiting(ssh({ target: undefined }))).toEqual(["setup", "update"]);
   });
 
-  it("holds a rename, a connect or disconnect and a removal while one of them runs", () => {
-    expect(waiting(ssh(), true)).toEqual(["rename", "toggle", "remove"]);
+  it("holds a rename, a connect or disconnect, Hide and a removal while one of them runs", () => {
+    // hiding the PC drops its row, and with it the guard on the request still running
+    expect(waiting(ssh(), true)).toEqual(["rename", "toggle", "hide", "remove"]);
+    expect(waiting(ssh({ kind: "hc", target: undefined }), true)).toEqual(["hide"]);
   });
 });
