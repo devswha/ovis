@@ -195,7 +195,8 @@ The composer's attachment picker takes any file (`src/components/Composer.tsx`,
 user-initiated: nothing is sent unless the user picks it. None of it is "shared": the PC is the
 user's own, the transcription provider is one the user chose and is sent to on the user's own
 action, and the developer's receiver, push relay, Ovis relay and `app.ovis.sh` run on
-Cloudflare, and FCM carries the encrypted alerts, as service providers.
+Cloudflare (the regional relay endpoint `relay-ap.ovis.sh` on a server rented from a hosting
+provider), and FCM carries the encrypted alerts, as service providers.
 
 **The usage counts, in full** (with the push token above, the only data that reaches the
 developer):
