@@ -157,6 +157,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   try {
     channel = await openRelayChannel(offer, {
       store: key, label: (await key.list())[0]!.label, socket: options.socket,
+      // whoever asks through the forward sets the deadline (the machine proxy: 75 s, 165 s for its slow routes)
+      requestTimeoutMs: () => 0,
       onClose: (error) => { lost(error); },
     });
   } catch (error) {
@@ -231,7 +233,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   };
   const sockets = new Set<Bun.ServerWebSocket<Forwarded>>();
   const server = Bun.serve<Forwarded>({
-    hostname: "127.0.0.1", port: 0,
+    // no idle cut of its own (Bun's default is 10 s): a slow answer from the PC is bounded by the one asking
+    hostname: "127.0.0.1", port: 0, idleTimeout: 0,
     fetch(request, bun) {
       if (!authorized(request)) return new Response(null, { status: 401 });
       const url = new URL(request.url);

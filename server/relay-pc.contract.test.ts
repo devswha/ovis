@@ -26,9 +26,15 @@ async function twoPcs() {
   } });
   cleanup.push(() => relay.stop());
   const synced = deferred<void>();
+  /** while set, what B sends its phones (A, here) reaches the relay this much later */
+  const delay = { ms: 0 };
   const local = (url: string): WebSocket => {
     const target = new URL(url);
     const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+    if (target.searchParams.has("connection_id")) {
+      const send = socket.send.bind(socket);
+      socket.send = (data) => { if (delay.ms > 0) setTimeout(() => send(data), delay.ms); else send(data); };
+    }
     if (target.searchParams.get("role") === "server" && !target.searchParams.has("connection_id")) {
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve();
@@ -55,7 +61,7 @@ async function twoPcs() {
     cleanup.push(stop);
     return { app: a, base: `http://127.0.0.1:${a.port}`, stop };
   };
-  return { b, link, aState, startA };
+  return { b, link, aState, startA, delay };
 }
 
 function addRelayPc(base: string, link: string, name?: string): Promise<Response> {
@@ -151,4 +157,15 @@ it("refuses a link without a pairing code and a PC already added", async () => {
   const again = await addRelayPc(a.base, link);
   expect(again.status).toBe(400);
   expect((await again.json() as { error: { message: string } }).error.message).toContain("already added");
+}, 60_000);
+
+it("waits for a PC that answers slower than an idle connection's default limit", async () => {
+  const { link, startA, delay } = await twoPcs();
+  const a = startA();
+  const { machine } = await (await addRelayPc(a.base, link)).json() as { machine: Machine };
+  await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
+  // Bun ends a request its server has not answered for 10 s unless told otherwise
+  delay.ms = 12_000;
+  const slow = await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } });
+  expect(slow.status).toBe(200);
 }, 60_000);

@@ -26,7 +26,7 @@ import { SshConnection, sshClient } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import type { RelaySocket } from "../shared/relay-channel.ts";
-import { openRelayPcTunnel, RelayPcKey, RelayPcRefused, removeRelayPcKey, type RelayPcTunnel } from "./relay-pc.ts";
+import { openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel } from "./relay-pc.ts";
 
 type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: SessionSnapshot | null }
   & ({ kind?: "ssh"; target: SshTarget } | { kind: "relay"; relay: NonNullable<Machine["relay"]> });
@@ -1556,8 +1556,9 @@ export class MachineManager {
     if (runtime.machine.herdr_profile_id) throw new Error("Remove this machine in herdr");
     runtime.machine.enabled = false; this.disconnect(runtime);
     for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
-    this.machines.delete(id); this.persist();
+    // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
+    this.machines.delete(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
@@ -1601,7 +1602,7 @@ export class MachineManager {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeRelayPcKey(keyPath);
-      throw error;
+      throw new Error(`This PC could not be saved (${error instanceof Error ? error.message : String(error)}). That PC already lists it under Phone & devices as ${relayPcLabel()}: revoke it there.`, { cause: error });
     }
     this.emit();
     try { await this.observe(runtime); this.emit(); } catch (e) { this.lost(runtime, generation, e); }

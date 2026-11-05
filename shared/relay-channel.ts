@@ -7,7 +7,7 @@ import { openClientSecureChannel } from "./relay-e2ee.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
 import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_PROTOCOL } from "./relay-mux.ts";
 import { MuxEngine } from "./relay-mux-engine.ts";
-import type { SessionFrame } from "./relay-mux-engine.ts";
+import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
 import type { RelayOffer } from "./relay-offer.ts";
 import { getDevice, sign } from "./relay-device.ts";
@@ -87,6 +87,8 @@ export interface RelayChannelOptions {
   readonly onClose?: (error: Error) => void;
   /** how long the relay may hold the connection for the PC before it is called offline; PC_ANSWER_MS by default */
   readonly pcAnswerMs?: number;
+  /** each request's deadline (MuxOptions.requestTimeoutMs); 60 s by default */
+  readonly requestTimeoutMs?: MuxOptions["requestTimeoutMs"];
 }
 export interface RelayChannel {
   readonly mux: MuxEngine;
@@ -290,7 +292,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
             return () => clearTimeout(timer);
           } },
           outboundWireByteLength: (bytes) => carrier.outboundWireByteLength(bytes.slice().buffer),
-          routingOverhead: 0, maxWireMessageBytes: 65536, limits,
+          routingOverhead: 0, maxWireMessageBytes: 65536, limits, requestTimeoutMs: options.requestTimeoutMs,
           onClose: (error) => stop(error),
         });
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
