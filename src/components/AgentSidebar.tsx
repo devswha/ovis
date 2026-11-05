@@ -9,7 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
-import { assignAgentGroup, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
+import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, toggleAgentLock } from "../lib/paneLocks.ts";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
@@ -424,10 +424,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const menuBackground = menuRow !== undefined && groupNames.length > 0 && splitBackgroundRows([menuRow], () => undefined, allRows).background.length > 0;
   const menuOwnGroup = menu === null ? undefined : settings.agentGroupOf[menu.key];
   const setGroup = (key: string, name: string | null): void => {
-    // as the pins: the groups of panes gone from a loaded PC leave with this change, and no other PC's. Every pane
-    // counts, not only the agent rows: a grouped pane whose agent has not started yet keeps its group
-    const live = new Set(machines.flatMap((machine) => machine.snapshot?.panes.map((pane) => sidebarPinKey(machine.id, pane.pane_id)) ?? []));
-    const kept = new Set(pruneSidebarPins(Object.keys(settings.agentGroupOf), live, machines, hidden));
+    // as the pins: the groups of panes gone from a loaded PC leave with this change, and no other PC's
+    const kept = liveGroupKeys(settings.agentGroupOf, machines, hidden);
     const next = assignAgentGroup(settings.agentGroupOf, key, name, (held) => kept.has(held));
     if (next === null) return;
     updateSettings({ agentGroupOf: next });

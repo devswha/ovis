@@ -88,6 +88,20 @@ describe("NewSessionDialog", () => {
     }
   });
 
+  it("clears a gone pane's group from a reused id on No group, and prunes the groups of gone panes (#2431)", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => new Response(JSON.stringify(String(input).includes("workspace/create") ? { workspace_id: "w9", pane_id: "w9:p1" } : { agents: [] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
+    localStorage.setItem("ovis:settings", JSON.stringify({ agentNamedGroups: true, agentGroupNames: ["Tasks"], agentGroupOf: { "local:w9:p1": "Tasks", "local:gone": "Tasks", "local:live": "Tasks" } }));
+    const groupKept = () => new Set(["local:live"]);
+    try {
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", onClose: () => undefined, onCreated: () => undefined, groupKept }) })); });
+      expect(renderer!.root.findByProps({ id: "new-session-group" }).props.value).toBe("");
+      await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+      expect(JSON.parse(localStorage.getItem("ovis:settings")!).agentGroupOf).toEqual({ "local:live": "Tasks" });
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it("offers no group while Named agent groups is off (#2431)", async () => {
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents: [] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
     localStorage.setItem("ovis:settings", JSON.stringify({ agentNamedGroups: false, agentGroupNames: ["Agents"] }));

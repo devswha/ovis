@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
-import { assignAgentGroup, folderAgentGroup, MAX_GROUPED_AGENTS, movedAgentGroup, rememberFolderAgentGroup, removeAgentGroup, renameAgentGroup, sanitizeGroupNames, sanitizeGroupOf, splitNamedGroups } from "./namedAgentGroups.ts";
+import { assignAgentGroup, folderAgentGroup, liveGroupKeys, loadFoldedAgentGroups, MAX_GROUPED_AGENTS, movedAgentGroup, rememberFolderAgentGroup, renameDeviceAgentGroup, saveFoldedAgentGroups, removeAgentGroup, renameAgentGroup, sanitizeGroupNames, sanitizeGroupOf, splitNamedGroups } from "./namedAgentGroups.ts";
 
 const row = (paneId: string, parent?: string, machineId = "local") => ({ machine: { id: machineId }, entry: { pane: { pane_id: paneId, ...(parent === undefined ? {} : { parent_pane_id: parent }) } } });
 
@@ -73,5 +73,22 @@ describe("named agent groups (#2431)", () => {
       rememberFolderAgentGroup("local", "~/app", null);
       expect(folderAgentGroup("local", "~/app", ["Agents", "Tasks"])).toBeNull();
     });
+
+    it("moves the folder's group and the fold with a renamed group, and drops them with a removed one", () => {
+      rememberFolderAgentGroup("local", "~/app", "Tasks");
+      saveFoldedAgentGroups(["Tasks", "Agents"]);
+      renameDeviceAgentGroup("Tasks", "Jobs");
+      expect(folderAgentGroup("local", "~/app", ["Jobs"])).toBe("Jobs");
+      expect(loadFoldedAgentGroups()).toEqual(["Jobs", "Agents"]);
+      renameDeviceAgentGroup("Jobs", null);
+      expect(folderAgentGroup("local", "~/app", ["Jobs"])).toBeNull();
+      expect(loadFoldedAgentGroups()).toEqual(["Agents"]);
+    });
+  });
+
+  it("keeps the groups of every pane a loaded PC has, and of PCs still loading or hidden", () => {
+    const groupOf = { "a:p1": "T", "a:gone": "T", "b:p9": "T", "c:p1": "T" };
+    const machines = [{ id: "a", snapshot: { panes: [{ pane_id: "p1" }] } }, { id: "b", snapshot: null }];
+    expect([...liveGroupKeys(groupOf, machines, ["c"])].sort()).toEqual(["a:p1", "b:p9", "c:p1"]);
   });
 });

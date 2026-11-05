@@ -63,6 +63,8 @@ export interface NewSessionDialogProps {
   onOpenPane?: (paneId: string) => void;
   /** this device only watches: a setup types into the PC's terminal, so Add another agent is not offered */
   watching?: boolean;
+  /** Settings -> Named agent groups: which grouped keys may stay as the new pane's group is saved (lib/namedAgentGroups.ts liveGroupKeys) */
+  groupKept?: (groupOf: Readonly<Record<string, string>>) => ReadonlySet<string>;
 }
 
 export interface DialogFields {
@@ -94,7 +96,7 @@ export function insertToken(text: string, at: number, token: string): { text: st
   return { text: `${head}${after}`.slice(0, MAX_COMPOSER_CHARS), caret: Math.min(head.length, MAX_COMPOSER_CHARS) };
 }
 
-export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
   const machineId = useMachineId();
@@ -340,8 +342,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       if (groupNames.length > 0) {
         const picked = groupNames.includes(group) ? group : null;
         rememberFolderAgentGroup(machineId, tab ? tab.cwd : directory, picked);
-        const next = picked === null ? null : assignAgentGroup(loadSettings().agentGroupOf, sidebarPinKey(machineId, result.pane_id), picked);
-        if (next !== null) updateSettings({ agentGroupOf: next });
+        // No group clears a group the pane's id still had from a pane gone before it (herdr reuses ids)
+        const held = loadSettings().agentGroupOf;
+        const kept = groupKept?.(held);
+        const next = assignAgentGroup(held, sidebarPinKey(machineId, result.pane_id), picked, kept === undefined ? undefined : (key) => kept.has(key));
+        if (next !== null && JSON.stringify(next) !== JSON.stringify(held)) updateSettings({ agentGroupOf: next });
       }
       if (agentKind && !result.agent_started && result.error?.message) {
         setPending(false);

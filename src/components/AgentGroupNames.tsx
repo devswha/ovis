@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Plus, X } from "lucide-react";
 
 import { useT } from "../lib/i18n.ts";
-import { MAX_AGENT_GROUP_NAME, MAX_AGENT_GROUPS, removeAgentGroup, renameAgentGroup } from "../lib/namedAgentGroups.ts";
+import { MAX_AGENT_GROUP_NAME, MAX_AGENT_GROUPS, removeAgentGroup, renameAgentGroup, renameDeviceAgentGroup } from "../lib/namedAgentGroups.ts";
 import { useSettings } from "../lib/settings.ts";
 
 /**
@@ -35,12 +35,16 @@ export function AgentGroupNames() {
             onBlur={(event) => {
               const renamed = renameAgentGroup(names, settings.agentGroupOf, name, event.currentTarget.value);
               if (renamed === null) event.currentTarget.value = name;
-              else if (renamed.names.some((held, index) => held !== names[index])) update({ agentGroupNames: renamed.names, agentGroupOf: renamed.groupOf });
+              else if (renamed.names.some((held, index) => held !== names[index])) {
+                update({ agentGroupNames: renamed.names, agentGroupOf: renamed.groupOf });
+                renameDeviceAgentGroup(name, event.currentTarget.value.trim().slice(0, MAX_AGENT_GROUP_NAME));
+              }
             }}
           />
           <button type="button" className="icon-button" aria-label={t("Remove group {group}", { group: name })} onClick={() => {
             const removed = removeAgentGroup(names, settings.agentGroupOf, name);
             update({ agentGroupNames: removed.names, agentGroupOf: removed.groupOf });
+            renameDeviceAgentGroup(name, null);
           }}>
             <X aria-hidden="true" />
           </button>
