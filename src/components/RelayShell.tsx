@@ -2,6 +2,7 @@ import "./RelayShell.css";
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
+import type { FormEvent, ReactNode } from "react";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
@@ -11,6 +12,7 @@ import { AccountFinePrint, AccountPcs, AccountSignIn } from "./AccountPcs.tsx";
 import { KeyId } from "./KeyId.tsx";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
+import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 
 export interface RelayShellProps {
@@ -36,6 +38,42 @@ export interface RelayShellProps {
   onLeave?: () => void;
   /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
   accountProviders?: readonly AccountProvider[];
+  /** Pair with a code: the field to type it in */
+  onCodeStart: () => void;
+  /** the code as typed; it is not kept anywhere else */
+  onCodeSubmit: (code: string) => void;
+  /** the ID a typed code found is the one the PC's screen shows */
+  onCodeMatch: () => void;
+}
+
+/**
+ * The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the
+ * DOM), as GitHub's device sign-in asks for the code its other screen shows.
+ */
+function CodeEntry({ failure, onSubmit, back }: { failure: TypedCodeFailure | null; onSubmit: (code: string) => void; back: ReactNode }) {
+  const t = useT();
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const field = event.currentTarget.elements.namedItem("code") as HTMLInputElement;
+    const code = field.value;
+    field.value = "";
+    onSubmit(code);
+  };
+  return (
+    <>
+      <h1 className="relay-shell-title">{t("Pair with a code")}</h1>
+      <p className="relay-shell-copy">{t("On the PC, open Settings → Phone & devices and choose Show a code to type. Type that code here.")}</p>
+      <form className="relay-shell-code-form" onSubmit={submit}>
+        <input name="code" className="relay-shell-code-input" aria-label={t("Code from the PC")} placeholder="XXXXX-XXXXX"
+          autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
+        {failure !== null && <p className="relay-shell-detail" role="alert">{codeFailureText(t, failure)}</p>}
+        <div className="relay-shell-actions">
+          <button type="submit" className="btn btn-primary">{t("Pair")}</button>
+          {back}
+        </div>
+      </form>
+    </>
+  );
 }
 
 /**
@@ -74,14 +112,15 @@ export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin 
  * `data-relay-state` for scripts. One card in the token gate's frame (AccessGate.css), so a phone
  * that pairs through the relay and one that pairs with a code see the same room.
  */
-export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onSignIn, onJoin, onSignOut, onLeave, accountProviders }: RelayShellProps) {
+export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onSignIn, onJoin, onSignOut, onLeave, accountProviders }: RelayShellProps) {
   const t = useT();
   const account: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
   const signIn = account?.kind === "signed-out" && onSignIn ? <AccountSignIn onSignIn={onSignIn} error={account.error} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
   // signed out with no saved PC, the QR route waits behind a link under the sign-in
   const [qr, setQr] = useState(false);
   const signInFirst = account?.kind === "signed-out" && state.kind === "empty" && !qr;
-  const name = state.kind === "confirm" ? state.offer.name ?? null : state.kind === "list" || state.kind === "empty" ? null : state.name;
+  const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
+    : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");
   // a forged link is the identity-changed warning in its own words: there is no key of its to forget
   const stateName = state.kind === "failed" ? state.failure : state.kind === "outdated" ? "pc-outdated" : state.kind === "forged" ? "identity-changed" : state.kind;
@@ -122,6 +161,7 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
               ))}
             </ul>
             <p className="relay-shell-copy">{t("To add another PC, scan the QR code it shows under Phone & devices.")}</p>
+            <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
             {signIn && <div className="account-or"><p className="relay-shell-copy">{t("Or sign in to see every PC on your account.")}</p>{signIn}<AccountFinePrint /></div>}
           </>
         )}
@@ -129,8 +169,27 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
           <>
             <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
             <p className="relay-shell-copy">{t("On the PC, open Settings → Phone & devices and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
+            <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button>{back}</div>
             {account && <div className="relay-shell-actions"><button type="button" className="btn" onClick={() => setQr(false)}>{t("Sign in instead")}</button></div>}
+          </>
+        )}
+        {state.kind === "code-entry" && <CodeEntry failure={state.failure} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>} />}
+        {state.kind === "code-looking" && (
+          <>
+            <h1 className="relay-shell-title">{t("Looking for the PC…")}</h1>
+            <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Looking for the PC…")}</span></div>
+            <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
+          </>
+        )}
+        {state.kind === "code-compare" && (
+          <>
+            <h1 className="relay-shell-title">{t("Does {name}'s screen show this ID?", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")}</p>
+            <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
+            <div className="relay-shell-actions">
+              <button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button>
+              <button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>
+            </div>
           </>
         )}
         {state.kind === "confirm" && (

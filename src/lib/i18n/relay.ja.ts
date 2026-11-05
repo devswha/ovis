@@ -3,7 +3,6 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
-  "this PC": "このPC",
   "Your PCs": "あなたのPC",
   "Unnamed PC": "名前のないPC",
   "To add another PC, scan the QR code it shows under Phone & devices.": "別のPCを追加するには、そのPCの「スマホとデバイス」に表示されるQRコードをスキャンしてください。",
@@ -74,6 +73,10 @@ export const RELAY_JA: Record<string, string> = {
   "Ready · not in the account yet": "接続可能 · まだアカウント外",
   "{name} is not taking new phones right now": "{name} は今は新しいスマートフォンを受け付けていません",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "リンクの有効期限が切れた(10 分間有効)か、試行が多すぎて一時停止しているか、ほかのスマートフォンの対応中かもしれません。PC で新しいリンクをコピーするか、数分待ってください。",
+  "Pair with a code": "コードでペアリング",
+  "On the PC, open Settings → Phone & devices and choose Show a code to type. Type that code here.": "PC で「設定 → スマートフォンとデバイス」を開き、「入力用のコードを表示」を選んでください。そのコードをここに入力します。",
+  "Code from the PC": "PC に表示されたコード",
+  "Looking for the PC…": "PC を探しています…",
   "Every PC of the account removes this device. You can pair it again later.": "アカウントのすべての PC からこのデバイスが外れます。あとでまたペアリングできます。",
   "Remove this device": "このデバイスを外す",
   "Remove this device from your account": "アカウントからこのデバイスを外す",

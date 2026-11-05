@@ -26,6 +26,7 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
+  ".wasm": "application/wasm",
 };
 
 /** Files whose URL never changes but whose contents decide what the app becomes. */
@@ -64,7 +65,8 @@ function cacheControlFor(pathname: string): string {
  *   directive that matters: KaTeX output and the agent marks are the two places that put
  *   third-party HTML into the page. `'wasm-unsafe-eval'` lets the page compile WebAssembly
  *   and nothing else (no eval, no string to script): the terminal's sixel decoder
- *   (@xterm/addon-image, Settings -> Pictures in the terminal) is a module bundled in the app.
+ *   (@xterm/addon-image, Settings -> Pictures in the terminal) and libghostty-vt (Settings ->
+ *   Draw with libghostty) are modules bundled in the app.
  * - `style-src 'self' 'unsafe-inline'`: inline style attributes are how measured layout
  *   reaches the DOM (AgentPicker, RowMenu, Droplet, UsageMeters), and KaTeX writes one on
  *   every expression it cannot render. It is also load-bearing for the terminal itself:
@@ -115,7 +117,8 @@ const CSP_DIRECTIVES = [
 ];
 
 /**
- * The policy both headers carry. A browser script that serves a build of its own sends it as it is:
+ * The policy both headers carry, before contentSecurityPolicy() adds the request's host to `frame-src`
+ * and the account service to `connect-src`. A browser script that serves a build of its own sends it as it is:
  * serveStatic reads only this checkout's dist/, and sends no policy before that is built.
  */
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
@@ -153,8 +156,14 @@ export function shellContentSecurityPolicy(connect: readonly string[] = []): str
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;
 
 /** The policy for a request from `origin` (requestOrigin): its host's other ports may be framed. */
-/** The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is https, else none. */
-export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"]): string | null {
+/** The account service when OVIS_ACCOUNT_SERVICE_URL is unset; `OVIS_ACCOUNT_SERVICE_URL=off` names none. */
+export const DEFAULT_ACCOUNT_SERVICE = "https://account.ovis.sh";
+
+/**
+ * The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is
+ * https, account.ovis.sh when it is unset, and none when it is `off` or not https.
+ */
+export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
@@ -278,9 +287,9 @@ export async function serveStatic(pathname: string, acceptEncoding?: string | nu
   if (candidate.startsWith(DIST_DIR) && relative !== "/" && existsSync(candidate)) {
     const file = Bun.file(candidate);
     if ((await file.exists()) && !(await file.stat()).isDirectory()) {
-      // Only immutable JS/CSS get build-time sidecars. Never compress user/API
-      // data, the service worker, or the shell on a request's hot path.
-      if (pathname.startsWith("/assets/") && /\.(?:js|css)$/.test(pathname)) {
+      // Only immutable JS/CSS/WebAssembly get build-time sidecars (scripts/compressed-assets.ts).
+      // Never compress user/API data, the service worker, or the shell on a request's hot path.
+      if (pathname.startsWith("/assets/") && /\.(?:js|css|wasm)$/.test(pathname)) {
         for (const encoding of encodings(acceptEncoding)) {
           const body = encoding === "identity" ? file : Bun.file(`${candidate}.${encoding === "br" ? "br" : "gz"}`);
           if (!await body.exists()) continue;

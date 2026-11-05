@@ -29,10 +29,12 @@ import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiF
 import { canListInstalledFonts, filterFamilies, isMonospaceFamily, queryInstalledFonts } from "../lib/installedFonts.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
-import { LOCAL_MACHINE, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
+import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
+import { codeFailureText, typedCodeFailure } from "./codeFailureText.ts";
+import { KeyId } from "./KeyId.tsx";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
-import { addRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
+import { addFoundRelayPc, addRelayPc, ApiError, findRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -48,6 +50,7 @@ import { statusText } from "./RelayPanel.tsx";
 import { AccountSection } from "./AccountSection.tsx";
 import { ConnectPhoneDialog, defaultRoute, relayOffered, type ConnectRoute } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
+import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
 import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
 import { TelemetryControls } from "./TelemetryControls.tsx";
@@ -482,6 +485,9 @@ function ChatPage() {
         <SettingsRow label={t("Artifacts chip")} description={t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.")}>
           <Toggle label={t("Artifacts chip")} checked={settings.composerArtifacts} onChange={(composerArtifacts) => update({ composerArtifacts })} />
         </SettingsRow>
+        <SettingsRow label={t("Paste and send button")} description={t("A button in the empty message box sends the text copied on this device as a message.")}>
+          <Toggle label={t("Paste and send button")} checked={settings.composerPasteSend} onChange={(composerPasteSend) => update({ composerPasteSend })} />
+        </SettingsRow>
         {touch && (
           <SettingsRow label={t("Suggestion chip")} description={t("A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.")}>
             <Toggle label={t("Suggestion chip")} checked={settings.suggestionChip} onChange={(suggestionChip) => update({ suggestionChip })} />
@@ -574,6 +580,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Pictures in the terminal")} description={t("Shows the pictures a program draws in a pane (imgcat, img2sixel, chafa) as sixel or iTerm2 images, on this device. Only on a PC that runs herdr-core, as the desktop app does: herdr does not pass pictures on. A picture is gone once the pane is drawn again.")}>
         <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages} onChange={(terminalImages) => update({ terminalImages })} />
       </SettingsRow>
+      <SettingsRow label={t("Draw with libghostty")} description={t("Draws a pane with libghostty, the terminal engine of Ghostty, on this device, with the pictures a program sends with the Kitty graphics protocol (kitty icat, timg, chafa). Only on a PC that runs herdr-core, as the desktop app does, and from the next time a pane is opened. A preview: typing, selection, links and search still go through xterm.js underneath.")}>
+        <Toggle label={t("Draw with libghostty")} checked={settings.terminalGhostty} onChange={(terminalGhostty) => update({ terminalGhostty })} />
+      </SettingsRow>
       <SettingsRow label={t("Use alongside herdr's own window")} description={t("Turn this on if herdr is also open in a terminal window, on this PC or another. A second after you switch to another window, or after 10 seconds without typing or clicking in a terminal you type straight into, this tab only watches the pane, so herdr's window keeps the pane at its own size instead of this window's. Type or click in the terminal to type again: what you type goes in once it is back. While it watches, the pane is drawn at herdr's size and may not fill this window.")}>
         <Toggle label={t("Use alongside herdr's own window")} checked={settings.releasePaneAway} onChange={(releasePaneAway) => update({ releasePaneAway })} />
       </SettingsRow>
@@ -620,13 +629,15 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
       </SettingsRow>
     </SettingsGroup>
     <AlertPcsGroup machines={machines} />
+    <AlertWebhookGroup />
     </>
   );
 }
 
 /**
  * Which PCs alert this device, the Host first: one turned off here sends it nothing, on any channel.
- * Shown with two PCs or more; kept by the PC's name (lib/alertFilters.ts).
+ * Shown with two PCs or more; kept by the PC's relay ID where it has one, else its name (shared/machines.ts
+ * pcAlertKey), and a PC an earlier version turned off by name stays off until turned on again.
  */
 function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   const t = useT();
@@ -635,12 +646,15 @@ function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   const listed = [...machines].sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"));
   return (
     <SettingsGroup title={t("Alerts from")} section="alert-pcs">
-      {listed.map((machine) => (
-        <SettingsRow key={machine.id} label={machine.name}>
-          <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(machine.name)}
-            onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((name) => name !== machine.name) : [...pcsOff, machine.name] })} />
-        </SettingsRow>
-      ))}
+      {listed.map((machine) => {
+        const key = pcAlertKey(machine);
+        return (
+          <SettingsRow key={machine.id} label={machine.name}>
+            <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(key) && !pcsOff.includes(machine.name)}
+              onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((item) => item !== key && item !== machine.name) : [...pcsOff, key] })} />
+          </SettingsRow>
+        );
+      })}
     </SettingsGroup>
   );
 }
@@ -1048,32 +1062,62 @@ function SidebarPcsGroup({ machines }: { machines: readonly Machine[] }) {
 }
 
 /**
- * Another PC through the Ovis relay, no SSH: its pairing link (Settings → Phone & devices → Copy link there) pairs this
- * PC's server with it as a phone would. The link holds a one-time code, so it stays in the input, never in state.
+ * Another PC through the Ovis relay, no SSH: its pairing link (Settings → Phone & devices → Copy link there), or the code
+ * it shows (Show a code to type), pairs this PC's server with it as a phone would. Both hold a one-time code, so they
+ * stay in the input, never in state. A typed code first finds the PC, and the person matches its ID with the one that
+ * PC shows before it is added, as the hosted app's code screen asks (RelayShell.tsx).
  */
-function AddRelayPc() {
+export function AddRelayPc() {
   const t = useT();
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [found, setFound] = useState<{ ticket: string; server_id: string; name: string | null } | null>(null);
   const [result, setResult] = useState<{ error: boolean; text: string } | null>(null);
-  const add = async () => {
-    const link = input.current?.value.trim() ?? "";
-    if (!link) return;
+  const added = (machine: Machine) => setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
+  const failed = (error: unknown) => {
+    const failure = error instanceof ApiError ? typedCodeFailure(error.code) : null;
+    setResult({ error: true, text: failure !== null ? codeFailureText(t, failure) : error instanceof Error ? error.message : String(error) });
+  };
+  const run = async (work: () => Promise<void>) => {
     setBusy(true);
     setResult(null);
-    try {
-      const { machine } = await addRelayPc(link);
-      if (input.current) input.current.value = "";
-      setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
-    } catch (error) {
-      setResult({ error: true, text: error instanceof Error ? error.message : String(error) });
-    } finally { setBusy(false); }
+    try { await work(); } catch (error) { failed(error); } finally { setBusy(false); }
   };
+  const submit = () => {
+    const field = input.current;
+    const value = field?.value.trim() ?? "";
+    if (!field || !value) return;
+    // a link carries its offer; anything else is taken as a typed code
+    const link = /^https?:\/\//i.test(value);
+    void run(async () => {
+      if (link) { added((await addRelayPc(value)).machine); field.value = ""; return; }
+      // one try per tap, as on the phone: the code is not kept for another
+      field.value = "";
+      setFound(await findRelayPc(value));
+    });
+  };
+  const match = (ticket: string) => void run(async () => {
+    try { added((await addFoundRelayPc(ticket)).machine); } finally { setFound(null); }
+  });
+  if (found !== null) {
+    const pc = found.name ?? t("this PC");
+    return (
+      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} wide>
+        <div className="relay-pc-found">
+          <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
+          <div className="relay-pc-actions">
+            <button type="button" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => match(found.ticket)}>{t("It matches")}</button>
+            <button type="button" className="btn" disabled={busy} onClick={() => setFound(null)}>{t("Cancel")}</button>
+          </div>
+        </div>
+      </SettingsRow>
+    );
+  }
   return (
     <>
-      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Phone & devices, choose Copy link, and paste it here.")} wide>
-        <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); void add(); }}>
-          <input ref={input} className="input relay-pc-input" type="url" placeholder="https://app.ovis.sh/s/…" aria-label={t("Pairing link")}
+      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Phone & devices. Paste its link here (Copy link), or type the code it shows (Show a code to type).")} wide>
+        <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+          <input ref={input} className="input relay-pc-input" type="text" placeholder={t("Link or code")} aria-label={t("Pairing link or code")}
             autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy} />
           <button type="submit" className="btn" disabled={busy} aria-busy={busy || undefined} aria-label={t("Add a PC through the relay")}>{t("Add PC")}</button>
         </form>

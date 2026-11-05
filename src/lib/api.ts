@@ -1,8 +1,10 @@
 import { apiFetch } from "./api-request-id.ts";
 import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
+import type { AlertWebhookSave, AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import type { AgentCatalogResponse, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import { resumeConnectionTraces } from "./connectionTrace.ts";
+import type { PullRequestCheckLog, PullRequestMergeRequest, PullRequestView } from "../../shared/pull-request.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
@@ -265,6 +267,22 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
 
 export function requestRelayOffer(): Promise<RelayOffer> {
   return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
+/** POST /api/relay/code: a code to type on the device being paired, good until `expires_at`; it replaces any showing. */
+export interface RelayCode {
+  readonly code: string;
+  readonly expires_at: string;
+  readonly server_id: string;
+}
+
+export function requestRelayCode(): Promise<RelayCode> {
+  return getJson<RelayCode>("/api/relay/code", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
+/** POST /api/relay/code/cancel: takes the code showing off the relay. */
+export function cancelRelayCode(): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
 /** POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC. */
@@ -1155,6 +1173,31 @@ export async function fetchRepoDiffFile(query: RepoDiffQuery, path: string, oldP
   return getJson<RepoDiffFilePatch>(machinePath(machineId, `workspace/diff/file?${params.toString()}`));
 }
 
+/** The folder whose branch's pull request is read: the pane's own, or `directory` when the pane is gone. */
+export interface PullRequestTarget { paneId: string | null; directory: string | null }
+
+function pullRequestParams(target: PullRequestTarget): URLSearchParams {
+  return new URLSearchParams({ ...(target.paneId ? { pane_id: target.paneId } : {}), ...(target.directory ? { directory: target.directory } : {}) });
+}
+
+/** GET /api/workspace/pr: the branch's pull request, its checks and open review threads, read through the PC's gh. */
+export async function fetchPullRequest(target: PullRequestTarget, machineId = "local"): Promise<PullRequestView> {
+  return getJson<PullRequestView>(machinePath(machineId, `workspace/pr?${pullRequestParams(target).toString()}`));
+}
+
+/** GET /api/workspace/pr/log: the last lines of a check's Actions job log. */
+export async function fetchPullRequestLog(target: PullRequestTarget, jobId: string, host: string, machineId = "local"): Promise<PullRequestCheckLog> {
+  const params = pullRequestParams(target);
+  params.set("job_id", jobId);
+  params.set("host", host);
+  return getJson<PullRequestCheckLog>(machinePath(machineId, `workspace/pr/log?${params.toString()}`));
+}
+
+/** POST /api/workspace/pr/merge: merges the pull request at the head it was read at, with the method shown. */
+export async function mergePullRequest(target: PullRequestTarget, merge: Pick<PullRequestMergeRequest, "number" | "head_oid" | "base_ref" | "method">, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "workspace/pr/merge"), "POST", { ...(target.paneId ? { pane_id: target.paneId } : {}), ...(target.directory ? { directory: target.directory } : {}), ...merge } satisfies PullRequestMergeRequest);
+}
+
 export type { CreateTabRequest, CreateWorkspaceRequest } from "../../shared/protocol.ts";
 
 /**
@@ -1414,6 +1457,13 @@ export async function machineRequest<T>(path: string, method = "GET", body?: unk
 }
 /** POST /api/machines/relay: pairs with the PC whose relay pairing link this is and adds it (server/relay-pc.ts). */
 export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { link });
+/**
+ * POST /api/machines/relay/code: finds the PC that shows this typed code. This PC's server keeps what it found, the
+ * one-time pairing code in it, under a ticket only this window gets, and answers the ID to compare; addFoundRelayPc then adds that PC.
+ * ApiError code `typed_code_<failure>` (shared/relay-code-offer.ts) when it finds none.
+ */
+export const findRelayPc = (code: string) => machineRequest<{ ticket: string; server_id: string; name: string | null }>("/relay/code", "POST", { code });
+export const addFoundRelayPc = (ticket: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: ticket });
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
@@ -1423,6 +1473,29 @@ export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   const response = await apiFetch("/api/voice", { cache: "no-store" });
   if (!response.ok) throw await errorFrom("/api/voice", response);
   return (await response.json()) as VoiceStatus;
+}
+
+/** Settings → Alerts → Also send to: the destination this PC also posts its alerts to, its URL or token masked. */
+export function fetchAlertWebhook(): Promise<AlertWebhookView> {
+  return getJson<AlertWebhookView>("/api/alerts/webhook", { cache: "no-store" });
+}
+
+/** ApiError 400 `invalid_webhook` names what is wrong with the destination. */
+export async function saveAlertWebhook(save: AlertWebhookSave): Promise<AlertWebhookView> {
+  const response = await apiFetch("/api/alerts/webhook", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(save) });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook", response);
+  return (await response.json()) as AlertWebhookView;
+}
+
+export async function removeAlertWebhook(): Promise<void> {
+  const response = await apiFetch("/api/alerts/webhook", { method: "DELETE" });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook", response);
+}
+
+/** ApiError 502 `webhook_failed` with what the destination answered. */
+export async function testAlertWebhook(): Promise<void> {
+  const response = await apiFetch("/api/alerts/webhook/test", { method: "POST" });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook/test", response);
 }
 
 /** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */

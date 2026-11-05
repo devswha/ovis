@@ -229,7 +229,8 @@ runtime bundle, run it with the bundle's Bun as for GJC above. The extension lis
 only your user can open, `herdr-web-ui-ask/<pid>.sock` in the same directory, and relays the
 card's answer to pi-ask as its submit event: the form then shows as a card with one question per
 step, its options and **Type your own answer**. The card shows only when the pane's pi process
-answers on that socket, writes the session herdr reports for the pane, has one form open and
+answers on that socket, writes the session herdr reports for the pane (on herdr-core, the one
+it names there itself), has one form open and
 that form's `ask_user` call is still unanswered on pi's current branch (after a `/tree` move
 too); anything else, a form opened by `/answer` or `/ask:replay`, Windows, and pi without the
 extension use Terminal. pi-ask is never answered with typed keys: a pi pane never gets the
@@ -527,6 +528,23 @@ The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
+
+An alert for an approval or a question with two short options (**Allow** / **Deny**, **Yes** /
+**No**) carries them as buttons on desktop browsers and Android, under the question and what it is
+about (the command or the file): a tap answers it without opening the app, and the card closes
+everywhere. If the question changed or was answered on another device meanwhile, nothing is sent
+and a new alert says so; tap it to open the pane. Questions with more or longer options, a command
+too long to show whole, typed answers and forms of several questions open the pane, as do alerts
+on iOS, in the relay app, and on a device paired to watch only.
+
+To get the same alerts in a chat app, choose a destination under **Settings → Alerts → Also send
+to**: an ntfy topic, a Slack or Discord webhook, a Telegram bot (its token and a chat id), or
+plain JSON to any URL. It has its own choice of alerts, waits and holds back like a device does,
+and is saved on this PC, owner-only, and shown masked afterwards. A message names the PC, the pane
+and what happened, with a link to the pane, never what the agent asked or said; the pane goes by its
+terminal title, which an agent may take from your task. **Send a test**
+checks it; a destination that fails shows its last error and is retried a few times, with at most
+one alert waiting.
 
 ### Using the app
 
@@ -890,8 +908,26 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   app's window's: Ovis shows it and hides those actions. A Herdr app started later on a core
   Ovis arranged takes in its terminals, grouped and named as they were, but not their split
   ratios or order; from then on the app arranges them.
+- **Agents' sessions:** herdr-core keeps no session reports, which herdr's own agent integrations
+  send to herdr's TUI server only, so a chat that needs one has none there. pi's chat comes from
+  the session the pane's pi names itself through the web UI's pi extension (see
+  [Supported agents](#supported-agents): `bun scripts/install-pi-integration.ts`, then restart
+  pi); without the extension a pi pane uses Terminal. Other agents whose chat reads only that
+  report, OpenCode for example, use Terminal on herdr-core.
 - **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
+  scroll buttons beside it, plugins and worktrees.
+- **Other machines:** each machine the core reaches (`hc machine add vps`, or added in the Herdr
+  app) is a PC of its own in the sidebar, beside this one: its workspaces and tabs as its own
+  `herdr-app` document lays them out, its live terminals, input, status and alerts, and new
+  workspaces and tabs started there. Ovis reaches it through this PC's core: nothing of Ovis is
+  installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
+  Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
+  own), so its agents' chat history is not read here: their transcripts are on that machine.
+  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
+  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
+  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  there. Temporary machines (`hc machine add --temp`) are not shown, and
+  PCs added over SSH or through the relay keep working beside them.
 
 ## Configuration
 
@@ -1122,6 +1158,7 @@ Optional features can send data off the PC:
 - [Subscription usage](#subscription-usage), when enabled, sends each provider's credentials to that provider's usage endpoint.
 - Updates and remote-PC setup fetch releases or configured runtime bundles over the network; remote panes are reached over SSH.
 - Enabled push alerts go through the browser vendor's push service as encrypted notifications.
+- A destination under **Settings → Alerts → Also send to** gets each alert it chose in plain text: the PC's and the pane's names (a pane's is its terminal title, which an agent may take from your task), what happened and a link to the pane.
 - [Portal](#behind-a-reverse-proxy), while it runs, carries every connection to the app through the relay you chose: the relay sees connection addresses, timing and volume, and holds the certificate for the address.
 - The [Ovis relay](#through-the-ovis-relay), while it's on, carries everything between a paired phone and this PC through `relay.ovis.sh`, end-to-end encrypted: the relay sees connection addresses, timing and sizes, down to the timing of keystrokes, but none of the content. The app on the phone comes from `app.ovis.sh`, which itself sees only requests for the app's files, whose path names the PC. You have to trust whoever serves that app, since it's the code that holds the phone's key and shows you the PC ([trust model](relay.md#trust-model)).
 
@@ -1145,7 +1182,7 @@ Samsung Internet has a forced dark mode that repaints every page, including one 
 
 All three are in the herdr plugin marketplace too, and each does something this app does not. [collie](https://github.com/AltanS/collie) is a mobile terminal for herdr, tmux and zellij, with a status dashboard, a key pad, quick replies and voice input, served over Tailscale by its own bridge. [roamgate](https://github.com/powerfooI/roamgate) is a browser client for herdr with a file explorer and diff annotations, installed by its own script. [herdr-remote](https://github.com/dcolinmorgan/herdr-remote) is a macOS menu-bar app with a phone dashboard and a Telegram bot behind a relay and a free tunnel.
 
-Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no account of its own. You reach it over Tailscale, SSH, your own HTTPS proxy, or the Ovis relay, which is end-to-end encrypted and off until you turn it on. If you want tmux or zellij, diffs or Telegram, one of the others is the better fit.
+Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no account of its own. You reach it over Tailscale, SSH, your own HTTPS proxy, or the Ovis relay, which is end-to-end encrypted and off until you turn it on. If you want tmux or zellij, diffs or to answer agents from Telegram, one of the others is the better fit.
 </details>
 
 <details>

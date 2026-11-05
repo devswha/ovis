@@ -3,7 +3,6 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
-  "this PC": "这台电脑",
   "Your PCs": "我的电脑",
   "Unnamed PC": "未命名的电脑",
   "To add another PC, scan the QR code it shows under Phone & devices.": "要添加另一台电脑，请扫描它在“手机与设备”中显示的二维码。",
@@ -74,6 +73,10 @@ export const RELAY_ZH: Record<string, string> = {
   "Ready · not in the account yet": "可连接 · 尚未加入账户",
   "{name} is not taking new phones right now": "{name} 现在不接受新手机",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "链接可能已过期（有效 10 分钟），或因尝试次数过多而暂停，或正在处理其他手机。请在电脑上复制新链接，或等几分钟。",
+  "Pair with a code": "用代码配对",
+  "On the PC, open Settings → Phone & devices and choose Show a code to type. Type that code here.": "在电脑上打开“设置 → 手机和设备”，选择“显示要输入的代码”，然后在这里输入该代码。",
+  "Code from the PC": "电脑上显示的代码",
+  "Looking for the PC…": "正在查找电脑…",
   "Every PC of the account removes this device. You can pair it again later.": "账户中的所有 PC 都会移除此设备。之后可以再次配对。",
   "Remove this device": "移除此设备",
   "Remove this device from your account": "从账户中移除此设备",

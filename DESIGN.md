@@ -1895,7 +1895,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   owner was replaced, and there is no app precedent to follow. A PC whose server names no herdr (an older bridge) keeps its drafts in the page alone.
 
 ### Changes list and diff viewer (`.repo-changes`, `.repo-diff*`)
-- Files has two faces, **Browse** | **Changes** (`.segmented` in its header). **Changes** lists
+- Files has three faces, **Browse** | **Changes** | **Pull request** (`.segmented` in its header). **Changes** lists
   what a comparison changed in the repository the pane sits in: the working tree against the
   index, the index against HEAD, two commits named by hand (**From commit**, **To commit**,
   **Compare**), or the branch against a base (**Branch**, below); a Refresh button re-reads it,
@@ -2013,6 +2013,36 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   refs and one fictional branch comparison against `main`. Another PC, pane or folder starts the
   scope over: the base is cleared, nothing is compared there until **Compare**, and a list still
   on its way for the target left behind is dropped.
+
+### Pull request (`.pull-request`)
+- **Pull request**, the third face of Files, shows the pull request of the pane's branch as the PC
+  running it reads it through its own `gh` sign-in (`GET /api/workspace/pr`): nothing new to sign
+  in to. It follows GitHub's mobile app: title and state first, then checks, then conversations,
+  in one column at every width. Read when the tab opens and on **Refresh pull request**, never
+  polled. Without `gh`, signed out, or without a pull request it says so in one line.
+- Primary action: **Merge** (`.btn-primary`, labelled with the repository's default method:
+  Squash and merge, Rebase and merge, Merge pull request), at the end, right-aligned on a desktop
+  and as wide as the column on a phone. It is off, with GitHub's reason above it, unless GitHub
+  would merge now (`mergeStateStatus` clean, unstable or has_hooks): required checks or reviews,
+  a branch behind its base, conflicts, a draft, or a base that merges through a merge queue (the
+  queue would merge whatever the head is by then, so that merge is left to GitHub). It asks first
+  (`ConfirmDialog`), and merges only the head commit the view showed (`--match-head-commit`) into
+  the base it showed (read again first); the branch is kept.
+- Priorities: 1. the title (`#n`, links to GitHub) and its state chip with `head -> base` in mono;
+  2. **Checks**, failing first, then pending, then the rest, with a `failing, pending, passed`
+  count, each row an icon in its status token (`--status-blocked`, `--status-working`,
+  `--status-done`), `workflow / name` and a link; 3. **Open review threads** (unresolved only):
+  `path:line` in mono, an `Outdated` tag, the first comment clamped to four lines with its
+  author, and how many more replies wait on GitHub.
+- **Send to agent** (`.btn`) on a failing check and on each thread puts text into the pane's
+  composer draft, after what it already holds, and sends nothing: a check's `workflow / name`,
+  its page and the last 80 lines of its Actions log (timestamps and colour codes removed) in a
+  code fence; a thread's `path:line`, author, link and first comment as a `>` quote. A note under
+  the row says it was added, added without the log, or too long for the box.
+- Left out on purpose: re-running checks, writing review replies, the diff (Changes has it), and
+  any polling.
+- Layout: one column inside the Files sheet; bar, branches line, Checks, Open review threads,
+  Merge, each separated by a hairline.
 
 ### Header context and connection
 - A selected pane shows agent mark + title (`--fs-md`), then on the same line the crumb
@@ -2611,6 +2641,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--space-1` tall), then ONE row of controls under it:
   on the left the add button (lucide `Plus`, named "Attach files"), the mic when voice input
   shows it (see Voice input), and the background-task chip; on the right the status content and ONE round Send/Stop button.
+  Once this device turns it on (Settings → Chat → Composer, **Paste and send button**, the device
+  setting `composerPasteSend`, off by default), **Paste and send** (lucide `ClipboardPaste`, beside
+  Attach) reads this device's clipboard on the press, never the PC's, and sends its text through
+  Send's own path (queued while the agent works, kept in the box when refused). It is on only for an
+  empty box with no files; a read that answers after the pane, the connection or the box changed
+  sends nothing, and an empty, refused or too-long clipboard is said in the note, never cut to fit.
+  The Codex and Claude apps have no such button; it follows the terminal key bar's Paste here.
   The message's text starts `--space-4` in (`--space-3` on a phone, `480px` and below).
 - The strip (`.composer-strip`) tucked under the card, as t3code's composer context strip: the
   card's own `--bg-elevated` with a `--border` hairline, inset on each side by the card's radius
@@ -3173,10 +3210,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (panes open in, show thinking, chat width, chat font size and family; then
   **Composer**: Enter sends, send queued messages automatically, in a mouse-driven window wider than
   640px the New tab button (off by default), the Artifacts chip (off by default, the device setting
-  `composerArtifacts`), and on a touch screen the suggestion chip (off by default); then
+  `composerArtifacts`), the Paste and send button (off by default, the device setting
+  `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
   speed, input mode, Key bar, Clipboard from a pane, Pictures in the terminal (off by default, the
-  device setting `terminalImages`), Use alongside herdr's own window, Follow
+  device setting `terminalImages`), Draw with libghostty (off by default, the device setting
+  `terminalGhostty`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
@@ -3475,6 +3514,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ordered change set, so Retry resends the current change, never an old request body.
 
 ### Terminal host, key bar and drawer
+- **Draw with libghostty** (Settings > Terminal, off by default, herdr-core only): libghostty-vt draws the
+  pane's text, cursor and Kitty graphics pictures in a layer over xterm's screen, at xterm's cell size;
+  xterm's own text and cursor are hidden under it and xterm keeps input, selection, links, search and
+  scrolling. It follows Ghostty's own split of a terminal core (libghostty-vt) from the renderer an app
+  draws with, rather than a second terminal widget: everything built on xterm keeps working while the
+  drawing moves. The layer takes no pointer events; pictures keep the layer Kitty gave them (below
+  the text, or above it).
 - **Find in terminal** in the header's More menu and Mod+Shift+F opens a find bar above the
   grid. It uses the existing input and icon-button primitives: a query, match ordinal,
   previous/next and close controls, with a dim note that scrolling is shared by all clients.

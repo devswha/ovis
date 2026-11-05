@@ -173,6 +173,19 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalImages).toBe(false);
   });
 
+  it("keeps Draw with libghostty in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalGhostty).toBe(false);
+    saveSettings(sanitizeSettings({ terminalGhostty: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalGhostty");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalGhostty).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalGhostty: false });
+    expect(loadSettings().terminalGhostty).toBe(false);
+    records.set("ovis:terminal-ghostty", "\"true\"");
+    expect(loadSettings().terminalGhostty).toBe(false);
+  });
+
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
     saveSettings(sanitizeSettings({ composerArtifacts: true }));
@@ -186,6 +199,15 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
     records.set("ovis:composer-artifacts", "not json");
     expect(loadSettings().composerArtifacts).toBe(false);
+  });
+
+  it("keeps the composer's Paste and send button in its own key, out of an old tab's whole-record save (#2493)", () => {
+    saveSettings(sanitizeSettings({ composerPasteSend: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerPasteSend");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerPasteSend).toBe(true);
+    records.set("ovis:composer-paste-send", "\"true\"");
+    expect(loadSettings().composerPasteSend).toBe(false);
   });
 
   it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
@@ -321,6 +343,13 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
   expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
+it("keeps the composer's Paste and send button off until this device turns it on, and keeps that choice its own (#2493)", () => {
+  expect(sanitizeSettings({}).composerPasteSend).toBe(false);
+  expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
+  expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
+  expect(SETTING_SCOPE.composerPasteSend).toBe("device");
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
@@ -563,6 +592,13 @@ it("draws no terminal pictures until this device turns them on", () => {
   expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(false);
   expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
   expect(SETTING_SCOPE.terminalImages).toBe("device");
+});
+
+it("draws with xterm until this device turns libghostty on", () => {
+  expect(sanitizeSettings({}).terminalGhostty).toBe(false);
+  expect(sanitizeSettings({ terminalGhostty: "true" }).terminalGhostty).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: true })))).terminalGhostty).toBe(true);
+  expect(SETTING_SCOPE.terminalGhostty).toBe("device");
 });
 
 it("drops the folder grouping an older version stored", () => {

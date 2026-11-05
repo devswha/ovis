@@ -1,4 +1,5 @@
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
+import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
 import type { ClientConnectionLog } from "./client-connection-log.ts";
 import type { RequestLog } from "./request-log.ts";
@@ -114,9 +115,12 @@ export interface ServerContext {
   readonly relayBodyBudget?: EventStreamBudget;
 }
 
+/** The routes that read or write files and folders on this disk (or run git and gh in them) for a pane, a workspace or a picker. */
+const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|image)$|workspace\/(?:diff\/|directories$|pr(?:$|\/)))/;
+
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
-  const { sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
+  const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   const startup = portalStartupResult ?? await portalStartup;
   if (!startup.ok) {
@@ -220,6 +224,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe" || pathname === "/api/push/status" || pathname === "/api/connection-diagnostics";
   // a repository's changes are file contents too: the patch of a credential file is that file
   const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/diff\//.test(pathname);
+  // a pull request's review comments and job logs are the repository's contents as well
+  const pullRequest = /^\/api\/(?:machines\/[^/]+\/)?workspace\/pr(?:\/|$)/.test(pathname);
   // earlier sessions carry their first prompts
   const sessionHistory = /^\/api\/(?:machines\/[^/]+\/)?sessions\/history$/.test(pathname);
   // an agent's commands in a folder, and a pane's, are read from that folder's command files (each row
@@ -237,7 +243,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/list$/.test(pathname);
   // the digits of a waiting comparison are what approving it takes (docs/account.md, "Who may admit a device")
   const pairingDigits = pathname === "/api/relay/pairings";
-  if (readOnly && (fileRead || directoryListing || repositoryDiff || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
+  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
@@ -252,6 +258,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     || pathname === "/api/relay" || pathname.startsWith("/api/relay/")
     || pathname.startsWith("/api/account/")
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
+    // a destination keeps getting alerts after the visitor who set it lost access, as a push subscription would
+    || pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test"
   );
   // pairing without a code ends in an approval only a window that hears of it can give (relay-pairings below):
   // an ungated LAN window never does, so it neither makes such a link nor answers one
@@ -284,6 +292,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // request gets it: the routes open without sign-in (health, auth, pairing) keep the default,
   // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
+
+  // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs
+  if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "unsupported", message: "Files on another machine of herdr-core are not reachable from Ovis yet" } }, 501);
+  }
 
   if (pathname === "/api/bridge") {
     setRequestRoute(pathname);
@@ -452,6 +466,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
 
+  // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
+  if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {
+    // its owner as a push subscription's: a paired device, null for a local/token/Tailscale sign-in, undefined for the open LAN
+    const owner = access.level !== "full" ? null : access.device?.id ?? (access.via === "open" ? undefined : null);
+    try { return (await handleAlertWebhookRequest(request, pathname, alertWebhook, owner))!; } catch (error) { return errorResponse(error); }
+  }
   if (pathname === "/api/push" || pathname.startsWith("/api/push/")) {
     try {
       // a paired device owns its alerts; the open LAN (before any pairing) owns them only while
@@ -493,6 +513,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     } : undefined;
     const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
     const relay = access.level === "full" ? { relay: ctx.services.relay.status() } : {};
+    // this PC's relay ID, for a PC that lists it over SSH: a device turns its alerts off by it (shared/machines.ts pcAlertKey)
+    const serverId = access.level === "full" && access.via !== "open" ? ctx.services.relay.serverId() : undefined;
     // what this PC has of the Herdr app's runtime, for Settings: never waited for, no path in it.
     // Only a driving owner is told: a session name can name a project, which a watching device or a
     // stranger on an open install has no need to read
@@ -507,7 +529,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
       return jsonResponse({ ok: true, herdr, auth, ...relay, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
-        web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } }, 200, securityHeaders);
+        web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null, ...(serverId ? { server_id: serverId } : {}) } }, 200, securityHeaders);
     } catch (error) {
       return errorResponse(error);
     }
@@ -567,7 +589,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const receipt = orderSequence.moved();
     void machines?.refreshLocal();
     return receipt;
-  }, shellAgents);
+  }, shellAgents, options.localFiles !== false);
   if (workspaceResponse) return workspaceResponse;
 
   const pluginResponse = await handlePluginRequest(request, url, pathname, options);

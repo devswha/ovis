@@ -206,11 +206,16 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
   const merged = new Map<string, AccountTombstone>();
   for (const tombstone of [...read.flatMap((list) => list ?? []), ...pending]) {
     const kept = merged.get(tombstone.key);
-    if (!kept || tombstone.removed_at > kept.removed_at) merged.set(tombstone.key, tombstone);
+    if (!kept) { merged.set(tombstone.key, tombstone); continue; }
+    // the account's removal outranks a revoke on the PC (only it keeps a relay code out), with the later of the two times
+    const local = (t: AccountTombstone) => t.record_id === "local";
+    const winner = local(kept) && !local(tombstone) ? tombstone : !local(kept) && local(tombstone) ? kept : tombstone.removed_at > kept.removed_at ? tombstone : kept;
+    const removedAt = tombstone.removed_at > kept.removed_at ? tombstone.removed_at : kept.removed_at;
+    merged.set(tombstone.key, { ...winner, removed_at: removedAt });
   }
   const tombstones = [...merged.values()];
   for (const [index, path] of paths.entries()) {
-    if ((read[index] ?? []).length !== tombstones.length || tombstones.some((t) => !read[index]?.some((own) => own.key === t.key && own.removed_at === t.removed_at))) {
+    if ((read[index] ?? []).length !== tombstones.length || tombstones.some((t) => !read[index]?.some((own) => own.key === t.key && own.removed_at === t.removed_at && own.record_id === t.record_id))) {
       writePrivateState(path, { v: 1, tombstones });
     }
   }
@@ -234,8 +239,11 @@ export class DeviceStore {
   private unconfirmedFirstPairs: UnconfirmedFirstPair[] = [];
   private readonly path: string;
   private readonly revocations = new Map<string, Set<() => void>>();
+  /** Sessions of a row, told when a `link` moves it to another key (onLinked). */
+  private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   private readonly revokeAllListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
+  private readonly codeStarts = new Set<() => void>();
   private readonly removals = new Set<(event: DeviceRemovedEvent) => void>();
   private readonly tombstonePath: string;
   private readonly pendingTombstonePath: string;
@@ -333,6 +341,17 @@ export class DeviceStore {
     this.unconfirmedFirstPairs = [];
   }
 
+  /** Hears of a `link` moving row `id` to another key, with the id of the session that sent it. */
+  onLinked(id: string, listener: (sessionId: string) => void): () => void {
+    const listeners = this.relinks.get(id) ?? new Set<(sessionId: string) => void>();
+    listeners.add(listener);
+    this.relinks.set(id, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.relinks.delete(id);
+    };
+  }
+
   /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
   onRevoke(id: string, close: () => void): () => void {
     if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
@@ -383,6 +402,12 @@ export class DeviceStore {
     }));
   }
 
+  /** Hears of every new six-digit code, which replaces the one pending (a typed relay code bound to it goes: server/relay/pair-code.ts). */
+  onPairingStarted(listener: () => void): () => void {
+    this.codeStarts.add(listener);
+    return () => { this.codeStarts.delete(listener); };
+  }
+
   /** The current code when it can still be used, without changing its attempts or expiry. */
   activePairing(now = Date.now()): PairingCode | null {
     const pending = this.pending;
@@ -399,7 +424,9 @@ export class DeviceStore {
     this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0, ...from };
-    return { code, expires_at: new Date(this.pending.expires).toISOString() };
+    const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
+    for (const listener of this.codeStarts) listener();
+    return started;
   }
 
   /** `{ token }` when the code is right; null when it is wrong, spent or expired. */
@@ -457,14 +484,21 @@ export class DeviceStore {
     // a code started through the relay is not a pairing made on this PC (docs/account.md, rule 5)
     const remote = this.pending?.remote ?? false;
     const startedBy = this.pending?.startedBy ?? null;
-    // a code started through the relay is not a pairing made on this PC; a member's code goes with the member
-    if ((remote && (this.accountError !== null || this.isTombstoned(publicKey))) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
+    // a code started through the relay is not a pairing made on this PC; a member's code goes with the member.
+    // On a PC in no account such a code may bring back a key this PC revoked itself, as before account linking;
+    // never one the account removed
+    const accountless = this.account() === null;
+    const refusedKey = accountless ? this.tombstones.some((t) => t.key === publicKey && t.record_id !== "local") : this.isTombstoned(publicKey);
+    if ((remote && (this.accountError !== null || refusedKey)) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
       this.noteRelayFailure("code", now);
       return null;
     }
-    // a device let in by a code started through the relay is its starter's addition, not a pairing made on this PC (removeAccountKey)
-    const paired = this.enrollRelay(label, publicKey, now, true, startedBy ?? undefined);
-    if (!remote) this.clearTombstone(publicKey);
+    // a device let in by a code started through the relay is its starter's addition, not a pairing made on this PC (removeAccountKey);
+    // one that brings back a key this PC revoked itself (on a PC in no account) undoes that revoke, and is the PC's own
+    // pairing, so a tombstone that comes back (a sibling dir, a stop before it is cleared) takes it only if newer
+    const undoesRevoke = remote && accountless && this.isTombstoned(publicKey);
+    const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
+    if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
   }
 
@@ -686,6 +720,9 @@ export class DeviceStore {
 
   has(id: string): boolean { return this.devices.some((device) => device.id === id); }
 
+  /** Whether the device may answer a pane's prompt: paired to drive, not to watch. */
+  canDrive(id: string): boolean { return this.devices.some((device) => device.id === id && device.role === "drive"); }
+
   private pruneUnconfirmedFirstPairs(now: number): void {
     this.unconfirmedFirstPairs = this.unconfirmedFirstPairs.filter(({ expires }) => now <= expires);
   }
@@ -695,8 +732,9 @@ export class DeviceStore {
   }
 
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */
-  accountSigner(key: string, account: string): DeviceMatch | null {
-    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && d.role === "drive" && !this.stale(d));
+  /** The member of `account` holding `key`: a drive one, unless `anyRole` (a device signing its own leave). */
+  accountSigner(key: string, account: string, anyRole = false): DeviceMatch | null {
+    const device = this.devices.find((d) => d.relay_public_key === key && d.account === account && (anyRole || d.role === "drive") && !this.stale(d));
     return device ? { id: device.id, label: device.label, role: device.role } : null;
   }
 
@@ -751,17 +789,21 @@ export class DeviceStore {
     if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.created_at > record.issuedAt)) return false;
     const recordId = record.id;
     const fresh = !this.isTombstoned(key);
-    if (fresh) this.writeTombstones([...this.tombstones, { key, account, record_id: recordId, removed_at: new Date(now).toISOString() }]);
+    const removal = { key, account, record_id: recordId, removed_at: new Date(now).toISOString() };
+    if (fresh) this.writeTombstones([...this.tombstones, removal]);
+    // a key this PC revoked first becomes the account's removal, so a code started through the relay cannot bring it back
+    else if (this.tombstones.some((t) => t.key === key && t.record_id === "local")) this.writeTombstones(this.tombstones.map((t) => t.key === key ? removal : t));
     const ids = this.devices.filter((d) => d.relay_public_key === key).map((d) => d.id);
     for (const id of ids) this.revoke(id, record.by);
     return fresh || ids.length > 0;
   }
 
   /**
-   * A `link` the device `deviceId` sent over its own session: its row takes `key` and joins `account`
-   * in one write. Its sessions stay: the device is the same, and a role change is what ends them.
+   * A `link` the device `deviceId` sent over its own session `sessionId`: its row takes `key` and joins
+   * `account` in one write. The row's other sessions signed in with a key it no longer has, so they end
+   * (`auth_changed`); the linking one goes on until it signs in again with the new key.
    */
-  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string): PairedDevice | null {
+  linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = ""): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return null;
@@ -769,6 +811,7 @@ export class DeviceStore {
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;
+    for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;
   }
 
