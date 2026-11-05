@@ -401,8 +401,8 @@ export function App() {
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, webDialogCover, contentReady } = usePaneCoverage({ contentKey });
-  // a popup file, a diff or Files as a dialog over the pane: a page opened from the palette would go under it
-  const localPageCovered = (filesOpen && !filesDocked) || diffViewing !== null || (viewing !== null && !fileDocked);
+  // a dialog over the pane (a popup file, a diff, Files, Settings, New workspace, a PC's): a page opened from the palette would go under it
+  const localPageCovered = (filesOpen && !filesDocked) || diffViewing !== null || (viewing !== null && !fileDocked) || settingsOpen || newSessionOpen || machineDialog !== null;
   // covered by something (closing it brings the pane into view again), or in view with its content still loading
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen

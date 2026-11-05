@@ -402,9 +402,10 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       return list;
     }
     // an address on this PC leads the list, the page opened in the web panel (as VS Code's Simple
-    // Browser takes one); not one the panel refuses (lib/webPanel.ts panelUrl), the app itself included
+    // Browser takes one); not one the panel refuses (lib/webPanel.ts panelUrl), the app itself included.
+    // A status filter is about panes: it leaves the page out, as it does the actions
     const { openLocalPage } = actions;
-    const page = openLocalPage === null ? null : localPageAddress(text, window.location);
+    const page = openLocalPage === null || (!actionsOnly && filter !== "all") ? null : localPageAddress(text, window.location);
     if (openLocalPage !== null && page !== null && panelUrl(page, window.location) !== null) {
       const { host, pathname, search, hash } = new URL(page);
       const rest = `${pathname}${search}${hash}`;

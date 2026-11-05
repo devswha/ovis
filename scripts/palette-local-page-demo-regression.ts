@@ -96,6 +96,30 @@ async function run(browser: Browser, origin: string, port: number, width: number
   await page.getByText("No matching panes or actions", { exact: true }).waitFor();
   assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row over Files`);
   await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
+  await files.first().waitFor({ state: "detached" });
+
+  // nor over Settings
+  await page.keyboard.press("ControlOrMeta+Shift+Comma");
+  await page.locator(".settings-dialog").waitFor();
+  await page.keyboard.press("ControlOrMeta+Shift+K");
+  await search.fill(`localhost:${port}`);
+  await page.getByText("No matching panes or actions", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row over Settings`);
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
+  await page.locator(".settings-dialog").waitFor({ state: "detached" });
+
+  // a status filter is about panes: it leaves the page out, as it does the actions
+  await page.keyboard.press("ControlOrMeta+Shift+K");
+  await search.fill(`localhost:${port}`);
+  await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).waitFor();
+  await page.locator('.palette-filter[data-status="idle"]').click();
+  await page.locator('.palette-filter[data-status="idle"][aria-checked="true"]').waitFor();
+  assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row under a status filter`);
+  await page.keyboard.press("Escape");
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
   console.log(`PASS local page from the palette ${tag}`);
