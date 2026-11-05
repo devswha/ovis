@@ -132,13 +132,13 @@ const cache = new Map<string, { source: RecognizedConversation["source"]; signat
 
 /** A restart may parse the same files differently: its answers never match an earlier ETag. */
 const PROCESS_VERSION = randomUUID();
-const copilotBindings = new Map<string, { identity: string; prefix: string }>();
+const copilotBindings = new Map<string, { identity: string; prefix: string; session: string }>();
 
-function copilotPrefix(paneId: string, identity: string): string {
+function copilotPrefix(paneId: string, identity: string, path: string): string {
   const previous = copilotBindings.get(paneId);
   if (previous?.identity === identity) return previous.prefix;
   const prefix = `cp${createHash("sha256").update(`${PROCESS_VERSION}\0${paneId}\0${identity}\0${randomUUID()}`).digest("hex").slice(0, 16)}.`;
-  remember(copilotBindings, paneId, { identity, prefix }, PANE_READS_MAX);
+  remember(copilotBindings, paneId, { identity, prefix, session: nodePath.basename(nodePath.dirname(path)) }, PANE_READS_MAX);
   return prefix;
 }
 
@@ -1890,10 +1890,17 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (!(error instanceof ConversationUnavailable)) throw error;
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (pane === undefined) { launchedAgents.forget(paneId); throw error; }
-    // A chat that names the history it shows may wait out a rejection that says nothing of that history's end
-    if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)
-      && !(page.history_id !== undefined && copilotRecoverable(error.diagnostic))) throw new HistoryChanged();
-    if (pane.agent === "copilot") throw error;
+    if (pane.agent === "copilot") {
+      // A chat that names the history it shows may wait out a rejection that says nothing of that
+      // history's end, while herdr reports no other session than the one that history was read from
+      const shown = copilotBindings.get(paneId);
+      const reported = pane.agent_session?.value;
+      const moved = copilotRecoverable(error.diagnostic) && page.history_id !== undefined
+        && (shown === undefined || !page.history_id.startsWith(shown.prefix) || (reported != null && reported !== shown.session));
+      const waits = page.history_id !== undefined && copilotRecoverable(error.diagnostic) && !moved;
+      if ((page.before !== undefined || page.since !== undefined || page.from !== undefined) && !waits) throw new HistoryChanged();
+      throw moved ? new ConversationUnavailable(error.message, error.screen, "copilot_report_mismatch") : error;
+    }
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);
     if (launch === null) {
@@ -1961,7 +1968,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
   rememberPaneRead(paneId, resolved.path);
   const history = resolved.source === "copilot-transcript" ? copilotHistoryIdentity(resolved.path) : null;
-  const prefix = history !== null && resolved.source === "copilot-transcript" ? copilotPrefix(paneId, `${resolved.binding}\0${history}`) : null;
+  const prefix = history !== null && resolved.source === "copilot-transcript" ? copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path) : null;
   let answer: RecognizedConversation;
   try {
     answer = resolved.source === "agy-transcript" ? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome)
@@ -2961,7 +2968,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   if (resolved.source === "copilot-transcript") {
     let history: string;
     try { history = copilotHistoryIdentity(resolved.path); } catch { return null; }
-    const prefix = copilotPrefix(paneId, `${resolved.binding}\0${history}`);
+    const prefix = copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path);
     if (!ref.startsWith(prefix)) return null;
     nativeRef = ref.slice(prefix.length);
     if (!nativeRef.includes("@")) return null;
@@ -2973,7 +2980,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
     const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);
     if (current?.path !== resolved.path || current.binding !== resolved.binding) return null;
     try {
-      if (!ref.startsWith(copilotPrefix(paneId, `${resolved.binding}\0${copilotHistoryIdentity(resolved.path)}`))) return null;
+      if (!ref.startsWith(copilotPrefix(paneId, `${resolved.binding}\0${copilotHistoryIdentity(resolved.path)}`, resolved.path))) return null;
     } catch { return null; }
   }
   return output;

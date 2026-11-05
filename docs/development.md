@@ -60,8 +60,8 @@ The reader retains a continuity-loss reason across ordinary appends, rather than
 later failures to a generic resume error. A new valid registration can establish ownership again.
 Copilot rotates its process log by copying it to `process-<ts>-<pid>.1.log` (older copies shift to
 `.2`, `.3`, …) and truncating the open file. The reader continues through the newest copy that
-starts with every byte it already read; with no such copy it reads the truncated file as a log
-first seen now, keeping only an observed release.
+starts with every byte it already read, without reading older copies; with no such copy the lines
+in between are unknown, so ownership stays rejected until the log registers a session again.
 `copilot_log_read_raced` and `copilot_log_partial` describe the current read, not a permanent
 revocation. They still require a later successful ownership check; they do not authorize cached
 history by themselves.
@@ -73,8 +73,9 @@ log. `time` uses the current wall clock; Chat throttling and elapsed failure dur
 separate monotonic clock so a clock correction or host suspend does not fabricate the event time.
 A verified transcript-read failure remains retryable (`conversation_read_pending`, HTTP 503);
 unknown or conflicting ownership still fails closed, without returning the previous session.
-When a refresh names the history it shows and the rejection is not a settled one (an observed
-release, a peer claim or a report naming another session), the scrollback answer carries
+When a refresh names the history this server last proved for the pane, herdr reports no other
+session for it, and the rejection is not a settled one (an observed release, a peer claim or a
+report naming another session), the scrollback answer carries
 `recovery: "waiting"`: the chat keeps its turns, appends nothing, marks them paused and reads again
 on the pane's next activity (a send, a status change, a transcript push, terminal output, a session
 change or the tab showing) instead of on a timer.

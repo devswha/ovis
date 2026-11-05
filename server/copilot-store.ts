@@ -77,14 +77,17 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
  * Copilot rotates its process log at about 10 MiB: it copies the open file to `<name>.1.log`
  * (older copies move to .2, .3, …) and truncates the open file in place. The newest copy that
  * starts with every byte already consumed holds the lines written since; the newer copies, then
- * the truncated file, follow it. Without that copy the lines in between are unknown: only a known
- * release is kept, and otherwise the open file is read as a log first seen now would be.
+ * the truncated file, follow it. Without that copy the lines in between are unknown, so ownership
+ * stays rejected until the open file registers a session again.
  */
 function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | null {
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
   try {
+    const consumed = cached.hash.copy().digest("hex");
+    // Bytes read to find and replay the copy: only copies newer than the match count.
     let total = 0;
-    for (let index = 1; index <= MAX_LOG_ARCHIVES; index++) {
+    let continued = -1;
+    for (let index = 1; index <= MAX_LOG_ARCHIVES && continued < 0; index++) {
       let fd: number;
       try { fd = openSync(`${target.slice(0, -".log".length)}.${index}.log`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); }
       catch (error) {
@@ -95,13 +98,14 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: num
       archives.push(archive);
       const stat = fstatSync(fd, { bigint: true });
       Object.assign(archive, { size: Number(stat.size), dev: stat.dev, ino: stat.ino });
-      if (!stat.isFile() || (total += Number(stat.size)) > LOG_HASH_BYTES) return null;
+      if (!stat.isFile()) return null;
+      if (archive.size < cached.size) { total += archive.size; continue; }
+      if ((total += archive.size) > LOG_HASH_BYTES) return null;
+      if (logPrefix(fd, cached.size)?.digest("hex") === consumed) continued = archives.length - 1;
     }
-    if (archives.length === 0) return null;
-    const consumed = cached.hash.copy().digest("hex");
-    const continued = archives.findIndex(({ fd, size }) => size >= cached.size && logPrefix(fd, cached.size)?.digest("hex") === consumed);
-    // An older copy than the bytes read says nothing current: replaying it could revive a session left since.
-    if (continued < 0) return cached.selection.kind === "unregistered" ? cached.selection : legacy;
+    // No copy carries on from the bytes read (an older one could revive a session left since):
+    // what was logged in between is unknown, so the rejection stands.
+    if (continued < 0) return null;
     let selected = cached.selection;
     // Until a rotated file holds a line, each read replays these copies from the same anchor: one binding.
     const epoch = cached.epoch;

@@ -185,7 +185,7 @@ for (const loss of ["rewrite", "descriptor gap"] as const) {
   });
 }
 
-for (const archive of ["continued", "unregistered in copy", "pruned", "missing"] as const) {
+for (const archive of ["continued", "continued past large older copies", "unregistered in copy", "pruned", "missing"] as const) {
   it.skipIf(process.platform !== "linux")(`follows a copy-and-truncate log rotation when its copy is ${archive}`, async () => {
     const fixture = await logFixture([session]);
     const { environment, log, pid } = fixture;
@@ -197,11 +197,19 @@ for (const archive of ["continued", "unregistered in copy", "pruned", "missing"]
       const copy = log.replace(/\.log$/, ".1.log");
       if (archive === "pruned") writeFileSync(copy, "only the newest copy\n");
       else if (archive !== "missing") writeFileSync(copy, readFileSync(log));
+      // older copies past the one that continues are never read, whatever their size
+      if (archive === "continued past large older copies") {
+        for (let index = 2; index <= 8; index++) {
+          const older = log.replace(/\.log$/, `.${index}.log`);
+          writeFileSync(older, "");
+          fs.truncateSync(older, 11 * 1024 * 1024);
+        }
+      }
       fs.truncateSync(log, 0);
       appendFileSync(log, "after rotation\n");
       const after = copilotProcessSession(environment, ["copilot"], pid);
-      if (archive === "continued") expect(after).toEqual(before);
-      else if (archive === "pruned") expect(after?.logged).toBe(false);
+      // a held marker never stands in for lines lost with a pruned copy
+      if (archive.startsWith("continued")) expect(after).toEqual(before);
       else expect(after).toBeNull();
     } finally { await fixture.close(); }
   });
@@ -216,7 +224,10 @@ it.skipIf(process.platform !== "linux")("never replays a log copy older than the
     expect(fixture.binding()?.sessionId).toBe(session);
     fs.truncateSync(log, 0);
     appendFileSync(log, "after an uncopied truncation\n");
-    expect(copilotProcessSession(environment, ["copilot"], pid)).toMatchObject({ sessionId: session, logged: false });
+    expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+    // a new registration proves ownership again
+    appendFileSync(log, register(session));
+    expect(copilotProcessSession(environment, ["copilot"], pid)).toMatchObject({ sessionId: session, logged: true });
   } finally { await fixture.close(); }
 });
 
@@ -734,9 +745,16 @@ it.skipIf(process.platform !== "linux")("retries a failed Copilot process lookup
     ownCalls = 0;
     await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_process_lookup_failed", message: "no_session_path" });
     expect(ownCalls).toBe(2);
-    // a chat holding a page start may wait out the failure only when it names the history it shows
-    await expect(paneConversation("own", undefined, { from: "held", history_id: shown.history_id })).rejects.toMatchObject({ diagnostic: "copilot_process_lookup_failed" });
+    // a chat holding a page start may wait out the failure only when it names the history last proved
+    await expect(paneConversation("own", undefined, { from: "held", history_id: changed.history_id })).rejects.toMatchObject({ diagnostic: "copilot_process_lookup_failed" });
     await expect(paneConversation("own", undefined, { from: "held" })).rejects.toBeInstanceOf(HistoryChanged);
+    await expect(paneConversation("own", undefined, { from: "held", history_id: shown.history_id })).rejects.toBeInstanceOf(HistoryChanged);
+    await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toMatchObject({ diagnostic: "copilot_report_mismatch" });
+    // and only while herdr reports no other session for the pane
+    (snapshot.panes[0] as { agent_session?: unknown }).agent_session = { agent: "copilot", kind: "id", source: "herdr:copilot", value: session };
+    await expect(paneConversation("own", undefined, { from: "held", history_id: changed.history_id })).rejects.toBeInstanceOf(HistoryChanged);
+    await expect(paneConversation("own", undefined, { history_id: changed.history_id })).rejects.toMatchObject({ diagnostic: "copilot_report_mismatch" });
+    delete (snapshot.panes[0] as { agent_session?: unknown }).agent_session;
     unavailable = false;
     empty = true;
     ownCalls = 0;
