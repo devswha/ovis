@@ -415,8 +415,11 @@ describe("a Portal that signs its visitors in", () => {
     expect(await ingress(portal.main, { ...forwarded, host: HOST })).toBe("portal");
     expect(await ingress(portal.main, { ...forwarded, host: `${SHORT.toUpperCase()}.` })).toBe("portal");
     expect(await ingress(portal.main, { ...forwarded, host: SHORT })).toBe("portal");
-    // another address, or Portal's without the shape Portal forwards, is some other proxy
+    expect(await ingress(portal.main, { ...forwarded, host: `${HOST}:443` })).toBe("portal");
+    // another address, Portal's name on another port, or Portal's without the shape Portal forwards, is some other proxy
     expect(await ingress(portal.main, { ...forwarded, host: "ovis.example.com" })).toBe("proxy");
+    expect(await ingress(portal.main, { ...forwarded, host: `${HOST}:8443` })).toBe("proxy");
+    expect(await ingress(portal.main, { ...forwarded, host: `${SHORT}:8443` })).toBe("proxy");
     expect(await ingress(portal.main, { ...portal.owner, host: HOST })).toBe("proxy");
     expect(await ingress(portal.main, { ...portal.owner, host: HOST, "x-forwarded-for": "203.0.113.9" })).toBe("proxy");
     expect(await ingress(portal.main, { ...forwarded, host: HOST, "x-forwarded-proto": "http" })).toBe("proxy");

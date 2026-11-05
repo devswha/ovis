@@ -529,7 +529,13 @@ export class PortalService {
   serves(host: string | null): boolean {
     const name = host === null ? null : hostName(host);
     if (name === null || this.url === null || this.auth.method !== "none") return false;
-    return [this.url, this.shortUrl].some((url) => url !== null && hostName(new URL(url).host) === name);
+    // its port too: the same name on another port is another server's (https's own port when none is given)
+    const port = Number(/:(\d{1,5})$/.exec(host!)?.[1] ?? 443);
+    return [this.url, this.shortUrl].some((url) => {
+      if (url === null) return false;
+      const served = new URL(url);
+      return hostName(served.host) === name && Number(served.port || 443) === port;
+    });
   }
 
   /** Only private links have invite records; every unrecorded Portal identity may watch. */
