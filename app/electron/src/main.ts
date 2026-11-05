@@ -304,7 +304,12 @@ async function startUpdates(): Promise<void> {
     // the .deb installs first and the app quits (stopping the server) only once it did, then starts again;
     // a cancelled prompt leaves the app and its server running. The AppImage starts its new copy at
     // once, so the server stops before.
-    updateReady = plan.installer === "deb" ? () => autoUpdater.quitAndInstall() : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
+    // apt, not DebUpdater's default dpkg: dpkg's fallback runs `apt-get install -f` after any failure,
+    // so a cancelled prompt asked again and a no-op repair restarted Ovis on its old version. apt
+    // installs the file and its dependencies in one command, and fails when it did not install.
+    updateReady = plan.installer === "deb"
+      ? () => { process.env["ELECTRON_BUILDER_LINUX_PACKAGE_MANAGER"] = "apt"; autoUpdater.quitAndInstall(); }
+      : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
     rebuildTrayMenu();
   });
   const check = () => void autoUpdater.checkForUpdates().catch((error: unknown) => console.error(`Update check failed: ${message(error)}`));
