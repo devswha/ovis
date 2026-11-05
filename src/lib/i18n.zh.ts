@@ -114,6 +114,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "显示终端",
   "Show the chat": "显示聊天",
   "Close this half": "关闭这一半",
+  "Remove from the split": "从拆分中移除",
+  "Resize the split": "调整拆分大小",
   "Toggle sidebar (⌘⇧B)": "切换侧边栏 (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "聊天记录 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "实时终端 (⌘⇧J)",
@@ -242,6 +244,7 @@ const BASE: Record<string, string> = {
   "Submit": "提交",
   "Recommended": "推荐",
   "Agents": "代理",
+  "Show {name}": "显示 {name}",
   "Check again": "重新检查",
   "Setup guide": "设置向导",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
@@ -426,6 +429,8 @@ const BASE: Record<string, string> = {
   "New group": "新分组",
   "Add group": "添加分组",
   "No group": "无分组",
+  "Context {percent}% left": "上下文剩余 {percent}%",
+  "{used} of {window} tokens": "{used} / {window} Token",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
