@@ -175,6 +175,15 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
   });
 
+  it("keeps the composer's Paste and send button in its own key, out of an old tab's whole-record save (#2493)", () => {
+    saveSettings(sanitizeSettings({ composerPasteSend: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerPasteSend");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerPasteSend).toBe(true);
+    records.set("ovis:composer-paste-send", "\"true\"");
+    expect(loadSettings().composerPasteSend).toBe(false);
+  });
+
   it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
     for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
       expect(loadSettings()[key]).toBe(false);

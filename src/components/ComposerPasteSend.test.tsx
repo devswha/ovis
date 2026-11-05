@@ -146,6 +146,21 @@ it.each([
   expect(composerDrafts.read(key).text).toBe(change === null ? "typed meanwhile" : "");
 });
 
+it.each([
+  ["the box is typed in and cleared", [() => composerDrafts.set(draftKey, "typed"), () => composerDrafts.set(draftKey, "")], ""],
+  ["another tab stores a draft", [() => paneLifetimes.paneStorage.setItem(draftKey, "another tab's draft")], "another tab's draft"],
+] as const)("sends nothing when %s while the clipboard is read", async (_name, changes, left) => {
+  const sent: unknown[][] = [];
+  let answer: (text: string) => void = () => {};
+  readText = () => new Promise((resolve) => { answer = resolve; });
+  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await press();
+  for (const change of changes) await act(async () => { change(); });
+  await act(async () => { answer("from the clipboard"); });
+  expect(sent).toEqual([]);
+  expect(paneLifetimes.paneStorage.getItem(draftKey) ?? "").toBe(left);
+});
+
 it("reads the clipboard once for a double press", async () => {
   const sent: unknown[][] = [];
   let reads = 0;

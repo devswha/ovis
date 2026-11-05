@@ -1020,6 +1020,9 @@ export function Composer({
    */
   const [pasteReading, setPasteReading] = useState(false);
   const pasteReadingRef = useRef(false);
+  /** each change of the box's text: a read that answers after any edit (typed and cleared too) sends nothing */
+  const textEdits = useRef({ text, count: 0 });
+  if (textEdits.current.text !== text) textEdits.current = { text, count: textEdits.current.count + 1 };
   /** the clipboard text put in the box, sent once the box is drawn with it (Send reads the drawn text) */
   const pasted = useRef<{ key: string; text: string } | null>(null);
   useEffect(() => {
@@ -1035,6 +1038,7 @@ export function Composer({
     if (typeof clipboard?.readText !== "function") { setNote(t("Paste is not available here. Use the keyboard's own paste in the message box.")); return; }
     const key = draftKey;
     const pressedOn = drops.current;
+    const editsAt = textEdits.current.count;
     const here = (): boolean => mounted.current && draftKeyRef.current === key;
     pasteReadingRef.current = true;
     setPasteReading(true);
@@ -1044,7 +1048,11 @@ export function Composer({
       if (clip.trim().length === 0) { setNote(t("Nothing to paste: the clipboard is empty.")); return; }
       if (clip.length > MAX_COMPOSER_CHARS) { setNote(t("The clipboard holds more than a message's {max} characters. Nothing was sent.", { max: formatChars(MAX_COMPOSER_CHARS) })); return; }
       if (!connectedRef.current || drops.current !== pressedOn || composingRef.current || textRef.current !== ""
-        || attachmentsRef.current.length > 0 || composerDrafts.read(key).sending) return;
+        || textEdits.current.count !== editsAt || attachmentsRef.current.length > 0) return;
+      // another tab may have stored a draft for this pane whose storage event has not reached this one yet
+      composerDrafts.refresh(key);
+      const stored = composerDrafts.read(key);
+      if (stored.text !== "" || stored.sending) return;
       textRef.current = clip;
       caretRef.current = clip.length;
       pasted.current = { key, text: clip };
