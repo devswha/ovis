@@ -195,10 +195,12 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
+Revoke on the PC has none). A client trusts none of them before it checks it (below).
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -217,20 +219,30 @@ answers every outcome, never failing the whole batch for one record:
 Outcomes: `applied`, `unchanged` (an `add` for a key already present; a `remove` for a key already
 removed and absent, or signed before this PC paired the key again) and `refused` with a code. A
 `remove` for a key this PC never had still leaves its tombstone, so the key cannot be added later.
+A `remove` refused `signer_not_member` waits on the PC with the mailbox's own such records
+(`account-pending.json`) and applies once its signer becomes a member there.
 
 `POST /api/account/enroll` `{ "account": "acct_1", "records": [<add>, …] }`: what a member sends a
 PC it just paired. The request's own device must already be a member of `account` (it links itself
 first). Same answer as `records`.
 
+What a client keeps: on each connection to a PC of its account it reads that PC's `removals` and
+keeps, verbatim, each one that verifies, is for its account and is signed by its own key or by a
+device it approved itself (an `add` it signed), at most 256. A PC cannot make it keep a removal
+signed by a key the PC made up, and it signs nothing for any of them.
+
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it sends that PC, over a session signed in with
-the account key, the `remove`s it signed itself, as signed (through `records`), so the PC tombstones
-those keys. It signs nothing for the enrollment and takes nothing from another PC's device list or
-status. It reads every record's outcome and sends again, on its next connection to that PC, each one
-the PC did not answer or answered `account_unavailable`, and any removal it signed while the
-enrollment ran. It enrolls no `add` yet: one it signed may be for a device another member removed
-since, and that member's `remove` does not reach a PC new to the account. Adds come with relaying
-the account's signed removals (#2956); until then a new PC admits the account's devices by approval.
+the account key, the `remove`s it signed itself and the ones it kept, as signed (through
+`records`), so the PC tombstones those keys, now or once their signer is a member there. It takes
+no key from another PC's device list or status. It reads every record's outcome and sends again, on
+its next connection to that PC, each one the PC did not answer or answered `account_unavailable`,
+and any removal it signed while the enrollment ran.
+
+It enrolls no `add`. No client can know it holds every removal of the account: one may sit in the
+unread mailbox of a PC that is off, or only on PCs this client has no pairing with. An add it
+signed earlier could then let a device another member removed into the new PC. So a new PC admits
+the account's devices by approval instead: each device asks once and is compared digit by digit.
 
 ### Introductions
 
@@ -263,7 +275,8 @@ is what authenticates the PC.
 
 - Membership lives on the rows of `devices.json` (`account`, `added_by`); the PC's account is the
   account of its members. Tombstones live beside it, in `account-tombstones.json` (readable by your
-  user only). A tombstone file that will not parse is not an empty one: account records are then
+  user only), each with the signed `remove`s that made it, as received, one per signer (at most
+  8). A tombstone file that will not parse is not an empty one: account records are then
   refused (`account_unavailable`) until it is restored, and so are a code started through the relay
   and a remote approval; the mailbox collects nothing meanwhile, so no removal is acknowledged
   unapplied. Pairing on the PC itself and signing in are unchanged. A **Revoke** meanwhile writes its
@@ -356,6 +369,15 @@ OAuth's authorization code flow with PKCE, `S256` only:
    "device_code" }` every `interval` seconds: 400 `authorization_pending` until the person approves,
    `slow_down` for a poll too soon (the interval grows by five seconds), `access_denied` if they
    refused, `expired_token` once it ran out; then the same answer as the other grants, once.
+   A browser on a PC's own address signs in the same way, bound to a verifier: it starts with
+   `{ "code_challenge", "code_challenge_method": "S256" }` (as in step 1, from 32 random bytes),
+   the service answers with `"code_challenge_method": "S256"` added, and every poll carries
+   `"code_verifier"`. A bound poll without that verifier, or with another, answers 400
+   `invalid_grant` before GitHub is asked and without moving the interval, so the `device_code`
+   alone redeems nothing. The page keeps the verifier in memory only, uses the service only when
+   it named the method, links only to `https://github.com/login/device`, waits `Retry-After` on a
+   429, and keeps no session from a sign-in cancelled meanwhile (it is stored under the same
+   lock as a refresh or a sign-out).
 6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
 
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
@@ -370,8 +392,13 @@ sign-in. The hosted shell's Content-Security-Policy lets it reach `https://accou
 The desktop app offers sign-in in **Settings → Phone & devices** with `https://account.ovis.sh`
 unless `OVIS_ACCOUNT_SERVICE_URL` names another https service. `OVIS_ACCOUNT_SERVICE_URL=off`
 turns the account off for the app and its server alike: no sign-in, no account origin in the
-pages' policy, no mailbox. A browser on the PC's own address offers no sign-in either way: the
-service sends a sign-in back only to the three redirects above, none of which is that address. Token errors are 400 `invalid_grant` (a wrong, spent or expired code, verifier, refresh
+pages' policy, no mailbox. A browser on the PC's own address cannot take a redirect (the service
+sends a sign-in back only to the three above, none of which is that address), so it signs in
+with GitHub's device flow (step 5), in the same place, with GitHub only: the PC writes
+`<meta name="ovis-pc-account-service">` into its own shell with exactly the origin its policy
+admits (none when the account is `off`), and the page offers the sign-in only on a secure page
+(https, or `localhost`), where no one on the network could have rewritten the script that holds
+the sign-in. The hosted shell keeps its redirect sign-in, and the desktop app its loopback one. Token errors are 400 `invalid_grant` (a wrong, spent or expired code, verifier, refresh
 token or identity token) and 400 `unsupported_grant_type`; an access token that expired or was
 signed out answers 401 `unauthorized` on every other request.
 
@@ -452,7 +479,21 @@ the account service gets an answer the relay refuses.
   together with a stolen sign-in still could.
 - **A PC that stays off while the account service hides a removal** keeps the removed device until a
   client connects to it and hands over the record directly.
-- **A coding agent on the desktop app's machine** can drive the app's account key (rule 3).
+- **Relayed removals are best effort.** A client relays the removals it kept only when it brings a
+  PC into the account, not ones it learns later; a PC from before relaying (#2956) drops one whose
+  signer is not its member yet; a PC keeps at most 8 signers' records per removed key and at most
+  1000 waiting records, and a client keeps at most 256. None of this admits a device: adds are not
+  enrolled, so a new PC still lets the account's devices in only by approval.
+- **A coding agent on the desktop app's machine** can drive the app's account key (rule 3). The same
+  holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
+  compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser
+  paired with a code holds a cookie), so its signatures admit nobody.
+- **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
+  every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
+  its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still
+  cannot add a device to a PC: that takes a member's signature and the PC's own `devices.json`, and
+  a join is still compared digit by digit on a device already linked. The page asks to enter a
+  code only if this page showed it, and GitHub's page names the app (Ovis).
 
 ## Code
 

@@ -10,6 +10,10 @@
  */
 import type { IDisposable, Terminal } from "@xterm/xterm";
 import { terminalDrawsPictures } from "../terminalImages.ts";
+import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminalGlyphs.ts";
+import { readableColor } from "../terminalFold.ts";
+import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
+import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
@@ -32,12 +36,26 @@ export function newLines(before: readonly string[], after: readonly string[]): s
   return after.filter((line, y) => line && (y >= rows - best || before[y + best] !== line));
 }
 
+/** Nerd Font icons and the like, which a font means to fill one cell (terminalGlyphs.ts oversizedIcon) */
+const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
+/** Powerline's separators run from the top of the row to the bottom: made smaller, a prompt's coloured segments would not join, so they are only narrowed */
+const POWERLINE = /^[\ue0b0-\ue0d7]$/u;
+/** Powerline glyphs xterm draws in their own colour whatever the contrast (its isPowerlineGlyph) */
+const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
+/** distinct glyphs measured before the measures start over: a long session of ever new graphemes must not grow without end */
+const MEASURED_MAX = 4096;
+
 const latin1 = new TextDecoder("latin1");
 /** an iTerm2 inline picture (OSC 1337 File=) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
 export function hasXtermPicture(data: string | Uint8Array): boolean {
   const text = typeof data === "string" ? data : latin1.decode(data);
   return text.includes("\x1b]1337;File=") || /\x1bP[0-9;]*q/.test(text);
 }
+
+/** how long after a wheel or a swipe a frame is taken for herdr's repaint of the scrolled screen, not for output */
+const VIEW_REPAINT_MS = 1000;
+/** a wheel or swipe, and herdr's view moved by the viewport tools (TerminalViewportTools.tsx) */
+const VIEW_GESTURES = ["wheel", "touchmove", VIEW_MOVED_EVENT];
 
 /** lines of one frame read out, so a flood does not drown the reader */
 const ANNOUNCED_LINES = 20;
@@ -105,10 +123,16 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   let primed = false;
   // bytes reached libghostty since the last frame: a frame without any only scrolled the view, which announces nothing
   let written = false;
+  // on herdr's own server xterm keeps no history: a wheel or a swipe scrolls herdr's screen, which comes back as
+  // written bytes (TerminalViewportTools.tsx). Frames until a moment after the gesture tell nothing
+  let viewMovedUntil = 0;
+  const viewMoved = (): void => { if (!term.options.scrollback) viewMovedUntil = performance.now() + VIEW_REPAINT_MS; };
   // the screen at the bottom as the last frame there drew it
   let bottomText: string[] = [];
   // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
   let rowHtml: string[] = [];
+  // the runs each row was drawn from, to draw it again once a late face changes what its glyphs measure
+  const rowRuns: GhosttyRun[][] = [];
   let cellW = 0;
   let cellH = 0;
   let frameQueued = false;
@@ -152,6 +176,19 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
   };
 
+  /** every row drawn again from its runs: a new cell size or a late face changes how its glyphs fit */
+  const redrawRows = (): void => {
+    rowRuns.forEach((runs, y) => {
+      const row = rowEls[y];
+      if (!row) return;
+      let html = "";
+      for (const run of runs) html += runHtml(run);
+      if (rowHtml[y] === html) return;
+      row.innerHTML = html;
+      rowHtml[y] = html;
+    });
+  };
+
   let grid = "";
   const fit = (): void => {
     metrics();
@@ -160,7 +197,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     if (now === grid) return;
     grid = now;
     vt.resize(term.cols, term.rows, cellW, cellH);
+    // rows past a shorter grid are gone
+    rowRuns.length = Math.min(rowRuns.length, term.rows);
     rebuildRows();
+    redrawRows();
     schedule();
   };
 
@@ -171,28 +211,107 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     cursor.style.background = palette.cursor;
   };
 
+  // glyphs are fitted to their cells as xterm's rows are (terminalGlyphs.ts): a wide glyph that leaves its two cells
+  // half empty is drawn larger (Hangul on a 0.6em Latin cell), an icon wider than its one cell smaller
+  let measure: CanvasRenderingContext2D | null | undefined;
+  const widths = new Map<string, number>();
+  const asked = new Set<string>();
+  const glyphWidth = (text: string, flags: number): number => {
+    const key = `${flags & (STYLE_BOLD | STYLE_ITALIC)}${text}`;
+    let width = widths.get(key);
+    if (width === undefined) {
+      measure ??= document.createElement("canvas").getContext("2d");
+      if (!measure) return 0;
+      const { fontFamily, fontSize, fontWeight, fontWeightBold } = term.options;
+      measure.font = `${flags & STYLE_ITALIC ? "italic " : ""}${flags & STYLE_BOLD ? fontWeightBold ?? "bold" : fontWeight ?? "normal"} ${fontSize ?? 13}px ${fontFamily ?? "monospace"}`;
+      width = measure.measureText(text).width;
+      if (widths.size >= MEASURED_MAX) widths.clear();
+      widths.set(key, width);
+    }
+    return width;
+  };
+  /** a cell drawn in a box of its own, or null for plain text; `glyph` is the inherited style its glyph takes (runHtml) */
+  const fittedCell = ({ text, wide }: GhosttyRun["cells"][number], flags: number, glyph: string): string | null => {
+    if (!wide && !PRIVATE_USE.test(text)) return null;
+    // each character asks for its faces once a font, as xterm's rows do
+    if (!asked.has(text)) {
+      if (asked.size >= MEASURED_MAX) asked.clear();
+      asked.add(text);
+      lateFaces.ask(term.options.fontFamily ?? "", text);
+    }
+    const width = glyphWidth(text, flags);
+    const size = term.options.fontSize ?? 13;
+    const own = (...css: string[]): string => [...css, glyph].filter(Boolean).join(";");
+    // xterm's `span:not(.xterm-bold)` rule sets every span's weight under its screen: a bold cell's box says it is bold
+    const bold = flags & STYLE_BOLD ? " xterm-bold" : "";
+    if (!wide) {
+      if (!oversizedIcon(text, width, cellW)) return null;
+      // a separator keeps its height and is narrowed to its cell, as xterm's rows draw it
+      if (POWERLINE.test(text)) return `<span class="ghostty-icon${bold}"><span class="ghostty-fit${bold}" style="${own(`transform:scaleX(${cellW / width})`, "transform-origin:0 0")}">${escapeHtml(text)}</span></span>`;
+      return `<span class="ghostty-icon${bold}" style="${own(`font-size:${size * iconScale([width], cellW)}px`)}">${escapeHtml(text)}</span>`;
+    }
+    const fit = glyphFit(2 * cellW - width, width, cellW);
+    if (!fit) return `<span class="ghostty-wide${bold}"${glyph ? ` style="${glyph}"` : ""}>${escapeHtml(text)}</span>`;
+    const scale = fit.scale !== 1 ? `font-size:${size * fit.scale}px` : "";
+    const stretch = fit.stretch !== 1 ? `transform:scaleX(${fit.stretch})` : "";
+    return `<span class="ghostty-wide${bold}"><span class="ghostty-fit${bold}" style="${own(scale, stretch)}">${escapeHtml(text)}</span></span>`;
+  };
+  const lateFaces = followLateFaces(document.fonts as Iterable<FontFace> | undefined, (callback) => requestAnimationFrame(callback), () => {
+    widths.clear();
+    redrawRows();
+  });
+
   const runHtml = (run: GhosttyRun): string => {
     let fg = run.fg, bg = run.bg;
-    if (run.flags & STYLE_INVERSE) [fg, bg] = [bg ?? themeColors(term).background, fg ?? themeColors(term).foreground];
-    const css: string[] = [];
-    if (fg) css.push(`color:${fg}`);
-    if (bg) css.push(`background:${bg}`);
-    if (run.flags & STYLE_BOLD) css.push("font-weight:bold");
-    if (run.flags & STYLE_ITALIC) css.push("font-style:italic");
-    if (run.flags & STYLE_FAINT) css.push("opacity:.6");
-    if (run.flags & STYLE_INVISIBLE) css.push("color:transparent");
+    const theme = themeColors(term);
+    if (run.flags & STYLE_INVERSE) [fg, bg] = [bg ?? theme.background, fg ?? theme.foreground];
+    // xterm's minimumContrastRatio, as its own rows and a folded mirror draw it (terminalFold.ts cellStyle)
+    const drawn = fg;
+    if (fg !== null || bg !== null) {
+      const text = fg ?? theme.foreground;
+      const readable = readableColor(text, bg ?? theme.background, term.options.minimumContrastRatio ?? 1);
+      if (fg !== null || readable !== text) fg = readable;
+    }
+    // a box, block or Powerline glyph is part of a drawing, its colour against the next one's: xterm keeps it as written
+    // (treatGlyphAsBackgroundColor), and so does this layer
+    const keepsColour = (text: string): boolean => fg !== drawn && (isBoxGlyph(text) || POWERLINE_GLYPH.test(text));
+    // what the run's box alone takes
+    const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
+    if (bg) box.push(`background:${bg}`);
+    if (run.flags & STYLE_BOLD) box.push("font-weight:bold");
+    // what its text inherits: a faint run dims its text, not its background, as xterm and a folded mirror draw it
+    const colours = (colour: string | null): string[] => {
+      const css: string[] = [];
+      if (colour) css.push(`color:${colour}`);
+      if (run.flags & STYLE_FAINT) css.push(`color:color-mix(in srgb, ${colour ?? "currentColor"} 50%, transparent)`);
+      if (run.flags & STYLE_INVISIBLE) css.push("color:transparent");
+      return css;
+    };
+    const rest: string[] = [];
+    if (run.flags & STYLE_ITALIC) rest.push("font-style:italic");
+    // an underline or strikethrough takes the colour of the element that draws it: it goes with the colour
     const lines = [run.flags & STYLE_UNDERLINE_MASK ? "underline" : "", run.flags & STYLE_STRIKE ? "line-through" : ""].filter(Boolean);
-    if (lines.length) css.push(`text-decoration:${lines.join(" ")}`);
+    if (lines.length) rest.push(`text-decoration:${lines.join(" ")}`);
+    const glyph = [...colours(fg), ...rest];
+    const kept = colours(drawn ?? theme.foreground);
+    // an element whose parent has an inherited value of its own (a colour) misses the browser's style cache and is
+    // styled from scratch: on a screen of Korean in a colour a cell, three elements a cell made each frame's style
+    // recalculation several times longer than xterm's. A run that is only boxed cells (a wide or icon cell each)
+    // gives the inherited values to the innermost box instead, so no element sits under a parent with a colour of its own
+    let boxed = run.cells.map((cell) => fittedCell(cell, run.flags, keepsColour(cell.text) ? kept.join(";") : ""));
+    const leaves = glyph.length > 0 && boxed.every((html) => html !== null);
+    if (leaves) boxed = run.cells.map((cell) => fittedCell(cell, run.flags, [...(keepsColour(cell.text) ? kept : colours(fg)), ...rest].join(";")));
     let body = "";
     let plain = "";
-    for (const cell of run.cells) {
-      if (cell.wide) {
+    run.cells.forEach((cell, index) => {
+      const fitted = boxed[index] ?? (keepsColour(cell.text) ? `<span style="${kept.join(";")}">${escapeHtml(cell.text)}</span>` : null);
+      if (fitted) {
         if (plain) { body += escapeHtml(plain); plain = ""; }
-        body += `<span class="ghostty-wide">${escapeHtml(cell.text)}</span>`;
+        body += fitted;
       } else plain += cell.text;
-    }
+    });
     if (plain) body += escapeHtml(plain);
-    return `<span style="left:calc(var(--ghostty-cw)*${run.x})${css.length ? `;${css.join(";")}` : ""}">${body}</span>`;
+    return `<span style="${(leaves ? box : [...box, ...glyph]).join(";")}">${body}</span>`;
   };
 
   const picture = (image: GhosttyImage): HTMLCanvasElement | null => {
@@ -257,6 +376,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
 
   const drawFrame = (): void => {
     if (optionsChanged()) {
+      widths.clear();
+      asked.clear();
+      grid = "";
       colors();
       vt.setScrollback(term.options.scrollback ?? 0);
       fit();
@@ -267,6 +389,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     const changed = vt.frame((y, runs) => {
       const row = rowEls[y];
       if (!row) return;
+      rowRuns[y] = runs;
       let html = "";
       for (const run of runs) html += runHtml(run);
       // a row libghostty marks dirty can come out the same (a cursor that moved past it): no DOM write
@@ -281,8 +404,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       const screenText = rowText.slice(0, term.rows);
       // a grid that changed height keeps its bottom rows, as xterm does: the baseline lines up with them
       const before = Array.from({ length: term.rows }, (_, y) => bottomText[bottomText.length - term.rows + y] ?? "");
-      if (primed && written) announce(newLines(before, screenText));
-      primed = true;
+      if (primed && written && performance.now() >= viewMovedUntil) announce(newLines(before, screenText));
+      // the screen a pane opens on is the first one written: herdr's own server paints it only after the attach
+      if (written) primed = true;
       written = false;
       bottomText = screenText;
     }
@@ -345,11 +469,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   // at xterm's grid and cell size, so a picture in the backlog is placed as xterm's cells are
   try {
     for (const chunk of backlog) vt.write(chunk);
+    written = backlog.length > 0;
   } catch (error) {
     // the caller falls back to xterm: it gets its own write and reset back, so nothing reaches the freed module
     disposed = true;
     term.write = write;
     term.reset = reset;
+    lateFaces.stop();
     layer.remove();
     vt.dispose();
     throw error;
@@ -359,6 +485,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     term.onRender(() => schedule()),
     term.onScroll(() => schedule()),
   ];
+  for (const gesture of VIEW_GESTURES) host.addEventListener(gesture, viewMoved, { capture: true, passive: true });
   const screenResize = new ResizeObserver(() => fit());
   screenResize.observe(screen);
 
@@ -391,6 +518,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       term.reset = reset;
       for (const subscription of subscriptions) subscription.dispose();
       screenResize.disconnect();
+      for (const gesture of VIEW_GESTURES) host.removeEventListener(gesture, viewMoved, { capture: true });
+      lateFaces.stop();
       layer.remove();
       decoded.clear();
       vt.dispose();

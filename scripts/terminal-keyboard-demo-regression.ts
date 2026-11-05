@@ -22,6 +22,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
+import { shownRow, shownRows } from "./shown-rows.ts";
 
 const SETTINGS_KEY = "ovis:settings";
 const PREFIX = "/herdr-web-ui/demo/app/";
@@ -128,7 +129,7 @@ async function open(context: BrowserContext, clock = false): Promise<{ page: Pag
   if (clock) await page.clock.install();
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
-  await page.locator(".pane-frame:not(.is-hidden) .xterm-rows").waitFor();
+  await page.locator(shownRows(".pane-frame:not(.is-hidden)")).waitFor();
   await appFaces(page);
   return { page, errors };
 }
@@ -178,7 +179,7 @@ const tapAndState = (page: Page): Promise<{ label: string | null; pressed: strin
 const ready = (page: Page): Promise<unknown> =>
   page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')?.disabled === false);
 
-const control = (page: Page): Promise<ControlState> => page.evaluate(() => {
+const control = (page: Page): Promise<ControlState> => page.evaluate((row) => {
   const frame = document.querySelector(".pane-frame:not(.is-hidden)");
   const key = frame?.querySelector<HTMLButtonElement>('.key-bar [data-key="keyboard"]') ?? null;
   const active = document.activeElement;
@@ -194,11 +195,11 @@ const control = (page: Page): Promise<ControlState> => page.evaluate(() => {
     keyboard: document.documentElement.hasAttribute("data-keyboard"),
     active: active instanceof HTMLElement && active !== document.body ? active.className : null,
     direct: document.querySelector("[data-direct-typing]") !== null,
-    grid: { rows: frame?.querySelectorAll(".xterm-rows > div").length ?? 0, width: Math.round(screen?.width ?? 0), height: Math.round(screen?.height ?? 0) },
+    grid: { rows: document.querySelectorAll(row).length, width: Math.round(screen?.width ?? 0), height: Math.round(screen?.height ?? 0) },
     settings: localStorage.getItem("ovis:settings"),
     frames: (window as unknown as QaWindow).sentFrames.map((frame) => frame.type),
   };
-});
+}, shownRow(".pane-frame:not(.is-hidden)"));
 
 const lineState = (page: Page): Promise<[string, number | null, number | null]> =>
   lineOf(page).evaluate((node: HTMLTextAreaElement) => [node.value, node.selectionStart, node.selectionEnd]);
@@ -270,7 +271,7 @@ async function switchMode(page: Page, to: "line" | "direct"): Promise<void> {
     assert.deepEqual(after.frames.slice(before.frames.length).filter((type) => type === "resize"), [], "and sends no resize");
     return;
   }
-  await page.waitForFunction((rows) => document.querySelectorAll(".pane-frame:not(.is-hidden) .xterm-rows > div").length !== rows, before.grid.rows);
+  await page.waitForFunction(({ rows, row }) => document.querySelectorAll(row).length !== rows, { rows: before.grid.rows, row: shownRow(".pane-frame:not(.is-hidden)") });
   await page.waitForFunction((count) => (window as unknown as QaWindow).sentFrames.filter((frame) => frame.type === "resize").length > count, before.frames.filter((type) => type === "resize").length);
   await ready(page);
 }
@@ -514,6 +515,85 @@ async function keyboardOnRequest(browser: Browser): Promise<Record<string, unkno
   return { scenario: "keyboard-on-request", results };
 }
 
+// ---- scenario: Settings > Terminal > Fold the key bar (#1531) ---------------------------------------
+
+interface FoldState { bar: boolean; barModeFirst: boolean; lineKeys: string | null; gridHeight: number; slotBottom: number; padBottom: number; viewport: number }
+
+const foldState = (page: Page): Promise<FoldState> => page.evaluate(() => {
+  const frame = document.querySelector(".pane-frame:not(.is-hidden)")!;
+  const line = frame.querySelector(".terminal-input");
+  return {
+    bar: frame.querySelector(".key-bar") !== null,
+    barModeFirst: frame.querySelector('.key-bar-row > [data-key="direct"]:first-child') !== null,
+    lineKeys: frame.querySelector(".terminal-input-keys")?.getAttribute("aria-pressed") ?? null,
+    gridHeight: Math.round(frame.querySelector(".xterm-screen")!.getBoundingClientRect().height),
+    slotBottom: Math.round(frame.querySelector(".terminal-input-slot")?.getBoundingClientRect().bottom ?? 0),
+    padBottom: line ? parseFloat(getComputedStyle(line).paddingBottom) : 0,
+    viewport: window.innerHeight,
+  };
+});
+
+async function foldKeyBar(browser: Browser): Promise<Record<string, unknown>> {
+  const results: Record<string, unknown> = {};
+  for (const fold of [false, true]) {
+    const context = await phone(browser, { language: "en", theme: "dark", terminalInputMode: "line", defaultView: "terminal" });
+    if (fold) await context.addInitScript(() => { localStorage.setItem("ovis:terminal-fold-key-bar", "true"); });
+    try {
+      const { page, errors } = await open(context);
+      const keys = page.locator(".pane-frame:not(.is-hidden) .terminal-input-keys");
+      const bar = page.locator(".pane-frame:not(.is-hidden) .key-bar");
+      if (fold) await keys.waitFor();
+      else await ready(page);
+      await settled(page);
+      const rest = await foldState(page);
+      results[fold ? "on" : "off"] = rest;
+      if (!fold) {
+        assert.deepEqual([rest.bar, rest.barModeFirst, rest.lineKeys], [true, true, null], "off: the key bar stays under the line with its mode key first, as on main");
+        assert.deepEqual(errors, []);
+        console.log("PASS fold the key bar off: the key bar and its mode key under the input line, as on main");
+        continue;
+      }
+      const off = results["off"] as FoldState;
+      assert.deepEqual([rest.bar, rest.lineKeys], [false, "false"], "on: the key bar is folded, Terminal keys sits in the line");
+      assert.equal(rest.slotBottom, rest.viewport, "on: the input line is the screen's bottom row");
+      assert.ok(rest.padBottom >= 8, `on: the folded line keeps at least --space-2 under its controls (${rest.padBottom})`);
+      assert.ok(rest.gridHeight > off.gridHeight, `on: the terminal gets the key bar's row back (${off.gridHeight} -> ${rest.gridHeight})`);
+      // Terminal keys opens the whole row, mode key first, pressed while open; a second tap folds it
+      await keys.tap();
+      await bar.waitFor();
+      await ready(page);
+      await settled(page);
+      const opened = await foldState(page);
+      assert.deepEqual([opened.barModeFirst, opened.lineKeys], [true, "true"], "on: Terminal keys opens the key bar, pressed, its mode key first");
+      assert.ok(opened.slotBottom < opened.viewport, "on, open: the line stands over the key bar again");
+      await keys.tap();
+      await bar.waitFor({ state: "detached" });
+      assert.equal((await foldState(page)).lineKeys, "false", "on: a second tap folds the key bar again");
+      // a folded row holds no modifier it no longer shows: Ctrl armed in the open row is let go by the fold
+      await keys.tap();
+      const ctrl = page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="Control"]');
+      await ctrl.tap();
+      await page.waitForFunction(() => document.querySelector('.pane-frame:not(.is-hidden) .key-bar [data-key="Control"]')?.getAttribute("aria-pressed") === "true");
+      await keys.tap();
+      await bar.waitFor({ state: "detached" });
+      await keys.tap();
+      assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "on: folding the row lets go of the modifier it held");
+      // left open, the bar's mode key switches to direct typing: the whole bar, no Terminal keys
+      await page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="direct"]').tap();
+      await page.locator("[data-direct-typing]").waitFor();
+      assert.deepEqual([(await foldState(page)).barModeFirst, (await foldState(page)).lineKeys], [true, null], "on, direct typing: the whole key bar, mode key first, and no input line");
+      // and back: the line, with the row folded again rather than left open
+      await page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="direct"]').tap();
+      await page.locator("[data-direct-typing]").waitFor({ state: "detached" });
+      await bar.waitFor({ state: "detached" });
+      assert.equal((await foldState(page)).lineKeys, "false", "on: back in the line the row is folded again");
+      assert.deepEqual(errors, []);
+      console.log(`PASS fold the key bar on: folded under a bottom input line (+${rest.gridHeight - off.gridHeight}px of grid), Terminal keys opens and folds it, a fold lets go of held modifiers, direct typing keeps the whole bar`);
+    } finally { await context.close(); }
+  }
+  return { scenario: "fold-key-bar", results };
+}
+
 // ---- scenario: composing, or no field to show the keyboard for --------------------------------------
 
 async function composingOrUnavailableTarget(browser: Browser): Promise<Record<string, unknown>> {
@@ -606,7 +686,7 @@ async function composingOrUnavailableTarget(browser: Browser): Promise<Record<st
     }, panes.shell);
     assert.equal(made.status, 200, `/api/pane/split answered ${made.status}`);
     await page.locator(".pane-frame.is-hidden").waitFor({ state: "attached" });
-    await page.locator(".pane-frame:not(.is-hidden) .xterm-rows").waitFor();
+    await page.locator(shownRows(".pane-frame:not(.is-hidden)")).waitFor();
     await ready(page);
     const shownFrame = (await page.locator(".pane-frame:not(.is-hidden)").getAttribute("data-layout-pane"))!;
     const hiddenFrame = (await page.locator(".pane-frame.is-hidden").getAttribute("data-layout-pane"))!;
@@ -722,7 +802,7 @@ async function focusReports(browser: Browser): Promise<Record<string, unknown>> 
     const nothingFocused = (): Promise<boolean> => page.evaluate(() => document.activeElement === null || document.activeElement === document.body);
     // input-ready precedes fixture playback, whose last frame can outlast flushTimers. Let the clock
     // run until that frame is drawn before adding output its cursor moves could overwrite.
-    await page.locator(".pane-frame:not(.is-hidden) .xterm-rows", { hasText: "0 fail" }).waitFor();
+    await page.locator(shownRows(".pane-frame:not(.is-hidden)"), { hasText: "0 fail" }).waitFor();
     // a known start: whatever the load leaves for later has run, then nothing is focused when the mode
     // goes on, so no focus or blur of the load's can report inside the window the assertions read
     await flushTimers(page);
@@ -730,7 +810,7 @@ async function focusReports(browser: Browser): Promise<Record<string, unknown>> 
     assert.equal(await nothingFocused(), true, "nothing focused before focus reporting goes on");
     // xterm parses its input in order: the marker after DECSET 1004 drawn is proof the mode is on
     await socket(page, { type: "pty-data", pane_id: panes.shell, data: "\r\n\u001b[?1004hfocus reporting on" });
-    await page.locator(".pane-frame:not(.is-hidden) .xterm-rows", { hasText: "focus reporting on" }).waitFor();
+    await page.locator(shownRows(".pane-frame:not(.is-hidden)"), { hasText: "focus reporting on" }).waitFor();
     await flushTimers(page);
     assert.equal(await nothingFocused(), true, "still nothing focused once the mode is on");
     const xterm = page.locator(".pane-frame:not(.is-hidden) .xterm-helper-textarea");
@@ -978,7 +1058,7 @@ try {
     } else {
       const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
       try {
-        const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
+        const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await foldKeyBar(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
         if (evidence) {
           mkdirSync(evidence, { recursive: true });
           for (const report of reports) writeFileSync(join(evidence, `terminal-keyboard-${report["scenario"]}.json`), JSON.stringify({ ...report, synthetic: "Chromium with scripted visualViewport geometry; not a native keyboard" }, null, 2));
