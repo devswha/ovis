@@ -672,7 +672,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
   const turns: ConversationTurn[] = [];
   const pendingTools = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
   const makeRef = (callId: string) => identity ? hermesOutputRef(identity, callId) : callId;
-  /** the turn each call went into: its result row is read into that turn, though a prompt came between */
+  /** the turn each call went into: its result row is read into that turn while it is still the last one */
   const callTurns = new Map<Extract<ConversationPart, { kind: "tool" }>, ConversationTurn>();
   for (const row of rows) {
     let owner: ConversationTurn | undefined;
@@ -765,9 +765,10 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           turn.parts.push(orphan);
         }
       }
-      // a pick finds the turn by its rows wherever a page began (rows come in id order)
-      const read = owner ?? turns[turns.length - 1];
-      if (read !== undefined) read.rows = [read.rows?.[0] ?? row.id, row.id];
+      // a pick finds the turn by its rows wherever a page began (rows come in id order); a result
+      // that came after another turn is left out, so no turn's rows reach over another's
+      const last = turns[turns.length - 1];
+      if (last !== undefined && (owner === undefined || owner === last)) last.rows = [last.rows?.[0] ?? row.id, row.id];
     } catch { /* ignore individual malformed row */ }
   }
 

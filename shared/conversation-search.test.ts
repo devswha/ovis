@@ -280,14 +280,19 @@ describe("pickedTurn", () => {
     expect(pickedTurn(older, whole)).toBe(1);
   });
 
-  it("reads a Hermes tool result into the answer that called it, though a prompt came between", () => {
+  it("keeps a Hermes tool result that came after other turns out of every turn's rows", () => {
     const at = (id: number, fields: Partial<HermesMessageRow>): HermesMessageRow =>
       ({ id, role: "assistant", content: null, tool_call_id: null, tool_calls: null, tool_name: null, reasoning: null, timestamp: 1_700_000_000 + id, ...fields });
     const turns = parseHermesRows([
       at(1, { tool_calls: JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]) }),
       at(2, { role: "user", content: "stop" }), at(3, { role: "tool", content: "done", tool_call_id: "c1", tool_name: "bash" }),
     ]);
-    expect(turns.map((turn) => turn.rows)).toEqual([[1, 3], [2, 2]]);
+    expect(turns.map((turn) => turn.rows)).toEqual([[1, 1], [2, 2]]);
+    // the result of an earlier answer's call came after a later answer: the later one is opened
+    const rows = [at(51, { content: "needle old", tool_calls: JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]) }),
+      at(52, { role: "user", content: "again" }), at(53, { content: "needle target" }), at(54, { role: "tool", content: "done", tool_call_id: "c1", tool_name: "bash" })];
+    const match = searchTurns(parseHermesRows(rows.slice(2)), searchPattern("needle")!)[0]!;
+    expect(pickedTurn(parseHermesRows(rows), match)).toBe(2);
   });
 });
 
