@@ -99,18 +99,26 @@ still use the network.
 ## Build cache
 
 Fast checks, Integration tests and both Browser regression jobs each run `bun run build` on the same
-commit: about 60 CPU seconds apiece on the P620. `run.sh --build-cache DIR` mounts
-`DIR/OWNER/NAME` read-write at `/build-cache` in every runner container and sets
-`OVIS_BUILD_CACHE_DIR`, so `bun run build` (`scripts/build-cache.ts`) builds a commit once and the
-other jobs restore its `dist/` in a fraction of a second. Point it at RAM (`/dev/shm/ovis-build-cache`);
-`--build-cache-mb` (default 2048, about 50 builds) bounds it, least recently used first. Measured
-(four builds of one commit, as one run's jobs do): 246-252 CPU s and 30-34 s without it, 69 CPU s
-and 8 s with it.
+commit: about 60 CPU seconds apiece on the P620. `run.sh --build-cache DIR --build-cache-writer LOGIN`
+lets the first of them build it and the others restore its `dist/` in a fraction of a second
+(`scripts/build-cache.ts`). Point it at RAM (`/dev/shm/ovis-build-cache`); `--build-cache-mb`
+(default 2048, about 50 builds) bounds it, least recently used first. Measured (four builds of one
+commit, as one run's jobs do): 246-266 CPU s without it, 53-70 CPU s with it; four started at once
+build once.
 
-An entry is named after the commit, Bun's version, the variables Vite reads and any `.env` file;
-a checkout with uncommitted changes never uses it. Unlike the host caches above, every job writes
-it, so one job could plant an entry for another commit's key: only `pull_request` runs read or
-write it, and main's pushes, `release.yml`'s validation and anything that ships always build.
+Every runner container gets `DIR/OWNER/NAME/entries` (the cache) **read-only** at `/build-cache`,
+`locks/` (which job builds a key; the others wait for it) and its slot's own `outbox/<runner>`. A job
+that built a commit leaves `<key>.tar` and `<key>.claim` (its run) in that outbox, and the launcher
+(`build-cache-promote.sh`, every second) takes it in only when GitHub says that runner is running a
+job of that run and the run is trusted: a push to the default branch, or a pull request from this
+repository that `--build-cache-writer` opened and started. Without the flag only pushes write. The
+launcher unpacks only files and directories and writes the sha256 of each into the entry's
+`.manifest`; a restore refuses an entry with a link, a missing, changed or extra file. Every other
+outbox file is deleted. Pull request runs and pushes to main read it; a tag's release validation
+and manual runs always build.
+
+An entry is named after the commit, Bun's version, the variables Vite reads and any `.env` file; a
+checkout with uncommitted changes, or with ignored files where Vite reads, never uses it.
 
 ## Routing jobs to it
 
@@ -213,6 +221,6 @@ the launcher writes them, the mirror from GitHub and the Bun cache from download
 the default branch's lockfile. A git object is named by its hash, so the mirror cannot change the
 commit a job checks out; Bun does not check a cached package again, which is why only that
 lockfile, never a job, fills the Bun cache. A job's copy of it is its own. The build cache (with
-`--build-cache`) is the exception: pull request jobs share it read-write, so a pull request's job can
-change the `dist/` another same-repository pull request's browser checks test, never what main or a
-release builds.
+`--build-cache`) is read-only to jobs as well: only the launcher writes it, from the builds of runs
+GitHub names as trusted (above). A job can write its own outbox and the shared locks, so at worst it
+makes the jobs waiting on a key wait up to five minutes and build themselves.

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { awaitBuild, cacheKey, evict, releaseLock, restore, store, takeLock } from "./build-cache.ts";
+import { awaitBuild, cacheKey, deliver, evict, releaseLock, restore, store, takeLock } from "./build-cache.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -78,12 +78,19 @@ describe("cacheKey", () => {
     expect("key" in cacheKey(root, {}, [])).toBe(true);
   });
 
-  it("is used in GitHub Actions only by pull request runs", () => {
+  it("is used in GitHub Actions only by pull request runs and pushes to main", () => {
     const root = checkout();
     expect("key" in cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request" }, [])).toBe(true);
-    for (const event of ["push", "workflow_dispatch", "pull_request_target", undefined]) {
-      expect(cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: event }, [])).toEqual({ bypass: "only pull request runs use it" });
+    expect("key" in cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" }, [])).toBe(true);
+    for (const [event, ref] of [["push", "refs/tags/v1.0.0"], ["push", "refs/heads/other"], ["workflow_dispatch", "refs/heads/main"], ["pull_request_target", ""], [undefined, ""]] as const) {
+      expect(cacheKey(root, { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: event, GITHUB_REF: ref }, [])).toEqual({ bypass: "only pull request runs and pushes to main use it" });
     }
+  });
+
+  it("never uses the cache when a .env file refers to other variables", () => {
+    const root = checkout();
+    writeFileSync(join(root, ".env"), "VITE_A=$HOME\n");
+    expect(cacheKey(root, {}, [])).toEqual({ bypass: ".env refers to other variables" });
   });
 
   it("never uses the cache while ignored files sit where the build reads them", () => {
@@ -137,15 +144,46 @@ describe("store and restore", () => {
     expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
   });
 
-  it("refuses a copy that came out short of the entry, as when another job evicts it meanwhile", () => {
+  it("refuses an entry whose files do not match its manifest: missing, changed or added", () => {
     const root = temp("ovis-build-cache-short-");
     const cache = join(root, "cache");
-    store(cache, "k", dist(root, { "index.html": "<p>", "assets/a.js": "a" }), 1 << 30);
-    rmSync(join(cache, "k", "assets"), { recursive: true });
-    dist(root, { "index.html": "mine" });
-    expect(() => restore(cache, "k", join(root, "dist"))).toThrow("the entry changed while it was copied");
-    expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
+    const damage: ((entry: string) => void)[] = [
+      (entry) => rmSync(join(entry, "assets"), { recursive: true }),
+      (entry) => writeFileSync(join(entry, "index.html"), "<p>planted"),
+      (entry) => writeFileSync(join(entry, "extra.js"), "planted"),
+    ];
+    for (const change of damage) {
+      rmSync(cache, { recursive: true, force: true });
+      store(cache, "k", dist(root, { "index.html": "<p>", "assets/a.js": "a" }), 1 << 30);
+      change(join(cache, "k"));
+      dist(root, { "index.html": "mine" });
+      expect(() => restore(cache, "k", join(root, "dist"))).toThrow("the entry's files do not match its manifest");
+      expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
+    }
     expect(readdirSync(root).filter((name) => name.startsWith("dist.cache-"))).toEqual([]);
+  });
+
+  it("refuses an entry holding a link, even one its manifest names", () => {
+    const root = temp("ovis-build-cache-link-");
+    const cache = join(root, "cache");
+    writeFileSync(join(root, "secret"), "token");
+    const sum = new Bun.CryptoHasher("sha256").update("token").digest("hex");
+    mkdirSync(join(cache, "k"), { recursive: true });
+    symlinkSync(join(root, "secret"), join(cache, "k", "leak"));
+    writeFileSync(join(cache, "k", ".manifest"), `${sum}  ./leak\n`);
+    expect(() => restore(cache, "k", join(root, "dist"))).toThrow("./leak is not a file or a directory");
+    expect(existsSync(join(root, "dist"))).toBe(false);
+  });
+
+  it("hands a build to the outbox without touching the cache", () => {
+    const root = temp("ovis-build-cache-outbox-");
+    const outbox = join(root, "outbox");
+    mkdirSync(outbox);
+    deliver(outbox, "k", dist(root, { "index.html": "<p>", "assets/a.js": "a" }), "123", "2");
+    expect(readdirSync(outbox).sort()).toEqual(["k.claim", "k.tar"]);
+    expect(readFileSync(join(outbox, "k.claim"), "utf8")).toBe("123 2\n");
+    const listed = spawnSync("tar", ["-tf", join(outbox, "k.tar")], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).sort();
+    expect(listed).toEqual(["./", "./assets/", "./assets/a.js", "./index.html"]);
   });
 
   it("keeps the first entry written for a key", () => {
@@ -285,6 +323,24 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     for (const { copy } of jobs) expect(readFileSync(join(copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
     expect(readdirSync(cache).filter((name) => name.startsWith(".lock-"))).toEqual([]);
     expect(runs()).toBe(0);
+  }, 60_000);
+
+  it("on the runner, writes only its own outbox, never the cache", () => {
+    const { root, runs } = project();
+    const base = temp("ovis-build-cache-runner-");
+    const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
+    for (const dir of [cache, outbox, locks]) mkdirSync(dir);
+    // as the runner mounts it: read-only
+    chmodSync(cache, 0o555);
+    try {
+      expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "0", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" })).toBe("export const a = 1;\n");
+    } finally {
+      chmodSync(cache, 0o755);
+    }
+    expect(runs()).toBe(1);
+    expect(readdirSync(cache)).toEqual([]);
+    expect(readdirSync(outbox).map((name) => name.replace(/^[0-9a-f]{64}/, "<key>")).sort()).toEqual(["<key>.claim", "<key>.tar"]);
+    expect(readdirSync(locks)).toEqual([]);
   }, 60_000);
 
   it("always builds without OVIS_BUILD_CACHE_DIR", () => {

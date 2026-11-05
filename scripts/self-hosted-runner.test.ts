@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -329,20 +329,28 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(runRunner().calls).not.toContain("--env-file");
   });
 
-  it("mounts the build cache read-write in every runner container only when asked", () => {
+  it("mounts the build cache read-only in every runner container, with only its own outbox to write", () => {
     const home = mkdtempSync(join(tmpdir(), "herdr-runner-build-cache-test-"));
     try {
-      const { result, calls } = runRunner({ count: 2, args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "512"] });
+      const { result, calls } = runRunner({ count: 2, args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "devswha"] });
       expect(result.status).toBe(0);
-      const dir = join(home, "shm/owner/repo");
+      const root = join(home, "shm/owner/repo");
       const lines = calls.split("\n");
       const runners = lines.filter((call) => runnerRun.test(call));
       expect(runners).toHaveLength(2);
-      for (const call of runners) expect(call).toContain(`-v ${dir}:/build-cache -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_MAX_MB=512 `);
+      for (const call of runners) {
+        const name = /--name (\S+)/.exec(call)![1]!;
+        expect(call).toContain(`-v ${root}/entries:/build-cache:ro -v ${root}/locks:/build-cache-locks -v ${root}/outbox/${name}:/build-cache-outbox `);
+        expect(call).toContain("-e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox ");
+        // the cache itself is never mounted writable
+        expect(call).not.toMatch(/entries:\/build-cache(?!:ro)/);
+      }
       expect(lines.filter((call) => call.startsWith("docker run -d ")).every((call) => !call.includes("build-cache"))).toBe(true);
-      expect(spawnSync("stat", ["-c", "%a", dir], { encoding: "utf8" }).stdout.trim()).toBe("1777");
+      const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
+      expect([mode(join(root, "entries")), mode(join(root, "locks")), mode(join(root, "outbox")), mode(join(root, "outbox/herdr-ci-" + spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim() + "-1"))]).toEqual(["755", "1777", "755", "1777"]);
       expect(runRunner().calls).not.toContain("build-cache");
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
+      expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -756,6 +764,92 @@ describe.skipIf(process.platform !== "linux")("self-hosted runner job-started ho
       // a closed output takes the refusal with it: the kill alone is the evidence there
       if (!("closedOutput" in event)) expect(result.stdout).toContain("::error::");
       expect(result.stdout).not.toContain("next step ran");
+    }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("build cache promotion", () => {
+  const promoteScript = fileURLToPath(new URL("./self-hosted-runner/build-cache-promote.sh", import.meta.url));
+  const key = "a".repeat(64);
+  const slot = "herdr-ci-host-3";
+
+  /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha") {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
+    try {
+      const bin = join(dir, "bin");
+      const root = join(dir, "root");
+      const outbox = join(root, "outbox", slot);
+      for (const path of [bin, join(root, "entries"), join(root, "locks"), outbox]) mkdirSync(path, { recursive: true });
+      const dist = join(dir, "dist");
+      mkdirSync(join(dist, "assets"), { recursive: true });
+      writeFileSync(join(dist, "index.html"), "<p>");
+      writeFileSync(join(dist, "assets/a.js"), "a");
+      if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
+      spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
+      writeFileSync(join(outbox, `${key}.claim`), "7 1\n");
+      const sha = "5".repeat(40);
+      const answers: Record<string, unknown> = {
+        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
+        run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
+        pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
+      };
+      for (const [name, value] of Object.entries(answers)) writeFileSync(join(dir, `${name}.json`), JSON.stringify(value));
+      writeFileSync(join(bin, "gh"), `#!/bin/sh
+case "$2" in
+  repos/owner/repo/actions/runs/7/attempts/1/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
+  repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
+  repos/owner/repo) echo main ;;
+  *) exit 1 ;;
+esac
+`);
+      chmodSync(join(bin, "gh"), 0o755);
+      const result = spawnSync("bash", [promoteScript, "owner/repo", root, writer, "2048", slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const entry = join(root, "entries", key);
+      return {
+        status: result.status,
+        stderr: result.stderr,
+        outbox: readdirSync(outbox),
+        entries: readdirSync(join(root, "entries")),
+        manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+
+  it("takes in the build of a pull request the writer opened and pushed, with the manifest readers check", () => {
+    const run = promote();
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
+    expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
+    expect(run.outbox).toEqual([]);
+  });
+
+  it("takes in the build of a push to the default branch", () => {
+    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([key]);
+  });
+
+  it("never takes in a build from a job it cannot trust, and deletes it", () => {
+    const refused = [
+      promote({ author: "someone" }),
+      promote({ actor: "someone" }),
+      promote({ prSha: "6".repeat(40) }),
+      promote({ headRepo: "fork/repo" }),
+      promote({ runner: "herdr-ci-host-4" }),
+      promote({ status: "completed" }),
+      promote({ event: "push", branch: "other" }),
+      promote({ event: "workflow_dispatch" }),
+      promote({}, "files", ""),
+      promote({}, "link"),
+    ];
+    for (const run of refused) {
+      expect(run.status).toBe(0);
+      expect(run.entries).toEqual([]);
+      expect(run.outbox).toEqual([]);
     }
   });
 });

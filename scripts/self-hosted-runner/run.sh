@@ -3,7 +3,7 @@
 #
 # Usage: scripts/self-hosted-runner/run.sh [--repo OWNER/NAME] [--count N] [--labels self-hosted-ovis]
 #          [--reserved N] [--reserved-labels self-hosted-ovis-main] [--env-file FILE] [--build] [--once]
-#          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache] [--build-cache DIR [--build-cache-mb N]]
+#          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache] [--build-cache DIR [--build-cache-mb N] [--build-cache-writer LOGIN]]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,6 +22,7 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ovis-ci-runner"
 CACHE_WAIT=120
 BUILD_CACHE=""
 BUILD_CACHE_MB=2048
+BUILD_CACHE_WRITER=""
 
 usage() {
   sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
     --no-cache) CACHE=0; shift ;;
     --build-cache) BUILD_CACHE="${2:?--build-cache needs a value}"; shift 2 ;;
     --build-cache-mb) BUILD_CACHE_MB="${2:?--build-cache-mb needs a value}"; shift 2 ;;
+    --build-cache-writer) BUILD_CACHE_WRITER="${2:?--build-cache-writer needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -56,6 +58,8 @@ case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number 
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
 case "$CACHE_WAIT" in ''|*[!0-9]*|?????*) echo "--cache-wait must be a whole number of seconds" >&2; exit 2 ;; esac
 case "$BUILD_CACHE_MB" in ''|*[!0-9]*|0|??????*) echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2 ;; esac
+# a GitHub login: letters, digits and single hyphens
+case "$BUILD_CACHE_WRITER" in *[!A-Za-z0-9-]*|-*|??????????????????????????????????????*) echo "--build-cache-writer must be a GitHub login" >&2; exit 2 ;; esac
 # What this host can take (CHECK_HOST_* in scripts/check.ts), for every runner container: read now,
 # so a missing file stops the launcher instead of every container failing to start.
 ENV_ARGS=()
@@ -118,22 +122,51 @@ if [ "$CACHE" = 1 ]; then
     CACHE=0
   fi
 fi
-# The client build cache (README "Build cache"): unlike the caches above, every runner writes it, so
-# each job of a commit after the first restores dist/ instead of building it (scripts/build-cache.ts).
-BUILD_CACHE_ARGS=()
+# The client build cache (README "Build cache"): the jobs of a commit after the first restore its
+# dist/ instead of building it (scripts/build-cache.ts). Runners read it only; a job's build goes to its
+# slot's own outbox, and this launcher moves it in (build-cache-promote.sh) only for a trusted run.
+BUILD_CACHE_ROOT=""
 if [ -n "$BUILD_CACHE" ]; then
   case "$REPO" in
     .*|*/.*|*/*/*|*[!A-Za-z0-9._/-]*|*/|/*) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
     */*)
-      # the runners' user is not the host's: a directory of the host user's that every user may write
-      if build_cache_dir="$(mkdir -p "$BUILD_CACHE/$REPO" && chmod 1777 "$BUILD_CACHE/$REPO" && cd "$BUILD_CACHE/$REPO" && pwd -P)"; then
-        BUILD_CACHE_ARGS=(-v "$build_cache_dir:/build-cache" -e OVIS_BUILD_CACHE_DIR=/build-cache -e "OVIS_BUILD_CACHE_MAX_MB=$((10#$BUILD_CACHE_MB))")
+      # entries/ only this user writes; locks/ and each slot's outbox the runners' user (not this one) does too
+      if BUILD_CACHE_ROOT="$(umask 022 && mkdir -p "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/locks" "$BUILD_CACHE/$REPO/outbox" &&
+        chmod 0755 "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/outbox" && chmod 1777 "$BUILD_CACHE/$REPO/locks" &&
+        cd "$BUILD_CACHE/$REPO" && pwd -P)"; then
+        :
       else
         echo "[build-cache] cannot use $BUILD_CACHE/$REPO: running without it" >&2
+        BUILD_CACHE_ROOT=""
       fi ;;
     *) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
   esac
 fi
+
+# Set when each runner starts: its slot's outbox, emptied of what an earlier job left.
+build_cache_args() {
+  local outbox="$BUILD_CACHE_ROOT/outbox/$1"
+  BUILD_CACHE_ARGS=()
+  [ -n "$BUILD_CACHE_ROOT" ] || return 0
+  # a file the runners' user made in it is this user's to delete (sticky directory); its directories may not be
+  if [ -d "$outbox" ]; then find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null || true; fi
+  mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0
+  BUILD_CACHE_ARGS=(-v "$BUILD_CACHE_ROOT/entries:/build-cache:ro" -v "$BUILD_CACHE_ROOT/locks:/build-cache-locks"
+    -v "$outbox:/build-cache-outbox" -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks
+    -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox)
+}
+
+# Every second: the trusted builds in the outboxes go into the cache. In its own process group, which cleanup stops.
+promote_loop() {
+  trap 'exit 143' TERM
+  local names=() slot
+  for slot in $(seq 1 "$COUNT"); do names+=("${PREFIX}${slot}"); done
+  while true; do
+    bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
+    [ "$ONCE" = 1 ] && return 0
+    sleep 1
+  done
+}
 
 # The cache loop runs in its own process: files here tell the launcher it warmed the caches, and it
 # that the launcher is stopping. Made with the EXIT trap that removes it.
@@ -357,6 +390,7 @@ slot_loop() {
     # a runner started after the namespace container went away would have no network
     start_netns
     cache_args
+    build_cache_args "$name"
     if printf '%s\n' "$token" | docker run --rm -i \
       --name "$name" \
       --network "container:$NETNS" \
@@ -384,6 +418,7 @@ slot_loop() {
 
 PIDS=()
 CACHE_PID=""
+PROMOTE_PID=""
 cleaned=0
 cleanup() {
   [ "$cleaned" = 1 ] && return
@@ -393,6 +428,7 @@ cleanup() {
   # the whole refresh, git and the Bun cache build included: none may outlive the launcher
   if [ -n "$STATE_DIR" ]; then : > "$STATE_DIR/stopping"; fi
   if [ -n "$CACHE_PID" ]; then kill -TERM -- "-$CACHE_PID" 2>/dev/null || true; fi
+  if [ -n "$PROMOTE_PID" ]; then kill -TERM -- "-$PROMOTE_PID" 2>/dev/null || true; fi
   docker stop -t 5 "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
@@ -433,6 +469,13 @@ if [ "$CACHE" = 1 ]; then
   if [ ! -e "$STATE_DIR/warm" ]; then
     echo "[cache] the caches are not ready after ${CACHE_WAIT}s: starting the runners without waiting for them" >&2
   fi
+fi
+
+if [ -n "$BUILD_CACHE_ROOT" ]; then
+  set -m
+  promote_loop &
+  PROMOTE_PID="$!"
+  set +m
 fi
 
 start_netns
