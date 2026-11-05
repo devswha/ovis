@@ -183,8 +183,10 @@ describe("xterm composition placement in Firefox", async () => {
       { dimensions: { css: { cell: { width: 9, height: 17 } } } });
     textarea.value = "ni hao shi ";
     helper.compositionstart();
-    textarea.value += "jie";
+    // the browser puts the preedit in the textarea after compositionupdate; the deferred update measures it
     helper.compositionupdate({ data: "jie" });
+    textarea.value += "jie";
+    jest.runOnlyPendingTimers();
     // Firefox anchors the candidate window to the unscrolled text, so nothing may overflow the box,
     // while its right edge, where the preedit ends, stays at the end of the drawn preedit
     expect(textarea.scrollWidth).toBe(textarea.clientWidth);
