@@ -877,7 +877,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--sidebar-user-w` on `.app`; the sidebar and its top row in the header both read
   `--sidebar-shown-w`. A phone's drawer keeps `--sidebar-w`.
 - The sidebar keeps its width on desktop until its edge is dragged, and is a `<=768px` drawer. The desktop collapse removes its
-  column; the drawer uses a scrim and keeps safe-area insets. On touch, a mostly horizontal swipe in
+  column; the drawer uses a scrim and keeps safe-area insets. Settings → Appearance → **Show the sidebar on hover** (#2588;
+  off by default, this device's choice) follows the Claude desktop app's collapsed sidebar, on the existing toggle rather
+  than an edge strip: a mouse resting `150ms` on the toggle of a collapsed sidebar shows it as `.sidebar.is-peek`, fixed
+  under the header at its open width with `--shadow-drawer` at `--z-drawer` and no scrim, so the pane keeps its width and
+  no pty resizes. Nothing takes the focus. The trip into it keeps it; `300ms` after the pointer left both it goes, later
+  while a row menu it opened is up or a field in it (the filter, a rename) has the focus. Escape puts it away and still
+  reaches the pane, unless that field or menu, or a modal dialog, takes it first; a click on the toggle
+  keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
   from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
@@ -1889,6 +1896,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
+- The browser's own split view (`lib/split.ts`, part of #1158) takes more than two panes with
+  Settings → Terminal → Split into rows and columns (`splitGrid`, per device, off by default:
+  off, it keeps the two halves of #861 and #1176). The layout is a tree of row and column splits
+  whose leaves are slots, at most four (each slot but `a` is one more set of connections, and a
+  laptop's screen leaves a quarter of it per terminal). Every slot keeps a one-letter id and is
+  drawn in one container at the rectangle the tree gives it (`position: absolute`), so a slot
+  keeps its element and its terminals when the layout around it changes. A drop in a slot's edge
+  band (a quarter of its width or height) opens the pane in a new slot beside, above or below it;
+  its middle opens the pane in the slot's place; a single pane keeps the halves' midpoint with its
+  12px band and adds a band along its top and bottom. A full area takes no new slot. The guide
+  outlines every slot and moves one `--accent` highlight to the place the pane would take. Each
+  boundary is a `role="separator"` band (8px to the pointer), dragged or moved with the arrow
+  keys in 5% steps between 15% and 85%. A pane may show in several slots: the active slot sizes
+  its pty when it shows the tab, else the first slot in reading order, and the others follow
+  (PaneFollowContext). Closing the active slot gives its place and the selection to the slot it
+  shared a split with. Two slots side by side are the two halves again (`data-side`, Close this
+  half); the split is kept in `ovis:split` for a reload, and a split saved by the two-half
+  version opens as before. Turned off, the setting leaves two halves: the active slot and the
+  first other one in reading order, each keeping its terminals, at half each. This follows VS Code's editor groups (split right or down into a
+  grid, draggable boundaries, the drop overlay by edge or centre), with the grid's tree model
+  from bricks-8's fork; moving a pane to a window of its own and stepping slots from the
+  keyboard are left for later.
 - Up to 768px a split has no room: the canvas shows the selected pane alone, full size and
   borderless as a zoomed one, with no split boundary, and the tab's menu picks another. The
   other panes stay mounted and hidden at the same full size. This is only what the browser draws:
