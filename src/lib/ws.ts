@@ -1150,6 +1150,8 @@ export class HerdrSocket {
       const socket = this.socket;
       const sentAt = Date.now();
       window.setTimeout(() => {
+        // a hidden page is probed when it is shown again (onWake), as the idle check leaves it
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
         if (this.submits.has(id) && this.socket === socket && this.lastFrameAt <= sentAt) this.probe();
       }, PROBE_TIMEOUT_MS);
     } catch {

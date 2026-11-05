@@ -1702,6 +1702,31 @@ it("probes a socket that has said nothing since a submit left, without waiting f
   }
 });
 
+it("leaves a silent submit to the page being shown again when it was hidden meanwhile", async () => {
+  jest.useFakeTimers();
+  const listeners = new Map<string, () => void>();
+  const page = { visibilityState: "visible", addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); }, removeEventListener: () => {} };
+  const globalDocument = globalThis as unknown as { document?: unknown };
+  const previous = globalDocument.document;
+  globalDocument.document = page;
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    void client.submit("w1:p1", "hello", "hello");
+    await settle();
+    page.visibilityState = "hidden";
+    listeners.get("visibilitychange")!();
+    jest.advanceTimersByTime(3_000);
+    expect(socket.sent.filter((frame) => frame.type === "ping")).toEqual([]);
+    page.visibilityState = "visible";
+    listeners.get("visibilitychange")!();
+    expect(socket.sent.filter((frame) => frame.type === "ping")).toHaveLength(1);
+  } finally {
+    client.close();
+    globalDocument.document = previous;
+    jest.useRealTimers();
+  }
+});
+
 it("does not probe after a submit when the socket has answered meanwhile", async () => {
   jest.useFakeTimers();
   const { client, socket } = liveClient(["submit", "ping"]);
