@@ -46,18 +46,14 @@ export interface PcAccountStatus {
   readonly account: string | null;
   /** its relay rows that are not members */
   readonly unlinked: readonly string[];
-  /** the keys its account removed, every member's `remove`, and when this PC applied each */
-  readonly removed: readonly { key: string; removed_at: string }[];
 }
 
 export async function pcAccountStatus(fetch: PcFetch): Promise<PcAccountStatus> {
   const response = await fetch("/api/account/status");
   if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { account?: unknown; unlinked?: unknown; removed?: unknown };
-  const strings = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-  const removed = Array.isArray(body.removed) ? body.removed.filter((entry): entry is { key: string; removed_at: string } => typeof entry === "object" && entry !== null
-    && typeof (entry as { key?: unknown }).key === "string" && typeof (entry as { removed_at?: unknown }).removed_at === "string").map(({ key, removed_at }) => ({ key, removed_at })) : [];
-  return { account: typeof body.account === "string" ? body.account : null, unlinked: strings(body.unlinked), removed };
+  const body = await response.json() as { account?: unknown; unlinked?: unknown };
+  const unlinked = Array.isArray(body.unlinked) ? body.unlinked.filter((id): id is string => typeof id === "string") : [];
+  return { account: typeof body.account === "string" ? body.account : null, unlinked };
 }
 
 /** Whether this device's row on the PC should be linked to `account` now. */
@@ -209,47 +205,31 @@ export async function admitToAccount(options: {
     for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
     return add;
   }
-  // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again
-  await options.store.update("adds", (current) => ({ ...current, [add.id]: { account: options.account, record: add, to: others } }));
-  // a device this client checked itself: a PC it brings into the account later gets this add too
-  await rememberDevice(options.store, add);
+  // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again;
+  // and, in the same write, as a device this client checked itself, which a PC it enrolls later gets too
+  await options.store.updateMany(["adds", "devices"], (current) => ({
+    adds: { ...current.adds, [add.id]: { account: options.account, record: add, to: others } },
+    devices: withDevice(current.devices, add),
+  }));
   await sendQueuedAdds({ service: options.service, store: options.store, account: options.account });
   return add;
 }
 
-/**
- * Keeps the latest record this client signed for a device of the account: an `add` for one it
- * approved itself, a `remove` for one it or the account removed. One entry per key, written in one
- * transaction, so an approval and a removal at once leave one of them, never neither.
- */
-export async function rememberDevice(store: AccountStore, record: AddRecord | RemoveRecord): Promise<void> {
-  await store.update("devices", (current) => ({ ...current, [record.key]: record }));
+type KnownDevices = Readonly<Record<string, AddRecord | RemoveRecord>>;
+
+/** `known` with `record` for its key, unless a record signed later is there (a removal wins a tie). */
+function withDevice(known: KnownDevices | undefined, record: AddRecord | RemoveRecord): KnownDevices {
+  const current = known?.[record.key];
+  const later = current !== undefined && (current.issued_at > record.issued_at || (current.issued_at === record.issued_at && current.kind === "remove"));
+  return later ? known! : { ...known, [record.key]: record };
 }
 
 /**
- * Keys a PC of the account says the account removed (`removed` in its status, any member's
- * `remove`): this client signs a `remove` of its own for each, dated when that PC applied the
- * removal (never later than now), so a PC it enrolls later tombstones them too, and a pairing made
- * there after the removal is left be; it also goes to every PC of the account (`directory`), so one
- * this client enrolled before it heard of the removal drops the device too. Its own key is never taken. A PC that names a key wrongly can
- * only keep that device out of the PCs this client enrolls.
+ * Keeps a record this client signed for a device of the account, which enrollPc hands a PC this
+ * client brings into the account: one entry per key, the later signed one.
  */
-export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly { key: string; removed_at: string }[]; directory: readonly string[]; now?: () => number }): Promise<void> {
-  const now = (options.now ?? Date.now)();
-  for (const { key, removed_at } of options.removed) {
-    if (key === options.key.public_spki) continue;
-    const known = (await options.store.get("devices"))?.[key];
-    if (known?.kind === "remove" && known.account === options.account) continue;
-    const at = Date.parse(removed_at);
-    const remove: RemoveRecord = await signAccountRecord({
-      v: 1, kind: "remove", account: options.account, key,
-      issued_at: new Date(Number.isFinite(at) ? Math.min(at, now) : now).toISOString(), id: newRecordId(), signer: options.key.public_spki,
-    }, options.key.private_key);
-    await rememberDevice(options.store, remove);
-    // a PC this client enrolled before it heard of the removal may hold an add for the key: the remove
-    // goes to every PC of the account by mailbox, kept and sent again like an add (sendQueuedAdds)
-    await options.store.update("adds", (current) => ({ ...current, [remove.id]: { account: options.account, record: remove, to: options.directory } }));
-  }
+export async function rememberDevice(store: AccountStore, record: AddRecord | RemoveRecord): Promise<void> {
+  await store.update("devices", (current) => withDevice(current, record));
 }
 
 /** Marks a PC this client is about to link while it had no account: enrollPc hands it the account's devices. */
@@ -263,7 +243,8 @@ const UNDECIDED = new Set(["account_unavailable"]);
 /**
  * Sends a planned PC (planEnroll) the account's devices as this client knows them
  * (docs/account.md, "Account members"): first the `remove`s it signed, so the PC tombstones those
- * keys, then the `add`s for the devices it approved itself, never a key another PC lists. `fetch`
+ * keys, then the `add`s for the devices it approved itself. Only records it signed itself go, as
+ * signed: never a key another PC lists, nor one a PC says was removed. `fetch`
  * must be a session signed in with the account key on that PC, after the link. Every record's
  * outcome is read; one the PC did not answer, or could not decide on, is sent again on the next
  * call. True once nothing is left to send there.
@@ -271,9 +252,9 @@ const UNDECIDED = new Set(["account_unavailable"]);
 export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return true;
-  const pending = async () => Object.values((await options.store.get("devices")) ?? {})
+  const pending = (devices: KnownDevices | undefined) => Object.values(devices ?? {})
     .filter((record) => record.account === options.account && !planned.done.includes(record.id));
-  const known = await pending();
+  const known = pending(await options.store.get("devices"));
   const removes = known.filter((record) => record.kind === "remove");
   const adds = known.filter((record) => record.kind === "add");
   const done: string[] = [];
@@ -294,17 +275,29 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   };
   // the adds go only once every removal has its outcome there: a removed key is tombstoned first
   const sent = await send("/api/account/records", removes) && await send("/api/account/enroll", adds);
-  // a removal or approval signed meanwhile (another tab) is not finished here: it goes on the next call
-  const finished = sent && (await pending()).every((record) => done.includes(record.id));
-  await options.store.update("enrolls", (current) => {
-    const entry = current?.[options.serverId];
-    if (current === undefined || entry === undefined || entry.account !== options.account) return current;
-    const rest = { ...current };
+  let finished = false;
+  // checked in the same write that ends the plan: a record signed meanwhile (another tab) keeps it for the next call
+  await options.store.updateMany(["enrolls", "devices"], (current) => {
+    const entry = current.enrolls?.[options.serverId];
+    if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
+    finished = sent && pending(current.devices).every((record) => done.includes(record.id));
+    const rest = { ...current.enrolls };
     if (finished) delete rest[options.serverId];
     else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
-    return Object.keys(rest).length === 0 ? undefined : rest;
+    return { devices: current.devices, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
   return finished;
+}
+
+/**
+ * What a connection to a PC of the account does for a PC this client planned to enroll (planEnroll):
+ * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
+ * signed in with the account key there. The PC's status gives this client no record to sign.
+ */
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+  const status = await pcAccountStatus(options.fetch);
+  if (status.account !== options.account) return false;
+  return enrollPc({ fetch: options.fetch, store: options.store, account: options.account, serverId: options.serverId });
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */

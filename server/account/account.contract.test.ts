@@ -68,7 +68,7 @@ async function post(link: Link, target: string, body: unknown) {
 }
 
 async function status(link: Link) {
-  return await (await link.open("/api/account/status").response).json() as { account: string | null; members: number; unlinked: string[]; removed: { key: string; removed_at: string }[] };
+  return await (await link.open("/api/account/status").response).json() as { account: string | null; members: number; unlinked: string[] };
 }
 
 /** A relay device that linked its row to the account: the device as it signs in from then on. */
@@ -162,8 +162,6 @@ test("a member's remove cuts the device off at once and keeps it out: its add re
   expect((await post(link, "/api/account/records", { records: [await remove(key, lost.spki)] })).body.results?.[0]?.outcome).toBe("applied");
   expect(await bounded(lostLink.serverError)).toBe("auth_revoked");
   expect((await post(link, "/api/account/records", { records: [replay] })).body.results?.[0]).toMatchObject({ outcome: "refused", code: "tombstoned" });
-  // the members hear which keys the account removed, so none of them hands that key to a PC it enrolls
-  expect((await status(link)).removed.map((entry) => entry.key)).toEqual([lost.spki]);
 
   // a pairing made on this PC wins over the account's removal
   const again = await relayConnection(f);
@@ -247,8 +245,6 @@ test("a revoke on this PC wins over the account: the device's signed add replaye
   await post(link, "/api/account/records", { records: [record] });
   f.app.context.services.devices.revoke(f.app.context.services.devices.list(null).find((row) => row.label === "Mac app")!.id);
   expect((await post(link, "/api/account/records", { records: [record] })).body.results?.[0]).toMatchObject({ outcome: "refused", code: "tombstoned" });
-  // a revoke on this PC is this PC's own: it is not listed as one of the account's removals
-  expect((await status(link)).removed).toEqual([]);
 });
 
 test("a code started through the relay does not let a removed key back in", async () => {
