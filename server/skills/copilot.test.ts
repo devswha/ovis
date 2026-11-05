@@ -61,6 +61,27 @@ it("reads skills in Copilot's order: nearest project folder first, then personal
   expect(found.find(({ name }) => name === "personal")!.id).toBe(join(home, ".copilot", "skills", "p", "SKILL.md"));
 });
 
+it("walks up to the home folder outside a repository, as Copilot does", () => {
+  const root = temp(), home = join(root, "home"), cwd = join(home, "project", "sub");
+  mkdirSync(cwd, { recursive: true });
+  skill(join(home, "project", ".claude", "skills", "near"), "near");
+  skill(join(home, ".github", "skills", "at-home"), "at-home");
+  skill(join(root, ".github", "skills", "above-home"), "above-home");
+  expect(skills(cwd, home).map(({ name, origin }) => [name, origin])).toEqual([["at-home", "project"], ["near", "project"]]);
+});
+
+it("reads names and folders the way Copilot does, and keeps the list when one root is a file", () => {
+  const home = temp(), cwd = join(home, "work");
+  mkdirSync(cwd, { recursive: true });
+  put(join(home, ".copilot", "skills"), "not a folder");
+  skill(join(cwd, "relative", "pane-folder"), "pane-folder");
+  skill(join(home, ".agents", "skills", "dotted"), "dotted.name");
+  put(join(home, ".agents", "skills", "no-header", "SKILL.md"), "Just a body\n");
+  put(join(home, ".copilot", "settings.json"), '{ "skillDirectories": ["relative"] }');
+  expect(skills(cwd, home, null).map(({ name }) => name)).toEqual(["dotted.name", "pane-folder"]);
+  expect(paneCommands("copilot", cwd, home).some(({ name }) => name === "model")).toBeTrue();
+});
+
 it("follows COPILOT_HOME and leaves out what Copilot's menu leaves out", () => {
   const home = temp(), copilotHome = join(home, "elsewhere");
   skill(join(copilotHome, "skills", "kept"), "kept");

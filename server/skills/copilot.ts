@@ -1,7 +1,8 @@
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import type { AgentCommandSource } from "./index.ts";
-import { ancestorsToRepoRoot, createWalkBudget, environValue, parseJsonc, plainObject, readConfigText, walkSkills } from "./walk.ts";
+import { createWalkBudget, environValue, parseJsonc, plainObject, readConfigText, walkSkills } from "./walk.ts";
 
 /**
  * GitHub Copilot CLI 1.0.105: the rows of its own `/` menu, scrolled through in an isolated
@@ -84,6 +85,20 @@ const forms: Record<string, CommandForm[]> = Object.fromEntries(terminalBare.map
 
 const typedOnly: ReadonlySet<string> = new Set(Object.keys(descriptions));
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item !== "") : [];
+const isDirectory = (path: string): boolean => { try { return statSync(path).isDirectory(); } catch { return false; } };
+
+/**
+ * The folders Copilot reads project skills from, nearest first: up to the repository root inside a
+ * repository; outside one, up to the home folder (included) or the filesystem root (1.0.105).
+ */
+function projectFolders(cwd: string, home: string): string[] {
+  const folders: string[] = [];
+  for (let directory = resolve(cwd); ; directory = dirname(directory)) {
+    folders.push(directory);
+    if (existsSync(join(directory, ".git")) || directory === resolve(home) || directory === dirname(directory)) break;
+  }
+  return folders;
+}
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions).filter((name) => !(agentHidden as readonly string[]).includes(name)),
@@ -97,11 +112,13 @@ export const source: AgentCommandSource = {
     try { settings = plainObject(parseJsonc(readConfigText(join(copilotHome, "settings.json")))); }
     catch { /* no settings file, or one Copilot itself would not read */ }
     const disabled = new Set(strings(settings.disabledSkills));
-    const added = strings(settings.skillDirectories).map((path) => path.startsWith("~/") ? join(home, path.slice(2)) : path);
-    // Copilot's order, the first skill of a name winning: each folder from the working directory up
-    // to the repository root, then the personal folders, then the folders `copilot skill add` saved
+    // a relative folder is the Copilot process's, which works in the pane's folder
+    const added = strings(settings.skillDirectories).flatMap((path) =>
+      path.startsWith("~/") ? [join(home, path.slice(2))] : isAbsolute(path) ? [path] : cwd ? [resolve(cwd, path)] : []);
+    // Copilot's order, the first skill of a name winning: the project folders, then the personal
+    // folders, then the folders `copilot skill add` saved
     const roots: [string, SlashCommand["origin"]][] = [
-      ...(cwd ? ancestorsToRepoRoot(cwd, home) : []).flatMap((directory): [string, SlashCommand["origin"]][] =>
+      ...(cwd ? projectFolders(cwd, home) : []).flatMap((directory): [string, SlashCommand["origin"]][] =>
         [".github", ".agents", ".claude"].map((prefix) => [join(directory, prefix, "skills"), "project"])),
       [join(copilotHome, "skills"), "user"], [join(home, ".agents", "skills"), "user"],
       ...added.map((path): [string, SlashCommand["origin"]] => [path, "user"]),
@@ -109,12 +126,18 @@ export const source: AgentCommandSource = {
     const budget = createWalkBudget();
     const found = new Map<string, SlashCommand | null>();
     for (const [root, origin] of roots) {
+      // a root that is a file is passed over, as Copilot does, rather than ending the whole list
+      if (!isDirectory(root)) continue;
       for (const skill of walkSkills(root, { depth: "recursive", looseMarkdown: "none", ignoreFiles: false, requireDescription: false, budget })) {
-        if (found.has(skill.name)) continue;
+        // a SKILL.md without frontmatter Copilot can read fails to load there
+        if (Object.keys(skill.fields).length === 0) continue;
+        const named = typeof skill.fields.name === "string" ? skill.fields.name.trim() : "";
+        const name = /^\S+$/.test(named) ? named : skill.name;
+        if (found.has(name)) continue;
         // its menu leaves out a disabled skill, one only the model may invoke, and one a builtin outranks
         const invocable = skill.fields["user-invocable"] !== false && skill.fields["user-invocable"] !== "false";
-        const listed = invocable && !disabled.has(skill.name) && !typedOnly.has(skill.name);
-        found.set(skill.name, listed ? { name: skill.name, description: skill.description, source: "skill", origin, id: skill.id } : null);
+        const listed = invocable && !disabled.has(name) && !typedOnly.has(name);
+        found.set(name, listed ? { name, description: skill.description, source: "skill", origin, id: skill.id } : null);
       }
     }
     return [...found.values()].filter((command): command is SlashCommand => command !== null);
