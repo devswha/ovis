@@ -624,8 +624,8 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   A PC with `OVIS_RELAY_URL` set uses that relay alone, unless it names one of Ovis's regional
   relays: that one is used with no measuring, and beside `relay.ovis.sh`, as below.
 - **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
-  same key and proof, to the regional relay. New pairing QR codes name the regional relay while its
-  link is online (the global one otherwise), and the relay status is the global link's; a phone
+  same key and proof, to the regional relay. New pairing QR codes and pairing links without a code
+  name the regional relay while its link is online (the global one otherwise), and the relay status is the global link's; a phone
   paired before keeps the relay it saved, so it still connects through `relay.ovis.sh`. Each link
   has its own session limits.
 - **The phone falls back.** A phone (or a PC that added this PC through the relay) whose saved relay
