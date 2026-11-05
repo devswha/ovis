@@ -22,13 +22,14 @@ log() { echo "[build-cache] $*" >&2; }
 # Whether the runner named $1 is running a job of run $2 (attempt $3), and that run is trusted.
 trusted() {
   local name="$1" run="$2" attempt="$3" info default pulls number pull
-  gh api "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
+  # every call has a deadline: one GitHub request that hangs must not stop the promotion of every slot
+  timeout 20 gh api "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
     jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null || { log "run $run has no job running on $name"; return 1; }
-  info="$(gh api "repos/$REPO/actions/runs/$run")" || return 1
+  info="$(timeout 20 gh api "repos/$REPO/actions/runs/$run")" || return 1
   [ "$(jq -r '.head_repository.full_name // ""' <<<"$info")" = "$REPO" ] || { log "run $run is not from $REPO"; return 1; }
   case "$(jq -r '.event // ""' <<<"$info")" in
     push)
-      default="$(gh api "repos/$REPO" --jq .default_branch)" || return 1
+      default="$(timeout 20 gh api "repos/$REPO" --jq .default_branch)" || return 1
       [ -n "$default" ] && [ "$(jq -r '.head_branch // ""' <<<"$info")" = "$default" ] || { log "run $run pushed another branch than $default"; return 1; }
       ;;
     pull_request)
@@ -38,7 +39,7 @@ trusted() {
       [ -n "$pulls" ] || { log "run $run names no pull request"; return 1; }
       for number in $pulls; do
         case "$number" in ''|*[!0-9]*) return 1 ;; esac
-        pull="$(gh api "repos/$REPO/pulls/$number")" || return 1
+        pull="$(timeout 20 gh api "repos/$REPO/pulls/$number")" || return 1
         jq -e --arg writer "$WRITER" --arg sha "$(jq -r '.head_sha // ""' <<<"$info")" \
           '.user.login == $writer and .head.sha == $sha' >/dev/null <<<"$pull" || { log "pull request $number of run $run is not $WRITER's"; return 1; }
       done
@@ -85,9 +86,11 @@ evict() {
 
 # The outboxes' files are moved into this host user's own directory before anything reads them, so
 # the job cannot change them between a check and a read (a FIFO swapped in, say).
+# Each claim gets a directory of its own there: what a job swapped in that this user cannot delete
+# (a directory of the runners' user) stays behind for run.sh to remove, and blocks no later claim.
 TAKEN="$OUTBOXES/.taken"
 mkdir -p "$TAKEN" && chmod 0700 "$TAKEN"
-take() { rm -rf "$2" && mv -T "$1" "$2" 2>/dev/null && [ -f "$2" ] && [ ! -L "$2" ]; }
+take() { [ -f "$1" ] && [ ! -L "$1" ] && mv -T "$1" "$2" 2>/dev/null && [ -f "$2" ] && [ ! -L "$2" ]; }
 
 promoted=0
 for name in "$@"; do
@@ -103,17 +106,18 @@ for name in "$@"; do
     [ -e "$claim" ] || [ -L "$claim" ] || continue
     file="${claim##*/}" key="${file%.claim}" tar="$outbox/${file%.claim}.tar"
     run="" attempt=""
+    work="$(mktemp -d "$TAKEN/XXXXXX")" || continue
     # only plain files, and small claims: a link could make this host user read or keep a file of its own
-    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$TAKEN/build.tar" && take "$claim" "$TAKEN/claim" &&
-      [ "$(stat -c %s "$TAKEN/claim")" -le 64 ]; then
-      read -r run attempt < "$TAKEN/claim" || true
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$work/build.tar" && take "$claim" "$work/claim" &&
+      [ "$(stat -c %s "$work/claim")" -le 64 ]; then
+      read -r run attempt < "$work/claim" || true
     fi
     if [[ "$run" =~ ^[0-9]{1,20}$ && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$key" ] &&
-      [ "$(stat -c %s "$TAKEN/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
-      if admit "$TAKEN/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
+      [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
+      if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
     fi
     # whatever it is (a directory named like a claim included): it must not stop the other slots
-    rm -rf "$claim" "$tar" "$TAKEN/claim" "$TAKEN/build.tar" 2>/dev/null || true
+    rm -rf "$claim" "$tar" "$work" 2>/dev/null || true
     # Only now, the entry in place or the build refused: the job that built it may let the others go.
     # A directory, which mkdir never makes through a link the job could have put at that name.
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then mkdir "$outbox/judged-$key" 2>/dev/null || true; fi

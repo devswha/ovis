@@ -170,6 +170,14 @@ build_cache_args() {
     -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox ${BUILD_CACHE_WRITER:+-e "OVIS_BUILD_CACHE_WRITER=$BUILD_CACHE_WRITER"})
 }
 
+# What the promoter could not delete (a directory of the runners' user that a job swapped in): a
+# throwaway container of the image, no network, allowed only past file permissions, removes it.
+clean_taken() {
+  [ -n "$(find "$BUILD_CACHE_OUTBOXES/.taken" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0
+  docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add DAC_OVERRIDE --user 0:0 \
+    -v "$BUILD_CACHE_OUTBOXES/.taken:/taken" --entrypoint find "$IMAGE" /taken -mindepth 1 -delete </dev/null >/dev/null 2>&1 || true
+}
+
 # Every second: the trusted builds in the outboxes go into the cache. In its own process group, which cleanup stops.
 promote_loop() {
   trap 'exit 143' TERM
@@ -177,6 +185,7 @@ promote_loop() {
   for slot in $(seq 1 "$COUNT"); do names+=("${PREFIX}${slot}"); done
   while true; do
     bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_OUTBOXES" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
+    clean_taken
     # with --once too: until cleanup stops it, after the slots' containers end
     sleep 1
   done
@@ -486,6 +495,8 @@ if [ "$CACHE" = 1 ]; then
 fi
 
 if [ -n "$BUILD_CACHE_ROOT" ]; then
+  # what an earlier launcher's promoter left
+  clean_taken
   set -m
   promote_loop &
   PROMOTE_PID="$!"

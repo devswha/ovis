@@ -362,8 +362,10 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
       mkdirSync(join(first, "junk"), { recursive: true });
       writeFileSync(join(first, "junk/blob"), "x");
+      mkdirSync(join(outboxes, ".taken", "left"), { recursive: true });
       const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
+      expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
@@ -789,7 +791,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false, used = false, claim = "7 1\n") {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n") {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -805,7 +807,15 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
       writeFileSync(join(outbox, `${key}.claim`), claim);
       // an earlier slot whose job left a directory named like a claim
-      if (junkSlot) mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
+      if (junkSlot === "claim") mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
+      // or a "tar" that is a directory this user cannot delete, as one of the runners' user is
+      if (junkSlot === "tar") {
+        const junk = join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.tar`);
+        mkdirSync(join(junk, "x"), { recursive: true });
+        writeFileSync(join(junk, "x", "f"), "");
+        chmodSync(join(junk, "x"), 0o000);
+        writeFileSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), "7 1\n");
+      }
       // a restore's use of an entry another run left, and a used marker that is a link
       if (used) {
         mkdirSync(join(root, "entries", "c".repeat(64)));
@@ -840,6 +850,7 @@ esac
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
       };
     } finally {
+      spawnSync("chmod", ["-R", "u+rwX", dir]);
       rmSync(dir, { recursive: true, force: true });
     }
   }
@@ -855,7 +866,13 @@ esac
   });
 
   it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
-    const run = promote({}, "files", "devswha", true);
+    const run = promote({}, "files", "devswha", "claim");
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
+  });
+
+  it("goes on taking in trusted builds past a tar this user cannot delete", () => {
+    const run = promote({}, "files", "devswha", "tar");
     expect(run.status).toBe(0);
     expect(run.entries).toEqual([key]);
   });
