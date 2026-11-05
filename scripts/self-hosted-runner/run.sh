@@ -102,6 +102,12 @@ NETNS="${PREFIX}net"
 if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -t "$IMAGE" "$SCRIPT_DIR"
 fi
+# A CPU list docker cannot give fails every container, and every slot would then ask for a token every
+# few seconds: refuse it now, with one throwaway container, before anything starts.
+if [ "${#CPUSET_ARGS[@]}" -gt 0 ] && ! docker run --rm "${CPUSET_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
+  echo "--cpuset-cpus ${CPUSET_ARGS[1]}: docker cannot run a container on those CPUs" >&2
+  exit 2
+fi
 
 # Host caches (README "Host caches"): a bare mirror of the repository's branches and tags, and Bun's
 # install cache for the default branch's bun.lock. Only this launcher writes them: the mirror from

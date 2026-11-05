@@ -166,8 +166,10 @@ case "$1" in
   # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
   rm) for last; do :; done; case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
-    # the shared network namespace container is detached and reads no token
-    [ "$2" = -d ] && exit 0
+    # docker's own refusal of a CPU list the host does not have
+    case " $* " in *" --cpuset-cpus 0-500 "*) echo "docker: Requested CPUs are not available" >&2; exit 125 ;; esac
+    # the launcher's check of its CPU list, and the shared network namespace container: neither reads a token
+    case " $* " in *" --entrypoint true "*|*" -d "*) exit 0 ;; esac
     shift
     name=""
     while [ "$#" -gt 0 ]; do
@@ -306,7 +308,7 @@ exit 0
 }
 
 /** A runner container: it reads its registration token on stdin. */
-const runnerRun = /^docker run --rm -i /;
+const runnerRun = /^docker run (?:--cpuset-cpus \S+ )?--rm -i /;
 /** What the git stub reports for the mirror's default branch and its bun.lock. */
 const commitSha = "1".repeat(40);
 const lockBlob = "2".repeat(40);
@@ -390,9 +392,19 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-95"] });
     expect(result.status).toBe(0);
     const runs = calls.split("\n").filter((call) => call.startsWith("docker run "));
-    expect(runs.length).toBeGreaterThanOrEqual(3);
+    // the network namespace container (the stub never reports it running, so each runner starts it again) and both runners, each pinned
+    expect(runs.filter((call) => call.startsWith("docker run --cpuset-cpus 0-95 -d ")).length).toBeGreaterThanOrEqual(1);
+    expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
     for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 ");
     expect(runRunner().calls).not.toContain("--cpuset-cpus");
+  });
+
+  it("refuses a CPU list docker cannot give before starting anything", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-500"] });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--cpuset-cpus 0-500");
+    expect(calls).not.toContain("registration-token");
+    expect(calls.split("\n").filter((call) => runnerRun.test(call) || call.includes(" -d "))).toEqual([]);
   });
 
   it("starts a slot's runner only once the container an earlier launcher left in that slot has ended", async () => {
