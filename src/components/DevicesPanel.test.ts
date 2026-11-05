@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import type { HealthAuth } from "../../shared/protocol.ts";
+import type { HealthAuth, PairedDevice } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { DevicesPanel } from "./DevicesPanel.tsx";
+import { DevicesPanel, signsAccountRemoves } from "./DevicesPanel.tsx";
 
 /** English, whatever the machine running the test prefers. */
 function render(auth: HealthAuth): string {
@@ -17,6 +17,25 @@ function render(auth: HealthAuth): string {
     else Reflect.deleteProperty(navigator, "languages");
   }
 }
+
+describe("who may disconnect a device from every PC", () => {
+  const row = (id: string, extra: Partial<PairedDevice> = {}): PairedDevice => ({ id, label: id, role: "drive", created_at: "", last_seen_at: "", current: false, ...extra });
+  const phone = row("phone", { account: "acct", account_key: "phone-key" });
+
+  it("is a drive member of the same account on this PC", () => {
+    expect(signsAccountRemoves([phone, row("me", { current: true, account: "acct", account_key: "my-key" })], "acct", "my-key")).toBe(true);
+  });
+
+  it("is not a browser whose account key no row of this PC holds (signed in on the PC's own address, paired by cookie)", () => {
+    expect(signsAccountRemoves([phone, row("me", { current: true })], "acct", "my-key")).toBe(false);
+    expect(signsAccountRemoves([phone], "acct", null)).toBe(false);
+  });
+
+  it("is not a member of another account, nor one that only watches", () => {
+    expect(signsAccountRemoves([phone, row("me", { account: "other", account_key: "my-key" })], "acct", "my-key")).toBe(false);
+    expect(signsAccountRemoves([phone, row("me", { role: "watch", account: "acct", account_key: "my-key" })], "acct", "my-key")).toBe(false);
+  });
+});
 
 describe("how this browser got in", () => {
   it("says who Portal's sign-in let in, and how", () => {

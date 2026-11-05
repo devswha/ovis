@@ -45,6 +45,15 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
   open: "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.",
 };
 
+/**
+ * Whether a `remove` signed with this client's account key would be applied here: the PC takes it only
+ * from a drive member of the account (server/account/records.ts). A browser signed in on the PC's own
+ * address, paired by cookie, holds a key no row has, and every PC would refuse it (`signer_not_member`).
+ */
+export function signsAccountRemoves(devices: readonly PairedDevice[], account: string, key: string | null): boolean {
+  return key !== null && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
+}
+
 /** Settings → Devices: the paired devices, and a code to pair one more. */
 export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevokedAll }: DevicesPanelProps) {
   const t = useT();
@@ -144,6 +153,15 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
     try { await renameDevice(renaming.id, renaming.label); setRenaming(null); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const signedIn = useAccountSignedIn();
+  /** this client's account key, read only once it is signed in (reading it makes one) */
+  const [accountKey, setAccountKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (signedIn === null) return;
+    let live = true;
+    indexedAccountStore.key().then((key) => { if (live) setAccountKey(key.public_spki); }, () => undefined);
+    return () => { live = false; };
+  }, [signedIn]);
+  const removesHere = signedIn !== null && devices !== null && signsAccountRemoves(devices, signedIn, accountKey);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
   const disconnect = async (id: string, key: string, account: string) => {
@@ -243,8 +261,8 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
                   {!guest && (
                     <div className="devices-actions">
                       <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                      {signedIn !== null && d.account === signedIn && d.account_key !== undefined && !d.current && (
-                        <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!, signedIn)}>
+                      {removesHere && d.account === signedIn && d.account_key !== undefined && !d.current && (
+                        <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!, signedIn!)}>
                           {disconnecting === d.id ? t("Disconnect everywhere?") : t("Disconnect from all PCs")}
                         </button>
                       )}
