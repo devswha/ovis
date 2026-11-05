@@ -468,6 +468,17 @@ async function keyboardOnRequest(browser: Browser): Promise<Record<string, unkno
         await lower(page);
         await flushTimers(page);
         assert.deepEqual(await fieldState(page, field), { inputmode: held, focused: true }, `${label}: the keyboard put away by the system holds the field again`);
+        // a keyboard the measurement is blind to (a floating keyboard, a zoomed page): Show's request
+        // outlives the control's settle window, which falls back to the measured "down"
+        await blur(page);
+        await tapAndInputmode(page, field);
+        await flushTimers(page);
+        assert.equal((await control(page)).label, "Show keyboard", `${label}: unmeasured, the control falls back to the measurement`);
+        assert.deepEqual(await fieldState(page, field), { inputmode: null, focused: true }, `${label}: an unmeasured keyboard Show raised is not taken back`);
+        // leaving the pane's fields ends the request: the next tap on them raises nothing
+        await blur(page);
+        await flushTimers(page);
+        assert.equal((await fieldState(page, field)).inputmode, held, `${label}: the focus gone from the pane's fields holds them again`);
         // Show again, then Hide from the control: the hold comes back as the keyboard goes
         await tapAndInputmode(page, field);
         await raise(page);

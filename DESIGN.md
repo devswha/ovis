@@ -3746,12 +3746,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--text-dim`, so a bar with nothing to send to reads as such.
 - **Keyboard only from the key bar** (Settings > Terminal, off by default, the device setting
   `terminalKeyboardOnRequest`, #1635): on a touch screen the control above becomes the only way the
-  terminal raises the soft keyboard. While this pane's control says the keyboard is down (its
-  `direction` is Show), the input line and xterm's field carry `inputmode="none"`, so a tap on the
-  grid, the line, Send or a key still focuses them and raises nothing (a browser shows no keyboard
-  for that mode, and a switch to it hides one). Show removes the attribute from the field it focuses
-  inside the same tap; the attribute comes back once the control reads Show again: after Hide, or
-  when the system put the keyboard away (Android's back gesture) and the measurement says so. The
+  terminal raises the soft keyboard. Until the control's Show asks for it, the input line and
+  xterm's field carry `inputmode="none"`, so a tap on the grid, the line, Send or a key still
+  focuses them and raises nothing (a browser shows no keyboard for that mode, and a switch to it
+  hides one). Show removes the attribute from the field it focuses inside the same tap. The request
+  is the tap's own, not the measurement's, which is blind to a floating keyboard or a zoomed page
+  (its settle window would otherwise take an unmeasured keyboard back): it ends at Hide, at a
+  keyboard measured going down (Android's back gesture), or when the focus leaves the pane's
+  fields, and the attribute comes back. The
   mode switch stays its own key beside the control. The model is Termux's KEYBOARD extra key, the
   keyboard toggle of a phone terminal app: reading is the rest state, typing is asked for.
 - When the row outgrows the viewport it scrolls sideways, and the edge that hides more keys fades

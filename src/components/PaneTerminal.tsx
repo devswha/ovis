@@ -52,7 +52,7 @@ import { learnFromSend } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { isAppShortcut } from "../lib/shortcuts.ts";
 import { plainPageDirection } from "../lib/pageScroll.ts";
-import { keyboardTypingField } from "../lib/keyboard.ts";
+import { keyboardTypingField, keyboardUp } from "../lib/keyboard.ts";
 import { keyboardControl } from "../lib/keyboardControl.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { WebPanelContext } from "../lib/webPanel.ts";
@@ -566,12 +566,39 @@ export function PaneTerminal({
   const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
   const keyboardOwnerRef = useRef(keyboardOwner);
   keyboardOwnerRef.current = keyboardOwner;
-  // Settings > Terminal > Keyboard only from the key bar (#1635): on a touch screen, while this pane's
-  // control says the keyboard is down, its fields carry inputmode="none". A tap on the grid, the line,
-  // Send or a key still focuses them, and raises no keyboard; only the control's Show lifts it
-  const keyboardView = useCallback(() => keyboardControl.view(keyboardOwner), [keyboardOwner]);
-  const keyboardDirection = useSyncExternalStore(keyboardControl.subscribe, keyboardView, keyboardView).direction;
-  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && keyboardDirection === "show";
+  // Settings > Terminal > Keyboard only from the key bar (#1635): on a touch screen, until the control's
+  // Show asks for the keyboard, this pane's fields carry inputmode="none": a tap on the grid, the line,
+  // Send or a key still focuses them, and raises no keyboard. The request is the tap's, not the
+  // measurement's, which is blind to a floating keyboard or a zoomed page: it ends at Hide, at a
+  // keyboard measured going down (the back gesture), or when the focus leaves this pane's fields
+  const [keyboardRequested, setKeyboardRequested] = useState(false);
+  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested;
+  useEffect(() => {
+    setKeyboardRequested(false);
+    let up = keyboardUp();
+    const unsubscribe = keyboardControl.subscribe(() => {
+      const now = keyboardUp();
+      if (up && !now) setKeyboardRequested(false);
+      up = now;
+    });
+    const stack = stackRef.current;
+    let timer: number | null = null;
+    // read where the focus landed once it has: Show's own blur-and-refocus lands back on the field
+    const onFocusOut = (): void => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        const focused = document.activeElement;
+        if (!(keyboardTypingField(focused) && stack?.contains(focused) === true)) setKeyboardRequested(false);
+      }, 0);
+    };
+    stack?.addEventListener("focusout", onFocusOut);
+    return () => {
+      unsubscribe();
+      stack?.removeEventListener("focusout", onFocusOut);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [paneId]);
   // a tap still in flight when this pane stops being the selected, shown one (another pane picked,
   // its tab left, or unmounted) is abandoned: coming back, its control reads the measurement
   useEffect(() => {
@@ -783,6 +810,7 @@ export function PaneTerminal({
       owner: keyboardOwnerRef.current,
     });
     if (action !== "show" && action !== "hide") return;
+    setKeyboardRequested(action === "show");
     const show = (): void => {
       if (line === null) return;
       // Keyboard only from the key bar: this tap is the request, so the field may raise it now
