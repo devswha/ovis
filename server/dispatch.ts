@@ -1,4 +1,5 @@
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
+import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
 import type { ClientConnectionLog } from "./client-connection-log.ts";
 import type { RequestLog } from "./request-log.ts";
@@ -116,7 +117,7 @@ export interface ServerContext {
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
-  const { sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
+  const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   const startup = portalStartupResult ?? await portalStartup;
   if (!startup.ok) {
@@ -452,6 +453,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
 
+  // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
+  if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {
+    try { return (await handleAlertWebhookRequest(request, pathname, alertWebhook))!; } catch (error) { return errorResponse(error); }
+  }
   if (pathname === "/api/push" || pathname.startsWith("/api/push/")) {
     try {
       // a paired device owns its alerts; the open LAN (before any pairing) owns them only while
