@@ -27,10 +27,15 @@ export function layoutActions({ selectedPaneId, offer, paneSplits, selection, ro
   layoutRefused: (what: string, err: unknown) => void;
 }): Pick<AppActions, "splitPane" | "zoomPane" | "toggleZoom"> {
   if (selectedPaneId === null) return { splitPane: null, zoomPane: null, toggleZoom: null };
+  // the shortcut's last zoom until the roster it reloads arrives: a second press before then undoes it
+  let asked: { paneId: string; mode: ZoomMode } | null = null;
   const zoom = (mode: ZoomMode): void => {
     const { machineId, paneId } = selection.current;
     if (paneId === null) return;
-    void zoomPane(paneId, mode, machineId).then(() => void load()).catch((err) => layoutRefused("pane zoom failed", err));
+    const request = { paneId, mode };
+    asked = request;
+    void zoomPane(paneId, mode, machineId).then(() => load()).catch((err) => layoutRefused("pane zoom failed", err))
+      .finally(() => { if (asked === request) asked = null; });
   };
   return {
     splitPane: !offer.split || !paneSplits ? null : (direction, focus = false) => {
@@ -53,7 +58,7 @@ export function layoutActions({ selectedPaneId, offer, paneSplits, selection, ro
       const layout = roster.current?.layouts.find((entry) => entry.tab_id === tabId);
       const panes = roster.current?.panes.filter((pane) => pane.tab_id === tabId).length ?? 0;
       if (paneId === null || !layout || panes < 2) return;
-      zoom(zoomMode(layout, paneId));
+      zoom(asked?.paneId === paneId ? (asked.mode === "on" ? "off" : "on") : zoomMode(layout, paneId));
     },
   };
 }

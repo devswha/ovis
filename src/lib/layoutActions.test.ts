@@ -79,7 +79,7 @@ describe("the split and zoom shortcuts", () => {
     useShortcuts(actions, true);
     return null;
   }
-  async function press(pc: keyof typeof OFFERS, key = "l", { pane = "p1", roster = rosterOf() } = {}): Promise<void> {
+  async function press(pc: keyof typeof OFFERS, key = "l", { pane = "p1", roster = rosterOf(), times = 1 } = {}): Promise<void> {
     await act(async () => renderer?.unmount());
     selection.current = { ...selection.current, paneId: pane };
     const actions = { ...layout(pc, pane, true, roster) } as AppActions;
@@ -90,7 +90,7 @@ describe("the split and zoom shortcuts", () => {
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
       await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Shortcuts, { actions }))); });
-      await act(async () => { events.dispatchEvent(chord(key)); });
+      await act(async () => { for (let press = 0; press < times; press++) events.dispatchEvent(chord(key)); });
     } finally {
       fetch.mockRestore();
     }
@@ -111,6 +111,11 @@ describe("the split and zoom shortcuts", () => {
     await press("tui", "z");
     await press("tui", "z", { roster: rosterOf(true) });
     expect(requested).toEqual(["/api/pane/zoom", "/api/pane/zoom"]);
+    expect(bodies).toEqual([{ pane_id: "p1", mode: "on" }, { pane_id: "p1", mode: "off" }]);
+  });
+
+  it("unzooms on a second press made before herdr's answer, rather than zooming again", async () => {
+    await press("tui", "z", { times: 2 });
     expect(bodies).toEqual([{ pane_id: "p1", mode: "on" }, { pane_id: "p1", mode: "off" }]);
   });
 
