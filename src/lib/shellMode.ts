@@ -42,8 +42,8 @@ export function shellServiceWorker(pathname: string): { script: string; scope: s
 
 /**
  * The hosted shell's worker opens a page from the shell it kept (public/sw.js), so a reload meant
- * to bring in a newer shell drops that copy first: the reload then asks the host.
+ * to bring in a newer shell asks it to go to the host first; the kept copy stays its fallback.
  */
-export async function forgetKeptShell(storage: Pick<CacheStorage, "keys" | "open">): Promise<void> {
-  for (const name of await storage.keys()) await (await storage.open(name)).delete("/");
+export async function requestFreshShell(storage: Pick<CacheStorage, "open">): Promise<void> {
+  await (await storage.open("ovis-files-v1")).put("/__ovis-fresh-shell", new Response("1"));
 }

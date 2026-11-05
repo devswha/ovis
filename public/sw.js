@@ -132,6 +132,23 @@ async function cachedShell() {
   return (await keptShell())?.response;
 }
 
+/**
+ * A page that needs the host's shell (src/lib/shellMode.ts requestFreshShell) leaves this entry in
+ * FILES: the next navigation takes it and asks the network first, its kept shell still the fallback.
+ */
+const FRESH_SHELL = "/__ovis-fresh-shell";
+/** How long a kept shell is opened without asking the host first: past it, a refresh that kept failing shows. */
+const KEPT_SHELL_MS = 24 * 60 * 60 * 1000;
+
+async function takeFreshRequest() {
+  return (await caches.open(FILES)).delete(FRESH_SHELL);
+}
+
+function keptRecently(response) {
+  const at = Date.parse(response.headers.get("date") || "");
+  return Number.isFinite(at) && Date.now() - at < KEPT_SHELL_MS;
+}
+
 /** The shell kept for the next start and the cache that holds it; null when none was kept. */
 async function keptShell() {
   for (const name of [CACHE, ...(await caches.keys()).filter((name) => name !== CACHE && name !== FILES)]) {
@@ -272,8 +289,9 @@ self.addEventListener("fetch", (event) => {
         // The hosted shell starts from the shell it kept: its host may be a slow ocean away, and
         // which build a page runs is told apart from the PC's by the version policy, not by being
         // fresh. The network's shell is kept for the next open.
-        const kept = RELAY_RESOURCES ? await keptShell() : null;
-        if (kept) {
+        const fresh = RELAY_RESOURCES ? await takeFreshRequest() : false;
+        const kept = RELAY_RESOURCES && !fresh ? await keptShell() : null;
+        if (kept && keptRecently(kept.response)) {
           event.waitUntil(fetch(request)
             .then((response) => (response.ok ? keepShell(response, kept.cache) : undefined))
             .catch(() => undefined));

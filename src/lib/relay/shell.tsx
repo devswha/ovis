@@ -16,7 +16,7 @@ import { deviceLabel } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import type { PendingPushStore } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
-import { forgetKeptShell } from "../shellMode.ts";
+import { requestFreshShell } from "../shellMode.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
@@ -62,7 +62,7 @@ async function reloadPage(): Promise<void> {
     // a worker check that hangs must not keep the stale shell up: the reload goes on without it
     await Promise.race([registration?.update(), wait(5000)]);
   } catch (error) { console.warn("Ovis: the service worker did not check for a newer shell", error); }
-  try { await forgetKeptShell(caches); } catch (error) { console.warn("Ovis: the kept shell could not be dropped", error); }
+  try { await requestFreshShell(caches); } catch (error) { console.warn("Ovis: the worker was not asked for a fresh shell", error); }
   window.location.reload();
 }
 

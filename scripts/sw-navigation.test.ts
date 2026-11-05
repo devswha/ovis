@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { forgetKeptShell } from "../src/lib/shellMode.ts";
+import { requestFreshShell } from "../src/lib/shellMode.ts";
 import { stampServiceWorker } from "./service-worker-build.ts";
 
 const source = readFileSync(join(import.meta.dir, "..", "public", "sw.js"), "utf8");
@@ -11,13 +11,13 @@ const SCOPE = `${ORIGIN}/s/${"0123456789abcdef".repeat(2)}/`;
 type Store = Map<string, Response>;
 
 /** sw.js run against in-memory caches and a network that answers `pages` and `files`. */
-function worker(options: { shell: boolean; build: string; caches?: Record<string, Record<string, string>>; network: Record<string, string> }) {
+function worker(options: { shell: boolean; build: string; caches?: Record<string, Record<string, string>>; network: Record<string, string>; keptAt?: Date; offline?: boolean }) {
   const stores = new Map<string, Store>();
   const key = (request: Request | string) => new URL(typeof request === "string" ? request : request.url, ORIGIN).href;
-  const page = (body: string) => new Response(body, { headers: { "content-type": "text/html" } });
+  const page = (body: string, date = new Date()) => new Response(body, { headers: { "content-type": "text/html", date: date.toUTCString() } });
   const file = (body: string) => new Response(body, { headers: { "content-type": "text/javascript" } });
   for (const [name, entries] of Object.entries(options.caches ?? {})) {
-    stores.set(name, new Map(Object.entries(entries).map(([path, body]) => [key(path), path === "/" ? page(body) : file(body)])));
+    stores.set(name, new Map(Object.entries(entries).map(([path, body]) => [key(path), path === "/" ? page(body, options.keptAt) : file(body)])));
   }
   const open = (name: string) => {
     let store = stores.get(name);
@@ -39,10 +39,9 @@ function worker(options: { shell: boolean; build: string; caches?: Record<string
       return undefined;
     },
   };
-  const requested: string[] = [];
   const fetch = async (request: Request | string) => {
     const url = new URL(key(request));
-    requested.push(url.pathname);
+    if (options.offline) throw new TypeError("Failed to fetch");
     const body = options.network[url.pathname];
     if (body === undefined) return new Response("", { status: 404 });
     const response = url.pathname.startsWith("/assets/") ? file(body) : page(body);
@@ -73,11 +72,13 @@ function worker(options: { shell: boolean; build: string; caches?: Record<string
     while (pending.length) await pending.shift();
     return body;
   }
-  return { navigate, stores, requested, caches: cacheStorage };
+  return { navigate, stores, caches: cacheStorage, network: options.network };
 }
 
 const OLD_SHELL = '<script type="module" src="/assets/index-old.js"></script>';
 const NEW_SHELL = '<script type="module" src="/assets/index-new.js"></script>';
+const KEPT = { "ovis-v4-sheep-0000000000aa": { "/": OLD_SHELL, "/assets/index-old.js": "old" } };
+const NETWORK = { [new URL(SCOPE).pathname]: NEW_SHELL, "/assets/index-new.js": "new" };
 
 describe("service worker navigations", () => {
   it("opens the hosted shell from the shell it kept, and keeps the network's for the next open", async () => {
@@ -90,13 +91,22 @@ describe("service worker navigations", () => {
     expect(await sw.navigate()).toBe(NEW_SHELL);
   });
 
-  it("asks the network on the reload that brings in a newer shell", async () => {
-    const sw = worker({
-      shell: true, build: "0000000000aa",
-      caches: { "ovis-v4-sheep-0000000000aa": { "/": OLD_SHELL, "/assets/index-old.js": "old" } },
-      network: { [new URL(SCOPE).pathname]: NEW_SHELL, "/assets/index-new.js": "new" },
-    });
-    await forgetKeptShell(sw.caches);
+  it("asks the network on the reload that brings in a newer shell, once", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: { ...NETWORK } });
+    await requestFreshShell(sw.caches);
+    expect(await sw.navigate()).toBe(NEW_SHELL);
+    sw.network[new URL(SCOPE).pathname] = OLD_SHELL;
+    expect(await sw.navigate()).toBe(NEW_SHELL);
+  });
+
+  it("keeps the kept shell for a reload that finds the host unreachable", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: NETWORK, offline: true });
+    await requestFreshShell(sw.caches);
+    expect(await sw.navigate()).toBe(OLD_SHELL);
+  });
+
+  it("asks the network first once the kept shell is a day old", async () => {
+    const sw = worker({ shell: true, build: "0000000000aa", caches: KEPT, network: NETWORK, keptAt: new Date(Date.now() - 25 * 3600_000) });
     expect(await sw.navigate()).toBe(NEW_SHELL);
   });
 
