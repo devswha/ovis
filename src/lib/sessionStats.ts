@@ -9,11 +9,12 @@ import { t } from "./i18n.ts";
  * transcript is, and the goal it works toward. Worked time is the sum of the agent turns' own
  * durations (each turn's first to last recorded activity, as its "Worked for" says), not the wall
  * time since the session began: idle time between turns is not work. The chat pages its turns, so
- * until the beginning is loaded the sum covers only the turns read and is said as "at least".
+ * until the beginning is loaded the sum covers only the turns read and is said as "at least"; so is
+ * a sum that leaves out a settled turn whose span the transcript does not record.
  */
 export interface SessionStats {
   workedSeconds: number | null;
-  /** the turns reach back to the conversation's beginning: the sum is the whole session's */
+  /** the turns reach back to the conversation's beginning and every settled one has a span: the sum is the whole session's */
   complete: boolean;
   /** the transcript file's size (ConversationResponse.transcript_bytes); null when the store is not one file */
   bytes: number | null;
@@ -23,14 +24,18 @@ export interface SessionStats {
 
 export function sessionStats(turns: readonly ConversationTurn[], complete: boolean, bytes: number | null): SessionStats {
   let worked: number | null = null;
+  let unknown = false;
+  const last = turns.at(-1);
   for (const turn of turns) {
-    if (turn.role !== "assistant" || turn.ts === null || turn.end_ts === undefined) continue;
-    const ms = Date.parse(turn.end_ts) - Date.parse(turn.ts);
+    if (turn.role !== "assistant") continue;
+    const ms = turn.ts === null || turn.end_ts === undefined ? NaN : Date.parse(turn.end_ts) - Date.parse(turn.ts);
     if (Number.isFinite(ms) && ms >= 0) worked = (worked ?? 0) + ms;
+    // the running turn may not have written its end yet
+    else if (turn !== last) unknown = true;
   }
   return {
     workedSeconds: worked === null ? null : Math.round(worked / 1000),
-    complete,
+    complete: complete && !unknown,
     bytes,
     goal: turnGoal(turns.flatMap((turn) => turn.role === "assistant" ? turn.parts : [])),
   };
@@ -42,18 +47,27 @@ const sameGoal = (a: GoalState | null, b: GoalState | null): boolean => a === b 
 const same = (a: SessionStats | undefined, b: SessionStats | null): boolean => a === undefined ? b === null
   : b !== null && a.workedSeconds === b.workedSeconds && a.complete === b.complete && a.bytes === b.bytes && sameGoal(a.goal, b.goal);
 
-// each pane's chat publishes its own; the header reads the selected pane's
-const published = new Map<string, SessionStats>();
+// each chat view publishes its own, under its pane; two views of one pane (a split) each keep theirs,
+// and the header reads the one published last
+const published = new Map<string, Map<symbol, SessionStats>>();
 const listeners = new Set<() => void>();
 const keyOf = (machineId: string, paneId: string): string => `${machineId}\0${paneId}`;
 
-/** `stats` null: the pane's chat shows no conversation (any more). Tells readers only on a change. */
-export function publishSessionStats(machineId: string, paneId: string, stats: SessionStats | null): void {
+function current(key: string): SessionStats | null {
+  return [...published.get(key)?.values() ?? []].at(-1) ?? null;
+}
+
+/** `stats` null: this view shows no conversation (any more). Tells readers only on a change. */
+export function publishSessionStats(machineId: string, paneId: string, view: symbol, stats: SessionStats | null): void {
   const key = keyOf(machineId, paneId);
-  if (same(published.get(key), stats)) return;
-  if (stats === null) published.delete(key);
-  else published.set(key, stats);
-  for (const listener of [...listeners]) listener();
+  const views = published.get(key) ?? new Map<symbol, SessionStats>();
+  if (same(views.get(view), stats)) return;
+  const before = current(key);
+  views.delete(view);
+  if (stats !== null) views.set(view, stats);
+  if (views.size === 0) published.delete(key);
+  else published.set(key, views);
+  if (current(key) !== before) for (const listener of [...listeners]) listener();
 }
 
 function subscribe(listener: () => void): () => void {
@@ -62,7 +76,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 export function useSessionStats(machineId: string, paneId: string | null): SessionStats | null {
-  return useSyncExternalStore(subscribe, () => paneId === null ? null : published.get(keyOf(machineId, paneId)) ?? null);
+  return useSyncExternalStore(subscribe, () => paneId === null ? null : current(keyOf(machineId, paneId)));
 }
 
 const STATUS_WORDS: Record<GoalStatus, string> = {

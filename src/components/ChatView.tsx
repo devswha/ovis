@@ -2355,8 +2355,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // the header's session totals (lib/sessionStats.ts): only a conversation read says them
   const stats = useMemo(() => loaded && state.source === "conversation" ? sessionStats(shownTurns, olderCursor === null, transcriptBytes) : null,
     [loaded, state.source, shownTurns, olderCursor, transcriptBytes]);
-  useEffect(() => { publishSessionStats(machineId, paneId, stats); }, [machineId, paneId, stats]);
-  useEffect(() => () => publishSessionStats(machineId, paneId, null), [machineId, paneId]);
+  const statsView = useRef(Symbol("chat view")).current;
+  useEffect(() => { publishSessionStats(machineId, paneId, statsView, stats); }, [machineId, paneId, statsView, stats]);
+  useEffect(() => () => publishSessionStats(machineId, paneId, statsView, null), [machineId, paneId, statsView]);
   // Claude Code's activity is herdr's status, which can rest before a read holds the turn's answer:
   // the turn stays at work until one does. Before paint, so no frame shows it ended with no answer.
   const answerEdge = useRef<{ pane: string; status: AgentStatus | undefined }>({ pane: paneId, status: agentStatus });
