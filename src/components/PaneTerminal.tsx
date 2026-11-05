@@ -574,8 +574,10 @@ export function PaneTerminal({
   const [keyboardRequested, setKeyboardRequested] = useState(false);
   // only while the control can be pressed: offline, held, ended or view only, it is gone or disabled,
   // and a line still taking a draft must raise the keyboard on a tap as it does with the setting off
-  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested
-    && connected && inputReady && !held && !ended && !observing;
+  const keyboardControlUsable = connected && inputReady && !held && !ended && !observing;
+  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested && keyboardControlUsable;
+  const keyboardControlUsableRef = useRef(keyboardControlUsable);
+  keyboardControlUsableRef.current = keyboardControlUsable;
   useEffect(() => {
     setKeyboardRequested(false);
     let up = keyboardUp();
@@ -596,10 +598,17 @@ export function PaneTerminal({
         if (!(focused instanceof HTMLElement && stack?.contains(focused) === true && focused.matches(".terminal-input-text, .xterm-helper-textarea"))) setKeyboardRequested(false);
       }, 0);
     };
+    // a tap into the line or the grid while the control cannot be pressed (offline, held) raised the
+    // keyboard itself: it stands as the request, so the control coming back (a reconnect) takes nothing away
+    const onFocusIn = (event: FocusEvent): void => {
+      if (!keyboardControlUsableRef.current && event.target instanceof HTMLElement && event.target.matches(".terminal-input-text, .xterm-helper-textarea")) setKeyboardRequested(true);
+    };
     stack?.addEventListener("focusout", onFocusOut);
+    stack?.addEventListener("focusin", onFocusIn);
     return () => {
       unsubscribe();
       stack?.removeEventListener("focusout", onFocusOut);
+      stack?.removeEventListener("focusin", onFocusIn);
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [paneId]);

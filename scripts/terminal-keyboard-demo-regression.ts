@@ -500,7 +500,12 @@ async function keyboardOnRequest(browser: Browser): Promise<Record<string, unkno
         await page.waitForFunction(() => document.activeElement?.classList.contains("terminal-input-text") === true);
         await nextRender(page);
         assert.deepEqual(await fieldState(page, "terminal-input-text"), { inputmode: null, focused: true }, "on, offline: with the control disabled a tap on the line raises the keyboard for a draft");
+        await page.keyboard.type("echo draft");
         await page.clock.resume();
+        // the reconnect is no tap: the line being typed in keeps its keyboard
+        await ready(page);
+        await flushTimers(page);
+        assert.deepEqual(await fieldState(page, "terminal-input-text"), { inputmode: null, focused: true }, "on, back online: the line typed in offline keeps its keyboard");
       }
       assert.deepEqual(errors, []);
       console.log(`PASS keyboard only from the key bar ${onRequest ? "on" : "off"}: line and grid ${onRequest ? "carry inputmode=none until Show, again after Hide or the system's dismissal" : "carry no inputmode, as on main"}`);
