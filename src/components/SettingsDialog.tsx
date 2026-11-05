@@ -404,6 +404,9 @@ function AppearancePage() {
       <SettingsRow label={t("Show the sidebar on hover")} description={t("On this device, while the sidebar is hidden, resting the mouse on its button shows it over the pane until the mouse leaves. Click the button to keep it open.")}>
         <Toggle label={t("Show the sidebar on hover")} checked={settings.sidebarPeek} onChange={(sidebarPeek) => update({ sidebarPeek })} />
       </SettingsRow>
+      <SettingsRow label={t("Background workspaces apart")} description={t("On this device, workspaces a tool tagged role=background (herdr workspace report-metadata --token role=background) stand after the others under a folded Background workspaces heading. The open one, and one whose agent asks a question, stay in sight.")}>
+        <Toggle label={t("Background workspaces apart")} checked={settings.sidebarBackgroundWorkspaces} onChange={(sidebarBackgroundWorkspaces) => update({ sidebarBackgroundWorkspaces })} />
+      </SettingsRow>
       <SettingsRow label={t("Context left on agent rows")} description={t("On this device, show the context ring from the chat's composer on each agent row, for the agents whose context window is known (Claude Code and Codex). It turns red at 20% left or less.")}>
         <Toggle label={t("Context left on agent rows")} checked={settings.sidebarContext} onChange={(sidebarContext) => update({ sidebarContext })} />
       </SettingsRow>
@@ -478,6 +481,9 @@ function ChatPage() {
         )}
         <SettingsRow label={t("Collapse work")} description={t("A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message")}>
           <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
+        </SettingsRow>
+        <SettingsRow label={t("Compaction and failed requests")} description={t("On this device, a compaction names the token counts the agent recorded with it, and each run of back-to-back failed requests shows as one row that opens to their errors. OmO, omp and pi record them.")}>
+          <Toggle label={t("Compaction and failed requests")} checked={settings.chatRequestDetails} onChange={(chatRequestDetails) => update({ chatRequestDetails })} />
         </SettingsRow>
         <SettingsRow label={t("Chat width")} description={t("How wide the conversation and the message box run on a large screen")} wide>
           <Segmented label={t("Chat width")} value={settings.chatWidth} onChange={(chatWidth) => update({ chatWidth })} options={CHAT_WIDTHS.map((chatWidth) => ({ value: chatWidth, label: t(chatWidth === "narrow" ? "Narrow" : chatWidth === "wide" ? "Wide" : chatWidth === "full" ? "Full" : "Default") }))} />

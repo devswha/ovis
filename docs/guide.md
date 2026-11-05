@@ -127,6 +127,13 @@ pane with `herdr pane report-metadata <pane_id> --source <id> --token role=backg
 moves up with the others until it is answered, and a pinned one stays in the pinned card. Panes
 without the tag stay where they are.
 
+Workspaces can be set apart the same way: tag each one a tool opens for its workers with
+`herdr workspace report-metadata <workspace_id> --source <id> --token role=background`, and turn on
+**Settings > Appearance > Background workspaces apart** (off by default). The sidebar then lists those
+workspaces after the others, under **Background workspaces**, folded at first with their count. The
+workspace you have open, and one whose agent asks a question, stay in sight, and a pinned one stays in
+the pinned card.
+
 
 **3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. No Tailscale? Turn on the [Ovis relay](#through-the-ovis-relay) and scan its QR code instead. See [On your phone](#on-your-phone).
 
@@ -583,6 +590,14 @@ On a phone:
 - **Settings → Phone & devices → Keep screen on** keeps the screen awake while a terminal or chat
   pane is open. It is off by default, releases when the app is hidden, and resumes when
   you return. It needs HTTPS or localhost and browser support; power-saving mode may refuse it.
+- A font named in **Settings → Terminal → Terminal font**, **Chat → Chat font** or the custom
+  interface font only draws where it is installed, and a phone has none of your PC's fonts. To
+  use one there, copy its files into `fonts/` under `OVIS_STATE_DIR` (default
+  `~/.config/ovis/fonts/`) on the PC. The PC serves them to its signed-in devices only.
+  Each file's name is its family, with an optional `-Regular`, `-Bold`, `-Italic` or `-BoldItalic`
+  (`D2Coding-Bold.ttf` is D2Coding in bold), and `.woff2`, `.woff`, `.ttf` and `.otf` files of up to
+  32 MB are served, at most 64 of them in file name order. A device downloads only the families its
+  Settings name, and keeps the files where the browser allows it. Reload the app after adding a file.
 
 On an iPad with a hardware keyboard (a Magic Keyboard, say), the small bar that rises from the
 bottom when a field gets the focus (language, arrows, dictation) is iPadOS's shortcuts bar for
@@ -880,8 +895,8 @@ Whether the core runs is read from its socket file (`HC_SOCKET`, `socket` in hc'
 `config.toml`, else `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core/`; `HC_SESSION` names the
 session, `default` otherwise); nothing connects to it.
 
-`OVIS_RUNTIME=herdr-core` is Linux/macOS only: there is no Windows named pipe support yet.
-Ovis refuses to start with this runtime on Windows; use the default `herdr` runtime there.
+On Windows Ovis serves herdr-core only when `OVIS_RUNTIME=herdr-core` is set, as the desktop app
+sets it: the automatic choice stays on herdr there, and Settings offers no switch.
 
 On a Linux or macOS PC with herdr-core and no herdr, the one-line installer
 (`curl -fsSL https://ovis.sh/install.sh | sh`) sets this up by itself: no herdr and no plugin, Ovis
@@ -903,7 +918,26 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
 - **Starting an agent:** the agent's command is typed into the pane's shell, so it starts only
   in a pane that runs a plain shell of its own (sh, bash, dash, zsh, ksh, mksh, ash or fish), and
   only while nothing else runs in front of it. A pane the app started with a program directly
-  cannot take one.
+  cannot take one. On Windows that shell is PowerShell (herdr-core's own, or one started with
+  interactive switches only) or cmd (without `/c`, `/k`, `/r` or `/v`). A POSIX shell cannot take
+  one there: Git Bash rewrites an argument that looks like a path on its way to the agent, and this
+  PC's process table does not show what runs in WSL. herdr-core names only the shell in front of a
+  Windows pane, so that table says the rest: the pane is busy while any program runs below its
+  shell, console hosts aside, or the table cannot be read, and the agent has started once a
+  program named for it runs there. A command PowerShell runs in itself (`Read-Host`) shows no
+  program there and takes the line as its input, and text left at a Windows prompt runs with the
+  line, as no key clears it in every editing mode. An argument the shell would change is refused
+  before anything is typed: in Windows PowerShell one whose whitespace all follows an odd number of
+  `"` (`"fix the bug"`, `x="a b"`); in PowerShell 7 an empty one, one holding a `"`, or one holding
+  whitespace and ending in a backslash; in cmd one holding a `"` or a `%`. In PowerShell one
+  holding `&`, `|`, `<`, `>`, `^` or `%` is refused too: an agent PowerShell starts through a
+  `.cmd` file alone (an npm install also has a `.ps1`, which PowerShell prefers) has its arguments
+  read by cmd as well, where an `&` outside cmd's quotes would end the agent's line and run the
+  rest, and which file the agent's name finds is not known before. Where the execution policy blocks scripts (`Restricted`, the Windows
+  default), PowerShell refuses that `.ps1` and does not fall back to the `.cmd`: the start fails,
+  and the pane says why. cmd looks in the pane's folder before the `PATH`, as it does for what you
+  type. Command Code is not offered on Windows, where its command `cmd` is cmd.exe, and a Windows
+  PC offers no agent on another machine of its core, whose shells its process table does not show.
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
   agent that reports none shows no status. A turn is done only when the program itself reports
   its turn finished (`done`, or `working` then `idle`); `error` shows no status. When a blocked
