@@ -792,10 +792,11 @@ describe("herdr-core adapter, agents", () => {
 
 describe("herdr-core adapter, Ovis's layout document", () => {
   /** hc's documents: `doc.set` writes only at the version read (`conflict` otherwise), `conflicts` more writers come first */
-  function documents(conflicts = 0) {
+  function documents(conflicts = 0, otherWriter?: (docs: Map<string, { value: unknown; version: number }>) => void) {
     const docs = new Map<string, { value: unknown; version: number }>();
     const writes: unknown[] = [];
     const conflict = () => Object.assign(new Error("conflict"), { kind: "conflict" });
+    let interleave = otherWriter;
     return {
       docs,
       writes,
@@ -803,8 +804,10 @@ describe("herdr-core adapter, Ovis's layout document", () => {
         "doc.get": (params: Record<string, unknown>) => docs.get(String(params["name"])) ?? { value: null, version: 0 },
         "doc.set": (params: Record<string, unknown>) => {
           const name = String(params["name"]);
-          const stored = docs.get(name) ?? { value: null, version: 0 };
           writes.push(params["value"]);
+          // another client writes between this one's read and its write
+          if (interleave) { interleave(docs); interleave = undefined; }
+          const stored = docs.get(name) ?? { value: null, version: 0 };
           if (conflicts > 0) { conflicts--; docs.set(name, { ...stored, version: stored.version + 1 }); throw conflict(); }
           if (params["version"] !== stored.version) throw conflict();
           docs.set(name, { value: params["value"], version: stored.version + 1 });
@@ -898,6 +901,44 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 1000, height: 1000 } });
     terminals.push(labeled("t9"));
     expect(await rects(socket)).toEqual({ t2: { x: 0, y: 0, width: 500, height: 1000 }, t9: { x: 500, y: 0, width: 500, height: 1000 } });
+  });
+
+  it("keeps another client's reorder that landed first, applying this move to the order as it is then", async () => {
+    const order = (ids: string[]) => ({ schema: 1, workspaces: ids.map((id) => ({ id, tabs: [{ id: `${id}1`, zoomed: null, root: { leaf: `t${id}` } }] })) });
+    const store = documents(0, (docs) => docs.set("ovis-layout", { value: order(["D", "A", "B", "C"]), version: docs.get("ovis-layout")!.version + 1 }));
+    store.docs.set("ovis-layout", { value: order(["A", "B", "C", "D"]), version: 1 });
+    const { socket } = await core(["A", "B", "C", "D"].map((id) => labeled(`t${id}`, id, `${id}1`)), store);
+    // B to the end, while another client moves D to the front
+    await herdrRpc("workspace.move", { workspace_id: "B", insert_index: 4 }, socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.workspace_id)).toEqual(["D", "A", "C", "B"]);
+  });
+
+  it("moves a workspace dropped after Other terminals to the end, and a tab dropped among helpers' tabs after their parent's", async () => {
+    const { socket } = await core([labeled("t1", "A", "A1"), labeled("t2", "A", "A2"), terminal("t5", { parent: "t1" }), labeled("t3", "B", "B1"), terminal("t4")]);
+    await herdrRpc("workspace.move", { workspace_id: "A", insert_index: 3 }, socket);
+    let shown = await sessionSnapshot(socket);
+    expect(shown.workspaces.map((workspace) => workspace.workspace_id)).toEqual(["B", "A", "hc-other"]);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A1", "A:t5", "A2"]);
+    // A2 dropped before the helper's tab: it goes before the next tab Ovis orders after it, which is none
+    await herdrRpc("tab.move", { tab_id: "A2", insert_index: 1 }, socket);
+    shown = await sessionSnapshot(socket);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A1", "A:t5", "A2"]);
+    await herdrRpc("tab.move", { tab_id: "A2", insert_index: 0 }, socket);
+    shown = await sessionSnapshot(socket);
+    expect(shown.tabs.filter((tab) => tab.workspace_id === "A").map((tab) => tab.tab_id)).toEqual(["A2", "A1", "A:t5"]);
+  });
+
+  it("starts no shell for a split a newer Ovis's layout would refuse, and says when a split pane could not be placed", async () => {
+    const foreign = documents();
+    foreign.docs.set("ovis-layout", { value: { schema: 2 }, version: 3 });
+    const refused = await core([labeled("t1")], foreign);
+    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, refused.socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(refused.terminals.map((held) => held.address)).toEqual(["t1"]);
+    // two writers came first: the shell runs, and the answer says where it went
+    const busy = await core([labeled("t1")], documents(2));
+    await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, busy.socket)).rejects.toMatchObject({ code: "layout_not_saved" });
+    expect(Object.keys(await rects(busy.socket))).toEqual(["t1", "t2"]);
   });
 
   it("neither reads nor overwrites a layout a newer Ovis wrote, and leaves the Herdr app's document alone", async () => {

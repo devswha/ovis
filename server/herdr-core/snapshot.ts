@@ -130,6 +130,14 @@ function chain(parts: readonly { node: LayoutNode; weight: number }[], direction
   return { split: direction, ratio: clampRatio(parts[0]!.weight / total), first: parts[0]!.node, second: chain(parts.slice(1), direction) };
 }
 
+/** Takes every terminal a node of the app's tree names without showing it (a hidden node, a stack's other children). */
+function claim(node: unknown, take: (address: string) => HcTerminal | null): void {
+  if (!isRecord(node)) return;
+  const content = node["content"];
+  if (isRecord(content) && typeof content["terminal"] === "string") take(content["terminal"]);
+  if (Array.isArray(node["children"])) for (const child of node["children"]) claim(child, take);
+}
+
 /**
  * A tab's tree in the app's document (never trusted to have a shape: herdr-app src/layout.rs
  * `Node`) as a split tree over the live terminals, so it is laid out top down like Ovis's own: a
@@ -138,7 +146,9 @@ function chain(parts: readonly { node: LayoutNode; weight: number }[], direction
  * yet, so one named twice is placed once; each one placed is added to `held`, in reading order.
  */
 function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[]): LayoutNode | null {
-  if (!isRecord(node) || node["hidden"] === true) return null;
+  if (!isRecord(node)) return null;
+  // the app holds a hidden node's terminals out of view: they are its, never adopted elsewhere
+  if (node["hidden"] === true) { claim(node, take); return null; }
   const content = node["content"];
   if (isRecord(content) && typeof content["terminal"] === "string") {
     const terminal = take(content["terminal"]);
@@ -151,6 +161,7 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   if (node["type"] === "stack") {
     const shown = children.filter((child) => isRecord(child) && child["hidden"] !== true);
     const active = shown.find((child) => isRecord(child) && child["id"] === node["active"]) ?? shown[0];
+    for (const child of children) if (child !== active) claim(child, take);
     return appTree(active, take, held);
   }
   const parts = children.flatMap((child) => {

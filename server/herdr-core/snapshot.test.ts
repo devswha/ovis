@@ -117,8 +117,12 @@ describe("buildSnapshot", () => {
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [
       { type: "stack", id: "st", active: "p-t2", children: [block("t1"), block("t2")] }, hidden, block("t4"),
     ] } }] }] };
-    const snapshot = buildSnapshot([terminal("t1"), terminal("t2"), terminal("t3"), terminal("t4")], layout, "0.1.17");
-    expect(snapshot.layouts[0]!.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width])).toEqual([["t2", 0, 500], ["t4", 500, 500]]);
+    for (const labels of [undefined, { "herdr.space": "s1", "herdr.tab": "s1t1" }]) {
+      const snapshot = buildSnapshot(["t1", "t2", "t3", "t4"].map((address) => terminal(address, labels ? { labels } : {})), layout, "0.1.17");
+      expect(snapshot.layouts.map((tab) => tab.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width]))).toEqual([[["t2", 0, 500], ["t4", 500, 500]]]);
+      // the app holds the ones out of view: they show nowhere else, neither under Other terminals nor beside its tab
+      expect(snapshot.tabs.map((tab) => tab.tab_id)).toEqual(["s1t1"]);
+    }
   });
 
   it("places a terminal the document names twice once, and skips a space or tab whose id was seen or is empty", () => {

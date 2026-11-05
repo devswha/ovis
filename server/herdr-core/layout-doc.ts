@@ -106,7 +106,9 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
       id: live.id,
       tabs: order(kept?.tabs ?? [], live.tabs).filter(({ live: tab }) => tab.panes.length > 0).map(({ live: tab, kept: stored }) => {
         const panes = new Set(tab.panes);
-        let root = stored ? prune(stored.root, (leaf) => panes.has(leaf)) : null;
+        // a pane named twice (a document another client wrote) is placed once
+        const seen = new Set<string>();
+        let root = stored ? prune(stored.root, (leaf) => panes.has(leaf) && !seen.has(leaf) && Boolean(seen.add(leaf))) : null;
         const held = new Set(root ? leaves(root) : []);
         const orphans = tab.panes.filter((pane) => !held.has(pane));
         if (!root) root = sideBySide(orphans);
@@ -121,11 +123,22 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
   };
 }
 
-/** A split's two sides within its rect: the first `ratio` of its extent (at least one unit to each side), the second the rest. */
+/** The least extent a subtree needs along that axis: one unit per pane side by side on it. */
+function minimum(node: LayoutNode, axis: SplitDirection): number {
+  if ("leaf" in node) return 1;
+  const first = minimum(node.first, axis);
+  const second = minimum(node.second, axis);
+  return node.split === axis ? first + second : Math.max(first, second);
+}
+
+/**
+ * A split's two sides within its rect: the first `ratio` of its extent, the second the rest, each
+ * kept wide enough for every pane in it to get a unit (the client's layoutTree.ts does the same).
+ */
 function sides(node: Extract<LayoutNode, { split: SplitDirection }>, rect: PaneLayoutRect): readonly [PaneLayoutRect, PaneLayoutRect] {
   const horizontal = node.split === "right";
   const extent = horizontal ? rect.width : rect.height;
-  const first = Math.max(1, Math.min(extent - 1, Math.round(extent * node.ratio)));
+  const first = Math.max(minimum(node.first, node.split), Math.min(extent - minimum(node.second, node.split), Math.round(extent * node.ratio)));
   return horizontal
     ? [{ ...rect, width: first }, { ...rect, x: rect.x + first, width: extent - first }]
     : [{ ...rect, height: first }, { ...rect, y: rect.y + first, height: extent - first }];

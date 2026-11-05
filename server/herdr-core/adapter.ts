@@ -344,7 +344,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   const editLayout = async (edit: (layout: OvisLayout) => OvisLayout | null): Promise<boolean> => {
     if (!layoutCalls(await hc.hello())) throw new AdapterError("unsupported", "this herdr-core keeps no documents Ovis can write");
     for (let attempt = 0; ; attempt++) {
-      const [list, app, doc] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC }), hc.call("doc.get", { name: OVIS_LAYOUT_DOC })]);
+      // the document before the terminals: a list read after it holds every terminal a writer of that version had
+      const doc = await hc.call("doc.get", { name: OVIS_LAYOUT_DOC });
+      const [list, app] = await Promise.all([hc.call("terminal.list", {}), hc.call("doc.get", { name: LAYOUT_DOC })]);
       if (!ownsLayout(app.value)) throw new AdapterError("unsupported", "the Herdr app arranges this core's workspaces, tabs and panes");
       if (foreignLayout(doc.value)) throw new AdapterError("unsupported", "a newer Ovis keeps this core's layout");
       const next = edit(keptLayout(list.terminals, doc.value));
@@ -376,16 +378,23 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     if (!layout) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
     return { changed, reason: changed ? null : reason, focused_pane_id: layout.focused_pane_id, layout };
   };
-  /** herdr's insertion boundary (an index before the item is taken out) as the list after the move. */
-  const moved = (ids: readonly string[], id: string, boundary: unknown): string[] => {
-    if (typeof boundary !== "number" || !Number.isInteger(boundary) || boundary < 0 || boundary > ids.length) throw new AdapterError("invalid_params", "insert_index is out of range");
-    const from = ids.indexOf(id);
-    const rest = ids.filter((candidate) => candidate !== id);
-    rest.splice(boundary > from ? boundary - 1 : boundary, 0, id);
+  /**
+   * herdr's insertion boundary in the list as shown (an index before the item is taken out) as the
+   * entry of the document it goes before: the first one at or after the boundary the document orders
+   * (not a helper's tab, not Other terminals), null for the end.
+   */
+  const anchorOf = (shown: readonly string[], id: string, boundary: unknown, ordered: ReadonlySet<string>): string | null => {
+    if (typeof boundary !== "number" || !Number.isInteger(boundary) || boundary < 0 || boundary > shown.length) throw new AdapterError("invalid_params", "insert_index is out of range");
+    return shown.slice(boundary).find((candidate) => candidate !== id && ordered.has(candidate)) ?? null;
+  };
+  /** The entry moved before `anchor` (to the end for null), in the order as it is now: another writer's move stays. */
+  const moveBefore = <T extends { id: string }>(items: readonly T[], id: string, anchor: string | null): T[] => {
+    const item = items.find((candidate) => candidate.id === id)!;
+    const rest = items.filter((candidate) => candidate.id !== id);
+    const at = anchor === null ? -1 : rest.findIndex((candidate) => candidate.id === anchor);
+    rest.splice(at === -1 ? rest.length : at, 0, item);
     return rest;
   };
-  const byOrder = <T extends { id: string }>(items: readonly T[], order: readonly string[]): T[] =>
-    [...items].sort((x, y) => (order.indexOf(x.id) + 1 || Infinity) - (order.indexOf(y.id) + 1 || Infinity));
 
   const paneOf = async (paneId: string, missing = "pane_not_found") => {
     const found = (await snapshot()).panes.find((pane) => pane.pane_id === paneId);
@@ -483,10 +492,10 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
 
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
-      const [hello, doc] = await Promise.all([hc.hello(), hc.call("doc.get", { name: LAYOUT_DOC })]);
+      const [hello, doc, ovis] = await Promise.all([hc.hello(), hc.call("doc.get", { name: LAYOUT_DOC }), hc.call("doc.get", { name: OVIS_LAYOUT_DOC })]);
       const own = ownsLayout(doc.value);
-      // splits, their ratios, zoom, swap and order live in Ovis's document: only where hc writes one
-      const arrange = own && layoutCalls(hello);
+      // splits, their ratios, zoom, swap and order live in Ovis's document: only where hc writes one this Ovis may write
+      const arrange = own && layoutCalls(hello) && !foreignLayout(ovis.value);
       return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: arrange, move: own, arrange } } };
     },
     async "session.snapshot"() {
@@ -699,6 +708,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       // only a tab its labels make takes another pane: one in Other terminals, or a helper's under its parent's tab, is one terminal's own
       if (labels[SPACE_LABEL] !== pane.workspace_id || labels[TAB_LABEL] !== pane.tab_id) throw new AdapterError("unsupported", `pane ${paneId} is in a tab of its own terminal: it does not split`);
       if (!layoutCalls(await hc.hello())) throw new AdapterError("unsupported", "this herdr-core keeps no documents Ovis can write");
+      // no shell for a split the document cannot hold
+      if (foreignLayout((await hc.call("doc.get", { name: OVIS_LAYOUT_DOC })).value)) throw new AdapterError("unsupported", "a newer Ovis keeps this core's layout");
       // the workspace's name as shown, and the tab's own where it has one, stay when the split pane closes
       const workspaceName = shown.workspaces.find((candidate) => candidate.workspace_id === pane.workspace_id)?.label;
       const names = { ...(workspaceName ? { [WORKSPACE_NAME_LABEL]: workspaceName } : {}), ...(labels[TAB_NAME_LABEL] ? { [TAB_NAME_LABEL]: labels[TAB_NAME_LABEL] } : {}) };
@@ -710,8 +721,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
           return root && withTab(layout, tab.id, { root });
         });
       } catch (error) {
-        // the shell runs and shows to the right of the tab (layout-doc.ts `reconcile`): the split is there, only not where asked
-        console.error(`herdr-core adapter: pane.split could not place ${root_pane.pane_id} in Ovis's layout:`, error);
+        // the shell runs and shows to the right of the tab (layout-doc.ts `reconcile`): said, so nobody splits again for it
+        const reason = error instanceof AdapterError || error instanceof HcError ? error.message : String(error);
+        throw new AdapterError("layout_not_saved", `pane ${root_pane.pane_id} started, but could not be placed ${direction === "right" ? "right of" : "below"} ${paneId} (${reason}); it shows at the right of the tab`);
       }
       return { pane: (await snapshot()).panes.find((candidate) => candidate.pane_id === root_pane.pane_id) ?? root_pane };
     },
@@ -780,11 +792,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const shown = await ownLayout();
       const tab = shown.tabs.find((candidate) => candidate.tab_id === tabId);
       if (!tab) throw new AdapterError("tab_not_found", `tab ${tabId} not found`);
-      const order = moved(shown.tabs.filter((candidate) => candidate.workspace_id === tab.workspace_id).map((candidate) => candidate.tab_id), tabId, params["insert_index"]);
+      const siblings = shown.tabs.filter((candidate) => candidate.workspace_id === tab.workspace_id).map((candidate) => candidate.tab_id);
       await editLayout((layout) => {
         const workspace = layout.workspaces.find((candidate) => candidate.id === tab.workspace_id);
         if (!workspace?.tabs.some((candidate) => candidate.id === tabId)) throw new AdapterError("unsupported", `tab ${tabId} follows the terminal that started it: it has no place of its own`);
-        return { ...layout, workspaces: layout.workspaces.map((candidate) => (candidate === workspace ? { ...candidate, tabs: byOrder(candidate.tabs, order) } : candidate)) };
+        const anchor = anchorOf(siblings, tabId, params["insert_index"], new Set(workspace.tabs.map((candidate) => candidate.id)));
+        return { ...layout, workspaces: layout.workspaces.map((candidate) => (candidate === workspace ? { ...candidate, tabs: moveBefore(candidate.tabs, tabId, anchor) } : candidate)) };
       });
       return { type: "tab_list", tabs: (await snapshot()).tabs.filter((candidate) => candidate.workspace_id === tab.workspace_id) };
     },
@@ -793,8 +806,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       if (workspaceId === OTHER_WORKSPACE_ID) throw new AdapterError("unsupported", "Other terminals stays last");
       const shown = await ownLayout();
       if (!shown.workspaces.some((candidate) => candidate.workspace_id === workspaceId)) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
-      const order = moved(shown.workspaces.filter((candidate) => candidate.workspace_id !== OTHER_WORKSPACE_ID).map((candidate) => candidate.workspace_id), workspaceId, params["insert_index"]);
-      await editLayout((layout) => ({ ...layout, workspaces: byOrder(layout.workspaces, order) }));
+      const listed = shown.workspaces.map((candidate) => candidate.workspace_id);
+      await editLayout((layout) => {
+        if (!layout.workspaces.some((candidate) => candidate.id === workspaceId)) throw new AdapterError("unsupported", `workspace ${workspaceId} holds no tab Ovis places`);
+        const anchor = anchorOf(listed, workspaceId, params["insert_index"], new Set(layout.workspaces.map((candidate) => candidate.id)));
+        return { ...layout, workspaces: moveBefore(layout.workspaces, workspaceId, anchor) };
+      });
       return { type: "ok" };
     },
     // A pane goes to a new tab of another workspace by its labels alone: its terminal, its program and
