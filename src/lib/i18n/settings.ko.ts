@@ -74,8 +74,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Expand thinking": "생각 펼치기",
   "Reasoning starts open instead of folded. One you open or fold stays that way for its message": "추론을 접지 않고 펼친 채로 보여줍니다. 직접 펼치거나 접은 추론은 그 메시지에서 그대로 유지됩니다",
   "Collapse work": "작업 접기",
-  "Compaction and failed requests": "압축과 실패한 요청",
-  "On this device, a compaction names the token counts the agent recorded with it, and a turn's failed requests show as one row that opens to their errors. OmO, omp and pi record them.": "이 기기에서 대화 압축에 에이전트가 함께 기록한 토큰 수를 보여 주고, 한 턴의 실패한 요청을 한 줄로 묶어 열면 오류를 볼 수 있게 합니다. OmO, omp, pi가 기록합니다.",
   "A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message": "턴의 작업을 한 줄로 접은 채 보여줍니다. 에이전트가 작업 중일 때도 접고, 내 응답이 필요할 때만 펼칩니다. 직접 펼치거나 접은 작업은 그 메시지에서 그대로 유지됩니다",
   "Chat width": "채팅 너비",
   "How wide the conversation and the message box run on a large screen": "큰 화면에서 대화와 입력창이 차지하는 너비",

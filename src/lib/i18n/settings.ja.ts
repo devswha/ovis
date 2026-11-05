@@ -74,8 +74,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Expand thinking": "思考を展開",
   "Reasoning starts open instead of folded. One you open or fold stays that way for its message": "推論を折りたたまずに開いた状態で表示します。自分で開いたり折りたたんだりした推論は、そのメッセージではそのまま保たれます",
   "Collapse work": "作業を折りたたむ",
-  "Compaction and failed requests": "圧縮と失敗したリクエスト",
-  "On this device, a compaction names the token counts the agent recorded with it, and a turn's failed requests show as one row that opens to their errors. OmO, omp and pi record them.": "この端末で、会話の圧縮にエージェントが記録したトークン数を表示し、ターン内の失敗したリクエストを 1 行にまとめて、開くとエラーが見られるようにします。OmO、omp、pi が記録します。",
   "A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message": "ターンの作業を 1 行に折りたたんで表示します。エージェントの作業中も折りたたみ、応答が必要なときだけ開きます。自分で開いたり折りたたんだりした作業は、そのメッセージではそのまま保たれます",
   "Chat width": "チャットの幅",
   "How wide the conversation and the message box run on a large screen": "大きな画面で会話と入力欄が広がる幅",
