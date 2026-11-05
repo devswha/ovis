@@ -181,7 +181,7 @@ describe("enrolling a PC this device brings into the account", () => {
       await planEnroll(accountStore, y.identity.server_id, ACCOUNT);
       return linkThisDevice({ fetch: pcFetch(await connect(y, (await phone.get(y.identity.server_id))!)), device: (await phone.get(y.identity.server_id))!, key, account: ACCOUNT, store: phone });
     };
-    return { x, y, phone, accountStore, account, key, onX, approve, linkY };
+    return { x, y, phone, service, accountStore, account, key, onX, approve, linkY };
   }
 
   it("adds only the devices this phone approved, with their role, and tombstones the ones it removed", async () => {
@@ -227,7 +227,7 @@ describe("enrolling a PC this device brings into the account", () => {
     // this phone's next look at X
     const status = await pcAccountStatus(pcFetch(await connect(x, onX)));
     expect(status.removed.map((entry) => entry.key).sort()).toEqual([tablet.public_spki, mac.public_spki].sort());
-    await forgetRemoved({ store: accountStore, key, account: ACCOUNT, removed: status.removed });
+    await forgetRemoved({ store: accountStore, key, account: ACCOUNT, removed: status.removed, directory: [x.identity.server_id] });
     expect(Object.values((await accountStore.get("devices")) ?? {}).map((record) => record.kind)).toEqual(["remove", "remove"]);
 
     const onY = await linkY();
@@ -237,6 +237,27 @@ describe("enrolling a PC this device brings into the account", () => {
     // the other phone's add for the tablet, replayed to Y, finds the tablet tombstoned
     expect((await applyAccountRecords(y.f.app.context.services.devices, [tabletAdd], y.identity.server_id))[0]).toMatchObject({ outcome: "refused" });
     expect(y.f.app.context.services.devices.hasKey(tablet.public_spki)).toBe(false);
+  });
+
+  it("takes a device back off a PC it enrolled before it heard another member removed that device", async () => {
+    const { x, y, service, accountStore, account, key, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    // another phone removes the Mac on X; this phone has not looked at X since, and enrolls Y with it
+    const other = await accountKey();
+    x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, other.public_spki), key: other.public_spki, label: "Other phone", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
+    const remove = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: mac.public_spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: other.public_spki }, other.private_key);
+    expect((await applyAccountRecords(x.f.app.context.services.devices, [remove], x.identity.server_id))[0]?.outcome).toBe("applied");
+    const onY = await linkY();
+    expect(await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).toBe(true);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(true);
+    await account.putPc(y.identity.server_id, { label: "nuc", public_key: Array.from(importPublicKey(y.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+    // its next look at X: the removal goes to every PC of the account, Y included
+    const status = await pcAccountStatus(pcFetch(await connect(x, onX)));
+    await forgetRemoved({ store: accountStore, key, account: ACCOUNT, removed: status.removed, directory: (await account.listPcs()).map((pc) => pc.server_id) });
+    await sendQueuedAdds({ service: account, store: accountStore, account: ACCOUNT });
+    await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+    expect(y.f.app.context.services.devices.isTombstoned(mac.public_spki)).toBe(true);
   });
 
   it("does not call an enrollment finished when a removal was signed while it ran", async () => {

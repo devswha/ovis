@@ -384,7 +384,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
       // a device the account removed, by any member, is one this client no longer hands a new PC
-      if (status.account === session.account) await forgetRemoved({ store: accountStore, key, account: session.account, removed: status.removed });
+      if (status.account === session.account && status.removed.length > 0) {
+        try {
+          await forgetRemoved({ store: accountStore, key, account: session.account, removed: status.removed, directory: (await account.listPcs()).map((pc) => pc.server_id) });
+          await sendQueuedAdds({ service: account, store: accountStore, account: session.account });
+        } catch (error) { console.warn("Ovis: the account's removals were not passed on yet", error instanceof Error ? error.name : error); }
+      }
       // a PC this link brings into the account gets the devices this client approved itself (enrollPc)
       if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });

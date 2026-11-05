@@ -43,7 +43,7 @@ interface Records {
   session: AccountSession;
   /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
-  /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
+  /** by record id: an `add` (or a `remove` it learned of) this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
   adds: Readonly<Record<string, QueuedAdd>>;
   /**
    * By key: the latest record this device signed for a device of the account, an `add` for one it
@@ -63,7 +63,7 @@ export interface PlannedEnroll {
 
 export interface QueuedAdd {
   readonly account: string;
-  readonly record: AddRecord;
+  readonly record: AddRecord | RemoveRecord;
   /** the PCs whose mailbox it has not reached */
   readonly to: readonly string[];
 }

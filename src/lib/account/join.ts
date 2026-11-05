@@ -230,10 +230,11 @@ export async function rememberDevice(store: AccountStore, record: AddRecord | Re
  * Keys a PC of the account says the account removed (`removed` in its status, any member's
  * `remove`): this client signs a `remove` of its own for each, dated when that PC applied the
  * removal (never later than now), so a PC it enrolls later tombstones them too, and a pairing made
- * there after the removal is left be. Its own key is never taken. A PC that names a key wrongly can
+ * there after the removal is left be; it also goes to every PC of the account (`directory`), so one
+ * this client enrolled before it heard of the removal drops the device too. Its own key is never taken. A PC that names a key wrongly can
  * only keep that device out of the PCs this client enrolls.
  */
-export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly { key: string; removed_at: string }[]; now?: () => number }): Promise<void> {
+export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly { key: string; removed_at: string }[]; directory: readonly string[]; now?: () => number }): Promise<void> {
   const now = (options.now ?? Date.now)();
   for (const { key, removed_at } of options.removed) {
     if (key === options.key.public_spki) continue;
@@ -245,6 +246,9 @@ export async function forgetRemoved(options: { store: AccountStore; key: Account
       issued_at: new Date(Number.isFinite(at) ? Math.min(at, now) : now).toISOString(), id: newRecordId(), signer: options.key.public_spki,
     }, options.key.private_key);
     await rememberDevice(options.store, remove);
+    // a PC this client enrolled before it heard of the removal may hold an add for the key: the remove
+    // goes to every PC of the account by mailbox, kept and sent again like an add (sendQueuedAdds)
+    await options.store.update("adds", (current) => ({ ...current, [remove.id]: { account: options.account, record: remove, to: options.directory } }));
   }
 }
 

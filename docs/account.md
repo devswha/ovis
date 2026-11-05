@@ -232,8 +232,11 @@ a key from another PC's device list. It reads every record's outcome and sends a
 connection to that PC, each one the PC did not answer or answered `account_unavailable`, and any
 record it signed while the enrollment ran. A key a PC of the account lists under `removed` (any
 member's removal) makes the client sign its own `remove` for it, dated at that PC's `removed_at`, so
-a PC it enrolls after that tombstones it, and a pairing made there after the removal is left be. A
-device another member approved is not in this client's list, so this enrollment does not add it.
+a PC it enrolls after that tombstones it, and a pairing made there after the removal is left be; it
+also sends that `remove` to every PC of the account by mailbox, so a PC it enrolled before it heard
+of the removal drops the device too. A device another member approved, or one approved before this
+client kept its approvals, is not in its list, so this enrollment does not add it; nor does the
+enrolled device get an introduction to the new PC.
 
 ### Introductions
 
