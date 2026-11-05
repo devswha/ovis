@@ -88,6 +88,8 @@ import { useT } from "./lib/i18n.ts";
 import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionChip.ts";
 import { useHeaderConnection } from "./lib/headerConnection.ts";
 import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
+import { HeaderSessions } from "./components/HeaderSessions.tsx";
+import { nextWaitingPane, sessionCounts, tabPosition } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
@@ -397,6 +399,13 @@ export function App() {
   const crumb = selectedPane && selectedTitle !== null
     ? headerCrumb({ machine: selectedMachine?.name ?? selectedMachineId, machineCount: machines.length, workspace: selectedWorkspace?.label ?? selectedPane.workspace_id, title: selectedTitle, cwd: selectedPane.cwd })
     : null;
+  // the selected PC's sessions as its sidebar draws them, and the tab's place in its strip
+  const rosterPanesShown = snapshot?.panes ?? [];
+  const shownStatus = (pane: (typeof rosterPanesShown)[number]) => activity.status(selectedMachineId, pane);
+  const sessionTally = sessionCounts(rosterPanesShown, shownStatus);
+  const nextWaiting = nextWaitingPane(rosterPanesShown, shownStatus, selectedPaneId);
+  const tabPlace = snapshot ? tabPosition(snapshot, selectedPaneId) : null;
+  const position = tabPlace && { ...tabPlace, words: t("Tab {index} of {count}", { index: tabPlace.index, count: tabPlace.count }) };
 
   const tabTitle = selectedPane ? tabPaneTitle(selectedPane) : null;
   useEffect(() => {
@@ -690,6 +699,10 @@ export function App() {
             <div className="context-title">
               {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
               <span className="context-title-text">{selectedTitle}</span>
+              {position && <span className="context-position" title={position.words}>
+                <span aria-hidden="true">{position.index}/{position.count}</span>
+                <span className="visually-hidden">{position.words}</span>
+              </span>}
             </div>
             {/* lost and back, the connection takes the crumb's place in words, in the same box: nothing moves */}
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
@@ -732,6 +745,7 @@ export function App() {
           </>
         )}
         <div className="header-meta">
+          <HeaderSessions counts={sessionTally} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)} />
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
           <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
           {!guideShown && <ConnectionChip
