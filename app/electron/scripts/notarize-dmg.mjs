@@ -29,7 +29,7 @@ export const NOTARY_ENV = ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUE
 export function run(file, args) {
   return new Promise((resolve, reject) => {
     execFile(file, args, { maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${file} ${args.join(" ")} failed: ${stderr.trim() || error.message}`));
+      if (error) reject(Object.assign(new Error(`${file} ${args.join(" ")} failed: ${stderr.trim() || error.message}`), { stdout }));
       else resolve(stdout);
     });
   });
@@ -60,7 +60,12 @@ export async function notarizeDmg(dmg, options = {}) {
   }
   log(`notarizing ${dmg}`);
   const key = ["--key", env["APPLE_API_KEY"].trim(), "--key-id", env["APPLE_API_KEY_ID"].trim(), "--issuer", env["APPLE_API_ISSUER"].trim()];
-  const submitted = JSON.parse(await exec("xcrun", ["notarytool", "submit", dmg, ...key, "--wait", "--output-format", "json"]));
+  // notarytool may exit non-zero on a rejected submission; its JSON still names it, for the log below
+  const answer = await exec("xcrun", ["notarytool", "submit", dmg, ...key, "--wait", "--output-format", "json"]).catch((error) => {
+    if (typeof error?.stdout === "string" && error.stdout.trim().startsWith("{")) return error.stdout;
+    throw error;
+  });
+  const submitted = JSON.parse(answer);
   if (submitted.status !== "Accepted") {
     const details = submitted.id ? await exec("xcrun", ["notarytool", "log", submitted.id, ...key]).catch((error) => String(error)) : "";
     throw new Error(`Notarization of ${dmg} ended ${submitted.status ?? "without a status"}: ${submitted.message ?? ""}\n${details}`);

@@ -30,6 +30,15 @@ describe("notarizeDmg", () => {
     ]);
   });
 
+  it("fetches Apple's log when notarytool exits non-zero on a rejected submission", async () => {
+    const { calls, run } = recorder({
+      "xcrun notarytool submit": Object.assign(new Error("exit 1"), { stdout: JSON.stringify({ id: "sub-3", status: "Invalid" }) }),
+      "xcrun notarytool log": "The signature of the binary is invalid.",
+    });
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet })).rejects.toThrow(/ended Invalid[\s\S]*signature of the binary is invalid/);
+    expect(calls.some((call) => call[1] === "notarytool" && call[2] === "log" && call[3] === "sub-3")).toBe(true);
+  });
+
   it("leaves the dmg alone without a notary key", async () => {
     const { calls, run } = recorder();
     expect(await notarizeDmg("dist/Ovis.dmg", { env: {}, run, log: quiet })).toBe("skipped");
