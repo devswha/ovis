@@ -5,13 +5,16 @@ import { paneLifetimes } from "./paneLifetime.ts";
 
 /**
  * The user turns the chat held when a message was sent. Its own turn is written after the send, so
- * it is none of these. `latest` is the newest time of all the turns it held (the PC's clock) and
- * `takenAt` when the chat first read them (the browser's): their difference is never less than how
- * far the browser's clock runs ahead of the PC's, so it bounds the skew without trusting either clock.
+ * it is none of these. `latest` is the newest time of all the turns it held and `answeredAt` when the
+ * PC answered that read (both the PC's clock), `takenAt` when the chat first read them (the
+ * browser's): its difference from the later of the two is never less than how far the browser's
+ * clock runs ahead of the PC's, so it bounds the skew without trusting either clock.
  */
 export interface WaitingBaseline {
   keys: ReadonlySet<string>;
   latest: number | null;
+  /** null from an older bridge, which does not say: the turns' times alone bound the skew */
+  answeredAt: number | null;
   takenAt: number;
 }
 
@@ -74,8 +77,12 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
     return coarse > 0 && at + coarse > send.at && (last || answeredAt >= at + coarse);
   }
   if (after.keys.has(key)) return false;
-  // written before the send, though the chat had not shown it yet: older than the send by any clock
-  return after.latest === null || (at >= after.latest && at + coarse + (after.takenAt - after.latest) > send.at);
+  // written before the send, though the chat had not shown it yet: older than the send by any clock.
+  // The PC's answer bounds the skew more tightly than its newest turn, read perhaps long after it was
+  // written: an identical turn another device or the terminal wrote just before the send is not this one
+  if (after.latest !== null && at < after.latest) return false;
+  const passed = Math.max(after.latest ?? Number.NEGATIVE_INFINITY, after.answeredAt ?? Number.NEGATIVE_INFINITY);
+  return passed === Number.NEGATIVE_INFINITY || at + coarse + (after.takenAt - passed) > send.at;
 }
 
 function turnMatches(send: WaitingSend, turn: Turn, key: string, answeredAt: number, last: boolean): boolean {
@@ -155,8 +162,9 @@ export function currentWaitingSends(key: string): readonly WaitingSend[] {
 /**
  * Consume each transcript turn once, leaving every other send visible until its own turn exists.
  * `loaded`: the chat has read the pane's transcript, so no turns means an empty chat, not an unread one.
+ * `serverTime`: the PC's clock as it answered that read (ConversationResponse.server_time).
  */
-export function settleWaitingSends(key: string, turns: readonly Turn[], now = Date.now(), loaded = turns.length > 0): void {
+export function settleWaitingSends(key: string, turns: readonly Turn[], now = Date.now(), loaded = turns.length > 0, serverTime?: string): void {
   const candidates = userTurns(turns);
   if (loaded) {
     // every shown turn was written before this read, the agent's too: the newest of them all bounds the skew
@@ -166,7 +174,8 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
     const before = shown.get(key);
     // the same turns settled again (the waiting list changed) are no new read: the first read's time stays
     const same = before !== undefined && before.latest === latest && before.keys.size === keys.size && [...keys].every((item) => before.keys.has(item));
-    if (!same) shown.set(key, { keys, latest, takenAt: now });
+    const answeredAt = serverTime === undefined ? Number.NaN : Date.parse(serverTime);
+    if (!same) shown.set(key, { keys, latest, answeredAt: Number.isFinite(answeredAt) ? answeredAt : null, takenAt: now });
   }
   const pane = waiting.get(key);
   if (!pane || pane.sends.length === 0) return;
