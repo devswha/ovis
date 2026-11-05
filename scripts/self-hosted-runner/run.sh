@@ -157,6 +157,8 @@ build_cache_args() {
   # are that user's only, so a throwaway container of the image, as that user, empties what is left
   if [ -d "$outbox" ]; then
     find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null || true
+    # the promoter's own verdicts (build-cache-promote.sh)
+    find "$outbox" -mindepth 1 -maxdepth 1 -type d -name 'judged-*' -user "$(id -u)" -empty -delete 2>/dev/null || true
     if [ -n "$(find "$outbox" -mindepth 1 -print -quit 2>/dev/null)" ]; then
       docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --user 1001:1001 \
         -v "$outbox:/outbox" --entrypoint sh "$IMAGE" -c 'chmod -R u+rwX /outbox 2>/dev/null; find /outbox -mindepth 1 -delete' </dev/null >/dev/null 2>&1 || true

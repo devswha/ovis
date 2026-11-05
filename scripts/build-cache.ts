@@ -48,7 +48,7 @@ export function cacheKey(root: string, env: Record<string, string | undefined>, 
   const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "index.html", "vite.config.ts", "public", "scripts", "src", "shared"]);
   if (ignored === null) return { bypass: "git ls-files failed" };
   // the type declarations typecheck emits (shared/vendor/paseo-e2ee/dist) are never bundled
-  if (ignored.split("\n").some((path) => path !== "" && !/\.d\.ts(?:\.map)?$|\.tsbuildinfo$/.test(path))) return { bypass: "ignored files where the build reads" };
+  if (ignored.split("\n").some((path) => path !== "" && !/^shared\/vendor\/[^/]+\/dist\/.+(?:\.d\.ts(?:\.map)?|\.tsbuildinfo)$/.test(path))) return { bypass: "ignored files where the build reads" };
   const hash = createHash("sha256");
   const part = (label: string, value: string | Buffer): void => { hash.update(`${label}\0${value.length}\0`).update(value); };
   part("format", FORMAT);
@@ -220,11 +220,15 @@ export function releaseLock(lockDir: string, key: string): void {
   }
 }
 
-/** Waits until the entry for `key` is in the cache, or `pending` (its lock, or a claim the launcher has not judged yet) is gone, or `ms` pass. */
-export async function awaitBuild(cacheDir: string, key: string, ms: number, pending = join(cacheDir, `.lock-${key}`), staleMs = STALE_LOCK_MS): Promise<void> {
+/**
+ * Waits until the entry for `key` is in the cache, or `ms` pass, or: with `lock`, that lock is gone or
+ * stale; with `verdict`, the launcher has made that directory, once it took the build in or refused it.
+ */
+export async function awaitBuild(cacheDir: string, key: string, ms: number, until: { lock?: string; verdict?: string; staleMs?: number }): Promise<void> {
+  const { lock, verdict, staleMs = STALE_LOCK_MS } = until;
   // a lock left by a job that was killed goes stale long before the wait ends: takeLock takes it over
-  const stale = (): boolean => { try { return Date.now() - statSync(pending).mtimeMs > staleMs; } catch { return true; } };
-  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || !existsSync(pending) || stale();
+  const unlocked = (): boolean => { try { return Date.now() - statSync(lock!).mtimeMs > staleMs; } catch { return true; } };
+  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || (lock !== undefined && unlocked()) || (verdict !== undefined && existsSync(verdict));
   const deadline = Date.now() + ms;
   while (!settled() && Date.now() < deadline) await Bun.sleep(200);
 }
@@ -293,7 +297,7 @@ if (import.meta.main) {
     if (!owner) {
       // another job of this commit is building it: a wait costs no CPU, a second build does
       console.log(`build cache: another job is building ${name}; waiting for it`);
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, join(lockDir, `.lock-${key.key}`));
+      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, { lock: join(lockDir, `.lock-${key.key}`) });
       if (restored()) process.exit(0);
       owner = takeLock(lockDir, key.key);
     }
@@ -311,8 +315,8 @@ if (import.meta.main) {
     try {
       if (!/^\d+$/.test(run) || !/^\d+$/.test(attempt)) throw new Error("no GitHub run to name");
       deliver(outbox, key.key, dist, run, attempt);
-      // the jobs waiting on the lock restore once the launcher has taken it in; it deletes the claim either way
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, join(outbox, `${key.key}.claim`));
+      // the jobs waiting on the lock restore once the launcher has taken it in; its verdict says it decided
+      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, { verdict: join(outbox, `judged-${key.key}`) });
       console.log(existsSync(join(cacheDir, key.key, MANIFEST)) ? `build cache: stored ${name}` : `build cache: ${name} was not taken in (only trusted runs write the cache)`);
     } catch (error) {
       console.log(`build cache: could not hand ${name} over (${(error as Error).message})`);

@@ -114,6 +114,9 @@ for name in "$@"; do
     fi
     # whatever it is (a directory named like a claim included): it must not stop the other slots
     rm -rf "$claim" "$tar" "$TAKEN/claim" "$TAKEN/build.tar" 2>/dev/null || true
+    # Only now, the entry in place or the build refused: the job that built it may let the others go.
+    # A directory, which mkdir never makes through a link the job could have put at that name.
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then mkdir "$outbox/judged-$key" 2>/dev/null || true; fi
   done
 done
 if [ "$promoted" = 1 ]; then evict; fi

@@ -122,7 +122,9 @@ build, and a run whose build the launcher would refuse (another author's pull re
 at once instead of waiting on the lock.
 
 An entry is named after the commit, Bun's version, the variables Vite reads and any `.env` file; a
-checkout with uncommitted changes, or with ignored files where Vite reads, never uses it.
+checkout with uncommitted changes, or with ignored files where Vite reads, never uses it. The
+key does not hash `node_modules`: it takes it to be what `bun install --frozen-lockfile` makes of the
+commit's `bun.lock` and patches, as in every CI job, so a hand-edited `node_modules` is not one to use it with.
 
 ## Routing jobs to it
 

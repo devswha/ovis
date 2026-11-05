@@ -101,14 +101,18 @@ describe("cacheKey", () => {
     rmSync(join(root, "public/extra.log"));
     writeFileSync(join(root, "top.log"), "not read by the build");
     expect("key" in cacheKey(root, {}, [])).toBe(true);
-    // what typecheck emits for shared/vendor/paseo-e2ee, which Vite never bundles
-    mkdirSync(join(root, "shared/lib/dist"), { recursive: true });
-    writeFileSync(join(root, "shared/lib/a.ts"), "export {};\n");
-    git(root, "add", "shared/lib/a.ts");
+    // what typecheck emits for shared/vendor/paseo-e2ee, which Vite never bundles; elsewhere a .d.ts still counts
+    mkdirSync(join(root, "public/dist"), { recursive: true });
+    writeFileSync(join(root, "public/dist/x.d.ts"), "");
+    expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
+    rmSync(join(root, "public/dist"), { recursive: true });
+    mkdirSync(join(root, "shared/vendor/x/dist"), { recursive: true });
+    writeFileSync(join(root, "shared/vendor/x/a.ts"), "export {};\n");
+    git(root, "add", "-f", "shared/vendor/x/a.ts");
     git(root, "commit", "-q", "-m", "vendor");
-    for (const name of ["a.d.ts", "a.d.ts.map", "tsconfig.tsbuildinfo"]) writeFileSync(join(root, "shared/lib/dist", name), "");
+    for (const name of ["a.d.ts", "a.d.ts.map", "tsconfig.tsbuildinfo"]) writeFileSync(join(root, "shared/vendor/x/dist", name), "");
     expect("key" in cacheKey(root, {}, [])).toBe(true);
-    writeFileSync(join(root, "shared/lib/dist/a.js"), "");
+    writeFileSync(join(root, "shared/vendor/x/dist/a.js"), "");
     expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
   });
 
@@ -269,7 +273,7 @@ describe("one build per key", () => {
     const old = new Date(Date.now() - 60_000);
     utimesSync(join(dir, ".lock-k"), old, old);
     const started = Date.now();
-    await awaitBuild(dir, "k", 30_000, join(dir, ".lock-k"), 30_000);
+    await awaitBuild(dir, "k", 30_000, { lock: join(dir, ".lock-k"), staleMs: 30_000 });
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(takeLock(dir, "k", 30_000)).toBe(true);
   });
@@ -299,7 +303,7 @@ describe("one build per key", () => {
     writeFileSync(join(root, "dist/index.html"), "built");
     mkdirSync(cache);
     takeLock(cache, "k");
-    const waited = awaitBuild(cache, "k", 30_000).then(() => existsSync(join(cache, "k")));
+    const waited = awaitBuild(cache, "k", 30_000, { lock: join(cache, ".lock-k") }).then(() => existsSync(join(cache, "k")));
     store(cache, "k", join(root, "dist"), 1 << 30);
     expect(await waited).toBe(true);
   });
@@ -307,12 +311,12 @@ describe("one build per key", () => {
   it("stops waiting once the building job gives up, or at its deadline", async () => {
     const cache = temp("ovis-build-cache-giveup-");
     takeLock(cache, "k");
-    const waited = awaitBuild(cache, "k", 30_000);
+    const waited = awaitBuild(cache, "k", 30_000, { lock: join(cache, ".lock-k") });
     releaseLock(cache, "k");
     await waited;
     takeLock(cache, "k");
     const started = Date.now();
-    await awaitBuild(cache, "k", 300);
+    await awaitBuild(cache, "k", 300, { lock: join(cache, ".lock-k") });
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 });
@@ -464,13 +468,58 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const claimed = (): string | undefined => readdirSync(outbox).find((name) => name.endsWith(".claim"));
     const deadline = Date.now() + 30_000;
     while (!claimed() && Date.now() < deadline) await Bun.sleep(25);
-    // the launcher refuses it: it deletes the claim and the build
+    // the launcher refuses it: it deletes the claim and the build, then gives its verdict
+    const key = claimed()!.slice(0, -".claim".length);
     for (const name of readdirSync(outbox)) rmSync(join(outbox, name));
+    mkdirSync(join(outbox, `judged-${key}`));
     const refusedAt = Date.now();
     expect(await job.exited).toBe(0);
     expect(Date.now() - refusedAt).toBeLessThan(10_000);
     expect(await new Response(job.stdout).text()).toContain("was not taken in");
     expect(readdirSync(locks)).toEqual([]);
+  }, 60_000);
+
+  it("builds a commit once on the runner when its jobs start together, however slowly GitHub answers the launcher", async () => {
+    const { root, runs } = project();
+    const base = temp("ovis-build-cache-promoted-");
+    const [entries, outboxes, locks, bin] = ["entries", "outboxes", "locks", "bin"].map((name) => join(base, name));
+    const slots = ["s1", "s2", "s3", "s4"];
+    for (const dir of [entries, locks, bin, ...slots.map((slot) => join(outboxes, slot))]) mkdirSync(dir, { recursive: true });
+    // a trusted push to main, each answer half a second late
+    writeFileSync(join(base, "jobs.json"), JSON.stringify({ jobs: slots.map((slot) => ({ runner_name: slot, status: "in_progress" })) }));
+    writeFileSync(join(base, "run.json"), JSON.stringify({ event: "push", head_branch: "main", head_repository: { full_name: "owner/repo" } }));
+    writeFileSync(join(bin, "gh"), `#!/bin/sh
+sleep 0.5
+case "$2" in
+  */jobs*) cat "${base}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7) cat "${base}/run.json" ;;
+  repos/owner/repo) echo main ;;
+  *) exit 1 ;;
+esac
+`);
+    chmodSync(join(bin, "gh"), 0o755);
+    const promoter = join(import.meta.dir, "self-hosted-runner/build-cache-promote.sh");
+    const jobs = slots.map((slot) => {
+      const copy = temp("ovis-build-cache-job-");
+      git(copy, "clone", "-q", root, ".");
+      spawnSync("cp", ["-a", join(root, "node_modules"), copy]);
+      const env = buildEnv(entries, { OVIS_BUILD_CACHE_OUTBOX: join(outboxes, slot), OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "30", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" });
+      return { copy, proc: Bun.spawn([process.execPath, script], { cwd: copy, env, stdout: "pipe", stderr: "pipe" }) };
+    });
+    let ended = false;
+    void Promise.all(jobs.map(({ proc }) => proc.exited)).then(() => { ended = true; });
+    // the launcher's loop: one pass after another until the jobs end
+    const deadline = Date.now() + 50_000;
+    while (!ended && Date.now() < deadline) {
+      spawnSync("bash", [promoter, "owner/repo", base, outboxes, "", "2048", ...slots], { env: { ...process.env, PATH: [bin, process.env.PATH].join(":") } });
+      await Bun.sleep(50);
+    }
+    for (const { proc } of jobs) expect(await proc.exited).toBe(0);
+    const built = jobs.map(({ copy }) => existsSync(join(copy, "node_modules/runs")) ? readFileSync(join(copy, "node_modules/runs"), "utf8").length : 0);
+    expect(built.reduce((a, b) => a + b, 0)).toBe(1);
+    for (const { copy } of jobs) expect(readFileSync(join(copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    expect(readdirSync(entries).filter((name) => !name.startsWith("."))).toHaveLength(1);
+    expect(runs()).toBe(0);
   }, 60_000);
 
   it("always builds without OVIS_BUILD_CACHE_DIR", () => {

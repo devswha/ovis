@@ -851,7 +851,7 @@ esac
     expect(run.status).toBe(0);
     expect(run.entries).toEqual([key]);
     expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
-    expect(run.outbox).toEqual([]);
+    expect(run.outbox).toEqual([`judged-${key}`]);
   });
 
   it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
@@ -863,7 +863,7 @@ esac
   it("stamps an entry's use from a restore's marker in the host's own directory, and drops the marker", () => {
     const run = promote({}, "files", "devswha", false, true);
     expect(run.used).toEqual(["c".repeat(64)]);
-    expect(run.outbox).toEqual([]);
+    expect(run.outbox).toEqual([`judged-${key}`]);
   });
 
   it("takes in the build of a push to the default branch", () => {
@@ -888,7 +888,7 @@ esac
     for (const run of refused) {
       expect(run.status).toBe(0);
       expect(run.entries).toEqual([]);
-      expect(run.outbox).toEqual([]);
+      expect(run.outbox).toEqual([`judged-${key}`]);
     }
   });
 });
