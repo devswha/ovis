@@ -4,7 +4,8 @@
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
- * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx,
+ * components/MarkdownOutlineRow.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const FILES_ZH: Record<string, string> = {
@@ -204,4 +205,6 @@ export const FILES_ZH: Record<string, string> = {
   "Only a device that drives this PC can edit its files.": "只有能操作这台电脑的设备才能编辑其文件。",
   "The file could not be saved.": "无法保存文件。",
   "Text of {name}": "{name} 的内容",
+  "Markdown outline": "Markdown 大纲",
+  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "在 Markdown 预览旁列出标题，并标出正在阅读的标题。在窄屏上，用标题栏中的大纲按钮打开列表。",
 };

@@ -91,8 +91,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "File viewer": "파일 뷰어",
   "Wrap long lines": "긴 줄 바꿈",
   "Markdown width": "Markdown 너비",
-  "Markdown outline": "Markdown 목차",
-  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "Markdown 미리보기 옆에 제목 목록을 보여 주고 지금 읽는 제목을 표시합니다. 좁은 화면에서는 머리글의 목차 버튼으로 목록을 엽니다.",
   "Full width": "전체 너비",
   "Shortcuts": "단축키",
   "Phone": "폰",
