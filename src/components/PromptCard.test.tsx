@@ -71,6 +71,26 @@ describe("Claude's words over its question, read off the screen (#2088)", () => 
   });
 });
 
+describe("the preview Claude draws for the option under its cursor (#1212)", () => {
+  const layout: InteractivePrompt = {
+    id: "p", agent: "claude", kind: "question", title: "Layout", question: "Which layout?", body: null,
+    options: [{ label: "Grid", description: null }, { label: "Wide", description: null }, { label: "Tall", description: null }], multi_select: false, custom_option_index: null,
+  };
+
+  it("shows it under that option, as drawn, with the rows Claude cut in the reader's language", () => {
+    const html = render({ ...layout, option_preview: { option_index: 2, text: "row 1\nrow 2", hidden_lines: 31 } }, ["ko"]);
+    expect(html).toContain("row 1\nrow 2");
+    expect(html.indexOf("Tall")).toBeLessThan(html.indexOf("row 1"));
+    expect(html.indexOf("Wide")).toBeLessThan(html.indexOf("Tall"));
+    expect(html).toContain(translate("ko", "{n} more lines in the terminal", { n: 31 }));
+  });
+
+  it("shows no preview without one, and no cut note for a whole one", () => {
+    expect(render(layout, ["en"])).not.toContain("prompt-card-option-preview");
+    expect(render({ ...layout, option_preview: { option_index: 0, text: "+--+" } }, ["en"])).not.toContain("more lines in the terminal");
+  });
+});
+
 describe("an omp Ask card in the agent's own Markdown (#1644)", () => {
   const ask: InteractivePrompt = {
     id: "a", agent: "omp", kind: "question", title: "Question", body: null, text_format: "markdown",

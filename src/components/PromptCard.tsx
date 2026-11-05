@@ -1,4 +1,4 @@
-import { useContext, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useContext, useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronUp, FileText, Send } from "lucide-react";
 
 import "./PromptCard.css";
@@ -316,10 +316,20 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
               );
             }
             const isSelected = prompt.default_option_index === index;
+            // Claude draws an option's preview for the one under its cursor only, beside its menu (#1212)
+            const preview = prompt.option_preview?.option_index === index ? prompt.option_preview : null;
             return (
-              <button key={index} type="button" className={`prompt-card-option${described}${typedAnswer?.option_index === index ? " is-typed" : ""}${isSelected ? " is-selected" : ""}`} disabled={pending} onClick={(event) => void answer({ option_index: index }, event)}>
-                {number} {content}
-              </button>
+              <Fragment key={index}>
+                <button type="button" className={`prompt-card-option${described}${typedAnswer?.option_index === index ? " is-typed" : ""}${isSelected ? " is-selected" : ""}`} disabled={pending} onClick={(event) => void answer({ option_index: index }, event)}>
+                  {number} {content}
+                </button>
+                {preview !== null && (
+                  <div className="prompt-card-option-preview" role="group" aria-label={t("Preview of {option}", { option: text })}>
+                    <pre>{preview.text}</pre>
+                    {preview.hidden_lines !== undefined && <p className="prompt-card-hint">{t("{n} more lines in the terminal", { n: preview.hidden_lines })}</p>}
+                  </div>
+                )}
+              </Fragment>
             );
           })}
         </div>
