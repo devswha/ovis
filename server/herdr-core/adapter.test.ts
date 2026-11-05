@@ -623,6 +623,15 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(paneClose("t9", socket)).rejects.toMatchObject({ code: "pane_not_found" });
   });
 
+  it("closes a tab's terminal the Herdr app holds hidden along with the rest", async () => {
+    const layout = { spaces: [{ id: "s1", name: "api", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [
+      { type: "block", id: "b1", content: { terminal: "t1" } }, { type: "block", id: "b3", hidden: true, content: { terminal: "t3" } },
+    ] } }] }] };
+    const { socket, ends } = await living([terminal("t1"), terminal("t3")], { "doc.get": (params) => ({ value: params["name"] === "herdr-app" ? layout : null, version: 1 }) });
+    await tabClose("s1t1", socket);
+    expect(ends.sort()).toEqual(["kill t1", "kill t3", "rm t1", "rm t3"]);
+  });
+
   it("closes only a tab's own terminal when labels name the same ids in other spaces", async () => {
     // t1 is the app's own (the layout document places it); t5 to t7 are labeled only
     const { socket, ends } = await living([

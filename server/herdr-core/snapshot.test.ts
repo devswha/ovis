@@ -112,15 +112,15 @@ describe("buildSnapshot", () => {
     expect(tab.splits.map((split) => [split.id, split.direction, split.ratio])).toEqual([["split_0_root", "right", 0.75], ["split_1_1", "down", 0.5]]);
   });
 
-  it("shows every child of a stack, which Ovis cannot switch, and nowhere a hidden node of the app's tree", () => {
+  it("shows every child of a stack and a hidden node in the app's tab, once, as Ovis can neither switch nor show them", () => {
     const hidden = { ...block("t3"), hidden: true };
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [
       { type: "stack", id: "st", active: "p-t2", children: [block("t1"), block("t2")] }, hidden, block("t4"),
     ] } }] }] };
     for (const labels of [undefined, { "herdr.space": "s1", "herdr.tab": "s1t1" }]) {
       const snapshot = buildSnapshot(["t1", "t2", "t3", "t4"].map((address) => terminal(address, labels ? { labels } : {})), layout, "0.1.17");
-      expect(snapshot.layouts.map((tab) => tab.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width]))).toEqual([[["t1", 0, 250], ["t2", 250, 250], ["t4", 500, 500]]]);
-      // the app holds a hidden one out of view: it shows nowhere else, neither under Other terminals nor beside its tab
+      expect(snapshot.layouts.map((tab) => tab.panes.map((pane) => [pane.pane_id, pane.rect.x, pane.rect.width]))).toEqual([[["t1", 0, 167], ["t2", 167, 166], ["t3", 333, 334], ["t4", 667, 333]]]);
+      // each in its tab only, neither under Other terminals nor again beside it
       expect(snapshot.tabs.map((tab) => tab.tab_id)).toEqual(["s1t1"]);
     }
   });

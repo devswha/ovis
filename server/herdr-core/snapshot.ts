@@ -130,25 +130,15 @@ function chain(parts: readonly { node: LayoutNode; weight: number }[], direction
   return { split: direction, ratio: clampRatio(parts[0]!.weight / total), first: parts[0]!.node, second: chain(parts.slice(1), direction) };
 }
 
-/** Takes every terminal a node of the app's tree names without showing it (a hidden node). */
-function claim(node: unknown, take: (address: string) => HcTerminal | null): void {
-  if (!isRecord(node)) return;
-  const content = node["content"];
-  if (isRecord(content) && typeof content["terminal"] === "string") take(content["terminal"]);
-  if (Array.isArray(node["children"])) for (const child of node["children"]) claim(child, take);
-}
-
 /**
  * A tab's tree in the app's document (never trusted to have a shape: herdr-app src/layout.rs
  * `Node`) as a split tree over the live terminals, so it is laid out top down like Ovis's own: a
- * `column` stacks its children, anything else sets them side by side (a \`stack\` too: Ovis cannot
- * switch its active child, so each one stays in reach); a hidden node and its terminals are left out. `take` hands over a live terminal not placed
+ * `column` stacks its children, anything else sets them side by side: a \`stack\` and a hidden node
+ * too, which Ovis cannot switch or show, so each terminal stays in reach and closes with its tab. `take` hands over a live terminal not placed
  * yet, so one named twice is placed once; each one placed is added to `held`, in reading order.
  */
 function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[]): LayoutNode | null {
   if (!isRecord(node)) return null;
-  // the app holds a hidden node's terminals out of view: they are its, never adopted elsewhere
-  if (node["hidden"] === true) { claim(node, take); return null; }
   const content = node["content"];
   if (isRecord(content) && typeof content["terminal"] === "string") {
     const terminal = take(content["terminal"]);
