@@ -175,6 +175,12 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
+  "Sessions on this PC": "此 PC 上的会话",
+  "{count} working": "{count} 个工作中",
+  "{count} waiting for you": "{count} 个等待你回应",
+  "{count} done": "{count} 个已完成",
+  "Open the next session waiting for you": "打开下一个等待你回应的会话",
+  "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
   "Reconnecting…": "正在重连…",
   "Add PC": "添加 PC",
   "Connect": "连接",
@@ -282,6 +288,9 @@ const BASE: Record<string, string> = {
   // ---- devices ----
   "Loading…": "正在加载…",
   "Done": "完成",
+  "Name": "名称",
+  "Recent": "最近",
+  "Needs you": "需要你回应",
 
   // ---- phone ----
   "Copy": "复制",
@@ -301,6 +310,7 @@ const BASE: Record<string, string> = {
   "This device would not make a push subscription. Check that push messaging is allowed in its settings, then try again.": "此设备未能创建推送订阅。请确认其设置中允许推送消息，然后重试。",
   "This device can only watch.": "此设备只能查看。",
   "Needs input": "需要输入",
+  "Needs permission": "需要权限",
   "Finished": "已完成",
   "Open pane": "打开窗格",
   "Quick replies": "快捷回复",

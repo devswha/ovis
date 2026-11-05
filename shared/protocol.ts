@@ -625,7 +625,7 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -634,6 +634,12 @@ export interface ConversationResponse {
    * and the pane's output can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
+  /**
+   * On a scrollback answer to a refresh that named the history shown (`history_id`): the reader lost
+   * its proof of the conversation without seeing it end. Keep the turns shown, append nothing, and
+   * read again on the pane's next activity rather than on a timer.
+   */
+  recovery?: "waiting";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or

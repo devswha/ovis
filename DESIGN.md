@@ -1284,6 +1284,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
+  filter is) moves the Agents list above the workspaces and splits its unpinned rows into
+  groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)
+  and **Idle** (ready, a finish already read, an unknown state, or a PC that is away). Each
+  group has a quiet caps heading with its count in the trailing cell, as Slack's sidebar
+  sections do; the Needs you heading takes `--status-blocked`. An empty group is left out, and
+  the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
+  default; the oldest `state_change_seq` first, as herdr's agent view sorts with
+  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name**. herdr's
+  counters only compare within one PC, so Longest wait and Recent order each PC's rows in the
+  PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
+  group of the one of them that needs the reader most. The shared Agents order applies while
+  grouping is off.
+- An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
+  from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
+  `-number`, `-type`, `-variable`, `-meta`), which every theme sets in both modes and keeps
+  readable on `--bg-elevated`, the disc's fill. It is the same on every device, and two unknown
+  kinds tell apart. Agent logos → Mono leaves the mark quiet.
 - A DONE opened here draws as ready in the Agents list and its workspace roll-up, as herdr's
   own client does. This follows the Codex app's [unread completion dot](https://github.com/openai/codex/issues/50856).
   A finish read in one browser is read in every browser of the server (a phone and
@@ -2038,6 +2056,27 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   relay keeps its word (the one most asked for) and the rest keep the glyph; below `360px` the
   relay's word goes too, so the pane title keeps its room. The phone app's demo shows none. It
   follows Paseo's app, which says beside a host whether it is reached directly or through its relay.
+- Beside the route mark, the PC's sessions by state (`.header-sessions`,
+  `components/HeaderSessions.tsx`, `lib/headerSessions.ts`): one figure per state that has any,
+  in the sidebar's colours and marks, `--status-working` dot for running (a turn waiting on its own
+  background work counts), `--status-blocked` question mark for waiting for an answer,
+  `--status-done` dot for finished and not looked at yet (a finish looked at reads as ready, as in
+  the sidebar). Tabular figures, so a count that changes moves nothing; nothing at all while every
+  session rests, and nothing for a PC that is not connected (its cached roster is greyed out in the
+  sidebar). The waiting figure is the one button: tinted with its state, it opens the next waiting
+  session after the selected one in the roster's order, wrapping, never the selected one and never
+  one a zoomed tab hides (a pick of it lands on the zoomed pane); with none to open it stays a
+  button, `aria-disabled`, so a keyboard's focus is not dropped. It follows Slack's "next unread"
+  rather than a coding-agent app, because the question on a phone is the same: which conversation
+  needs me now. After the title, `--text-dim` and kept whole, the selected tab's place in its
+  workspace's strip (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more.
+  At `<=480px` the header's line is the title's, as wide as without these: the figures become one
+  pill (waiting, else running, else done, tinted with its state) at the end of the tab row under the
+  header (`.tab-strip-sessions`), a full `--touch-target-header` target. Where that row is not drawn
+  (a lone tab on a cramped phone) More carries the jump: **Open the next session waiting for you** is
+  its first item, and its button wears a `--status-blocked` dot (`.header-more-dot.is-waiting`, in
+  place of the alerts-off dot) and says the count in its name. Below `420px` the tab's place leaves
+  the header: the tab row shows it.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
@@ -3484,6 +3523,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the chat lens' round button form (`--control-h`, `--touch-target` on coarse pointers,
   `--radius-pill`, `--shadow-pop`), keeps focus in the terminal, and is hidden at the bottom, in
   read-only views and while Find owns the viewport. A grown touch input line floats over it.
+  On a herdr-core server (`terminal-history`) xterm keeps the history itself, so the same
+  button shows whenever xterm's own view is above its bottom, under the same conditions, and
+  takes it back with xterm's scrollToBottom. This follows VS Code's integrated terminal,
+  whose history scrolls locally and returns to the bottom on demand.
 - Mod+Shift+PageUp/PageDown pages the selected pane only, preserving chat composer focus and
   selection. Chat moves instantly by its viewport minus one prose line;
   Terminal uses native viewport rows minus one. A page still
