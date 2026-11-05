@@ -122,7 +122,7 @@ try {
           // a file size of its own: preview and source at it, the chat and the header where they were
           const own = await sizes(browser, width, { theme, chatFontSize: 21, fileFontSize: 18 }, `own-${theme}`);
           assert.ok(Math.abs(own.preview - base.preview * 18 / 14) < 0.1, `${width}px ${theme}: the preview takes the file size (${own.preview})`);
-          assert.ok(Math.abs(own.source - base.source * 18 / 14) < 0.1, `${width}px ${theme}: the source scales with it (${own.source})`);
+          assert.ok(Math.abs(own.source - base.source * 18 / 21) < 0.1, `${width}px ${theme}: the source scales with it (${own.source})`);
           assert.equal(own.chat, chat.chat, `${width}px ${theme}: the chat keeps its own size`);
           assert.equal(own.title, base.title, `${width}px ${theme}: the viewer's header keeps the interface's size`);
           console.log(`PASS ${width}px ${theme}: preview ${base.preview}→${own.preview}px, source ${base.source}→${own.source}px, chat ${own.chat}px, title ${own.title}px`);
@@ -198,6 +198,7 @@ try {
           assert.equal(await dialog.getByRole("button", { name: "Follow chat", exact: true }).count(), 0, "nothing to reset while it follows");
           await stepper.getByRole("button", { name: "Increase file text size", exact: true }).click();
           assert.equal(await stepper.locator("output").textContent(), "17px");
+          assert.ok(Math.abs(Number(await page.evaluate(() => document.documentElement.style.getPropertyValue("--file-source-scale"))) - 17 / 16) < 1e-9, "a step up from the chat's size moves the source up with the preview");
           assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:file-font-size") ?? "null")), 17, "kept on this device");
           if (evidence) await page.screenshot({ path: join(evidence, `settings-file-text-size-${width}.png`) });
           await dialog.getByRole("button", { name: "Follow chat", exact: true }).click();

@@ -877,10 +877,12 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   // interface's, so a chosen chat size is drawn as itself whatever the interface size, and an unchosen one follows it
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));
   // ChatView.css gives a file viewer's preview this scale in place of the chat's, the same until a file size is chosen;
-  // FileViewer.css scales the source by the second one, which only a chosen size writes (the interface's size till then)
+  // FileViewer.css scales the source by the second one, which only a chosen size writes (the interface's size till then):
+  // the chosen size over the chat's, where the stepper starts, so choosing that size changes nothing and a step moves the
+  // source the way it moves the preview
   root.style.setProperty("--file-scale", String(fontScale(fileFontSize(settings), uiPx)));
   if (settings.fileFontSize === null) root.style.removeProperty("--file-source-scale");
-  else root.style.setProperty("--file-source-scale", String(fontScale(settings.fileFontSize, uiPx)));
+  else root.style.setProperty("--file-source-scale", String(fontScale(settings.fileFontSize, chatFontSize(settings))));
   // Settings → Appearance → Interface font, written as the token itself: the chosen list in front of the built-in stack
   const uiFont = uiFontStack(settings.uiFontFamily, language);
   if (uiFont === null) root.style.removeProperty("--font-ui");

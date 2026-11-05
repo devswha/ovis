@@ -315,7 +315,15 @@ describe("saved theme migration", () => {
     apply({ chatFontSize: 21, fileFontSize: 28 });
     expect(props.get("--chat-scale")).toBe("1.5");
     expect(props.get("--file-scale")).toBe(String(24 / 14));
-    expect(props.get("--file-source-scale")).toBe(String(24 / 14));
+    // the source moves by the file size over the chat's, the size the stepper starts from: choosing that size changes
+    // nothing, and a step moves the source the way it moves the preview
+    expect(props.get("--file-source-scale")).toBe(String(24 / 21));
+    apply({ chatFontSize: 21, fileFontSize: 21 });
+    expect(props.get("--file-source-scale")).toBe("1");
+    apply({ chatFontSize: 21, fileFontSize: 20 });
+    expect(Number(props.get("--file-source-scale"))).toBeLessThan(1);
+    apply({ chatFontSize: 11, fileFontSize: 12 });
+    expect(Number(props.get("--file-source-scale"))).toBeGreaterThan(1);
     apply({ chatFontSize: 21 });
     expect(props.has("--file-source-scale")).toBe(false);
   });
