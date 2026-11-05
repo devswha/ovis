@@ -52,6 +52,10 @@ it("gives a native program its arguments through Windows PowerShell 5.1 as they 
   // PowerShell 7 escapes them itself from 7.3, and passes them as 5.1 does before that
   expect(powershellNativeArgs("pwsh", ["--model", "a b", "trail\\", "it's"])).toEqual(["--model", "a b", "trail\\", "it's"]);
   for (const arg of ['say "hi"', "", "C:\\dir with space\\"]) expect(() => powershellNativeArgs("pwsh", [arg])).toThrow();
+  // cmd reads an agent's arguments again when PowerShell finds it as a .cmd file: `&` there runs the rest
+  for (const program of ["powershell", "pwsh"] as const) {
+    for (const arg of ['fix "a&echo ran&b" now', "a&b", "x|y", "a<b", "a>b", "^caret", "%PATH%"]) expect(() => powershellNativeArgs(program, [arg])).toThrow();
+  }
 });
 
 it("recognizes gjc as Windows reports it", () => {

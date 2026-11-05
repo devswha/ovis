@@ -914,11 +914,11 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   line, as no key clears it in every editing mode. An argument the shell would change is refused
   before anything is typed: in Windows PowerShell one whose whitespace all follows an odd number of
   `"` (`"fix the bug"`, `x="a b"`); in PowerShell 7 an empty one, one holding a `"`, or one holding
-  whitespace and ending in a backslash; in cmd one holding a `"` or a `%`. An agent PowerShell
-  starts through a `.cmd` file alone (an npm install also has a `.ps1`, which PowerShell prefers)
-  has its arguments read by cmd as well, which this does not refuse: `%NAME%` and `^` change there,
-  and an `&` cmd reads outside quotes, where a `"` in the argument can put it, ends the agent's
-  line and runs the rest. Where the execution policy blocks scripts (`Restricted`, the Windows
+  whitespace and ending in a backslash; in cmd one holding a `"` or a `%`. In PowerShell one
+  holding `&`, `|`, `<`, `>`, `^` or `%` is refused too: an agent PowerShell starts through a
+  `.cmd` file alone (an npm install also has a `.ps1`, which PowerShell prefers) has its arguments
+  read by cmd as well, where an `&` outside cmd's quotes would end the agent's line and run the
+  rest, and which file the agent's name finds is not known before. Where the execution policy blocks scripts (`Restricted`, the Windows
   default), PowerShell refuses that `.ps1` and does not fall back to the `.cmd`: the start fails,
   and the pane says why. cmd looks in the pane's folder before the `PATH`, as it does for what you
   type. Command Code is not offered on Windows, where its command `cmd` is cmd.exe, and a Windows

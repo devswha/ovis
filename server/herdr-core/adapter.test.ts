@@ -1094,6 +1094,8 @@ describe("herdr-core adapter, agents on Windows", () => {
     const { socket, typed } = await windows(HC_SHELL, (line) => line ? [...idle, claude] : idle);
     // one Windows PowerShell 5.1 would split is refused, and nothing is typed for it
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1", args: ['"fix the bug"'] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
+    // and one cmd would run part of, were the agent a .cmd file
+    await expect(agentStart({ name: "x", kind: "codex", paneId: "t1", args: ['fix "a&echo ran&b" now'] }, socket)).rejects.toMatchObject({ code: "invalid_params" });
     expect(typed()).toBe("");
     await agentStart({ name: "claude-1", kind: "claude", paneId: "t1", args: ["--model", "say \"hi\"", ""] }, socket);
     // no Ctrl-U, which PowerShell would type into the line; the quote and the empty argument go as
