@@ -148,10 +148,12 @@ export class RelayService {
 
   /**
    * A pairing link without a code: the phone that opens it pairs by comparing six digits with this
-   * PC, and the owner approves it here (server/relay/session.ts). It holds nothing secret and never expires.
+   * PC, and the owner approves it here (server/relay/session.ts). It holds nothing secret; asking for it
+   * opens the window in which this PC takes comparisons (pairing-approvals.ts PAIRING_WINDOW_MS).
    */
   pairingLink(): { url: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    this.approvals.openWindow();
     return { url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.relay }, this.app) };
   }
 

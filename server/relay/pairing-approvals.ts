@@ -3,6 +3,8 @@ import type { RelayPairingRequest } from "../../shared/machines.ts";
 
 /** Comparisons waiting on the owner at once; a phone past them is refused (`auth_failed`), so prompts cannot pile up. */
 export const MAX_PENDING_APPROVALS = 3;
+/** How long after the owner copies a link without a code this PC takes comparisons, as a Bluetooth device in pairing mode. */
+export const PAIRING_WINDOW_MS = 10 * 60_000;
 
 /**
  * The phones waiting for the owner to approve them on this PC after both screens showed the same
@@ -12,6 +14,13 @@ export const MAX_PENDING_APPROVALS = 3;
 export class RelayPairingApprovals {
   private readonly waiting = new Map<string, { request: RelayPairingRequest; finish: (approved: boolean) => void }>();
   private readonly listeners = new Set<(pairings: RelayPairingRequest[]) => void>();
+  private windowUntil = 0;
+
+  /** The owner asked for a link without a code: comparisons are taken for PAIRING_WINDOW_MS from now. */
+  openWindow(now = Date.now()): void { this.windowUntil = now + PAIRING_WINDOW_MS; }
+
+  /** Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one. */
+  windowOpen(now = Date.now()): boolean { return now < this.windowUntil; }
 
   list(): RelayPairingRequest[] {
     return [...this.waiting.values()].map(({ request }) => request);

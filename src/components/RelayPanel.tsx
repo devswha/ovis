@@ -219,7 +219,7 @@ function CodelessLink() {
     try {
       const { url } = await requestRelayLink();
       // where the browser refuses the clipboard (plain http on the LAN), the link stays on screen, selected once drawn
-      if (await copyText(url)) { setLink(null); setNote({ ok: true, text: t("Copied. Open it on the phone: both screens show six digits to compare, and you approve the phone here.") }); }
+      if (await copyText(url)) { setLink(null); setNote({ ok: true, text: t("Copied. Open it on the phone within 10 minutes: both screens show six digits to compare, and you approve the phone here.") }); }
       else { setLink({ url, select: document.activeElement === initiator }); setNote(null); }
     } catch (reason) { setNote({ ok: false, text: failureText(reason) }); }
   };

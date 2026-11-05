@@ -223,6 +223,8 @@ export class RelaySession {
       case FrameType.PAIR_REQUEST: {
         if (this.state !== "auth" || !this.sasBinding) { this.close("protocol_error"); return; }
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        // nobody asked for a link lately: refused before any prompt, and not counted, since no person was asked
+        if (!this.options.services.relay.approvals.windowOpen()) { this.close("auth_failed"); return; }
         this.options.services.devices.assertRelayPairing();
         this.state = "pair-commit";
         this.sas = {

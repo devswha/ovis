@@ -424,6 +424,8 @@ function connectReal(f: ReturnType<typeof relayFixture>, keys: ReturnType<typeof
 async function comparing(compare: (digits: string) => Promise<void>) {
   const f = relayFixture();
   cleanups.push(() => f.close());
+  // as copying a link without a code does
+  f.app.context.services.relay.approvals.openWindow();
   const keys = generateKeyPair();
   const store = new MemoryDeviceStore();
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(keys.publicKey), relay: "wss://relay.example" };
@@ -514,6 +516,7 @@ it("does not take AUTH_OK from a PC before this phone said the digits match", as
 it("a phone the PC removed is refused at sign-in from a link without a code, and pairs by digits once its old key is gone", async () => {
   const f = relayFixture();
   cleanups.push(() => f.close());
+  f.app.context.services.relay.approvals.openWindow();
   const keys = generateKeyPair();
   const store = new MemoryDeviceStore();
   const base = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(keys.publicKey), relay: "wss://relay.example" };

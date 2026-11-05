@@ -114,7 +114,9 @@ longer works**.
 
 **Pairing by comparing digits.** A phone can also pair without a code, from a link that holds the
 PC's `server_id`, public key and relay only (**Copy a link without a code** under the QR code; it
-holds nothing secret and never expires). Such a link may have come through a channel nobody vouches
+holds nothing secret). Copying it opens a 10-minute window, as a Bluetooth device's pairing mode
+does: outside it the PC refuses a comparison with `auth_failed` before any prompt, and does not count
+it as a failed pairing, so nobody the owner did not invite can raise a prompt. Such a link may have come through a channel nobody vouches
 for, so its key is not trusted on its own: a relay, or whoever handed the link over, could have put
 its own key there and sit between the phone and the PC. Trust comes from two people looking at
 two screens instead, as in Bluetooth's numeric comparison:
@@ -154,7 +156,7 @@ the 20 failures allowed in 10 minutes a relay gets about 20 tries, one in fifty 
 relay pairing pauses. Without step 3, a relay could try handshakes until the digits matched; the
 commitment is what stops that.
 
-Limits: both people have 90 seconds from `PAIR_REQUEST` (under the relay's 120-second idle close),
+Limits: a comparison starts only inside the window opened by copying the link; both people have 90 seconds from `PAIR_REQUEST` (under the relay's 120-second idle close),
 after which the session ends with `timeout` and the prompt goes. At most three phones wait for
 approval at once; a fourth gets `auth_failed`. Every comparison that ends without a device
 (declined, abandoned, timed out, a broken commitment) counts toward the same 20 failed relay

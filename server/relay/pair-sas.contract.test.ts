@@ -15,8 +15,10 @@ type Fixture = ReturnType<typeof relayFixture>;
 const fixtures: Fixture[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 
+/** A PC whose owner just copied a link without a code, so it takes comparisons. */
 function fixture(): Fixture {
   const made = relayFixture();
+  made.app.context.services.relay.approvals.openWindow();
   fixtures.push(made);
   return made;
 }
@@ -232,6 +234,37 @@ test("an answer that lands after the comparison's deadline makes no device", asy
     expect(await sessionError(p)).toBe("timeout");
   } finally { setSystemTime(); }
   expect(f.app.context.services.devices.list(null).some((device) => device.label === "New phone")).toBe(false);
+});
+
+test("a PC whose owner copied no link without a code refuses a comparison before any prompt, and counts no failure", async () => {
+  const made = relayFixture();
+  fixtures.push(made);
+  const { p } = await direct(made);
+  await p.hello();
+  const nonce = randomPairNonce();
+  await p.send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+    payload: { label: "Ovis update - click Approve", public_key: p.publicKey, commitment: toBase64Url(pairCommitment(p.binding(), p.publicKey, nonce)) } });
+  expect(await sessionError(p)).toBe("auth_failed");
+  expect(made.app.context.services.relay.approvals.list()).toEqual([]);
+  // twenty refusals later a QR code still pairs: the closed window spent none of the budget
+  for (let index = 0; index < 20; index++) {
+    const again = await direct(made);
+    await again.p.hello();
+    await again.p.send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+      payload: { label: "x", public_key: again.p.publicKey, commitment: toBase64Url(new Uint8Array(32)) } });
+    await sessionError(again.p);
+  }
+  const devices = made.app.context.services.devices;
+  expect(() => devices.assertRelayPairing()).not.toThrow();
+});
+
+test("the window closes ten minutes after the link was copied", () => {
+  const made = relayFixture();
+  fixtures.push(made);
+  const approvals = made.app.context.services.relay.approvals;
+  approvals.openWindow(1_000);
+  expect(approvals.windowOpen(1_000 + 10 * 60_000 - 1)).toBe(true);
+  expect(approvals.windowOpen(1_000 + 10 * 60_000)).toBe(false);
 });
 
 test("the phone's word alone does not pair it: it waits for the owner", async () => {
