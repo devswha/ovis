@@ -1,5 +1,5 @@
 import { authenticatedWebSocket } from "./remote-websocket.ts";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
@@ -25,8 +25,14 @@ import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 import { SshConnection, sshClient } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
+import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
+
 import type { RelaySocket } from "../shared/relay-channel.ts";
 import { openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel } from "./relay-pc.ts";
+import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
+
+/** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
+const RELAY_FOUND_MS = 10 * 60_000;
 
 type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: SessionSnapshot | null }
   & ({ kind?: "ssh"; target: SshTarget; server_id?: string } | { kind: "relay"; relay: NonNullable<Machine["relay"]> });
@@ -35,6 +41,8 @@ interface Runtime {
   ssh?: SshConnection;
   /** a PC added through the relay: its connection and loopback forward (server/relay-pc.ts) */
   tunnel?: RelayPcTunnel;
+  /** another machine of this PC's herdr-core (kind "hc"): what the core calls it, and its server once started (herdr-core/machine-bridge.ts) */
+  hc?: { id: string; name: string; bridge?: MachineBridge };
   endpoint?: { url: string; token: string };
   observer?: WebSocket;
   /** set only while the PC waits out its delay before the next try (retryLater) */
@@ -97,6 +105,8 @@ interface JobState {
 }
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis: update it on that PC.";
+/** a PC of herdr-core's machines is the core's: Ovis neither renames, removes nor sets it up */
+const HC_MACHINE_MANAGED = "This PC is a machine of herdr-core: add, rename or remove it with `hc machine` or in the Herdr app.";
 /** the shortest time between the starts of two health calls that prove one PC's server (sourceCheck) */
 export const SOURCE_CHECK_INTERVAL_MS = 1000;
 /** the shortest time between the starts of two tries to connect that a request cuts short (retryNow) */
@@ -282,6 +292,8 @@ export class MachineManager {
   private remoteDiagnostics = new ConnectionDiagnostics("machine.remote");
   private discoveryTimer?: ReturnType<typeof setTimeout>;
   private discoveryStarted = false;
+  private hcTimer?: ReturnType<typeof setTimeout>;
+  private hcStart?: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>;
   private settingsPath: string;
   private preferences: MachineSettings = { ...DEFAULT_SETTINGS };
   /** automatic bridge updates run one at a time: they share one bundle download */
@@ -303,6 +315,11 @@ export class MachineManager {
   private ownUpdateCheckMs: number;
   /** how a relay PC's connection reaches the relay; tests point it at a local one */
   private relaySocket?: (url: string) => RelaySocket;
+  /**
+   * PCs typed codes found (relayFoundByCode), waiting for the person to match their IDs, by a random ticket only the
+   * asking window gets: each offer holds that PC's one-time code, so another client naming the PC's public ID takes none.
+   */
+  private foundByCode = new Map<string, { offer: RelayOffer; at: number }>();
   /** this server's own relay ID, where it has one: the local PC's `server_id` */
   private serverId?: () => string | undefined;
 
@@ -456,6 +473,65 @@ export class MachineManager {
     this.profileState.flush();
     if (errors.length) throw new AggregateError(errors, "Some saved machine keys could not be removed; cleanup will retry");
   }
+  /**
+   * On herdr-core, the core's other machines (`hc machine add`) as PCs, read every few seconds: each one's
+   * server starts as it connects (`start`, herdr-core/machine-bridge.ts) and reaches its terminals through
+   * this PC's core. A broken read keeps the PCs as they were.
+   */
+  watchHcMachines(read: () => Promise<HcMachine[]>, start: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>, intervalMs = 5000): void {
+    if (this.hcStart || this.stopped) return;
+    this.hcStart = start;
+    let failures = 0, previousError: string | undefined;
+    const poll = async () => {
+      try {
+        this.syncHcMachines(await read());
+        failures = 0; previousError = undefined;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "read failed";
+        if (!this.stopped && previousError !== message) console.error("herdr-core's machines could not be read:", message);
+        previousError = message; failures++;
+      }
+      if (!this.stopped) { this.hcTimer = setTimeout(poll, Math.min(60_000, intervalMs * 2 ** Math.min(failures, 4))); this.hcTimer.unref(); }
+    };
+    void poll();
+  }
+  syncHcMachines(list: readonly HcMachine[]): void {
+    if (this.stopped) return;
+    const wanted = new Set<string>();
+    let changed = false;
+    for (const hc of list) {
+      const id = `hc-${hc.id}`;
+      wanted.add(id);
+      let runtime = this.machines.get(id);
+      if (!runtime) {
+        runtime = this.runtime({ id, name: hc.name, kind: "hc", enabled: true, state: "disconnected", error: null, snapshot: null });
+        runtime.hc = { id: hc.id, name: hc.name };
+        this.machines.set(id, runtime);
+        changed = true;
+      }
+      // its terminals are known by its name (`lab/t3`): renamed, its server starts again under the new one
+      if (runtime.hc!.name !== hc.name) {
+        this.disconnect(runtime);
+        runtime.hc = { id: hc.id, name: hc.name };
+        runtime.machine.name = hc.name;
+        changed = true;
+      }
+      if (!hc.connected) {
+        const error = `herdr-core cannot reach this machine (${hc.why ?? "not connected"})`;
+        if (runtime.machine.state !== "disconnected" || runtime.machine.error !== error) { this.disconnect(runtime); runtime.machine.error = error; changed = true; }
+      } else if (runtime.machine.state === "disconnected") {
+        runtime.machine.error = null;
+        void this.reconnect(runtime);
+      }
+    }
+    for (const [id, runtime] of this.machines) {
+      if (runtime.machine.kind !== "hc" || wanted.has(id)) continue;
+      runtime.machine.enabled = false; this.disconnect(runtime);
+      this.machines.delete(id);
+      changed = true;
+    }
+    if (changed) this.emit();
+  }
   private mayConnect(runtime: Runtime): boolean {
     const machine = runtime.machine;
     return !machine.herdr_profile_id || !!machine.target && this.profileState.connectionApproved(machine.herdr_profile_id, machine.target);
@@ -579,7 +655,8 @@ export class MachineManager {
    * disk pays for the write and its fsync.
    */
   private persist(): void {
-    const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine }) => machine);
+    // herdr's saved machines and herdr-core's are their catalogs': read again, never saved here
+    const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id && machine.kind !== "hc").map(({ machine }) => machine);
     const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, ...(m.server_id ? { server_id: m.server_id } : {}), enabled: m.enabled, snapshot: m.snapshot }));
     const relayPcs: StoredMachine[] = owned.filter((m) => m.kind === "relay").map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
     const relayText = JSON.stringify(relayPcs);
@@ -618,6 +695,7 @@ export class MachineManager {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (runtime.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
+    if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (!this.mayConnect(runtime)) throw new MachineActionRequired("Connect this machine first", "connect");
     // A saved herdr machine connected without bridge approval reviews the update in its dialog;
     // an unattended update would also record that approval for later automatic updates.
@@ -638,6 +716,7 @@ export class MachineManager {
     if ([...this.jobs.values()].filter((j) => !["connected", "failed", "cancelled"].includes(j.public.phase)).length >= 4) throw new Error("Finish or cancel the current connection jobs first");
     if (request.machine_id && !existing) throw new Error("PC not found");
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
+    if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (existing && [...this.jobs.values()].some((j) => j.public.machine_id === existing.machine.id && !["connected", "failed", "cancelled"].includes(j.public.phase))) throw new Error("A connection job for this PC is already running");
     const id = randomUUID();
     const machineId = existing?.machine.id ?? randomUUID();
@@ -1291,7 +1370,7 @@ export class MachineManager {
     const generation = runtime.generation;
     try {
       // a PC added through the relay has no bridge identity: its own health says what runs its terminals
-      if (runtime.tunnel && !runtime.machine.herdr) {
+      if ((runtime.tunnel || runtime.hc) && !runtime.machine.herdr) {
         await this.readRelayHerdr(runtime, endpoint, generation);
         // a reconnect while it was read: its queued load runs from the finally below, on the new endpoint
         if (generation !== runtime.generation || this.stopped) return;
@@ -1359,7 +1438,7 @@ export class MachineManager {
       this.emit({ type: "machine-message", machine_id: runtime.machine.id, message });
       if (["pane-status", "pane-exited", "session-changed"].includes(message.type)) void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e));
     };
-    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : "SSH bridge connection interrupted"));
+    ws.onclose = () => this.lost(runtime, generation, new Error(runtime.tunnel ? "Relay connection to this PC was lost" : runtime.hc ? "This machine's server connection was lost" : "SSH bridge connection interrupted"));
     ws.onerror = () => ws.close();
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
     runtime.poll = setInterval(() => void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e)), 5000);
@@ -1415,6 +1494,19 @@ export class MachineManager {
     runtime.triedAt = this.now();
     runtime.machine.state = "reconnecting"; runtime.machine.action_required = null; this.emit();
     const generation = runtime.generation;
+    if (runtime.hc) {
+      const hc = runtime.hc;
+      try {
+        // the PC's herdr-core version and layout come from its own server's health once it answers
+        delete runtime.machine.herdr;
+        const bridge = await this.hcStart!(hc);
+        if (generation !== runtime.generation || this.stopped || runtime.hc !== hc) { bridge.stop(); return; }
+        hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
+        void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
+        await this.observe(runtime); this.emit();
+      } catch (e) { this.lost(runtime, generation, e); }
+      return;
+    }
     if (runtime.machine.kind === "relay") {
       try {
         let key: RelayPcKey;
@@ -1466,6 +1558,7 @@ export class MachineManager {
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     runtime.tunnel?.close(); runtime.tunnel = undefined;
+    if (runtime.hc?.bridge) { runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
     // what this connection proved goes with it; the start interval stays (sourceStarts)
     runtime.verification?.abort.abort(); runtime.verification = undefined;
     runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
@@ -1588,6 +1681,7 @@ export class MachineManager {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (runtime.machine.herdr_profile_id) throw new Error("Rename or disable this machine in herdr");
+    if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") throw new Error("enabled must be boolean");
     if (patch.name !== undefined) { if (typeof patch.name !== "string" || !patch.name.trim() || patch.name.length > 100) throw new Error("Enter a PC name (1–100 characters)"); runtime.machine.name = patch.name.trim(); }
     if (patch.enabled !== undefined) {
@@ -1604,6 +1698,7 @@ export class MachineManager {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (runtime.machine.herdr_profile_id) throw new Error("Remove this machine in herdr");
+    if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     runtime.machine.enabled = false; this.disconnect(runtime);
     for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
     // the key goes first: a registration saved without the PC must not leave its credential behind
@@ -1614,14 +1709,40 @@ export class MachineManager {
   }
   private relayKeyPath(id: string): string { return join(this.stateDir, "relay-pcs", `${id}.json`); }
   /**
+   * Settings → Remote PCs, with the code another PC shows (its Settings → Phone & devices → Show a code to type):
+   * finds that PC as a phone does (shared/relay-code-offer.ts) and holds its offer here, the one-time code in it
+   * included, while the person compares the ID with the one that PC shows; addRelay with `found` then pairs with
+   * it. One exchange per call; throws TypedCodeError.
+   */
+  async relayFoundByCode(code: unknown, signal?: AbortSignal): Promise<{ ticket: string; server_id: string; name: string | null }> {
+    if (this.stopped) throw new Error("Server stopping");
+    if (typeof code !== "string" || code.length > 64) throw new TypedCodeError("not-a-code");
+    const offer = await offerFromCode(code, { ...(this.relaySocket ? { connect: this.relaySocket } : {}), ...(signal ? { signal } : {}) });
+    if (this.stopped) throw new Error("Server stopping");
+    const now = this.now();
+    for (const [ticket, held] of this.foundByCode) if (now - held.at > RELAY_FOUND_MS) this.foundByCode.delete(ticket);
+    // a few windows at once at most; the oldest gives way
+    if (this.foundByCode.size >= 8) this.foundByCode.delete(this.foundByCode.keys().next().value!);
+    const ticket = randomBytes(32).toString("base64url");
+    this.foundByCode.set(ticket, { offer, at: now });
+    return { ticket, server_id: offer.server_id, name: offer.name ?? null };
+  }
+
+  /**
    * Settings → Remote PCs → Add a PC through the relay: pairs with the PC whose pairing link (its Settings → Phone &
    * devices → Copy link) this is, as a phone would, and adds it once that PC admitted this one. The link's code is
    * spent here; later connections sign in with the key this pairing made.
+   * `found` instead of `link`: the ticket relayFoundByCode gave for the PC it found, once the person matched its ID.
    */
-  async addRelay(link: unknown, name?: unknown): Promise<Machine> {
+  async addRelay(link: unknown, name?: unknown, found?: unknown): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
     let offer: RelayOffer | null = null;
-    if (typeof link === "string" && link.length <= 4096) try { offer = decodeOffer(link.trim()); } catch { offer = null; }
+    if (found !== undefined) {
+      const held = typeof found === "string" ? this.foundByCode.get(found) : undefined;
+      if (held === undefined || this.now() - held.at > RELAY_FOUND_MS) throw new Error("That PC is no longer waiting. Show a new code on it and type that.");
+      this.foundByCode.delete(found as string);
+      offer = held.offer;
+    } else if (typeof link === "string" && link.length <= 4096) try { offer = decodeOffer(link.trim()); } catch { offer = null; }
     if (!offer?.code) throw new Error("That is not a pairing link. On the other PC, turn the relay on in Settings → Phone & devices and copy its link.");
     if (name !== undefined && (typeof name !== "string" || !name.trim() || name.length > 100)) throw new Error("Enter a PC name (1–100 characters)");
     const serverId = offer.server_id;
@@ -1659,7 +1780,7 @@ export class MachineManager {
     return runtime.machine;
   }
   stop(): void {
-    this.stopped = true; clearTimeout(this.discoveryTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
+    this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     for (const runtime of this.machines.values()) this.disconnect(runtime);
     this.listeners.clear();
