@@ -96,12 +96,19 @@ export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSe
 /**
  * Whether `turn` may be the one `match` was found in after it changed since the search, so its name
  * (conversationTurnAnchor) changed too: an answer that went on, or whose first tool's output came. It
- * has the match's role and time and still holds the match after the same words (a turn only grows
- * after them, though a Markdown mark that streamed in may close: `[deploy` became a link). Two
- * answers of one time (Codex, when the user steers mid-task) can both pass: see pickedTurn.
+ * has the match's role and time, goes on from how the searched turn began (its first text grew, or
+ * its first tool is the same call up to its output), and still holds the match after the same words
+ * (a Markdown mark that streamed in may close: `[deploy` became a link). Two answers of one time
+ * (Codex, when the user steers mid-task) can both pass: see pickedTurn.
  */
 export function searchedTurnChanged(turn: ConversationTurn, match: ConversationSearchMatch): boolean {
   if (turn.role !== match.role || turn.ts !== match.ts) return false;
+  const name = conversationTurnAnchor(turn);
+  const prefix = `${turn.role}|${turn.ts ?? ""}|`;
+  if (!match.turn.startsWith(prefix)) return false;
+  const began = match.turn.slice(prefix.length), now = name.slice(prefix.length);
+  const output = began.startsWith("tool|") ? began.indexOf('"output":') : -1;
+  if (!now.startsWith(output < 0 ? began : began.slice(0, output))) return false;
   // the matched words find what the query found: the same words, any whitespace, case ignored
   const pattern = searchPattern(match.match);
   const snippet = pattern === null ? null : matchSnippet(searchableText(turn), pattern);
@@ -109,9 +116,9 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   // a snippet keeps the last words before the match, so a mark gone moves where a long one is cut:
   // then one ends the other
   const words = (before: string): string => before.replace(/^…/, "").replace(/[[\]*`]/g, "");
-  const was = words(match.before), now = words(snippet.before);
-  if (!match.before.startsWith("…") && !snippet.before.startsWith("…")) return was === now;
-  return was !== "" && now !== "" && (now.endsWith(was) || was.endsWith(now));
+  const was = words(match.before), after = words(snippet.before);
+  if (!match.before.startsWith("…") && !snippet.before.startsWith("…")) return was === after;
+  return was !== "" && after !== "" && (after.endsWith(was) || was.endsWith(after));
 }
 
 /**

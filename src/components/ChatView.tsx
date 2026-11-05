@@ -1500,7 +1500,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   /** where the reader left this pane before (lib/chatScrollMemory.ts), until the first answer puts it back */
   const restoring = useRef<ChatPosition | null>(null);
   /** the turn a search's pick opens the chat at (revealTurn), until its row is in; bumped for each pick */
-  const revealing = useRef<{ match: ConversationSearchMatch; read: "named" | "all"; done: (result: RevealResult) => void } | null>(null);
+  const revealing = useRef<{ match: ConversationSearchMatch; done: (result: RevealResult) => void } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   const stopRestore = useRef<(() => void) | null>(null);
   const [pollKey, setPollKey] = useState(0);
@@ -2532,10 +2532,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
     if (pick === null || list === null || node === null) return;
-    const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
-    // a page read is in the rows by now; a turn found by its name and changed since still counts
-    if (index === "none" && pick.read === "named") return;
+    // the pages read are in the rows by now (loadOlder lays a page before it answers)
     revealing.current = null;
+    const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
     if (typeof index !== "number") { pick.done("missing"); return; }
     placeRow(list, node, index, 0);
     pick.done("shown");
@@ -2548,21 +2547,21 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    */
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
     const named = (turn: ConversationTurn): boolean => chatTurnAnchor(turn) === match.turn;
-    const reveal = (read: "named" | "all"): Promise<RevealResult> => new Promise((done) => {
+    const reveal = (): Promise<RevealResult> => new Promise((done) => {
       revealing.current?.done("missing");
-      revealing.current = { match, read, done };
+      revealing.current = { match, done };
       setRevealTick((tick) => tick + 1);
     });
-    if (shownTurns.some(named)) return reveal("named");
+    if (shownTurns.some(named)) return reveal();
     const generation = olderGeneration.current;
     for (let before = olderCursor; typeof before === "string";) {
       const page = await loadOlder({ before, prompts: LARGEST_PAGE });
       if (olderGeneration.current !== generation) return "missing";
       if (page === null) return "failed";
-      if (page.turns.some(named)) return reveal("named");
+      if (page.turns.some(named)) return reveal();
       before = page.cursor;
     }
-    return reveal("all");
+    return reveal();
   };
   // Covers first layout, restored short chats and a fresh read that changes no scroll offset.
   useLayoutEffect(() => { measureEnd(); });

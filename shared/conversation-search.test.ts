@@ -144,6 +144,15 @@ describe("pickedTurn", () => {
     expect(pickedTurn([answer(`${long}](https://example.com) now`)], cut)).toBe(0);
   });
 
+  it("opens each of two answers of one time that begin with the match, by its name", () => {
+    const turns = [answer("Deploy script fails."), user("again"), answer("Deploy script passes.")];
+    const [passes, fails] = searchTurns(turns, searchPattern("deploy script")!);
+    expect(pickedTurn(turns, fails!)).toBe(0);
+    expect(pickedTurn(turns, passes!)).toBe(2);
+    // one that went on is still found
+    expect(pickedTurn([answer("Deploy script fails. Rerunning it."), user("again"), answer("Deploy script passes.")], fails!)).toBe(0);
+  });
+
   it("opens none when the answer grew and a later answer of its time took its old name", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
