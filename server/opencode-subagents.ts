@@ -27,8 +27,9 @@
  */
 import type { Database } from "bun:sqlite";
 
-import type { HerdrPane } from "../shared/protocol.ts";
+import type { HerdrPane, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 import type { OmoTask } from "../shared/tasks.ts";
+import { DETAIL_LIMITS, fitDetail, type DetailRefusal } from "./claude-subagents.ts";
 import { opencodeSessionId, withStore } from "./opencode.ts";
 
 /** As for Claude Code and OmO: the newest ten that ended in the last day are listed. */
@@ -322,8 +323,7 @@ function scanResult(scan: Scan): OpencodeSubagentState {
       turns: work?.turns ?? null,
       tool_calls: work?.toolCalls ?? null,
       tokens: work?.tokens ?? null,
-      // a child's work has no detail sheet (that reads a Claude Code subagent's transcript): this bridge knows the field
-      detail_kind: null,
+      detail_kind: "opencode-subagent",
     };
   });
   if (scan.shells === null || (scan.shells.length === 0 && scan.shellRunning === 0)) return { ...state, tasks };
@@ -335,6 +335,98 @@ function scanResult(scan: Scan): OpencodeSubagentState {
   const settled = [...tasks.filter((task) => task.status !== "running"), ...scan.shells.filter((task) => task.status !== "running")]
     .sort((a, b) => ended(b) - ended(a)).slice(0, RECENT_LIMIT);
   return { ...state, running: state.running + scan.shellRunning, unlisted: state.running + scan.shellRunning - running.length, tasks: [...running, ...settled] };
+}
+
+/** A row of a child's over this is not read for its detail, and is said to be left out (`incomplete`), as a Claude record over its size is. */
+const DETAIL_RECORD_BYTES = 64 * 1024;
+
+/**
+ * GET /api/pane/background-agent for an OpenCode pane: what the child session `childId` of the session `sessionId` did,
+ * read-only and bounded as a Claude Code subagent's detail is (claude-subagents.ts backgroundAgentDetail), from one
+ * snapshot of the store. The prompt is the child's first `user` row (what it was dispatched with); its work is the text
+ * and tool parts of its newest `assistant` rows, as many as max_events and max_read_bytes allow (no reasoning, no tool
+ * output). A row over DETAIL_RECORD_BYTES or that is not JSON is left out and said (`incomplete`); rows left unread for
+ * the limits are said (`truncated`). Only a child of `sessionId` is answered: another session's is not found. `command`:
+ * the id is one of the session's background commands, which has no work of its own to read.
+ */
+export function opencodeAgentDetail(path: string, sessionId: string, childId: string): { detail: Omit<PaneBackgroundAgentDetail, "server_time"> } | { refusal: DetailRefusal | "command" } {
+  try {
+    return withStore(path, (db) => db.transaction(() => childDetail(db, sessionId, childId))()) ?? { refusal: "unavailable" };
+  } catch { return { refusal: "unavailable" }; }
+}
+
+function childDetail(db: Database, sessionId: string, childId: string): ReturnType<typeof opencodeAgentDetail> {
+  const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('session_v2')").all().map((column) => column.name));
+  // 1.x tables, or a 2.0 store from before child sessions: no subagent to read
+  if (!columns.has("parent_id")) return { refusal: "not_found" };
+  const child = db.query<{ title: unknown; agent: unknown }, [string, string]>(
+    `SELECT ${["title", "agent"].map((name) => columns.has(name) ? name : `NULL AS ${name}`).join(", ")} FROM session_v2 WHERE id = ? AND parent_id = ?`,
+  ).get(childId, sessionId);
+  if (child === null) {
+    // a background command is listed by its shellID, else its row's id (shellStep)
+    const command = db.query<{ found: number }, [string, string, string]>(`
+      SELECT 1 AS found FROM session_message WHERE session_id = ? AND type = 'shell' AND json_valid(data)
+        AND json_type(data, '$.metadata.background') = 'true' AND (json_extract(data, '$.shellID') = ? OR id = ?) LIMIT 1`).get(sessionId, childId, childId);
+    return { refusal: command === null ? "not_found" : "command" };
+  }
+  let incomplete = false;
+  const sized = `CASE WHEN length(CAST(data AS BLOB)) <= ${DETAIL_RECORD_BYTES} THEN data END AS data, length(CAST(data AS BLOB)) AS bytes, time_created`;
+  type DetailRow = { data: string | null; bytes: number; time_created: number };
+  const parsed = (row: DetailRow): Row | null => {
+    if (row.data === null) { incomplete = true; return null; }
+    try { const data = JSON.parse(row.data) as unknown; if (data !== null && typeof data === "object" && !Array.isArray(data)) return data as Row; } catch { /* said below */ }
+    incomplete = true;
+    return null;
+  };
+  const first = db.query<DetailRow, [string]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq LIMIT 1`).get(childId);
+  const dispatch = first === null ? null : parsed(first);
+  const prompt = dispatch !== null && typeof dispatch.text === "string" && dispatch.text.trim().length > 0 ? dispatch.text : null;
+  // the newest rows' sizes first, one more than can be shown to tell whether older ones were left; then only the rows
+  // that fit max_read_bytes are read, so no more than that comes out of the store
+  const sizes = db.query<{ seq: number; bytes: number }, [string]>(
+    `SELECT seq, length(CAST(data AS BLOB)) AS bytes FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT ${DETAIL_LIMITS.max_events + 1}`,
+  ).all(childId);
+  let truncated = sizes.length > DETAIL_LIMITS.max_events;
+  let left = DETAIL_LIMITS.max_read_bytes - (first === null || first.data === null ? 0 : first.bytes);
+  const fits: number[] = [];
+  for (const { seq, bytes } of sizes.slice(0, DETAIL_LIMITS.max_events)) {
+    if (bytes > DETAIL_RECORD_BYTES) { incomplete = true; continue; }
+    if (bytes > left) { truncated = true; break; }
+    left -= bytes;
+    fits.push(seq);
+  }
+  const rowAt = db.query<DetailRow, [string, number]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND seq = ?`);
+  const taken: PaneBackgroundAgentDetail["events"][] = [];
+  for (const seq of fits) {
+    const row = rowAt.get(childId, seq);
+    if (row === null) continue;
+    const data = parsed(row);
+    if (data === null) continue;
+    const at = iso(stamp(record(data.time).created) ?? row.time_created);
+    taken.push((Array.isArray(data.content) ? data.content : []).flatMap((value): PaneBackgroundAgentDetail["events"] => {
+      const part = record(value);
+      if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) return [{ kind: "text", text: part.text, at }];
+      if (part.type === "tool" && typeof part.name === "string" && part.name.trim().length > 0) {
+        const input = record(part.state).input;
+        return [{ kind: "tool", text: `${part.name.trim()} ${input === undefined ? "{}" : JSON.stringify(input)}`, at }];
+      }
+      return [];
+    }));
+  }
+  const fitted = fitDetail(prompt, taken.reverse().flat(), truncated);
+  return {
+    detail: {
+      agent_id: childId,
+      session_id: sessionId,
+      title: label(child.title),
+      agent: label(child.agent),
+      prompt: fitted.prompt,
+      events: fitted.events,
+      truncated: fitted.truncated,
+      incomplete,
+      limits: DETAIL_LIMITS,
+    },
+  };
 }
 
 /** The event loop let go between two steps of a read. */
