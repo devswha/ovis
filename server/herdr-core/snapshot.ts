@@ -50,6 +50,15 @@ export type HcTerminal = Pick<Terminal, "address" | "cols" | "rows" | "cwd" | "s
   Partial<Pick<Terminal, "argv" | "pid" | "name" | "title" | "labels" | "turn" | "parent">> &
   { status?: HcStatus | null; foreground?: HcForeground | null };
 
+/**
+ * A terminal on another machine the core reaches (`hc machine add vps`): hc lists and reports it
+ * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Until those machines
+ * show as PCs of their own, none of their terminals is this PC's: no workspace, tab, pane or event.
+ */
+export function onOtherMachine(address: string): boolean {
+  return address.includes("/");
+}
+
 /** The one object guard of server/herdr-core/: hc's records and the app's document come from outside. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -182,7 +191,7 @@ function besides(root: LayoutNode | null, count: number, address: string): Layou
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   // no Herdr app arranges this core: the tabs labels make are Ovis's to lay out
   const own = layout === null || layout === undefined;
-  const live = new Map(terminals.filter((terminal) => terminal.state === "live").map((terminal) => [terminal.address, terminal]));
+  const live = new Map(terminals.filter((terminal) => terminal.state === "live" && !onOtherMachine(terminal.address)).map((terminal) => [terminal.address, terminal]));
   const placed = new Set<string>();
   const take = (address: string): HcTerminal | null => {
     const terminal = live.get(address);
