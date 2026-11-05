@@ -153,6 +153,20 @@ describe("pickedTurn", () => {
     expect(pickedTurn([answer("Deploy script fails. Rerunning it."), user("again"), answer("Deploy script passes.")], fails!)).toBe(0);
   });
 
+  it("opens an answer by its name when a later answer of its time begins with it", () => {
+    const parser = createCodexTranscriptParser();
+    const line = (timestamp: string, payload: Record<string, unknown>): string => `${JSON.stringify({ timestamp, type: "event_msg", payload })}\n`;
+    parser.write(line("2026-10-01T00:00:00Z", { type: "task_started", turn_id: "t1" }) + line("2026-10-01T00:00:00Z", { type: "user_message", message: "fix the build" })
+      + line("2026-10-01T00:00:01Z", { type: "agent_message", message: "Done." }) + line("2026-10-01T00:00:02Z", { type: "user_message", message: "also the lint" })
+      + line("2026-10-01T00:00:03Z", { type: "agent_message", message: "Done. The lint passes too." }));
+    const turns = parser.snapshot();
+    const [later, first] = searchTurns(turns, searchPattern("done")!);
+    expect(pickedTurn(turns, first!)).toBe(1);
+    expect(pickedTurn(turns, later!)).toBe(3);
+    const prompts = [user("run tests", null), answer("ok"), user("run tests now", null)];
+    expect(pickedTurn(prompts, searchTurns(prompts, searchPattern("run tests")!)[1]!)).toBe(0);
+  });
+
   it("opens the first of turns that share the match's name, as without a changed one", () => {
     const turns = [user("continue", null), answer("ok one"), user("continue", null), answer("ok two")];
     for (const match of searchTurns(turns, searchPattern("continue")!)) expect(pickedTurn(turns, match)).toBe(0);

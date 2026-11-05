@@ -115,7 +115,7 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   if (snippet === null || snippet.match !== match.match) return false;
   // a snippet keeps the last words before the match, so a mark gone moves where a long one is cut:
   // then one ends the other
-  const words = (before: string): string => before.replace(/^…/, "").replace(/[[\]*`]/g, "");
+  const words = (before: string): string => before.replace(/^…/, "").replace(/!?\[|[\]*`]/g, "");
   const was = words(match.before), after = words(snippet.before);
   const sameBefore = !match.before.startsWith("…") && !snippet.before.startsWith("…") ? was === after
     : was !== "" && after !== "" && (after.endsWith(was) || was.endsWith(after));
@@ -126,10 +126,10 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
 
 /**
  * The row a pick opens among the turns shown (null: a row that is no turn): the first with the
- * match's name, as before, when no other turn changed into the match; else the one turn changed
- * since (searchedTurnChanged). `several` when a named turn and a changed one both are, as when an
- * answer grew and a later answer of its time took its old name, or two changed ones: none is
- * opened, never the wrong one.
+ * match's name, as before, unless a turn before it changed into the match; else the one turn changed
+ * since (searchedTurnChanged). `several` when an earlier turn changed into the match and a later
+ * one has its name (an answer grew and a later answer of its time took its old name), or two
+ * changed ones: none is opened, never the wrong one.
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
   let named: number | null = null, changed: number | null = null;
@@ -142,7 +142,8 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
       changed = index;
     }
   }
-  if (named !== null && changed !== null) return "several";
+  // a turn that grew can lose its old name only to a later turn
+  if (named !== null && changed !== null && changed < named) return "several";
   return named ?? changed ?? "none";
 }
 
