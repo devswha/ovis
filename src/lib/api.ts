@@ -1,5 +1,6 @@
 import { apiFetch } from "./api-request-id.ts";
 import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
+import type { AlertWebhookSave, AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import type { AgentCatalogResponse, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import { resumeConnectionTraces } from "./connectionTrace.ts";
@@ -267,15 +268,32 @@ export function requestRelayOffer(): Promise<RelayOffer> {
   return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
+/** POST /api/relay/code: a code to type on the device being paired, good until `expires_at`; it replaces any showing. */
+export interface RelayCode {
+  readonly code: string;
+  readonly expires_at: string;
+  readonly server_id: string;
+}
+
+export function requestRelayCode(): Promise<RelayCode> {
+  return getJson<RelayCode>("/api/relay/code", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
+/** POST /api/relay/code/cancel: takes the code showing off the relay. */
+export function cancelRelayCode(): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
 /** POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC. */
 export function requestRelayLink(): Promise<{ readonly url: string }> {
   return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
-export async function decideRelayPairing(id: string, decision: "approve" | "decline"): Promise<void> {
+export async function decideRelayPairing(id: string, decision: "approve" | "decline", digits?: string): Promise<void> {
   const url = "/api/relay/pairing";
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
   if (!response.ok) throw await errorFrom(url, response);
 }
 
@@ -1422,6 +1440,29 @@ export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   const response = await apiFetch("/api/voice", { cache: "no-store" });
   if (!response.ok) throw await errorFrom("/api/voice", response);
   return (await response.json()) as VoiceStatus;
+}
+
+/** Settings → Alerts → Also send to: the destination this PC also posts its alerts to, its URL or token masked. */
+export function fetchAlertWebhook(): Promise<AlertWebhookView> {
+  return getJson<AlertWebhookView>("/api/alerts/webhook", { cache: "no-store" });
+}
+
+/** ApiError 400 `invalid_webhook` names what is wrong with the destination. */
+export async function saveAlertWebhook(save: AlertWebhookSave): Promise<AlertWebhookView> {
+  const response = await apiFetch("/api/alerts/webhook", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(save) });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook", response);
+  return (await response.json()) as AlertWebhookView;
+}
+
+export async function removeAlertWebhook(): Promise<void> {
+  const response = await apiFetch("/api/alerts/webhook", { method: "DELETE" });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook", response);
+}
+
+/** ApiError 502 `webhook_failed` with what the destination answered. */
+export async function testAlertWebhook(): Promise<void> {
+  const response = await apiFetch("/api/alerts/webhook/test", { method: "POST" });
+  if (!response.ok) throw await errorFrom("/api/alerts/webhook/test", response);
 }
 
 /** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */

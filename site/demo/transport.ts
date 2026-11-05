@@ -19,6 +19,8 @@ import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, Conver
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
+import { ALERT_WEBHOOK_PRESETS, type AlertWebhookSave, type AlertWebhookView } from "../../shared/alert-webhook.ts";
+import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { firstMessageFault } from "../../shared/launch-rules.ts";
@@ -1289,7 +1291,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
-    || path === "/api/relay/link" || path === "/api/relay/pairing") {
+    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
@@ -1297,6 +1299,13 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
       return json({ url: encodeOffer({ v: 1, server_id: demoRelayServerId(), server_public_key: DEMO_RELAY_PUBLIC_KEY, relay: DEMO_RELAY }, DEMO_RELAY_APP) }, 200, { "cache-control": "no-store" });
     }
+    // a made-up code: no device can find the demo with it, as no relay holds it
+    if (path === "/api/relay/code") {
+      if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
+      const pairing = startDemoPairing();
+      return json({ code: "7K3QD-M2XHA", expires_at: pairing.expires_at, server_id: demoRelayServerId() }, 200, { "cache-control": "no-store" });
+    }
+    if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
     // no phone ever compares digits with the demo, so none is waiting to be approved
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/start") demoRelayOnline = true;
@@ -1393,6 +1402,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   if (path === "/api/cliproxy/login" || path === "/api/cliproxy/callback") return error("demo", "Sign in from an installed server, not the public demo.", 409);
   if (path === "/api/push" || path.startsWith("/api/push/")) return pushRoute(path, method, init);
+  if (path === "/api/alerts/webhook" || path === "/api/alerts/webhook/test") return alertWebhookRoute(path, method, init);
   if (path === "/api/machines/settings") return json({ auto_update_bridges: true });
   if (path.startsWith("/api/machines/")) return error("demo", "remote PCs need a real machine", 404);
 
@@ -2107,6 +2117,32 @@ async function pushRoute(path: string, method: string, init: RequestInit | undef
     return notFound();
   }
   return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+}
+
+/** Settings → Alerts → Also send to: kept in this page only, and never posted anywhere. */
+const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, last_success_at: null, last_failure_at: null, last_error: null };
+let demoWebhook: AlertWebhookView = NO_WEBHOOK;
+const demoMask = (preset: string, secret: string): string => { if (preset === "telegram") return "…"; try { return `${new URL(secret).host}/…`; } catch { return "…"; } };
+
+function alertWebhookRoute(path: string, method: string, init: RequestInit | undefined): Response {
+  if (path === "/api/alerts/webhook/test" && method === "POST") {
+    if (!demoWebhook.configured) return error("webhook_not_configured", "no destination is set", 404);
+    demoWebhook = { ...demoWebhook, last_success_at: new Date().toISOString(), last_error: null };
+    return new Response(null, { status: 204 });
+  }
+  if (path !== "/api/alerts/webhook") return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+  if (method === "GET") return json(demoWebhook, 200, { "cache-control": "no-store" });
+  if (method === "DELETE") { demoWebhook = NO_WEBHOOK; return new Response(null, { status: 204 }); }
+  if (method !== "PUT") return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+  const body = (typeof init?.body === "string" ? JSON.parse(init.body) : {}) as Partial<AlertWebhookSave>;
+  const preset = body.preset;
+  if (!preset || !(ALERT_WEBHOOK_PRESETS as readonly string[]).includes(preset)) return error("invalid_webhook", "unknown destination", 400);
+  const secret = preset === "telegram" ? body.token : body.url;
+  const same = demoWebhook.configured && demoWebhook.preset === preset;
+  if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
+  demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
+    chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts };
+  return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
 
 const realFetch = window.fetch.bind(window);
