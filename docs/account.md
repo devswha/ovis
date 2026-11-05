@@ -224,15 +224,13 @@ first). Same answer as `records`.
 
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it sends that PC, over a session signed in with
-the account key, only records it signed itself, as signed: first its `remove`s (through `records`,
-so the PC tombstones those keys), then its `add`s for devices it approved itself, with their role
-(rule 6). An `add` goes only while another PC of the account this client is linked on still lists
-its key as a member (`GET /api/devices`), so a device another member removed is held back; that PC
-can only hold an add back. It never takes a key from another PC's device list or status, and signs
-nothing for the enrollment. It reads every record's outcome and sends again, on its next connection to that PC, each
-one the PC did not answer or answered `account_unavailable`, and any record it signed while the
-enrollment ran. A device another member approved or removed reaches the new PC through that member's
-records and the mailbox, not through this enrollment; the enrolled devices get no introduction to it.
+the account key, the `remove`s it signed itself, as signed (through `records`), so the PC tombstones
+those keys. It signs nothing for the enrollment and takes nothing from another PC's device list or
+status. It reads every record's outcome and sends again, on its next connection to that PC, each one
+the PC did not answer or answered `account_unavailable`, and any removal it signed while the
+enrollment ran. It enrolls no `add` yet: one it signed may be for a device another member removed
+since, and that member's `remove` does not reach a PC new to the account. Adds come with relaying
+the account's signed removals (#2956); until then a new PC admits the account's devices by approval.
 
 ### Introductions
 

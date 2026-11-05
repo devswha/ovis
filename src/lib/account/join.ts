@@ -241,33 +241,28 @@ export async function planEnroll(store: AccountStore, serverId: string, account:
 const UNDECIDED = new Set(["account_unavailable"]);
 
 /**
- * Sends a planned PC (planEnroll) the account's devices as this client knows them
- * (docs/account.md, "Account members"): first the `remove`s it signed, so the PC tombstones those
- * keys, then the `add`s for the devices it approved itself. Only records it signed itself go, as
- * signed: never a key another PC lists, nor one a PC says was removed. An `add` goes only while
- * `members` (the account keys another PC of the account lists, accountMembers) holds its key, so a
- * PC can only hold an add back, never make this client vouch for a key. `fetch`
+ * Sends a planned PC (planEnroll) the `remove`s this client signed (docs/account.md, "Account
+ * members"), as signed, so the PC tombstones those keys. Nothing else: no record from another PC,
+ * and no `add` until the account's other removals reach such a PC too (#2956). `fetch`
  * must be a session signed in with the account key on that PC, after the link. Every record's
  * outcome is read; one the PC did not answer, or could not decide on, is sent again on the next
  * call. True once nothing is left to send there.
  */
-export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; members: ReadonlySet<string> | null }): Promise<boolean> {
+export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return true;
   const pending = (devices: KnownDevices | undefined) => Object.values(devices ?? {})
     .filter((record) => record.account === options.account && !planned.done.includes(record.id));
   const known = pending(await options.store.get("devices"));
+  // removes only: an add this client signed may be for a device another member removed since, whose
+  // remove would not reach this PC (#2956), so no add is enrolled yet
   const removes = known.filter((record) => record.kind === "remove");
-  // an add goes only for a key another PC of the account still lists as a member: one another member
-  // removed meanwhile (its remove may never reach this PC) waits, and none goes with no such PC answering
-  const adds = known.filter((record) => record.kind === "add" && options.members?.has(record.key) === true);
-  const held = known.some((record) => record.kind === "add" && !adds.includes(record));
   const done: string[] = [];
-  const send = async (path: string, records: readonly { id: string }[]): Promise<boolean> => {
+  const send = async (records: readonly { id: string }[]): Promise<boolean> => {
     let all = true;
     for (let start = 0; start < records.length; start += ACCOUNT_RECORDS_MAX) {
       const batch = records.slice(start, start + ACCOUNT_RECORDS_MAX);
-      const answer = await (await post(options.fetch, path, path === "/api/account/enroll" ? { account: options.account, records: batch } : { records: batch })).json() as { results?: unknown };
+      const answer = await (await post(options.fetch, "/api/account/records", { records: batch })).json() as { results?: unknown };
       const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
       for (const record of batch) {
         const result = results.find((entry) => entry.id === record.id);
@@ -278,14 +273,13 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
     }
     return all;
   };
-  // the adds go only once every removal has its outcome there: a removed key is tombstoned first
-  const sent = await send("/api/account/records", removes) && await send("/api/account/enroll", adds) && !held;
+  const sent = await send(removes);
   let finished = false;
   // checked in the same write that ends the plan: a record signed meanwhile (another tab) keeps it for the next call
   await options.store.updateMany(["enrolls", "devices"], (current) => {
     const entry = current.enrolls?.[options.serverId];
     if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
-    finished = sent && pending(current.devices).every((record) => done.includes(record.id));
+    finished = sent && pending(current.devices).every((record) => record.kind === "add" || done.includes(record.id));
     const rest = { ...current.enrolls };
     if (finished) delete rest[options.serverId];
     else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
@@ -299,19 +293,10 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
  * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
  * signed in with the account key there. The PC's status gives this client no record to sign.
  */
-export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; members: () => Promise<ReadonlySet<string> | null> }): Promise<boolean> {
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
   const status = await pcAccountStatus(options.fetch);
   if (status.account !== options.account) return false;
-  return enrollPc({ fetch: options.fetch, store: options.store, account: options.account, serverId: options.serverId, members: await options.members() });
-}
-
-/** The account keys of `account`'s members on a PC this client drives there (`GET /api/devices`, docs/account.md). */
-export async function accountMembers(fetch: PcFetch, account: string): Promise<Set<string>> {
-  const response = await fetch("/api/devices");
-  if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { devices?: unknown };
-  const rows = Array.isArray(body.devices) ? body.devices as { account?: unknown; account_key?: unknown }[] : [];
-  return new Set(rows.filter((row) => row.account === account && typeof row.account_key === "string").map((row) => row.account_key as string));
+  return enrollPc(options);
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */

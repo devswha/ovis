@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { accountMembers, enrollOnPc, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { enrollOnPc, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -367,21 +367,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * and an introduction waiting there saves the account's other PCs. A failure leaves the pairing as
    * it was; the next connection tries again.
    */
-  /** The account's members as another PC this device is linked on lists them, first that answers; null when none does. */
-  const othersMembers = async (serverId: string, accountId: string, accountKey: string): Promise<ReadonlySet<string> | null> => {
-    const others = (await store.list()).filter((device) => device.server_id !== serverId && device.account === accountId && device.public_spki === accountKey && device.device_id !== null);
-    for (const other of others) {
-      let through: RelayTransport | null = null;
-      try {
-        through = await open(offerOf(other), { store, label });
-        const reached = through;
-        return await accountMembers((path, init) => reached.fetch(path, init), accountId);
-      } catch (error) { console.warn("Ovis: a PC of the account did not list its members", error instanceof Error ? error.name : error); }
-      finally { through?.close(); }
-    }
-    return null;
-  };
-
   const joinAccount = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<void> => {
     if (accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return;
     const session = await account.session();
@@ -398,7 +383,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
-      // a PC this link brings into the account gets the devices this client approved itself (enrollPc)
+      // a PC this link brings into the account gets the removals this client signed (enrollPc)
       if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
@@ -418,7 +403,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         let signedIn = opened;
         try {
           if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
-          await enrollOnPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, members: () => othersMembers(serverId, session.account, key.public_spki) });
+          await enrollOnPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId });
         } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
         finally { if (signedIn !== opened) signedIn.close(); }
       }
