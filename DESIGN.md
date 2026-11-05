@@ -883,8 +883,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   under the header at its open width with `--shadow-drawer` at `--z-drawer` and no scrim, so the pane keeps its width and
   no pty resizes. Nothing takes the focus. The trip into it keeps it; `300ms` after the pointer left both it goes, later
   while a menu or popover it opened is up, a field in it (the filter, a rename) has the focus, or a row is dragged in it
-  (and after a drop on it, until the pointer moves). Escape puts it away and still reaches the pane, unless an open menu
-  or dialog, or a field in it whose Escape does something (a rename, a filter with words), takes it first; a click on the toggle
+  (and after a drop on it, until the pointer moves). Escape puts it away and still reaches what has the focus, unless a modal
+  dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
+  words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
   from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half

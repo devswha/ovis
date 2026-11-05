@@ -120,6 +120,7 @@ try {
             // Escape in the empty field puts the peek away, as nothing else takes it
             await page.keyboard.press("Escape");
             await peeking(page).waitFor({ state: "detached" });
+            assert.equal(await toggle(page).evaluate((element) => element === document.activeElement), true, "the focus goes back to the toggle, not to the page");
             await onToggle(page);
             await page.clock.runFor(PEEK_OPEN_MS);
             await peeking(page).waitFor();

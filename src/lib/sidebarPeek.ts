@@ -80,12 +80,14 @@ function editingIn(sidebar: Element): Element | null {
 /**
  * `enabled`: the setting is on, the window is wide and the sidebar is collapsed. Turning it off (a click on
  * the toggle keeps the sidebar open) puts a peek away. Only a mouse peeks: a touch keeps the toggle's tap.
- * `sidebarRef` goes on the sidebar itself, so a keyboard that reaches it before any pointer is known too.
+ * `sidebarRef` goes on the sidebar itself, so a keyboard that reaches it before any pointer is known too;
+ * `toggleRef` on its toggle, which takes the focus back when the sidebar hides with the focus in it.
  */
 export function useSidebarPeek(enabled: boolean) {
   const [peeking, setPeeking] = useState(false);
   const controller = useRef<SidebarPeek | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
   // a row being dragged in it: a drag start makes the browser cancel the pointer and report it gone (#3070). Dropped on
   // the sidebar, the browser says nothing of the pointer until it moves again, so the drop holds it until then
   const dragging = useRef(false);
@@ -93,7 +95,12 @@ export function useSidebarPeek(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     // in use beyond the pointer: a drag, a popup it opened, or a field in it being typed in
-    const peek = createSidebarPeek(setPeeking, () => {
+    const show = (shown: boolean): void => {
+      // a sidebar hidden with the focus in it would drop the focus on the page: the toggle that showed it takes it
+      if (!shown && sidebarRef.current?.contains(document.activeElement) === true) toggleRef.current?.focus({ preventScroll: true });
+      setPeeking(shown);
+    };
+    const peek = createSidebarPeek(show, () => {
       const sidebar = sidebarRef.current;
       return sidebar !== null && (dragging.current || droppedOn.current || sidebar.querySelector(POPUP_IN) !== null || editingIn(sidebar) !== null);
     });
@@ -106,14 +113,16 @@ export function useSidebarPeek(enabled: boolean) {
       setPeeking(false);
     };
   }, [enabled]);
-  // Escape puts the peek away and still reaches the pane: the focus never left it. An IME composition, any open menu
-  // or popover (wherever it is, its Escape closes it first), a modal dialog, or a field in the sidebar whose Escape
-  // does something (a rename cancels, a filter with words clears) takes it first; an empty filter's Escape is the peek's
+  // Escape puts the peek away and still reaches what has the focus. An IME composition, a modal dialog, a menu or
+  // popover the focus is in or on the control that opened it (its Escape closes it first), or a field in the sidebar
+  // whose Escape does something (a rename cancels, a filter with words clears) takes it first; an empty filter's
+  // Escape is the peek's
   useEffect(() => {
     if (!peeking) return;
     const onEscape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
-      if (document.querySelector('[role="menu"], [role="dialog"], [role="alertdialog"]') !== null) return;
+      if (document.querySelector('[aria-modal="true"]') !== null) return;
+      if (document.activeElement?.closest('[role="menu"], [role="dialog"], [role="alertdialog"], [aria-expanded="true"][aria-haspopup], .usage-strip[aria-expanded="true"]') != null) return;
       const sidebar = sidebarRef.current;
       const field = sidebar === null ? null : editingIn(sidebar);
       if (field !== null && !(field instanceof HTMLInputElement && field.type === "search" && field.value === "")) return;
@@ -131,7 +140,14 @@ export function useSidebarPeek(enabled: boolean) {
       toggle: zone("toggle"),
       sidebar: {
         ...zone("sidebar"),
-        onDragStart: () => { dragging.current = true; },
+        onDragStart: () => {
+          dragging.current = true;
+          // the row may be redrawn elsewhere during the drag, its dragend then never reaching the sidebar: the drop or
+          // dragend reaches the window either way
+          const done = (): void => { dragging.current = false; window.removeEventListener("drop", done, true); window.removeEventListener("dragend", done, true); };
+          window.addEventListener("drop", done, true);
+          window.addEventListener("dragend", done, true);
+        },
         onDragEnd: (event: ReactDragEvent<HTMLElement>) => {
           dragging.current = false;
           const box = event.currentTarget.getBoundingClientRect();
@@ -143,5 +159,5 @@ export function useSidebarPeek(enabled: boolean) {
       },
     };
   }, []);
-  return { peeking: enabled && peeking, sidebarRef, toggleHandlers: handlers.toggle, sidebarHandlers: handlers.sidebar };
+  return { peeking: enabled && peeking, sidebarRef, toggleRef, toggleHandlers: handlers.toggle, sidebarHandlers: handlers.sidebar };
 }
