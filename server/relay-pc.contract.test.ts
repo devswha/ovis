@@ -166,7 +166,7 @@ it("refuses a link without a pairing code and a PC already added", async () => {
 it("leaves no relay PC behind when its registration cannot be saved", async () => {
   const { link, aState, startA } = await twoPcs();
   let a = startA();
-  // relay-pcs.json is written before machines.json, so the add's save fails after that one took the PC
+  // the add's save fails at machines.json, which other saves write after relay-pcs.json
   const registrations = join(aState, "machines.json");
   mkdirSync(registrations);
   const failed = await addRelayPc(a.base, link, "Lab");
@@ -174,8 +174,8 @@ it("leaves no relay PC behind when its registration cannot be saved", async () =
   expect((await failed.json() as { error: { message: string } }).error.message).toContain("could not be saved");
   const keys = join(aState, "relay-pcs");
   expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);
-  const relayPcs = join(aState, "relay-pcs.json");
-  expect(existsSync(relayPcs) ? JSON.parse(readFileSync(relayPcs, "utf8")) : []).toEqual([]);
+  // the PC's registration was never written, not written and then taken back: no relay-pcs.json where none was
+  expect(existsSync(join(aState, "relay-pcs.json"))).toBe(false);
 
   // a restart brings back no PC without its key
   a.stop();

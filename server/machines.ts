@@ -569,10 +569,12 @@ export class MachineManager {
    * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
    * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
    * PC saves soon, mostly with the same snapshot, so only a document that differs from the one on
-   * disk pays for the write and its fsync.
+   * disk pays for the write and its fsync. `relayLast` is for the save that adds a relay PC
+   * (addRelay): relay-pcs.json, its registration, goes last instead, so a save that fails before it
+   * leaves the PC off disk, as it leaves no key (#2833).
    */
-  private persist(): void {
-    this.persistRelayPcs();
+  private persist(relayLast = false): void {
+    if (!relayLast) this.persistRelayPcs();
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine }) => machine);
     const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
     const text = JSON.stringify(data);
@@ -582,8 +584,8 @@ export class MachineManager {
     this.profileState.flush();
     // the file on disk may have been deleted or replaced since this manager wrote it
     if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
+    if (relayLast) this.persistRelayPcs();
   }
-  /** relay-pcs.json, which persist writes before the rest: an add whose save fails after it writes it again (addRelay) */
   private persistRelayPcs(): void {
     const relayPcs: StoredMachine[] = [...this.machines.values()].map(({ machine }) => machine).filter((m) => !m.herdr_profile_id && m.kind === "relay")
       .map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
@@ -1625,12 +1627,10 @@ export class MachineManager {
     runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
-    try { this.persist(); } catch (error) {
+    try { this.persist(true); } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeRelayPcKey(keyPath);
-      // relay-pcs.json may already list the PC: left there, a restart would bring it back without its key (#2833)
-      try { this.persistRelayPcs(); } catch (e) { console.error("relay-pcs.json could not be restored:", e instanceof Error ? e.message : "write failed"); }
       throw new Error(`This PC could not be saved (${error instanceof Error ? error.message : String(error)}). That PC already lists it under Phone & devices as ${relayPcLabel()}: revoke it there.`, { cause: error });
     }
     this.emit();
