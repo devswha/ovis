@@ -35,6 +35,11 @@ export function clampSplit(height: number, room: SplitRoom): number {
   return Math.round(Math.max(min, Math.min(max, height)));
 }
 
+/** The upper section's share of the room for the separator's `aria-valuenow`, held to its 0-100 range. */
+export function splitPercent(height: number, room: number): number {
+  return room > 0 ? Math.round(Math.max(0, Math.min(100, height / room * 100))) : 0;
+}
+
 /** a section by name, for the folds its caret makes */
 export type SplitFold = "pcs" | "agents";
 

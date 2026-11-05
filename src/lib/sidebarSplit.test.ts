@@ -1,9 +1,19 @@
 import { describe, expect, it } from "bun:test";
 
-import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
+import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitPercent, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
 
 // a 600px column: each head 42px, rows 34px
 const ROOM: SplitRoom = { topHead: 42, bottomHead: 42, room: 600, row: 34, topRow: 34, bottomRow: 34 };
+
+describe("splitPercent", () => {
+  it("stays within the separator's 0-100 range in a window shorter than the heads", () => {
+    expect(splitPercent(150, 600)).toBe(25);
+    // a snap preview draws a 52px head in 30px of room
+    expect(splitPercent(52, 30)).toBe(100);
+    expect(splitPercent(-22, 30)).toBe(0);
+    expect(splitPercent(10, 0)).toBe(0);
+  });
+});
 
 describe("splitBounds and clampSplit", () => {
   it("keeps a head and a row of each section in view", () => {

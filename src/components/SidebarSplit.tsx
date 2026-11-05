@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import "./SidebarSplit.css";
 
 import { useT } from "../lib/i18n.ts";
-import { clampSplit, keyedSplit, sectionAt, splitBounds, splitSnap, type SplitFold, type SplitOrder, type SplitRoom, type SplitSide } from "../lib/sidebarSplit.ts";
+import { clampSplit, keyedSplit, sectionAt, splitBounds, splitPercent, splitSnap, type SplitFold, type SplitOrder, type SplitRoom, type SplitSide } from "../lib/sidebarSplit.ts";
 
 export interface SidebarSplitProps {
   /** the sidebar's shell (MachineSidebar.tsx): the line sets its split on it, in `--split-top` */
@@ -106,7 +106,7 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
       box.classList.add("has-split");
       box.style.setProperty("--split-top", `${clampSplit(split, room)}px`);
     }
-    setPercent(room.room > 0 ? Math.round(allocation(found, line) / room.room * 100) : 0);
+    setPercent(splitPercent(allocation(found, line), room.room));
   };
   useLayoutEffect(apply);
   // a window that grows or shrinks moves the clamp with no render of its own to say so, and a section that
@@ -135,7 +135,7 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     box.classList.add("has-split", "is-splitting");
     box.style.setProperty("--split-top", `${height}px`);
     // apply() waits out the drag, so the line reports the height it draws as it moves
-    setPercent(room > 0 ? Math.round(height / room * 100) : 0);
+    setPercent(splitPercent(height, room));
     found.top.classList.toggle("will-fold", next === "top");
     found.bottom.classList.toggle("will-fold", next === "bottom");
   };
