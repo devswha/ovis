@@ -1088,15 +1088,17 @@ function goalWaitSource(t: ReturnType<typeof useT>, kind: keyof GoalWait["waitin
 function GoalWaitRow({ wait }: { wait: GoalWait }) {
   const t = useT();
   const until = goalWaitUntil(wait);
-  const [now, setNow] = useState(Date.now);
+  // the due time this row has seen pass; a newer wait in its place is checked afresh
+  const [expired, setExpired] = useState<number | null>(() => Date.now() < until ? null : until);
+  const [checks, setChecks] = useState(0);
   useEffect(() => {
     const left = until - Date.now();
-    if (!(left > 0)) return;
+    if (!(left > 0)) { setExpired(until); return; }
     // a timer holds at most 2^31-1 ms; a later due time is checked again then
-    const timer = setTimeout(() => setNow(Date.now()), Math.min(left, 2_147_483_647));
+    const timer = setTimeout(() => left > 2_147_483_647 ? setChecks((n) => n + 1) : setExpired(until), Math.min(left, 2_147_483_647));
     return () => clearTimeout(timer);
-  }, [until, now]);
-  if (!(now < until)) return null;
+  }, [until, checks]);
+  if (expired === until) return null;
   const locale = currentLocale();
   const sources = goalWaitSources(wait).map(([kind, n]) => goalWaitSource(t, kind, n));
   const what = sources.length === 0 ? t("background work") : new Intl.ListFormat(locale, { type: "conjunction" }).format(sources);

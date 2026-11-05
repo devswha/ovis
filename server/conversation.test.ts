@@ -1831,6 +1831,9 @@ describe("OmO goal continuation and waits", () => {
     expect(kinds([...waiting, warmup("2026-10-05T00:06:30.000Z", "resumed", due)])).toEqual(["text", "text"]);
     expect(kinds([...waiting, turnStart("2026-10-05T00:03:00.000Z", "senpi-monitor:notification")])).toEqual(["text", "text"]);
     expect(kinds([...waiting, final("2026-10-05T00:03:00.000Z", "A check failed.")])).toEqual(["text", "text", "text"]);
+    // a record that adds no turn leaves it standing
+    const empty = JSON.stringify({ type: "message", timestamp: "2026-10-05T00:03:00.000Z", message: { role: "assistant", content: [] } });
+    expect(kinds([...waiting, empty])).toEqual(["text", "text", "goal_wait"]);
     // a later wait takes the earlier one's place
     const again = parseOmpTranscript([...waiting, warmup("2026-10-05T00:03:00.000Z", "scheduled", due + 60_000)].join("\n"));
     expect(again.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "goal_wait"]);
@@ -1956,6 +1959,22 @@ describe("transcript pages", () => {
     for (const page of [transcriptPage("omo-transcript", path), transcriptPage("omo-transcript", cold)]) {
       const ended = page.turns.at(-1)?.parts[0];
       expect(ended?.kind === "task_result" ? ended.tasks.map((task) => task.title) : ended).toEqual(["Survey the repo"]);
+    }
+  });
+
+  it("keeps OmO's goal wait only while it is the newest page's last turn, live and cold alike", () => {
+    const root = temp();
+    const path = join(root, "omo.jsonl");
+    const wait = JSON.stringify({ type: "custom", customType: "goal-cache-warmup", timestamp: "2026-10-05T00:01:00.000Z", data: { phase: "scheduled", dueAtMs: Date.parse("2026-10-05T00:05:00.000Z"), wakeSources: { "terminal-monitors": 1 } } });
+    const answer = JSON.stringify({ type: "message", timestamp: "2026-10-05T00:00:30.000Z", message: { role: "assistant", content: [{ type: "text", text: "watching" }], stopReason: "stop" } });
+    writeFileSync(path, `${[omoUser("2026-10-05T00:00:00.000Z", "watch it"), answer, wait].join("\n")}\n`);
+    expect(transcriptPage("omo-transcript", path).turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "goal_wait"]);
+    // the next prompt is a turn start: what came before it is parsed apart from it, and the wait is over
+    appendFileSync(path, `${omoUser("2026-10-05T00:02:00.000Z", "something else")}\n`);
+    const cold = join(root, "cold.jsonl");
+    copyFileSync(path, cold);
+    for (const page of [transcriptPage("omo-transcript", path), transcriptPage("omo-transcript", cold)]) {
+      expect(page.turns.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "text"]);
     }
   });
 

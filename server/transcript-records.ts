@@ -351,9 +351,9 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
     if (state.wait !== null) turns.splice(state.wait, 1);
     state.wait = null;
   };
-  const assistantTurn = (ts?: string): ConversationTurn => {
+  const assistantTurn = (ts: string | undefined, speaks: boolean): ConversationTurn => {
     // the agent speaks again: a goal's wait is over, and the turn it would continue is the one before it
-    endWait();
+    if (speaks) endWait();
     const last = turns[turns.length - 1];
     if (last !== undefined && last.role === "assistant" && !state.settled) return last;
     const turn: ConversationTurn = { role: "assistant", ts: ts ?? null, parts: [] };
@@ -365,8 +365,9 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
     Array.isArray(content) ? content.filter((part) => typeof part === "object" && part !== null) : [];
 
   // a goal's wait holds only while nothing follows it: a turn the last record added after it ends it
+  // (an assistant record with nothing to draw opens an empty turn, which is not one)
   const settleWait = (): void => {
-    if (state.wait !== null && turns.length > state.wait + 1) endWait();
+    if (state.wait !== null && turns.slice(state.wait + 1).some((turn) => turn.parts.length > 0)) endWait();
   };
 
   const write = (text: string): void => {
@@ -468,7 +469,13 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
       }
 
       if (message.role === "assistant" && Array.isArray(message.content)) {
-        const turn = assistantTurn(timestamp);
+        const speaks = message.content.some((block: unknown) => {
+          const b = record(block);
+          return b.type === "text" ? typeof b.text === "string" && b.text.length > 0
+            : b.type === "thinking" ? (typeof b.thinking === "string" ? b.thinking : typeof b.text === "string" ? b.text : "").length > 0
+            : b.type === "toolCall" && typeof b.name === "string";
+        }) || (message.stopReason === "error" && typeof message.errorMessage === "string" && message.errorMessage.length > 0);
+        const turn = assistantTurn(timestamp, speaks);
         if (timestamp) turn.end_ts = timestamp;
         for (const block of message.content) {
           if (typeof block !== "object" || block === null) continue;
