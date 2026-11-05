@@ -526,6 +526,31 @@ To run your own relay, or your own copy of the app, see
 [Running your own relay](guide.md#running-your-own-relay) and
 [relay/README.md](../relay/README.md#running-your-own).
 
+## Regional relays
+
+`relay.ovis.sh` runs on Cloudflare, which serves some networks from far away (from Korea, from Los
+Angeles). Regional relay endpoints run the same relay (`relay/bun.ts` behind a TLS proxy) closer to
+them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/relay-regions.ts), now
+`relay-ap.ovis.sh` in Seoul.
+
+- **The PC chooses.** A PC with no `OVIS_RELAY_URL` measures each relay's `/health` when the relay
+  is turned on (the best of two round trips after a first one that opens the connection). A regional
+  relay that answers in at most half the global relay's time, with both answering, is saved in
+  `relay/region.json` under `OVIS_STATE_DIR` and kept from then on; with none saved, the PC measures
+  again at every start. A PC with `OVIS_RELAY_URL` set uses that relay alone.
+- **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
+  same key and proof, to the regional relay. New pairing QR codes name the regional relay; a phone
+  paired before keeps the relay it saved, so it still connects through `relay.ovis.sh`. Each link
+  has its own session limits.
+- **The phone falls back.** A phone whose saved relay is one of the regional ones and that cannot get
+  through it (the relay does not answer, or the PC does not answer there) tries `relay.ovis.sh` at
+  once, and keeps using the one that worked. A phone never falls back from any other relay, so a
+  self-hosted one is never traded for Ovis's.
+
+Which relay carries a connection changes nothing about its protection: the phone and the PC
+encrypt end to end whichever relay passes the frames on, and each relay sees what
+[What the relay sees](#what-the-relay-sees) says.
+
 ## Code
 
 | Path | What it does |
