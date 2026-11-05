@@ -151,3 +151,38 @@ describe("AgentSidebar, what herdr-core reports", () => {
     expect(lines).toEqual([["t1", false, false], ["t2", true, false], ["t5", false, true], ["t3", false, false], ["t4", false, false]]);
   });
 });
+
+describe("AgentSidebar background agents", () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }) } });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  });
+  afterEach(() => {
+    if (saved) Object.defineProperty(globalThis, "window", saved);
+    else Reflect.deleteProperty(globalThis, "window");
+    if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages);
+    else Reflect.deleteProperty(navigator, "languages");
+  });
+  /** the pane ids of each list, in the order drawn, with whether the list is hidden */
+  const lists = (html: string): [string, boolean, string[]][] =>
+    [...html.matchAll(/<ul class="(agent-list[^"]*)"([^>]*)>([\s\S]*?)<\/ul>/g)].map((match) => [match[1]!, /\bhidden=""/.test(match[2]!), [...match[3]!.matchAll(/data-pane="([^"]+)"/g)].map((pane) => pane[1]!)]);
+
+  test("panes tagged role=background sit in a folded part after the others, which says how many it holds", () => {
+    const html = render([machine([
+      pane("w1:p1"),
+      pane("w1:p2", { agent_status: "working", tokens: { role: "background" } }),
+      pane("w1:p3", { agent_status: "blocked", tokens: { role: "background" } }),
+      pane("w1:p4", { agent_status: "working", tokens: { role: "background" } }),
+    ])]);
+    expect(lists(html)).toEqual([["agent-list", false, ["w1:p1", "w1:p3"]], ["agent-list agent-list-background", true, ["w1:p2", "w1:p4"]]]);
+    expect(html).toMatch(/<button type="button" class="agent-background-toggle"[^>]*aria-expanded="false"[^>]*>[\s\S]*?<span>Background agents<\/span><span class="agent-section-count">2<\/span><\/button>/);
+  });
+
+  test("a list with no tagged pane has no background part", () => {
+    const html = render([machine([pane("w1:p1"), pane("w1:p2", { tokens: { role: "lead" } })])]);
+    expect(lists(html)).toEqual([["agent-list", false, ["w1:p1", "w1:p2"]]]);
+    expect(html).not.toContain("agent-background-toggle");
+  });
+});

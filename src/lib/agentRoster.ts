@@ -78,6 +78,39 @@ export function agentRoster(machines: readonly Machine[], options: AgentRosterOp
   return splitPinnedRows(rows, options.pinned, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id));
 }
 
+/**
+ * Whether a launcher tagged the pane as a background agent: `herdr pane report-metadata <pane>
+ * --token role=background` (any case, spaces around it ignored). Nothing is guessed: a pane
+ * without the token is one a person drives.
+ */
+export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
+  const role = (pane.tokens ?? agent?.tokens)?.["role"];
+  return typeof role === "string" && role.trim().toLowerCase() === "background";
+}
+
+/**
+ * The list's unpinned rows split into the agents a person drives and the background ones (workers,
+ * subagents), each in the order given. A background row is one tagged `role=background`, or a
+ * helper started (herdr-core's `parent_pane_id`) by one; a blocked one stays with the people's rows,
+ * so a question is never folded away.
+ */
+export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined): { people: AgentRow[]; background: AgentRow[] } {
+  const byKey = new Map(rows.map((row) => [sidebarPinKey(row.machine.id, row.entry.pane.pane_id), row]));
+  const tagged = (row: AgentRow): boolean => {
+    // up the helpers chain to the first tagged row; a loop ends the walk
+    const passed = new Set<AgentRow>();
+    for (let up: AgentRow | undefined = row; up && !passed.has(up); up = up.entry.pane.parent_pane_id === undefined ? undefined : byKey.get(sidebarPinKey(up.machine.id, up.entry.pane.parent_pane_id))) {
+      if (isBackgroundAgent(up.entry)) return true;
+      passed.add(up);
+    }
+    return false;
+  };
+  const people: AgentRow[] = [];
+  const background: AgentRow[] = [];
+  for (const row of rows) (tagged(row) && knownStatus(status(row)) !== "blocked" ? background : people).push(row);
+  return { people, background };
+}
+
 /** Settings → Group agents by state: the groups, in the order the list draws them */
 export const AGENT_GROUPS = ["blocked", "working", "done", "idle"] as const;
 export type AgentGroup = (typeof AGENT_GROUPS)[number];
