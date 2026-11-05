@@ -154,19 +154,37 @@ try {
             const big = await rowAt();
             assert.ok(Math.abs(big.row - big.host) < 0.5, `${width}px: a virtualized row is drawn at the measured line height (${big.row} vs ${big.host})`);
             assert.ok(big.last, `${width}px: the last line is in view at the end of a long file`);
-            const stepper = page.locator(".settings-dialog").getByRole("group", { name: "File text size", exact: true });
-            for (let step = 24; step > 12; step--) await stepper.getByRole("button", { name: "Decrease file text size", exact: true }).click();
-            assert.equal(await stepper.locator("output").textContent(), "12px");
+            // from the middle of the file, back to the chat's size at once: the estimate follows the new rows (3,000 of
+            // them) and the view keeps the line it showed, with no scroll of the reader's own after it
+            const topLine = (): Promise<number> => page.evaluate(() => {
+              const view = document.querySelector<HTMLElement>(".virtual-source-scroll")!.getBoundingClientRect();
+              const rows = [...document.querySelector("diffs-container")!.shadowRoot!.querySelectorAll<HTMLElement>("[data-line]")];
+              const shown = rows.filter((row) => { const box = row.getBoundingClientRect(); return box.bottom > view.top + 1 && box.top < view.bottom; });
+              return Math.min(...shown.map((row) => Number(row.dataset["line"])));
+            });
+            await page.evaluate((height) => { document.querySelector<HTMLElement>(".virtual-source-scroll")!.scrollTop = 1499 * height; }, big.host);
+            await page.waitForFunction(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))));
+            const before = await topLine();
+            assert.ok(before > 1400 && before < 1600, `${width}px: scrolled to the middle (${before})`);
+            await page.locator(".settings-dialog").getByRole("button", { name: "Follow chat", exact: true }).click();
+            await page.waitForFunction((was) => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight) < was, big.host);
+            const small = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
+            await page.waitForFunction((height) => {
+              const scroll = document.querySelector<HTMLElement>(".virtual-source-scroll")!;
+              return Math.abs(scroll.scrollHeight - 3000 * height) < 3000 * height * 0.05;
+            }, small);
+            await page.waitForFunction(() => new Promise((done) => setTimeout(() => requestAnimationFrame(() => done(true)), 0)));
+            const after = await topLine();
+            assert.ok(Math.abs(after - before) <= 3, `${width}px: the view keeps its line across the change (${before} → ${after})`);
             await page.keyboard.press("Escape");
             await page.locator(".settings-dialog").waitFor({ state: "detached" });
-            await page.waitForFunction((before) => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight) < before, big.host);
             await toEnd();
-            const small = await rowAt();
-            assert.ok(Math.abs(small.row - small.host) < 0.5, `${width}px: a size changed while open re-measures the rows (${small.row} vs ${small.host})`);
-            assert.ok(small.last, `${width}px: the last line is still in view after the change`);
+            const end = await rowAt();
+            assert.ok(Math.abs(end.row - end.host) < 0.5, `${width}px: the rows are drawn at the new height (${end.row} vs ${end.host})`);
+            assert.ok(end.last, `${width}px: the last line is still in view after the change`);
             if (evidence) await page.screenshot({ path: join(evidence, `virtual-source-${width}.png`) });
             assert.deepEqual(errors, []);
-            console.log(`PASS ${width}px: a virtualized source draws its rows at the file size (${big.row}px, then ${small.row}px) and reaches its last line`);
+            console.log(`PASS ${width}px: a virtualized source draws its rows at the file size (${big.row}px, then ${end.row}px), keeps its line across a change and reaches its last line`);
           } finally { await close(); }
         }
 
