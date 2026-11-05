@@ -95,6 +95,15 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "delete-worktree"]);
   });
 
+  it("offers no close or delete for a workspace, or its repository's group, holding a locked pinned agent (#2432)", async () => {
+    stored.set("ovis:settings", JSON.stringify({ lockedAgents: ["local:child:p"] }));
+    setSidebarPins(["local:child:p"]);
+    await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true)), workspace("other")]), TUI);
+    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "new-worktree", "open-worktree", "fold"]);
+    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history"]);
+    expect(await menuOf("other")).toContain("close");
+  });
+
   it("leaves rename, the worktree actions and the checkout's delete out on a core PC, and keeps pin, earlier sessions, close and the fold", async () => {
     await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true))]), APP_CORE);
     expect(await menuOf("root")).toEqual(["pin-workspace", "session-history", "close", "fold"]);

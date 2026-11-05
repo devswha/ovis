@@ -959,8 +959,9 @@ export function App() {
                       const target = snapshot?.panes.find((item) => item.pane_id === paneId);
                       if (!target || !paneActionsRef.current) return [];
                       // the strip renders before the canvas, so its items come from the canvas's previous render:
-                      // an action runs against the canvas's latest one, where a snapshot change has landed
-                      return paneActionsRef.current(target).map((item) => ({ ...item, run: () => (paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id) ?? item).run() }));
+                      // an action runs against the canvas's latest one, where a snapshot change has landed; one it no
+                      // longer offers (a close a lock took away, lib/paneLocks.ts) does nothing
+                      return paneActionsRef.current(target).map((item) => ({ ...item, run: () => paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id)?.run() }));
                     } : undefined} />
                 )}
                 {/* the tab strip's panel: its id is what each tab's aria-controls points at, one per half.

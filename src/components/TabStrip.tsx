@@ -324,6 +324,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (strip.current?.contains(document.activeElement) || document.activeElement === document.body) focusTab(beside.tab_id);
   };
   const tabLocked = (tab: HerdrTab): boolean => panesOf(tab).some((pane) => paneLocked(pane.pane_id));
+  // a lock that lands while the confirmation is open (from another browser) takes the confirmation with it
+  if (confirm && tabLocked(confirm.tab)) setConfirm(null);
   const requestClose = (tab: HerdrTab): void => {
     if (tabLocked(tab)) return;
     setError(null);

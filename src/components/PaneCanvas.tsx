@@ -113,6 +113,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   // a locked pinned agent (lib/paneLocks.ts) is closed from no menu here, nor is the tab it is in
   const paneLocked = usePaneLocked(machineId);
   const tabLocked = (tabId: string): boolean => snapshot?.panes.some((item) => item.tab_id === tabId && paneLocked(item.pane_id)) === true;
+  // a lock that lands while a confirmation is open (from another browser) takes the confirmation with it
+  if (closing && paneLocked(closing.pane_id)) setClosing(null);
+  if (closingTab && tabLocked(closingTab.tab_id)) setClosingTab(null);
   // A new pane can be selected before its snapshot arrives, and a selected pane can close
   // before App confirms its replacement. Keep the prior tab's surviving mounts (and their
   // connection-owned pending sends) through either gap, with selection/input still pending.

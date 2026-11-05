@@ -452,7 +452,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         : { id: "pin", label: t("Pin agent"), icon: Pin, run: () => runPin(menu) }]),
       // only a pinned row locks: this app then offers no close for its pane or its tab (lib/paneLocks.ts)
       ...(!menuPinned ? [] : [{
-        id: menuLocked ? "unlock" : "lock", label: menuLocked ? t("Unlock agent") : t("Lock agent"), icon: menuLocked ? LockOpen : Lock,
+        // a watching device sends no settings: it sees the lock and cannot change it, as with Mute alerts
+        id: menuLocked ? "unlock" : "lock", label: menuLocked ? t("Unlock agent") : t("Lock agent"), icon: menuLocked ? LockOpen : Lock, disabled: watching,
         run: () => updateSettings({ lockedAgents: toggleAgentLock(settings.lockedAgents, pinned, menu.key) }),
       }]),
       // one switch for every alert channel and every browser (lib/paneMutes.ts); a watching device sees its state and cannot flip it
