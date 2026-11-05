@@ -41,10 +41,11 @@ export interface EditableText {
 
 /**
  * PUT /api/fs/text, application/json: `text` (LF line endings, no CR or NUL) replaces the file that
- * had `revision`, written to a new file beside it that takes its place, with the file's mode, group
- * and line endings. The rules of GET, and the file must be writable (403 not_writable, linked_file,
- * not_owner). 409 stale_revision (`error.revision`: the file's own now) when it changed since it
- * was read: nothing is written. A change another program makes in the moment between that last
+ * had `revision`, written to a new file beside it that takes its place, with the file's mode, group,
+ * line endings, extended attributes and access list. The rules of GET, and the file must be writable
+ * (403 not_writable, linked_file, not_owner; access_list when its access list could not be kept).
+ * 409 stale_revision (`error.revision`: the file's own now) when it changed since it was read:
+ * nothing is written. A change another program makes in the moment between that last
  * look and the replacement is not seen, as with any editor that does not lock the file.
  */
 export interface TextSaveRequest {

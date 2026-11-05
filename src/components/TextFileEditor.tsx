@@ -3,7 +3,21 @@ import { useEffect, useState } from "react";
 import type { EditableText } from "../../shared/files.ts";
 import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { useMachineApi } from "../lib/machineContext.tsx";
+import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
+
+/**
+ * Text typed and not saved yet, by PC and file, kept above the viewer: Close, Back, the viewer moved
+ * beside the pane or another file opened all unmount the editor, and none of them throws the text
+ * away. Only Save and Cancel do. Kept with the file as it was opened, so a save of it still names
+ * that revision (and meets a conflict if the file changed since).
+ */
+const drafts = new Map<string, { file: EditableText; draft: string }>();
+const draftKey = (machineId: string, path: string): string => `${machineId}\u0000${path}`;
+
+/** Whether text typed into `path` on `machineId` waits to be saved, for the viewer to open its editor again. */
+export function hasDraft(machineId: string, path: string): boolean {
+  return drafts.has(draftKey(machineId, path));
+}
 
 type EditorState =
   | { kind: "opening" }
@@ -34,6 +48,7 @@ export interface TextFileEditorProps {
 export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFileEditorProps) {
   const t = useT();
   const { fetchEditableText, saveEditableText } = useMachineApi();
+  const key = draftKey(useMachineId(), path);
   const [file, setFile] = useState<EditableText | null>(null);
   const [draft, setDraft] = useState("");
   const [state, setState] = useState<EditorState>({ kind: "opening" });
@@ -41,6 +56,14 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
 
   useEffect(() => {
     let live = true;
+    const kept = opens === 0 ? drafts.get(key) : undefined;
+    if (kept !== undefined) {
+      setFile(kept.file);
+      setDraft(kept.draft);
+      setState({ kind: "editing" });
+      return;
+    }
+    drafts.delete(key);
     setState({ kind: "opening" });
     fetchEditableText(path, paneId).then((opened) => {
       if (!live) return;
@@ -51,18 +74,35 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
       if (live) setState({ kind: "refused", code: reason instanceof ApiError ? reason.code : null, opened: false });
     });
     return () => { live = false; };
-  }, [path, paneId, fetchEditableText, opens]);
+  }, [path, paneId, fetchEditableText, opens, key]);
 
   const changed = file !== null && draft !== file.text;
   useEffect(() => onChanged(changed), [changed, onChanged]);
+  useEffect(() => {
+    if (file === null) return;
+    if (changed) drafts.set(key, { file, draft });
+    else drafts.delete(key);
+  }, [key, file, draft, changed]);
+  // a reload or a closed tab would lose it: the browser asks first
+  useEffect(() => {
+    if (!changed) return;
+    const ask = (event: BeforeUnloadEvent): void => event.preventDefault();
+    window.addEventListener("beforeunload", ask);
+    return () => window.removeEventListener("beforeunload", ask);
+  }, [changed]);
+  /** Leaves the editor; `saved` or not, nothing typed is kept. */
+  const finish = (saved: boolean): void => {
+    drafts.delete(key);
+    onChanged(false);
+    onDone(saved);
+  };
 
   const save = async (): Promise<void> => {
     if (file === null) return;
     setState({ kind: "saving" });
     try {
       await saveEditableText({ pane_id: paneId, path: file.path, revision: file.revision, text: draft });
-      onChanged(false);
-      onDone(true);
+      finish(true);
     } catch (reason) {
       const code = reason instanceof ApiError ? reason.code : null;
       setState(code === "stale_revision" ? { kind: "conflict" } : { kind: "refused", code, opened: true });
@@ -77,13 +117,13 @@ export function TextFileEditor({ path, paneId, name, onDone, onChanged }: TextFi
       case "not_text": return t("Only a UTF-8 text file can be edited here.");
       case "mixed_line_endings": return t("This file mixes line endings. Edit it in the terminal.");
       case "unsupported_platform": return t("Saving files from the app isn't available on this PC yet.");
-      case "not_writable": case "linked_file": case "not_owner": return t("This file can't be written here.");
+      case "not_writable": case "linked_file": case "not_owner": case "access_list": return t("This file can't be written here.");
       case "drive_only": case "read_only": return t("Only a device that drives this PC can edit its files.");
       default: return t("The file could not be saved.");
     }
   };
 
-  const cancel = <button type="button" className="btn btn-ghost" onClick={() => onDone(false)}>{t("Cancel")}</button>;
+  const cancel = <button type="button" className="btn btn-ghost" onClick={() => finish(false)}>{t("Cancel")}</button>;
   const bar = (() => {
     switch (state.kind) {
       case "opening":

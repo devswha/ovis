@@ -7,7 +7,7 @@ import { FileGlyph } from "./FileGlyph.tsx";
 import { useHighlightedLines } from "./HighlightedCode.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
 import { RelayRenderedPage } from "./RelayRenderedPage.tsx";
-import { TextFileEditor } from "./TextFileEditor.tsx";
+import { hasDraft, TextFileEditor } from "./TextFileEditor.tsx";
 import { TextFileView } from "./TextFileView.tsx";
 import { MarkdownImageContext } from "./Markdown.tsx";
 
@@ -412,6 +412,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const copyable = textFile && loaded !== null && !loaded.truncated;
   // shown as text (an HTML page as its source), in a pane's folder the server checks it lies in, and small enough
   const canEdit = editable && settings.editTextFiles && !page && paneId !== null && textFile && (!htmlPage || source) && info.size <= MAX_EDITABLE_TEXT_BYTES;
+  // text typed and not saved (closed, or the viewer moved): the file opens in its editor again, with it
+  const draftWaits = canEdit && hasDraft(machineId, info.path);
+  useEffect(() => { if (draftWaits) setEditing(true); }, [draftWaits]);
   const markdown = info?.kind === "text" && /\.(?:md|markdown)$/i.test(info.name);
   // a page of just the document, not the app over it (FileReader)
   const previewUrl = readerHref(machineId, shownPath + (target.line === null ? "" : `#L${target.line}`));

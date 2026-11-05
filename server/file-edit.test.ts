@@ -3,10 +3,13 @@ import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { dlopen, FFIType } from "bun:ffi";
 
 import type { Access } from "./access.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { MAX_TEXT_SAVE_BODY_BYTES, textEditAllowed, textSaveHooks } from "./file-edit.ts";
+import { setFilePoolOptions } from "./file-pool.ts";
+import { runFileTask } from "./file-tasks.ts";
 import * as herdr from "./herdr/client.ts";
 import { createServer } from "./index.ts";
 import { MAX_EDITABLE_TEXT_BYTES, type EditableText } from "../shared/files.ts";
@@ -46,6 +49,8 @@ describe("editing a text file (#771)", () => {
     paneCwd = folder;
     paneGet = spyOn(herdr, "paneGet").mockImplementation(async (paneId) => ({ pane_id: paneId, workspace_id: "w1", tab_id: "w1:t1", cwd: paneCwd, agent_status: "idle" }) as unknown as Awaited<ReturnType<typeof herdr.paneGet>>);
     server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", machines: false, sidecar: false });
+    // on this thread, where the hooks are seen; one test below runs on the file threads
+    setFilePoolOptions({ inline: runFileTask });
   });
   afterEach(() => {
     delete textSaveHooks.beforeRename;
@@ -53,6 +58,7 @@ describe("editing a text file (#771)", () => {
     paneCwd = folder;
   });
   afterAll(() => {
+    setFilePoolOptions();
     server.stop();
     paneGet.mockRestore();
     rmSync(stateDir, { recursive: true, force: true });
@@ -70,6 +76,47 @@ describe("editing a text file (#771)", () => {
     expect(readFileSync(notes, "utf8")).toBe("# Notes\n\nDone.\n");
     expect(statSync(notes).mode & 0o777).toBe(0o640);
     expect(readdirSync(join(folder, "docs"))).toEqual(["notes.md"]);
+  });
+
+  it("reads and saves on a file thread, and a long name saves too", async () => {
+    setFilePoolOptions();
+    try {
+      const long = file(`${"n".repeat(240)}.md`, "long\n");
+      const body = await (await open(long)).json() as EditableText;
+      expect((await save(long, body.revision, "longer\n")).status).toBe(200);
+      expect(readFileSync(long, "utf8")).toBe("longer\n");
+    } finally { setFilePoolOptions({ inline: runFileTask }); }
+  });
+
+  it("keeps a set-id bit, which a write clears", async () => {
+    const tool = file("tool.sh", "#!/bin/sh\n", 0o2755);
+    expect((await save(tool, sha("#!/bin/sh\n"), "#!/bin/sh\necho hi\n")).status).toBe(200);
+    expect(statSync(tool).mode & 0o7777).toBe(0o2755);
+  });
+
+  it("carries the file's extended attributes and access list over to the saved file", async () => {
+    const { symbols } = dlopen("libc.so.6", {
+      setxattr: { args: [FFIType.cstring, FFIType.cstring, FFIType.ptr, FFIType.u64, FFIType.i32], returns: FFIType.i32 },
+      getxattr: { args: [FFIType.cstring, FFIType.cstring, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
+    });
+    const cstring = (value: string) => Buffer.from(`${value}\0`);
+    const read = (path: string, name: string): string | null => {
+      const buffer = Buffer.alloc(256);
+      const got = Number(symbols.getxattr(cstring(path), cstring(name), buffer, buffer.length));
+      return got < 0 ? null : buffer.subarray(0, got).toString("hex");
+    };
+    const tagged = file("tagged.md", "tagged\n");
+    expect(symbols.setxattr(cstring(tagged), cstring("user.ovis"), Buffer.from("kept"), 4, 0)).toBe(0);
+    expect((await save(tagged, sha("tagged\n"), "still tagged\n")).status).toBe(200);
+    expect(read(tagged, "user.ovis")).toBe(Buffer.from("kept").toString("hex"));
+    // an access list that narrows the group and names a user
+    if (Bun.which("setfacl") === null) return;
+    const listed = file("listed.md", "listed\n", 0o640);
+    expect(Bun.spawnSync(["setfacl", "-m", "u:nobody:r--,g::---,o::---,m::r--", listed]).exitCode).toBe(0);
+    const before = read(listed, "system.posix_acl_access");
+    expect(before).not.toBeNull();
+    expect((await save(listed, sha("listed\n"), "x\n")).status).toBe(200);
+    expect(read(listed, "system.posix_acl_access")).toBe(before);
   });
 
   it("gives a CRLF file back with LF and saves it with CRLF again, its BOM kept", async () => {
@@ -137,6 +184,10 @@ describe("editing a text file (#771)", () => {
     expect(await error(await save(kept, sha("kept\n"), "after\n"))).toEqual([409, "stale_revision"]);
     expect(readFileSync(join(outside, "away", "kept.md"), "utf8")).toBe("kept\n");
     expect(readdirSync(join(outside, "away"))).toEqual(["kept.md"]);
+    // and a folder removed meanwhile is a conflict, not a failure
+    file("gone/note.md", "gone\n");
+    textSaveHooks.beforeRename = () => rmSync(join(folder, "gone"), { recursive: true, force: true });
+    expect(await error(await save(join(folder, "gone", "note.md"), sha("gone\n"), "after\n"))).toEqual([409, "stale_revision"]);
   });
 
   it("refuses a binary, non-UTF-8, mixed-endings or oversized file, and a read-only or hard-linked one", async () => {

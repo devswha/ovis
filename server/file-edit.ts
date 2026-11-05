@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join, parse, relative, sep } from "node:
 
 import { MAX_EDITABLE_TEXT_BYTES, type EditableText, type TextSaved } from "../shared/files.ts";
 import type { Access } from "./access.ts";
+import { copyFileAttributes } from "./file-attributes.ts";
 import { openAuthorized, ownedFolders, release, resolveFilePath } from "./file-view.ts";
 
 /**
@@ -20,8 +21,10 @@ import { openAuthorized, ownedFolders, release, resolveFilePath } from "./file-v
  * of its folder (`/proc/self/fd/N/<name>`), so a folder on the way swapped for a link meanwhile
  * cannot send the rename anywhere else; on macOS the folders from the pane's folder down must be
  * this user's own and writable by nobody else (`ownedFolders`), checked right before the rename.
- * Other platforms do not save yet. All of it is synchronous: two saves on this server never
- * interleave.
+ * Other platforms do not save yet. The file's extended attributes and access list are carried over
+ * to the new file (file-attributes.ts); one whose access list cannot be is not saved. Each read and save runs on a file thread (`file-pool.ts`, `text-read` and
+ * `text-save`), so a slow disk holds that thread, not the server's; a save that outlives its
+ * deadline is answered 503 and may still land, which the next save's revision check then sees.
  */
 
 /** A request this route will not carry out, with the status and code it answers. */
@@ -140,9 +143,10 @@ function openSame(path: string, flags: number, stat: BigIntStats): number {
   return fd;
 }
 
-/** A permission the filesystem refused, as the 403 that says the file cannot be written here. */
+/** A permission the filesystem refused, as the 403 that says the file cannot be written here; a file gone meanwhile, as a conflict. */
 function refusedWrite(error: unknown): unknown {
   const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ENOENT") return new TextEditRefused(409, "stale_revision", "The file was moved or removed since it was opened");
   return code === "EACCES" || code === "EPERM" || code === "EROFS" ? new TextEditRefused(403, "not_writable", "This file can't be written here") : error;
 }
 
@@ -165,6 +169,7 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
   const folder = dirname(current.file);
   const name = basename(current.file);
   let folderFd: number | null = null;
+  let original = -1;
   let temp: string | null = null;
   let anchor = folder;
   try {
@@ -176,17 +181,23 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     }
     // the file itself must be writable: opening it to write (without truncating) changes nothing
     closeSync(openSame(join(anchor, name), constants.O_WRONLY, current.stat));
-    temp = `.${name}.ovis-${randomBytes(6).toString("hex")}.tmp`;
+    // and its attributes and access list are read from it, for the new file
+    original = openSame(join(anchor, name), constants.O_RDONLY, current.stat);
+    // a name of its own, short whatever the file's is
+    temp = `.ovis-edit-${randomBytes(6).toString("hex")}.tmp`;
     const fd = openSync(join(anchor, temp), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
-      fchmodSync(fd, Number(current.stat.mode & 0o7777n));
       if (BigInt(fstatSync(fd).gid) !== current.stat.gid) fchownSync(fd, uid, Number(current.stat.gid));
       for (let written = 0; written < bytes.length;) written += writeSync(fd, bytes, written, bytes.length - written);
+      // the mode last: a write (and a change of group) clears set-id bits given before it
+      fchmodSync(fd, Number(current.stat.mode & 0o7777n));
+      // after the mode, which an access list's own entries must agree with
+      if (!copyFileAttributes(original, fd, platform())) throw new TextEditRefused(403, "access_list", "This file's access list could not be kept; edit it in the terminal");
       fsyncSync(fd);
     } finally { closeSync(fd); }
     textSaveHooks.beforeRename?.();
     // the last look: the folder still inside the pane's folder, and the same file, unchanged
-    const proven = platform() === "linux" ? inside(root, join(readlinkSync(anchor), name)) : ownedFolders(root, current.file, uid) && realpathSync(folder) === folder;
+    const proven = platform() === "linux" ? inside(root, join(readlinkSync(anchor), name)) && !readlinkSync(anchor).endsWith(" (deleted)") : ownedFolders(root, current.file, uid) && realpathSync(folder) === folder;
     if (!proven) throw new TextEditRefused(409, "stale_revision", "The file was moved since it was opened");
     const check = openSame(join(anchor, name), constants.O_RDONLY, current.stat);
     let now: Buffer;
@@ -201,6 +212,7 @@ export function saveEditableText(input: string, cwd: string, revision: string, t
     throw refusedWrite(error);
   } finally {
     if (temp !== null) try { unlinkSync(join(anchor, temp)); } catch { /* never created, or already gone */ }
+    if (original !== -1) closeSync(original);
     if (folderFd !== null) closeSync(folderFd);
   }
 }

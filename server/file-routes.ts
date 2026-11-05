@@ -12,7 +12,9 @@ import type { Access } from "./access.ts";
 import { isSecureRequest } from "./auth.ts";
 import { claudeSessionTempDir, claudeTempBases } from "./claude-store.ts";
 import { claudePaneSession } from "./conversation.ts";
-import { MAX_TEXT_SAVE_BODY_BYTES, readCappedText, readEditableText, saveEditableText, TextEditRefused } from "./file-edit.ts";
+import { MAX_TEXT_SAVE_BODY_BYTES, readCappedText, TextEditRefused } from "./file-edit.ts";
+import { fileTask } from "./file-pool.ts";
+import type { TextTaskResult } from "./file-tasks.ts";
 import { fileResponse, findFile, crossSiteFileRead, pageMediaResponse, pageMediaSource, PAGE_MEDIA_PATH, watchPageMedia } from "./file-view.ts";
 import { paneGet } from "./herdr/client.ts";
 import { badRequest, errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
@@ -70,12 +72,15 @@ export async function handleFileRequest(request: Request, url: URL, pathname: st
   return null;
 }
 
+/** The save running now, which the next one waits for. */
+let saving: Promise<unknown> = Promise.resolve();
+
 /** GET and PUT /api/fs/text (shared/files.ts): the pane's folder is the one a file may be edited in. */
 async function textRoute(request: Request, url: URL): Promise<Response> {
   if (request.method === "GET") {
     const paneId = url.searchParams.get("pane_id") ?? "";
     if (paneId === "") return badRequest("missing_pane", "pane_id is required");
-    return jsonResponse(readEditableText(url.searchParams.get("path") ?? "", (await paneContext(paneId)).cwd));
+    return textAnswer(await fileTask<TextTaskResult>({ op: "text-read", path: url.searchParams.get("path") ?? "", cwd: (await paneContext(paneId)).cwd }));
   }
   // JSON only: a form or a text/plain body from another page is refused before it is read
   if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") return jsonResponse({ error: { code: "invalid_content_type", message: "send application/json" } }, 415);
@@ -88,7 +93,18 @@ async function textRoute(request: Request, url: URL): Promise<Response> {
   const { pane_id: paneId, path, revision, text } = body;
   if (typeof paneId !== "string" || paneId === "") return badRequest("missing_pane", "pane_id is required");
   if (typeof path !== "string" || typeof revision !== "string" || typeof text !== "string") return badRequest("invalid_body", "path, revision and text are strings");
-  return jsonResponse(saveEditableText(path, (await paneContext(paneId)).cwd, revision, text));
+  const cwd = (await paneContext(paneId)).cwd;
+  // one save at a time, whichever file thread it lands on: each checks the revision the one before it left
+  const save = saving.then(() => fileTask<TextTaskResult>({ op: "text-save", path, cwd, revision, text }));
+  saving = save.catch(() => undefined);
+  return textAnswer(await save);
+}
+
+/** A text task's answer, or the refusal it came back with. */
+function textAnswer(result: TextTaskResult): Response {
+  if ("done" in result) return jsonResponse(result.done);
+  const { status, code, message, revision } = result.refused;
+  return jsonResponse({ error: { code, message, ...(revision ? { revision } : {}) } }, status);
 }
 
 /** GET/HEAD /api/fs/stat, /api/fs/file and /api/fs/favicon, past the method and site checks. */

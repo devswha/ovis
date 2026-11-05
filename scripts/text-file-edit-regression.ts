@@ -88,6 +88,20 @@ try {
       await viewer.getByText("Second line.", { exact: true }).waitFor();
       console.log(`PASS ${tag}: Edit, Save asks once more, then the file holds the text and the viewer shows it`);
 
+      // moved beside the pane (a wide window) while edited: the viewer is drawn again, and the text typed stays
+      if (width >= 1280) {
+        await viewer.getByRole("button", { name: "Edit file", exact: true }).click();
+        await box.fill("typed before the move\n");
+        await viewer.getByRole("button", { name: "Show beside the pane", exact: true }).click();
+        const docked = page.getByRole("complementary", { name: `notes-${tag}.md`, exact: true });
+        await docked.getByText("Unsaved changes", { exact: true }).waitFor();
+        assert.equal(await docked.getByRole("textbox", { name: `Text of notes-${tag}.md`, exact: true }).inputValue(), "typed before the move\n", `${tag}: the draft survives the move beside the pane`);
+        await docked.getByRole("button", { name: "Cancel", exact: true }).click();
+        await docked.getByRole("button", { name: "Show as a popup", exact: true }).click();
+        await viewer.waitFor();
+        console.log(`PASS ${tag}: text typed and not saved survives moving the viewer beside the pane`);
+      }
+
       // Cancel leaves the file as it is
       await viewer.getByRole("button", { name: "Edit file", exact: true }).click();
       await box.fill("thrown away\n");

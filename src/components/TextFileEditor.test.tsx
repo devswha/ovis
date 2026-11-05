@@ -91,6 +91,24 @@ test("saves only after the second Save, over the revision it opened", async () =
   expect(done).toEqual([true]);
 });
 
+test("a draft outlives the editor it was typed in until it is saved or cancelled", async () => {
+  const seen = pc([Response.json(opened("a\n", "r1")), Response.json(opened("a\n", "r1"))], () => Response.json({}));
+  const done: boolean[] = [];
+  let root = await render((saved) => done.push(saved));
+  await type(root, "kept draft\n");
+  // closed, moved beside the pane, Back: the editor goes away
+  await act(async () => renderer?.unmount());
+  root = await render((saved) => done.push(saved));
+  expect(seen.reads).toBe(1);
+  expect(root.findByType("textarea").props.value).toBe("kept draft\n");
+  expect(text(root)).toContain("Unsaved changes");
+  await press(root, "Cancel");
+  await act(async () => renderer?.unmount());
+  root = await render(() => {});
+  expect(seen.reads).toBe(2);
+  expect(root.findByType("textarea").props.value).toBe("a\n");
+});
+
 test("Cancel leaves without saving", async () => {
   const seen = pc([Response.json(opened("a\n", "r1"))], () => Response.json({}));
   const done: boolean[] = [];
