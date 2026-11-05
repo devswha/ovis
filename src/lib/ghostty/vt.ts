@@ -8,6 +8,8 @@
  * ghostty_type_json(), so a row costs one wasm call plus a few per style change.
  */
 
+import { FIRST_SPACING_MARK, SPACING_MARK } from "../terminalWidths.ts";
+
 interface Bits { lsb: number; width: number; arms?: Record<string, { bits: Record<string, Bits> } | null> }
 interface TypeLayout { types: Record<string, { fields?: Record<string, { offset: number }>; bits?: Record<string, Bits> }> }
 
@@ -97,6 +99,16 @@ const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MOD
 /** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
 const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3;
+const spacingMarks = new Map<number, boolean>();
+const isSpacingMark = (codepoint: number): boolean => {
+  if (codepoint < FIRST_SPACING_MARK) return false;
+  let mark = spacingMarks.get(codepoint);
+  if (mark === undefined) {
+    mark = SPACING_MARK.test(String.fromCodePoint(codepoint));
+    spacingMarks.set(codepoint, mark);
+  }
+  return mark;
+};
 const DATA_KITTY_GRAPHICS = 30;
 const SCROLL_BOTTOM = 1, SCROLL_DELTA = 2;
 const IMAGE_ID = 2, IMAGE_GENERATION = 3, IMAGE_LAYER = 4, IMAGE_Z = 5, IMAGE_COL = 6, IMAGE_ROW = 7, IMAGE_OFFSET_X = 10, IMAGE_OFFSET_Y = 11;
@@ -200,7 +212,7 @@ export class GhosttyVt {
     this.check(exports.ghostty_terminal_set(this.terminal, OPT_KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
     // xterm (terminalWidths.ts) and herdr give a whole grapheme one cell, two columns for an emoji
     // sequence; libghostty does that only with mode 2027 on, here also after a reset
-    this.setGraphemeClusters(OPT_MODE_DEFAULT);
+    this.setGraphemeClusters(OPT_MODE_DEFAULT, true);
     this.setScrollback(0);
   }
 
@@ -226,18 +238,35 @@ export class GhosttyVt {
       this.input = this.x.ghostty_wasm_alloc(this.inputCap);
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
-    // xterm ignores a program's own 2027 off (CSI ? ... 2027 ... l): so does the layer, which turns it
-    // back on right after the sequence, or the two grids drift apart. The sequence may span writes.
+    // Two places where libghostty's clusters would differ from xterm's (terminalWidths.ts):
+    // - xterm ignores a program's own 2027 off (CSI ? ... 2027 ... l): so does the layer, which turns it
+    //   back on right after the sequence, which may span writes;
+    // - herdr and xterm give a spacing mark (a Devanagari vowel sign, Thai SARA AM) a cell of its own, where a cluster
+    //   would join it to the letter before: the layer prints each one with 2027 off.
     let start = 0;
-    let at = this.csi === CSI_GROUND ? bytes.indexOf(0x1b) : 0;
-    for (; at !== -1 && at < bytes.length; at++) {
+    for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
       if (byte === 0x1b) { this.csi = CSI_ESC; continue; }
+      // a C0 control inside an escape sequence runs without ending it; CAN and SUB cancel it
+      if (this.csi !== CSI_GROUND && byte < 0x20 && byte !== 0x18 && byte !== 0x1a) continue;
       switch (this.csi) {
-        case CSI_GROUND:
-          at = bytes.indexOf(0x1b, at) - 1;
-          if (at < 0) at = bytes.length;
+        case CSI_GROUND: {
+          if (byte < 0xe0) continue;
+          const length = byte >= 0xf0 ? 4 : 3;
+          if (at + length > bytes.length) continue;
+          const codepoint = length === 3
+            ? ((byte & 0x0f) << 12) | ((bytes[at + 1]! & 0x3f) << 6) | (bytes[at + 2]! & 0x3f)
+            : ((byte & 0x07) << 18) | ((bytes[at + 1]! & 0x3f) << 12) | ((bytes[at + 2]! & 0x3f) << 6) | (bytes[at + 3]! & 0x3f);
+          if (isSpacingMark(codepoint)) {
+            if (at > start) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, at - start);
+            this.setGraphemeClusters(OPT_MODE, false);
+            this.x.ghostty_terminal_vt_write(this.terminal, this.input + at, length);
+            this.setGraphemeClusters(OPT_MODE, true);
+            start = at + length;
+          }
+          at += length - 1;
           continue;
+        }
         case CSI_ESC:
           this.csi = byte === 0x5b ? CSI_BRACKET : CSI_GROUND;
           continue;
@@ -254,7 +283,7 @@ export class GhosttyVt {
       } else if (byte === 0x18 || byte === 0x1a || byte >= 0x20) {
         if (byte === 0x6c && (this.sawGraphemeMode || this.param === MODE_GRAPHEME_CLUSTER)) {
           this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, at + 1 - start);
-          this.setGraphemeClusters(OPT_MODE);
+          this.setGraphemeClusters(OPT_MODE, true);
           start = at + 1;
         }
         this.csi = CSI_GROUND;
@@ -263,17 +292,17 @@ export class GhosttyVt {
     if (start < bytes.length) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, bytes.length - start);
   }
 
-  private setGraphemeClusters(option: number): void {
+  private setGraphemeClusters(option: number, on: boolean): void {
     // GhosttyTerminalModeConfig { uint16_t mode; bool value }
     const dv = this.view();
     dv.setUint16(this.scratch + 1000, MODE_GRAPHEME_CLUSTER, true);
-    dv.setUint8(this.scratch + 1002, 1);
+    dv.setUint8(this.scratch + 1002, on ? 1 : 0);
     this.check(this.x.ghostty_terminal_set(this.terminal, option, this.scratch + 1000), "grapheme clusters");
   }
 
   reset(): void {
+    // libghostty keeps a sequence it is in the middle of across a reset, and so does the scanner
     this.x.ghostty_terminal_reset(this.terminal);
-    this.csi = CSI_GROUND;
     this.placementsGeneration = -1;
   }
 

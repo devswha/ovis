@@ -24,12 +24,12 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 
 export const HERDR_UNICODE_VERSION = "15-herdr";
 
-const SPACING_MARK = /[\p{Mc}\u0e33\u0eb3]/u;
+export const SPACING_MARK = /[\p{Mc}\u0e33\u0eb3]/u;
 const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
 const INVISIBLE = /(?![\u00ad\u1100-\u11ff\u200d\ufe00-\ufe0f\u{e0000}-\u{e0fff}])\p{Default_Ignorable_Code_Point}/u;
 /** Below these, the tests above cannot match. */
 const FIRST_INVISIBLE = 0x034f;
-const FIRST_SPACING_MARK = 0x0903;
+export const FIRST_SPACING_MARK = 0x0903;
 const FIRST_EMOJI_PRESENTATION = 0x231a;
 /** Regional indicators are emoji-presentation one at a time, but only a pair is a (two-cell) flag. */
 const REGIONAL_INDICATORS = [0x1f1e6, 0x1f1ff] as const;

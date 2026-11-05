@@ -8,12 +8,20 @@ interface Layout { cells: [number, string][]; cursor: number }
 
 /** Each drawn cell's column and grapheme on the first row, and the cursor's column, as libghostty lays out `text`. */
 async function ghosttyLayout(...chunks: string[]): Promise<Layout> {
-  const vt = await GhosttyVt.create(40, 2);
+  return await ghosttyScreen(40, 0, chunks);
+}
+
+/** The same on one row of a `cols`-wide terminal, given in `chunks` with a reset() after the `resetAfter`th (0: none). */
+async function ghosttyScreen(cols: number, resetAfter: number, chunks: string[], row = 0): Promise<Layout> {
+  const vt = await GhosttyVt.create(cols, 2);
   try {
-    for (const chunk of chunks) vt.write(chunk);
+    chunks.forEach((chunk, index) => {
+      vt.write(chunk);
+      if (index + 1 === resetAfter) vt.reset();
+    });
     const cells: [number, string][] = [];
     vt.frame((y, runs) => {
-      if (y !== 0) return;
+      if (y !== row) return;
       for (const run of runs) {
         let x = run.x;
         for (const cell of run.cells) {
@@ -29,13 +37,13 @@ async function ghosttyLayout(...chunks: string[]): Promise<Layout> {
 }
 
 /** The same, as xterm counts them with herdr's widths: the grid the cursor, selection and links use. */
-async function xtermLayout(text: string): Promise<Layout> {
-  const term = new Terminal({ allowProposedApi: true, cols: 40, rows: 2 });
+async function xtermLayout(text: string, cols = 40, row = 0): Promise<Layout> {
+  const term = new Terminal({ allowProposedApi: true, cols, rows: 2 });
   matchHerdrWidths(term);
   await new Promise<void>((resolve) => term.write(text, resolve));
-  const line = term.buffer.active.getLine(0)!;
+  const line = term.buffer.active.getLine(row)!;
   const cells: [number, string][] = [];
-  for (let x = 0; x < 40; x++) {
+  for (let x = 0; x < cols; x++) {
     const chars = line.getCell(x)?.getChars() ?? "";
     if (chars && chars !== " ") cells.push([x, chars]);
   }
@@ -95,5 +103,16 @@ describe("GhosttyVt widths", () => {
   it("draws a ZWJ sequence longer than the grapheme buffer", async () => {
     const long = `👩${"\u200d👩".repeat(18)}X`;
     expect(await ghosttyLayout(long)).toEqual(await xtermLayout(long));
+  });
+
+  it("gives a spacing mark xterm's own cell at the end of a line and when overwritten", async () => {
+    expect(await ghosttyScreen(10, 0, ["123456789काX"], 1)).toEqual(await xtermLayout("123456789काX", 10, 1));
+    expect(await ghosttyLayout("aका\x1b[3GZ")).toEqual(await xtermLayout("aका\x1b[3GZ"));
+    expect(await ghosttyLayout("aน้ำb")).toEqual(await xtermLayout("aน้ำb"));
+  });
+
+  it("finds a mode 2027 off with a control byte inside it or across a reset", async () => {
+    expect(await ghosttyLayout("\x1b[\x00?2027la👨‍👩‍👧X")).toEqual(await xtermLayout("\x1b[\x00?2027la👨‍👩‍👧X"));
+    expect(await ghosttyScreen(40, 1, ["\x1b[?20", "27la👨‍👩‍👧X"])).toEqual(await xtermLayout("a👨‍👩‍👧X"));
   });
 });
