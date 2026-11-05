@@ -1,9 +1,23 @@
 import { describe, expect, it } from "bun:test";
 
-import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitPercent, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
+import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitDrag, splitPercent, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
 
 // a 600px column: each head 42px, rows 34px
 const ROOM: SplitRoom = { topHead: 42, bottomHead: 42, room: 600, row: 34, topRow: 34, bottomRow: 34 };
+
+describe("splitDrag", () => {
+  it("previews the height a release saves", () => {
+    // past the bounds but short of the snap zone: the release saves the clamp, so the preview shows it too
+    expect(splitDrag(70, ROOM)).toEqual({ snap: null, height: 76, shown: 76 });
+    expect(splitDrag(530, ROOM)).toEqual({ snap: null, height: 524, shown: 524 });
+    expect(splitDrag(300, ROOM)).toEqual({ snap: null, height: 300, shown: 300 });
+  });
+
+  it("previews a snapping section at its head", () => {
+    expect(splitDrag(50, ROOM)).toMatchObject({ snap: "top", shown: 42 });
+    expect(splitDrag(550, ROOM)).toMatchObject({ snap: "bottom", shown: 558 });
+  });
+});
 
 describe("splitPercent", () => {
   it("stays within the separator's 0-100 range in a window shorter than the heads", () => {

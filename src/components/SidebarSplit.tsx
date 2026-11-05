@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import "./SidebarSplit.css";
 
 import { useT } from "../lib/i18n.ts";
-import { clampSplit, keyedSplit, sectionAt, splitBounds, splitPercent, splitSnap, type SplitFold, type SplitOrder, type SplitRoom, type SplitSide } from "../lib/sidebarSplit.ts";
+import { clampSplit, keyedSplit, sectionAt, splitBounds, splitDrag, splitPercent, type SplitFold, type SplitOrder, type SplitRoom, type SplitSide } from "../lib/sidebarSplit.ts";
 
 export interface SidebarSplitProps {
   /** the sidebar's shell (MachineSidebar.tsx): the line sets its split on it, in `--split-top` */
@@ -172,11 +172,10 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
       // a drag sizes both: a folded section opens under it, as a sash drag opens a collapsed view
       onFold([]);
     }
-    const { topHead, bottomHead, room } = state.room;
-    const raw = state.startHeight + dy;
-    state.snap = splitSnap(raw, state.room);
-    state.height = clampSplit(raw, state.room);
-    show(state.snap === "top" ? topHead : state.snap === "bottom" ? room - bottomHead : Math.max(topHead, Math.min(room - bottomHead, raw)), room, state.snap);
+    const { snap, height, shown } = splitDrag(state.startHeight + dy, state.room);
+    state.snap = snap;
+    state.height = height;
+    show(shown, state.room.room, snap);
     setSnap(state.snap);
   };
   const endDrag = (event: PointerEvent<HTMLDivElement>): void => {

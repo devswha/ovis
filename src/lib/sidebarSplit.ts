@@ -63,6 +63,16 @@ export function splitSnap(height: number, { topHead, bottomHead, room, row }: Sp
   return top ? "top" : bottom ? "bottom" : null;
 }
 
+/**
+ * A drag released at `raw`: the side it folds, the height it saves, and the height to draw meanwhile, which
+ * is the saved one (a snapping section is drawn at its head), so a release never jumps.
+ */
+export function splitDrag(raw: number, room: SplitRoom): { snap: SplitSide | null; height: number; shown: number } {
+  const snap = splitSnap(raw, room);
+  const height = clampSplit(raw, room);
+  return { snap, height, shown: snap === "top" ? room.topHead : snap === "bottom" ? room.room - room.bottomHead : height };
+}
+
 /** What a key does on the focused line: move it a row, fold a section, or go back to the shared height. */
 export type SplitKey = { split: number } | { fold: SplitSide } | { reset: true };
 
