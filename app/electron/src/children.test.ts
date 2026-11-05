@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -285,6 +285,20 @@ describe("endLeftover", () => {
     const gone = Bun.spawn(process.platform === "win32" ? ["cmd.exe", "/c", "exit"] : ["true"]);
     await gone.exited;
     expect(await processStart(gone.pid)).toBeNull();
-    // each lookup on Windows starts PowerShell for its CIM query: over 5 s for the four on a cold runner
-  }, 30_000);
+    // each lookup on Windows starts PowerShell for its CIM query: over 5 s for the four on a cold runner, at most 15 s each
+  }, 90_000);
+
+  it.skipIf(process.platform !== "win32")("reads a command line whose path is not ASCII whole, as a user name may be", async () => {
+    const dir = join(tempDir(), "오비스 사용자");
+    mkdirSync(dir);
+    const exe = join(dir, "ping.exe");
+    copyFileSync(join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "ping.exe"), exe);
+    const child = Bun.spawn([exe, "-n", "60", "127.0.0.1"], { stdout: "ignore", stderr: "ignore" });
+    try {
+      expect(await processCommand(child.pid)).toContain(dir);
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  }, 90_000);
 });

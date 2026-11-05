@@ -293,7 +293,7 @@ export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = 
  */
 export function windowsProcessQuery(pid: number, field: "command" | "started"): [string, string[]] {
   const value = field === "command" ? "$p.CommandLine" : "$p.CreationDate.ToUniversalTime().ToString('o')";
-  return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${Math.trunc(pid)}'; if ($p) { ${value} }`]];
+  return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $p = Get-CimInstance Win32_Process -Filter 'ProcessId=${Math.trunc(pid)}'; if ($p) { ${value} }`]];
 }
 
 const WINDOWS = process.platform === "win32";
