@@ -24,17 +24,27 @@ export function terminalImageOptions(coarse: boolean): IImageAddonOptions {
 export function useTerminalImages(terminal: Terminal | null, enabled: boolean, coarse: boolean): void {
   useEffect(() => {
     if (terminal === null || !enabled) return;
-    let addon: IDisposable | null = null;
+    let loaded: IDisposable[] = [];
     let gone = false;
+    // the addon turns xterm's pixel size reports on (the bridge passes the cell size on to hc, which
+    // answers the program with it); turned off, the terminal answers as it did before
+    const windowOptions = { ...terminal.options.windowOptions };
     import("@xterm/addon-image").then(({ ImageAddon }) => {
       if (gone) return;
-      const loaded = new ImageAddon(terminalImageOptions(coarse));
-      terminal.loadAddon(loaded);
-      addon = loaded;
+      const addon = new ImageAddon(terminalImageOptions(coarse));
+      terminal.loadAddon(addon);
+      // XTSMGRAPHICS goes unanswered, as without the addon: hc leaves it to its viewers, and two
+      // browsers on one pane answered it late, into the program's next read (measured on hc 0.1.17)
+      loaded = [addon, terminal.parser.registerCsiHandler({ prefix: "?", final: "S" }, () => true)];
     }, (error: unknown) => {
       console.error("terminal pictures could not be loaded", error);
     });
     // xterm disposes its addons with the terminal, and a second dispose is a no-op
-    return () => { gone = true; addon?.dispose(); };
+    return () => {
+      gone = true;
+      if (loaded.length === 0) return;
+      for (const disposable of loaded) disposable.dispose();
+      terminal.options.windowOptions = windowOptions;
+    };
   }, [terminal, enabled, coarse]);
 }
