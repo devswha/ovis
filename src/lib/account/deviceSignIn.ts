@@ -52,9 +52,15 @@ function waitFor(ms: number, signal: AbortSignal): Promise<void> {
 
 /** GitHub's own device page, parsed: a service that names another address is not followed there. */
 function devicePage(value: unknown): string {
-  if (typeof value !== "string" || !URL.canParse(value)) return GITHUB_DEVICE_PAGE;
-  const url = new URL(value);
-  return url.origin === "https://github.com" && url.pathname === "/login/device" ? url.href : GITHUB_DEVICE_PAGE;
+  if (typeof value !== "string") return GITHUB_DEVICE_PAGE;
+  // new URL in a try: an older WebView has no URL.canParse
+  try {
+    const url = new URL(value);
+    return url.origin === "https://github.com" && url.pathname === "/login/device" ? url.href : GITHUB_DEVICE_PAGE;
+  } catch (error) {
+    if (error instanceof TypeError) return GITHUB_DEVICE_PAGE;
+    throw error;
+  }
 }
 
 function seconds(value: unknown, fallback: number): number {
@@ -96,7 +102,8 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
       let interval = firstInterval;
       let pause = interval;
       for (;;) {
-        await wait(pause, signal);
+        // never past the code's lifetime, however long a 429 asked to wait
+        await wait(Math.min(pause, Math.max(0, expiresAt - now())), signal);
         if (now() >= expiresAt) throw new SignInError("expired", "The code ran out");
         pause = interval;
         let answer: Response;
@@ -113,10 +120,19 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         if (answer.ok) {
           const session = sessionOf(await answer.json(), options.service, now());
           // under the lock sign-out and refresh take, and never once this sign-in was cancelled
-          await lock(async () => {
-            signal.throwIfAborted();
+          const kept = await lock(async () => {
+            if (signal.aborted) return false;
             await options.store.set("session", session);
+            if (!signal.aborted) return true;
+            // cancelled while it was being written: take back exactly this session, never a newer one
+            await options.store.update("session", (current) => current?.refresh_token === session.refresh_token ? undefined : current);
+            return false;
           });
+          if (kept) return session;
+          // a sign-in nobody keeps ends at the service too, so its tokens do not outlive the page
+          await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
+            .catch((error: unknown) => console.warn("Ovis: a cancelled sign-in was not ended at the account service", error instanceof Error ? error.name : error));
+          signal.throwIfAborted();
           return session;
         }
         if (answer.status === 429) { pause = retryAfterMs(answer, interval); continue; }

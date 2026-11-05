@@ -240,6 +240,30 @@ describe("signing in on a PC's own page, with GitHub's device flow", () => {
     const started = await startDeviceSignIn({ ...options, wait: async () => { fake.approveDevice(started.userCode, "acct_page"); cancel.abort(); } });
     await expect(started.finish(cancel.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(await store.get("session")).toBeUndefined();
+    expect(fake.requests).toContain("POST /v1/signout");
+  });
+
+  it("takes back the session of a sign-in cancelled while it was being written", async () => {
+    const { fake, store, options } = setup();
+    const cancel = new AbortController();
+    const slow = { ...store, set: async (...args: Parameters<typeof store.set>) => { await store.set(...args); cancel.abort(); } };
+    const started = await startDeviceSignIn({ ...options, store: slow });
+    fake.approveDevice(started.userCode, "acct_page");
+    await expect(started.finish(cancel.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(await store.get("session")).toBeUndefined();
+  });
+
+  it("never waits past the code's lifetime, however long a 429 asks", async () => {
+    const { fake, options, waits } = setup();
+    const fetch = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return new URL(request.url).pathname === "/v1/token"
+        ? Response.json({ error: { code: "rate_limited", message: "" } }, { status: 429, headers: { "retry-after": "3600" } })
+        : fake.fetch(request);
+    };
+    const started = await startDeviceSignIn({ ...options, fetch });
+    await expect(started.finish(new AbortController().signal)).rejects.toMatchObject({ code: "expired" });
+    expect(waits).toEqual([5_000, DEVICE_CODE_TTL_S * 1000 - 5_000]);
   });
 
   it("links only to GitHub's own device page, whatever the service names", async () => {

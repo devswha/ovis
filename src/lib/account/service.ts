@@ -33,9 +33,15 @@ export function accountServiceOf(document: { querySelector(selector: string): { 
  */
 export function pcAccountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }, secure: boolean): string | null {
   const content = document.querySelector('meta[name="ovis-pc-account-service"]')?.getAttribute("content");
-  if (!secure || !content || !URL.canParse(content)) return null;
-  const url = new URL(content);
-  return url.protocol === "https:" ? url.origin : null;
+  if (!secure || !content) return null;
+  // new URL in a try: an older WebView has no URL.canParse
+  try {
+    const url = new URL(content);
+    return url.protocol === "https:" ? url.origin : null;
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
 }
 
 /**
