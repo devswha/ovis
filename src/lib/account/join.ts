@@ -5,14 +5,14 @@
  * call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
  * its devices is asking.
  */
-import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
-import type { AddRecord, LinkRecord } from "../../../shared/account-records.ts";
+import { ACCOUNT_RECORDS_MAX, accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
+import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import type { RemotePairingRequest } from "../../../shared/protocol.ts";
 import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
 import { keyIdOf } from "../relay/shellState.ts";
 import type { AccountService } from "./service.ts";
-import type { AccountKey } from "./store.ts";
+import type { AccountKey, AccountStore } from "./store.ts";
 
 export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -177,6 +177,8 @@ export async function admitToAccount(options: {
   fetch: PcFetch; service: AccountService; key: AccountKey; account: string;
   joining: { key: string; label: string }; through: string; paired: readonly RelayDevice[]; directory: readonly string[]; now?: () => number;
   wait?: (ms: number) => Promise<void>;
+  /** where the add waits for the PCs the account service did not take it for; none, and a refusal throws */
+  store?: AccountStore;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
@@ -199,7 +201,132 @@ export async function admitToAccount(options: {
     issued_at: new Date(now()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
   }, options.key.private_key);
   const others = options.directory.filter((serverId) => serverId !== options.through);
-  for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
+  if (!options.store) {
+    for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
+    return add;
+  }
+  // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again;
+  // and, in the same write, as a device this client checked itself, which a PC it enrolls later gets too
+  await options.store.updateMany(["adds", "devices"], (current) => ({
+    adds: { ...current.adds, [add.id]: { account: options.account, record: add, to: others } },
+    devices: withDevice(current.devices, add),
+  }));
+  await sendQueuedAdds({ service: options.service, store: options.store, account: options.account });
   return add;
+}
+
+type KnownDevices = Readonly<Record<string, AddRecord | RemoveRecord>>;
+
+/** `known` with `record` for its key, unless a record signed later is there (a removal wins a tie). */
+function withDevice(known: KnownDevices | undefined, record: AddRecord | RemoveRecord): KnownDevices {
+  const current = known?.[record.key];
+  const later = current !== undefined && (current.issued_at > record.issued_at || (current.issued_at === record.issued_at && current.kind === "remove"));
+  return later ? known! : { ...known, [record.key]: record };
+}
+
+/**
+ * Keeps a record this client signed for a device of the account, which enrollPc hands a PC this
+ * client brings into the account: one entry per key, the later signed one.
+ */
+export async function rememberDevice(store: AccountStore, record: AddRecord | RemoveRecord): Promise<void> {
+  await store.update("devices", (current) => withDevice(current, record));
+}
+
+/** Marks a PC this client is about to link while it had no account: enrollPc hands it the account's devices. */
+export async function planEnroll(store: AccountStore, serverId: string, account: string): Promise<void> {
+  await store.update("enrolls", (current) => ({ ...current, [serverId]: { account, done: [] } }));
+}
+
+/** A refusal that says nothing final about the record: the PC could not read its tombstones, so it is sent again. */
+const UNDECIDED = new Set(["account_unavailable"]);
+
+/**
+ * Sends a planned PC (planEnroll) the `remove`s this client signed (docs/account.md, "Account
+ * members"), as signed, so the PC tombstones those keys. Nothing else: no record from another PC,
+ * and no `add` until the account's other removals reach such a PC too (#2956). `fetch`
+ * must be a session signed in with the account key on that PC, after the link. Every record's
+ * outcome is read; one the PC did not answer, or could not decide on, is sent again on the next
+ * call. True once nothing is left to send there.
+ */
+export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+  const planned = (await options.store.get("enrolls"))?.[options.serverId];
+  if (planned === undefined || planned.account !== options.account) return true;
+  const pending = (devices: KnownDevices | undefined) => Object.values(devices ?? {})
+    .filter((record) => record.account === options.account && !planned.done.includes(record.id));
+  const known = pending(await options.store.get("devices"));
+  // removes only: an add this client signed may be for a device another member removed since, whose
+  // remove would not reach this PC (#2956), so no add is enrolled yet
+  const removes = known.filter((record) => record.kind === "remove");
+  const done: string[] = [];
+  const send = async (records: readonly { id: string }[]): Promise<boolean> => {
+    let all = true;
+    for (let start = 0; start < records.length; start += ACCOUNT_RECORDS_MAX) {
+      const batch = records.slice(start, start + ACCOUNT_RECORDS_MAX);
+      const answer = await (await post(options.fetch, "/api/account/records", { records: batch })).json() as { results?: unknown };
+      const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
+      for (const record of batch) {
+        const result = results.find((entry) => entry.id === record.id);
+        const final = result?.outcome === "applied" || result?.outcome === "unchanged" || (result?.outcome === "refused" && !UNDECIDED.has(String(result.code)));
+        if (final) done.push(record.id);
+        else all = false;
+      }
+    }
+    return all;
+  };
+  const sent = await send(removes);
+  let finished = false;
+  // checked in the same write that ends the plan: a record signed meanwhile (another tab) keeps it for the next call
+  await options.store.updateMany(["enrolls", "devices"], (current) => {
+    const entry = current.enrolls?.[options.serverId];
+    if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
+    finished = sent && pending(current.devices).every((record) => record.kind === "add" || done.includes(record.id));
+    const rest = { ...current.enrolls };
+    if (finished) delete rest[options.serverId];
+    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
+    return { devices: current.devices, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
+  });
+  return finished;
+}
+
+/**
+ * What a connection to a PC of the account does for a PC this client planned to enroll (planEnroll):
+ * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
+ * signed in with the account key there. The PC's status gives this client no record to sign.
+ */
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+  const status = await pcAccountStatus(options.fetch);
+  if (status.account !== options.account) return false;
+  return enrollPc(options);
+}
+
+/** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */
+export const QUEUED_ADD_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * Sends the adds this device signed that some PCs' mailboxes have not taken (admitToAccount), and
+ * forgets each PC the account service took it for. A refusal or a failure keeps the rest for the
+ * next try; one of another account waits for its sign-in, and one older than the mailbox keeps a record is dropped.
+ */
+export async function sendQueuedAdds(options: { service: AccountService; store: AccountStore; account: string; now?: () => number }): Promise<void> {
+  const now = (options.now ?? Date.now)();
+  const queued = Object.values((await options.store.get("adds")) ?? {});
+  for (const entry of queued) {
+    const sent: string[] = [];
+    if (entry.account === options.account && now - Date.parse(entry.record.issued_at) <= QUEUED_ADD_MS) {
+      for (let start = 0; start < entry.to.length; start += 32) {
+        const batch = entry.to.slice(start, start + 32);
+        try { await options.service.postRecord(batch, entry.record); sent.push(...batch); }
+        catch (error) { console.warn("Ovis: an approved device's add is kept for the next try", error instanceof Error ? error.name : error); }
+      }
+    }
+    const keep = now - Date.parse(entry.record.issued_at) <= QUEUED_ADD_MS;
+    await options.store.update("adds", (current) => {
+      const rest = { ...current };
+      const left = (rest[entry.record.id]?.to ?? []).filter((serverId) => !sent.includes(serverId));
+      if (!keep || left.length === 0) delete rest[entry.record.id];
+      else rest[entry.record.id] = { ...entry, to: left };
+      return Object.keys(rest).length === 0 ? undefined : rest;
+    });
+  }
 }
 

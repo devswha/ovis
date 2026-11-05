@@ -222,6 +222,16 @@ removed and absent, or signed before this PC paired the key again) and `refused`
 PC it just paired. The request's own device must already be a member of `account` (it links itself
 first). Same answer as `records`.
 
+What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
+its link brings a PC that had no account into it, it sends that PC, over a session signed in with
+the account key, the `remove`s it signed itself, as signed (through `records`), so the PC tombstones
+those keys. It signs nothing for the enrollment and takes nothing from another PC's device list or
+status. It reads every record's outcome and sends again, on its next connection to that PC, each one
+the PC did not answer or answered `account_unavailable`, and any removal it signed while the
+enrollment ran. It enrolls no `add` yet: one it signed may be for a device another member removed
+since, and that member's `remove` does not reach a PC new to the account. Adds come with relaying
+the account's signed removals (#2956); until then a new PC admits the account's devices by approval.
+
 ### Introductions
 
 A device just admitted on PC X learns the account's other PCs from the member that approved it,
@@ -267,10 +277,14 @@ is what authenticates the PC.
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be (`unchanged`), so a late or replayed one cannot undo it. A row an `add` or a remote
   approval made goes, however late the `remove` arrives.
-- **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back.
+- **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back,
+  even after the PC joins an account. An account `remove` for a key the PC revoked first takes over
+  its tombstone.
 - A pairing made on this PC (a code started on the PC, or a comparison approved here) clears that
   key's tombstone, after its row is written. A code started through the relay, or a comparison an
-  account member approves remotely, is refused for a tombstoned key.
+  account member approves remotely, is refused for a tombstoned key, except on a PC in no account:
+  there a code started through the relay may let back a key the PC revoked itself (not one the
+  account removed), and clears its tombstone.
 - A stop between two such writes leaves a row and a tombstone for one key. On start the PC tells them
   apart by time: a row made before the key's removal is revoked, one made after it keeps its device
   and the tombstone goes. Until then no such row signs in, signs or approves.
@@ -282,7 +296,7 @@ is what authenticates the PC.
   signer's own `add`) is kept in `account-pending.json` and tried again on every pull, a restart
   included, until it applies; at most 1000 wait, the oldest dropped first.
 - The PC collects its mailbox from `OVIS_ACCOUNT_SERVICE_URL` (https, or http on loopback only;
-  `https://account.ovis.sh` when unset), only while it has members and a relay identity (one on disk counts, the relay on or off; none is ever made for it). An address
+  `https://account.ovis.sh` when unset, none when `off`), only while it has members and a relay identity (one on disk counts, the relay on or off; none is ever made for it). An address
   it cannot use shows as the mailbox's error in `/api/account/status`.
 - `/api/account/*` is refused to Portal visitors and open LAN windows (`owner_only`), and a `link`
   must start from the key its own session signed in with.
@@ -351,7 +365,13 @@ not the one it sent.
 `redirect_uri` is compared exactly against three forms: `https://app.ovis.sh/`,
 `ovis://account/callback`, and `http://127.0.0.1:<port>/callback` on any port (a loopback redirect
 for the desktop app, RFC 8252). Anything else answers 400 `invalid_redirect_uri` before any
-sign-in. The hosted shell's Content-Security-Policy lets it reach `https://account.ovis.sh` (`connect-src`), and no other account service yet. The PC's own pages may reach exactly the origin `OVIS_ACCOUNT_SERVICE_URL` names when it is https, and no account service when it is unset or not https. Token errors are 400 `invalid_grant` (a wrong, spent or expired code, verifier, refresh
+sign-in. The hosted shell's Content-Security-Policy lets it reach `https://account.ovis.sh` (`connect-src`), and no other account service yet. The PC's own pages may reach `https://account.ovis.sh` when `OVIS_ACCOUNT_SERVICE_URL` is unset, exactly the origin it names when it is https with a host name or IPv4 address, and no account service when it is `off` or not https.
+
+The desktop app offers sign-in in **Settings → Phone & devices** with `https://account.ovis.sh`
+unless `OVIS_ACCOUNT_SERVICE_URL` names another https service. `OVIS_ACCOUNT_SERVICE_URL=off`
+turns the account off for the app and its server alike: no sign-in, no account origin in the
+pages' policy, no mailbox. A browser on the PC's own address offers no sign-in either way: the
+service sends a sign-in back only to the three redirects above, none of which is that address. Token errors are 400 `invalid_grant` (a wrong, spent or expired code, verifier, refresh
 token or identity token) and 400 `unsupported_grant_type`; an access token that expired or was
 signed out answers 401 `unauthorized` on every other request.
 

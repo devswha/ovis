@@ -1,8 +1,8 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, Target, X } from "lucide-react";
 
-import type { HerdrPane } from "../shared/protocol.ts";
-import { authenticate, createTab, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
+import type { HerdrPane, PaneDirection } from "../shared/protocol.ts";
+import { authenticate, createTab, movePaneBeside, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
 import { layoutActions } from "./lib/layoutActions.ts";
 import { displayPaneTitle, storedWorktreeCollapsed, tabPaneTitle } from "./components/Sidebar.tsx";
 import { endSignIn } from "./lib/signOut.ts";
@@ -48,9 +48,9 @@ import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
 import { adjacentTabPane, adjacentWorkspacePane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
-import { currentSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
+import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { useSettings } from "./lib/settings.ts";
+import { loadSettings, useSettings } from "./lib/settings.ts";
 import { useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
@@ -84,6 +84,7 @@ import { useMachineDialog } from "./lib/useMachineDialog.ts";
 import { useNewSessionMachine, useNewSessionState, useSessionHistoryList } from "./lib/useNewSessionDialog.ts";
 import { useCommandPalette } from "./lib/useCommandPalette.ts";
 import { useRenameRequest } from "./lib/useRenameRequest.ts";
+import { useSearchRequest } from "./lib/useSearchRequest.ts";
 import { useFilePanels } from "./lib/useFilePanels.ts";
 import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
@@ -103,7 +104,7 @@ import { alertsBell } from "./lib/alertsBell.ts";
 import { Droplet } from "./components/Droplet.tsx";
 import { MarkdownLinkMenu } from "./components/MarkdownLinkMenu.tsx";
 import { paneDragData, PANE_DRAG_TYPE, slotSide, type SplitSlot, type SplitTarget } from "./lib/split.ts";
-import { useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
+import { paneMoveNotice, useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
 import { PaneFollowContext, PanePressContext } from "./lib/paneSubmitContext.ts";
 import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 import { CrashProbe, RegionCrash } from "./components/AppCrash.tsx";
@@ -205,10 +206,15 @@ export function App() {
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink });
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });
   const { lens, setLens, viewPicks, setViewPicks } = usePaneLensState();
-  const { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, dropAt, dropAtRef, showDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap } = useSplitState();
+  const { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, dropAt, dropAtRef, showDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap, markMove } = useSplitState();
   const { paletteOpen, paletteQuery, openPalette, setPaletteOpen } = useCommandPalette();
   const paneControls = useRef<PaneControls | null>(null);
   const [findRequest, setFindRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
+  // Search conversation over a pane's chat (ChatView): from the palette for the selected pane, from a pane's own menu for that one
+  const { searchRequest, requestSearch } = useSearchRequest(setDrawerOpen);
+  /** a pane's chat can be searched: it shows the chat, and its PC's bridge searches (an older one does not) */
+  const searchable = (machineId: string, pane: HerdrPane, lens: PaneView): boolean =>
+    showsChat(pane, lens) && machineSessions.peek(machineId)?.socket.canSearchConversation() === true;
   // the Rename tab shortcut and palette action: the tab strip of the selected pane opens its name field
   const { renameRequest, requestRename, clearRenameRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   // the header's More menu: its button
@@ -332,11 +338,23 @@ export function App() {
       void load();
     }).catch((err) => layoutRefused("pane swap failed", err));
   };
+  // a pane's title dropped on another pane's body in its tab: it goes to that side of it (#1819)
+  const movePanes = (dragged: SplitTarget, targetPaneId: string, side: PaneDirection): void => {
+    void movePaneBeside(dragged.paneId, targetPaneId, side, dragged.machineId).then((move) => {
+      const notice = paneMoveNotice(move, side, t);
+      if (notice !== null) setLayoutNotice(notice);
+      void load();
+    }).catch((err: unknown) => { moveRefused(err); void load(); });
+  };
 
   // what this browser keeps under the moved pane's ID goes to its new ID (lib/paneMove.ts), and wherever the old ID is
   // shown, in either half, the view goes with it (#1503). Nothing is sent: held text waits for its Send or Discard
   const followPaneMove = (machineId: string, from: string, to: string): void => {
     carryMovedPane(machineId, from, to);
+    // its lock goes with its pin (lib/paneLocks.ts); the locks as last saved, as this call may come from an older render's event
+    const locks = loadSettings().lockedAgents;
+    const movedLocks = movedSidebarPins(locks, machineId, from, to);
+    if (movedLocks !== locks) updateSettings({ lockedAgents: [...movedLocks] });
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);
@@ -371,6 +389,8 @@ export function App() {
   const attachOn = (machineId: string): boolean => { const herdr = herdrOn(machineId); return herdr?.terminal_attach !== false || herdr?.terminal_mirror === true; };
 
   const { lenses, view, pressPane } = usePaneLens({ settings, selectedPaneId, selectedMachineId, selectedPane, selectedAgent, terminalAttach, attachOn, notificationViewTarget, setNotificationViewTarget, lens, setLens, viewPicks, terminalPeek, setTerminalPeek });
+  // a peek shows the terminal over the chat: nothing there to search
+  const selectedSearchable = selectedPane !== null && terminalPeek === null && searchable(selectedMachineId, selectedPane, view);
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, webDialogCover, contentReady } = usePaneCoverage({ contentKey });
@@ -390,7 +410,7 @@ export function App() {
   // up under a sheet or Settings opened over it: their close, or a Back, comes back to the peek
   usePhoneSheetBack(() => endPeek(), terminalPeek !== null, true);
 
-  const { otherMachine, otherPane, splitOn, sameTabs, otherWorkspace, otherHerdr, otherAttach, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes, swapRefused: (machineId) => !appLayoutOn(machineId).arrange });
+  const { otherMachine, otherPane, splitOn, sameTabs, otherWorkspace, otherHerdr, otherAttach, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, arrangeRefused: (machineId) => !appLayoutOn(machineId).arrange });
 
   useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, releaseFile, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, setHeaderNote, selectionRef });
 
@@ -573,10 +593,11 @@ export function App() {
       enableNotifications: bellVisible && bell.run === enableNotifications ? () => void enableNotifications() : null,
       refresh: () => void load(),
       openFiles: selectedPaneId !== null ? () => { setDrawerOpen(false); setFilesOpen(true); } : null,
+      searchConversation: selectedSearchable && selectedPaneId !== null ? () => requestSearch(split ? split.active : soloSlot, selectedMachineId, selectedPaneId) : null,
       // herdr's layout calls on the selected pane (lib/layoutActions.ts): only those the PC's herdr answers
       ...layoutActions({ selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
     }),
-    [selectPane, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter],
+    [selectPane, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot],
   );
 
   useShortcuts(actions, locked === false);
@@ -955,8 +976,9 @@ export function App() {
                       const target = snapshot?.panes.find((item) => item.pane_id === paneId);
                       if (!target || !paneActionsRef.current) return [];
                       // the strip renders before the canvas, so its items come from the canvas's previous render:
-                      // an action runs against the canvas's latest one, where a snapshot change has landed
-                      return paneActionsRef.current(target).map((item) => ({ ...item, run: () => (paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id) ?? item).run() }));
+                      // an action runs against the canvas's latest one, where a snapshot change has landed; one it no
+                      // longer offers (a close a lock took away, lib/paneLocks.ts) does nothing
+                      return paneActionsRef.current(target).map((item) => ({ ...item, run: () => paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id)?.run() }));
                     } : undefined} />
                 )}
                 {/* the tab strip's panel: its id is what each tab's aria-controls points at, one per half.
@@ -967,6 +989,7 @@ export function App() {
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
+                    onSearchConversation={(target) => searchable(machineId, target, lensOf(target)) && !(slotPeek !== null && target.pane_id === pane?.pane_id) ? () => requestSearch(slot, machineId, target.pane_id) : null}
                     onNewTab={workspace ? () => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onNewTerminal={workspace ? () => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
@@ -1010,6 +1033,7 @@ export function App() {
                         // the paging shortcuts reach the selected pane of the active half only
                         controls={active && itemActive ? paneControls : undefined}
                         findRequest={active && findRequest.paneId === item?.pane_id ? findRequest.serial : 0}
+                        searchRequest={searchRequest.slot === slot && searchRequest.machineId === machineId && searchRequest.paneId === item?.pane_id ? searchRequest.serial : 0}
                         autoSelected={active ? autoSelected : true}
                         terminalFontSize={settings.terminalFontSize}
                         split={herdrSplit || splitOn}

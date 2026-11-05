@@ -80,6 +80,7 @@ run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
+run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
 run_script scripts/chat-no-rewind-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
@@ -97,11 +98,13 @@ run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
+run_script scripts/file-text-size-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
 run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
+run_script scripts/alert-webhook-demo-regression.ts
 run_script scripts/install-hint-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
@@ -116,6 +119,8 @@ run_script scripts/chat-history-browser-qa.ts
 run_script scripts/session-history-browser-qa.ts
 run_script scripts/new-session-skills-browser-qa.ts
 run_script scripts/chat-virtual-browser-qa.ts
+run_script scripts/conversation-search-browser-qa.ts
+run_script scripts/conversation-search-demo-regression.ts
 run_script scripts/chat-gjc-streaming-browser-qa.ts
 run_script scripts/chat-scroll-padding-regression.ts
 run_script scripts/chat-selection-copy-regression.ts
@@ -183,6 +188,7 @@ run_script scripts/sidebar-selection-contrast-demo-regression.ts
 run_script scripts/hide-pc-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
+run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
