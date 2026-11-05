@@ -67,6 +67,13 @@ it("adds every face of a named family the PC serves, once, and no other family",
   expect(asked).toEqual(["/api/fonts", "/api/fonts/QA%20Mono-Regular.ttf?v=4-1", "/api/fonts/QA%20Mono-BoldItalic.woff2?v=4-1"]);
 });
 
+it("gives FontFace the family as it is, never quoted, whatever CSS would need to read it bare", async () => {
+  // FontFace takes its family literally: a quoted one is a family named with the quotes, which no stack names
+  serving([font("1st.Mono+X.ttf", "1st.Mono+X")]);
+  await addServedFonts('"1st.Mono+X"', fontSet);
+  expect(added.map(({ family }) => family)).toEqual(["1st.Mono+X"]);
+});
+
 it("adds nothing from a server without the route, and fails no one", async () => {
   serving(null);
   await addServedFonts("Gamma", fontSet);

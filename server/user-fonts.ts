@@ -31,7 +31,9 @@ function fontOf(file: string, bytes: number, modified: number): UserFont | null 
   const stem = file.slice(0, -type.length).normalize("NFC");
   if (!Object.hasOwn(FONT_TYPES, type.toLowerCase()) || !PLAIN_NAME.test(stem) || bytes > USER_FONT_MAX_BYTES) return null;
   const dash = stem.lastIndexOf("-");
-  const face = dash > 0 ? FACE_SUFFIX[stem.slice(dash + 1).toLowerCase()] : undefined;
+  const suffix = dash > 0 ? stem.slice(dash + 1).toLowerCase() : "";
+  // own keys only: "-constructor" is no face
+  const face = Object.hasOwn(FACE_SUFFIX, suffix) ? FACE_SUFFIX[suffix] : undefined;
   const family = face ? stem.slice(0, dash).trim() : stem;
   return { file, family, ...(face ?? { weight: 400, style: "normal" }), bytes, version: `${bytes}-${Math.trunc(modified)}` };
 }
@@ -66,7 +68,7 @@ function fileOf(pathname: string): string | null | undefined {
   }
 }
 
-export async function handleUserFontsRequest(request: Request, pathname: string, dir: string): Promise<Response> {
+export async function handleUserFontsRequest(request: Request, pathname: string, dir: string, search = ""): Promise<Response> {
   const file = fileOf(pathname);
   setRequestRoute(file === null ? USER_FONTS_PATH : `${USER_FONTS_PATH}/:file`);
   if (request.method !== "GET" && request.method !== "HEAD") return jsonResponse({ error: { code: "method_not_allowed", message: "GET only" } }, 405);
@@ -85,9 +87,10 @@ export async function handleUserFontsRequest(request: Request, pathname: string,
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > USER_FONT_MAX_BYTES) return missing();
-      // the client asks with the font's version in the address, so a changed file is a new address
+      // kept for good only under the font's version, which the client puts in the address: a changed file is a new address
+      const versioned = new URLSearchParams(search).get("v") === font.version;
       return new Response(await handle.readFile(), {
-        headers: { "content-type": FONT_TYPES[extname(font.file).toLowerCase()]!, "cache-control": "private, max-age=31536000, immutable" },
+        headers: { "content-type": FONT_TYPES[extname(font.file).toLowerCase()]!, "cache-control": versioned ? "private, max-age=31536000, immutable" : "private, no-cache" },
       });
     } finally {
       await handle.close();

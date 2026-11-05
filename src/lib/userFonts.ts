@@ -65,6 +65,7 @@ function addFace(font: UserFont, fonts: Pick<FontFaceSet, "add">): Promise<void>
   let added = faces.get(key);
   if (added) return added;
   added = bytesOf(font).then(async (bytes) => {
+    // the name as it is: FontFace takes it literally (quotes would become part of it), digits, "." and "+" too
     const face = new FontFace(font.family, bytes, { weight: String(font.weight), style: font.style });
     fonts.add(face);
     await face.loaded;

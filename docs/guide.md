@@ -584,8 +584,8 @@ On a phone:
   `~/.config/ovis/fonts/`) on the PC. The PC serves them to its signed-in devices only.
   Each file's name is its family, with an optional `-Regular`, `-Bold`, `-Italic` or `-BoldItalic`
   (`D2Coding-Bold.ttf` is D2Coding in bold), and `.woff2`, `.woff`, `.ttf` and `.otf` files of up to
-  32 MB are served. A device downloads only the families its Settings name, and keeps the files
-  where the browser allows it. Reload the app after adding a file.
+  32 MB are served, at most 64 of them in file name order. A device downloads only the families its
+  Settings name, and keeps the files where the browser allows it. Reload the app after adding a file.
 
 On an iPad with a hardware keyboard (a Magic Keyboard, say), the small bar that rises from the
 bottom when a field gets the focus (language, arrows, dictation) is iPadOS's shortcuts bar for

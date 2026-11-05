@@ -23,6 +23,7 @@ describe("GET /api/fonts", () => {
     writeFileSync(join(fonts, "QA Mono-Regular.ttf"), "regular face");
     writeFileSync(join(fonts, "QA Mono-BoldItalic.woff2"), "bold italic face");
     writeFileSync(join(fonts, "D2Coding.otf"), "plain name");
+    writeFileSync(join(fonts, "Mono-constructor.ttf"), "no face suffix");
     writeFileSync(join(fonts, "notes.txt"), "not a font");
     writeFileSync(join(fonts, ".hidden.ttf"), "hidden");
     writeFileSync(join(fonts, 'Odd"Name.ttf'), "a name CSS would need escaped");
@@ -49,6 +50,7 @@ describe("GET /api/fonts", () => {
     const { fonts } = await response.json() as UserFontList;
     expect(fonts.map(({ file, family, weight, style, bytes }) => ({ file, family, weight, style, bytes }))).toEqual([
       { file: "D2Coding.otf", family: "D2Coding", weight: 400, style: "normal", bytes: 10 },
+      { file: "Mono-constructor.ttf", family: "Mono-constructor", weight: 400, style: "normal", bytes: 14 },
       { file: "QA Mono-BoldItalic.woff2", family: "QA Mono", weight: 700, style: "italic", bytes: 16 },
       { file: "QA Mono-Regular.ttf", family: "QA Mono", weight: 400, style: "normal", bytes: 12 },
     ]);
@@ -56,10 +58,14 @@ describe("GET /api/fonts", () => {
   });
 
   it("serves a listed file as a font the browser may keep, and nothing it does not list", async () => {
-    const served = await signedIn(`/api/fonts/${encodeURIComponent("QA Mono-Regular.ttf")}?v=1`);
+    const { fonts } = await (await signedIn("/api/fonts")).json() as UserFontList;
+    const version = fonts.find((font) => font.file === "QA Mono-Regular.ttf")!.version;
+    const served = await signedIn(`/api/fonts/${encodeURIComponent("QA Mono-Regular.ttf")}?v=${encodeURIComponent(version)}`);
     expect(served.status).toBe(200);
     expect(served.headers.get("content-type")).toBe("font/ttf");
     expect(served.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
+    // an address without the file's current version may name an older file: it is checked again
+    expect((await signedIn(`/api/fonts/${encodeURIComponent("QA Mono-Regular.ttf")}?v=old`)).headers.get("cache-control")).toBe("private, no-cache");
     expect(await served.text()).toBe("regular face");
     for (const name of ["notes.txt", "Huge.ttf", ".hidden.ttf", "Linked.ttf", "missing.ttf"]) {
       expect((await signedIn(`/api/fonts/${encodeURIComponent(name)}`)).status, name).toBe(404);
