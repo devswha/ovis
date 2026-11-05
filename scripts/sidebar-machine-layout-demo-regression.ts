@@ -169,9 +169,9 @@ async function renameGeometry(page: Page, manage: Locator, scenario: Scenario): 
   await capture(page, scenario, "renaming");
   await page.keyboard.press("Escape");
   await input.waitFor({ state: "detached" });
-  // a phone's drawer takes Escape first and goes away with the button, as it does from a workspace's rename field
-  // (lib/useSidebarLayout.ts)
-  if (scenario.desktopSidebar) assert.equal(await manage.evaluate((button) => document.activeElement === button), true, `${scenario.name} Escape in the field gives the focus back to the manage button`);
+  // the field keeps its own Escape: a phone's drawer stays out (lib/useSidebarLayout.ts)
+  assert.equal(await manage.evaluate((button) => document.activeElement === button), true, `${scenario.name} Escape in the field gives the focus back to the manage button`);
+  if (!scenario.desktopSidebar) assert.equal(await page.locator(".sidebar.is-open").isVisible(), true, `${scenario.name} Escape in the field leaves the drawer out`);
   assert.equal((await getHook(page, "calls.mutations") as unknown[]).length, before, `${scenario.name} Escape sends no rename`);
   await machineGroup(page, REMOTE_NAME).waitFor({ state: "attached" });
 }

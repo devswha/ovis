@@ -1526,7 +1526,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   are **Rename…**, **Disconnect** (**Connect** while the PC is disabled), **Reconnect / setup**, **Update bridge…**,
   **Hide on this device** and, after a rule, **Remove PC…** in the danger colour. Rename… swaps the name in the header
   for a field (up to 100 characters, its text selected): Enter saves, and Escape or a click away keeps the old name;
-  Enter and Escape give the focus back to the manage button. Remove PC… asks in the dialog a workspace's Close asks
+  Enter and Escape give the focus back to the manage button, and on a phone that Escape leaves the drawer out. Remove PC… asks in the dialog a workspace's Close asks
   in (`ConfirmDialog`), which says only the registration goes and shows a failure in place. Hide on this device
   follows Show in sidebar's rules: the last PC shown has no such item, and the focus goes to the line under the PCs
   that says how many are hidden. A PC herdr manages keeps herdr's limits: no Rename…, Disconnect or Remove PC…, and

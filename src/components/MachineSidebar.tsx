@@ -416,6 +416,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
         {renaming ? <input
           className="input machine-rename-input"
           aria-label={t("PC name")}
+          data-own-escape=""
           autoFocus
           maxLength={100}
           value={name}
