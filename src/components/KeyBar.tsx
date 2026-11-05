@@ -325,7 +325,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
       ? t("Press {key}", { key: [item.modifiers.ctrl && "Ctrl", item.modifiers.alt && "Alt", item.modifiers.shift && "Shift", spoken].filter(Boolean).join("+") })
       : spoken === keyBarItemLabel(item) ? undefined : spoken;
     return <Key key={keyBarItemId(item)} disabled={disabled} dataKey={item.modifiers === undefined ? item.key : keyBarItemId(item)} label={label} onPress={(repeat) => onKey(item, repeat)}
-      onHoldEnd={onKeyHoldEnd} repeatable={isRepeatableKeyBarItem(item)} holdScope={holdScope}>
+      onHoldEnd={item.modifiers === undefined ? onKeyHoldEnd : undefined} repeatable={isRepeatableKeyBarItem(item)} holdScope={holdScope}>
       {arrow && item.modifiers === undefined ? <Chevron direction={arrow.direction} /> : keyBarItemLabel(item)}
     </Key>;
   };

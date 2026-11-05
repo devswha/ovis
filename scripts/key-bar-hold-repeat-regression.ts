@@ -233,6 +233,20 @@ try {
         assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "a third tap lets Ctrl go");
         console.log("PASS two taps lock Ctrl for every key and a third lets it go");
 
+        // 6c. A hardware key's own auto-repeat keeps Ctrl held for one key; letting the key up ends it.
+        await ctrl.tap();
+        await page.locator(".xterm-helper-textarea").focus();
+        before = (await framesOf(page)).length;
+        await page.keyboard.down("ArrowLeft");
+        await page.keyboard.down("ArrowLeft");
+        await page.keyboard.down("ArrowLeft");
+        await page.waitForFunction((count) => (window as unknown as Recorder).keyBarFrames.length >= count + 3, before, { timeout: 5_000 });
+        assert.equal(await ctrl.getAttribute("aria-pressed"), "true", "Ctrl stays held while the hardware key repeats");
+        await page.keyboard.up("ArrowLeft");
+        assert.deepEqual(leftKeys(await framesSince(page, before)), ["ctrl+left", "ctrl+left", "ctrl+left"], "every auto-repeat carries Ctrl");
+        assert.equal(await ctrl.getAttribute("aria-pressed"), "false", "letting the hardware key up lets Ctrl go");
+        console.log("PASS a hardware key's auto-repeat keeps Ctrl held for one key until the key is let up");
+
         // 7. Probe the cancelable contextmenu while the arrow is physically held, not after it.
         await hold(page, cdp, left, KEY_REPEAT_DELAY_MS + KEY_REPEAT_INTERVAL_MS, async () => {
           const prevented = await left.evaluate((key) => {

@@ -344,7 +344,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // An app shortcut is the app's alone: xterm would still type it, and Ctrl+Shift+↓ reached the
       // pane it had just switched to as ESC[1;6B.
       let typedChord: string | null = null;
+      // the physical key that took the key bar's modifiers held for one key: they last through its
+      // own auto-repeat and go when it is let up, or when another key comes down first
+      let releaseOnKeyUp: string | null = null;
       term.attachCustomKeyEventHandler((event) => {
+        if (releaseOnKeyUp !== null && (event.type === "keyup" ? event.code === releaseOnKeyUp : event.type === "keydown" && event.code !== releaseOnKeyUp)) {
+          releaseOnKeyUp = null;
+          consumeModifiers();
+        }
         if (isAppShortcut(event, shortcutSettings.current)) return false;
         if (hasModifiers(modifiersRef.current) && !term.options.disableStdin && !composingRef.current && !compositionCommitPendingRef.current
             && !event.isComposing && event.keyCode !== 229 && !event.metaKey) {
@@ -357,7 +364,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const chord = terminalChord(physicalKey(event.key, event.code), combined);
           const navigation = navigationSequence(event.key, combined);
           if (navigation !== null) {
-            if (event.type === "keydown") { event.preventDefault(); commitPendingText(); term.input(navigation); consumeModifiers(); }
+            if (event.type === "keydown") { event.preventDefault(); commitPendingText(); term.input(navigation); releaseOnKeyUp = event.code; }
             return false;
           }
           // A real clipboard shortcut still belongs to the browser. Soft Ctrl+V
@@ -373,7 +380,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
               // Go through the same readiness/role/secret checks as other input.
               term.input(event.key);
               typedChord = null;
-              consumeModifiers();
+              releaseOnKeyUp = event.code;
             }
             return false;
           }

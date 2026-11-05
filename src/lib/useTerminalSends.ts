@@ -170,6 +170,8 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     cancelTouchRef.current();
     const sent = socket.submit(pane, message, payload, true);
     if (sent === null) return false;
+    // the line's Enter was the next key: modifiers held for one key are done with, as pressEnter's
+    consumeModifiers();
     const releaseSubmit = submitRetention?.retain(pane);
     term.scrollToBottom();
     return sent.then((result) => (result.ok ? true : submitNote(result.code, result.message))).finally(() => {
