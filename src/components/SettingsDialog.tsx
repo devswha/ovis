@@ -672,7 +672,7 @@ function VoicePage() {
         )}
       </SettingsGroup>
 
-      {settings.voiceInput !== "off" && (
+      {settings.voiceInput !== "off" && settings.voiceEngine !== "browser" && (
         <SettingsGroup title={t("Tidy dictated text")} section="tidy-dictation">
           <SettingsRow label={t("In chat")} description={t("Drops fillers and fixes spacing; code and paths stay as spoken")}>
             <Toggle label={t("Tidy dictated text in chat")} checked={settings.voicePolishChat} onChange={(voicePolishChat) => update({ voicePolishChat })} />

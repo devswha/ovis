@@ -126,6 +126,17 @@ describe("saved theme migration", () => {
     expect(loadSettings().sidebarFilter).toBe(true);
   });
 
+  it("keeps the speech recognition in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().voiceEngine).toBe("auto");
+    saveSettings(sanitizeSettings({ voiceEngine: "browser" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("voiceEngine");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().voiceEngine).toBe("browser");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    records.set("ovis:voice-engine", "not json");
+    expect(loadSettings().voiceEngine).toBe("auto");
+  });
+
   it("keeps the history page size in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().historyPrompts).toBe(10);
     saveSettings(sanitizeSettings({ historyPrompts: 50 }));

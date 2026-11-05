@@ -629,6 +629,18 @@ function readSidebarFilter(): boolean {
   }
 }
 
+/** Settings → Voice input → Speech recognition, in a key of its own: an older tab's whole-record save would put it back on Auto. */
+export const VOICE_ENGINE_STORAGE_KEY = "ovis:voice-engine";
+
+function readVoiceEngine(): VoiceEngineChoice {
+  try {
+    const raw = window.localStorage.getItem(VOICE_ENGINE_STORAGE_KEY);
+    return sanitizeSettings({ voiceEngine: raw === null ? null : JSON.parse(raw) }).voiceEngine;
+  } catch {
+    return DEFAULT_SETTINGS.voiceEngine;
+  }
+}
+
 /** Settings → Chat → History page size, kept in a key of its own for the same reason: an old tab's save drops a field it does not know. */
 export const HISTORY_PROMPTS_STORAGE_KEY = "ovis:history-prompts";
 
@@ -704,7 +716,7 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork) };
 }
 
@@ -716,7 +728,8 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, historyPrompts, composerArtifacts, expandThinking, foldWork, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, historyPrompts, composerArtifacts, expandThinking, foldWork, ...main } = mirrored;
+    window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
     window.localStorage.setItem(SIDEBAR_FILTER_STORAGE_KEY, JSON.stringify(sidebarFilter));
@@ -793,10 +806,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== null)) return;
-      const { shortcutOverrides, enterSends } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides, enterSends };
-      setSettings((current) => ({ ...current, shortcutOverrides, enterSends }));
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== null)) return;
+      // the recognition another tab chose: audio must not keep going where this tab last sent it
+      const { shortcutOverrides, enterSends, voiceEngine } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine };
+      setSettings((current) => ({ ...current, shortcutOverrides, enterSends, voiceEngine }));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
