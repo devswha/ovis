@@ -119,6 +119,9 @@ export interface Settings {
   /** a herdr-core pane is drawn by libghostty over its xterm, Kitty graphics pictures included (lib/ghostty/overlay.ts);
    *  off by default. herdr's own server redraws a pane from its grid, which keeps no pictures, so it stays with xterm. */
   terminalGhostty: boolean;
+  /** on a touch screen, an Attach files button in the terminal's input line and a key in the key bar while typing
+   *  straight into the grid pick files to store beside the pane (POST /api/pane/image); off by default */
+  terminalAttachButton: boolean;
   /** on a touch screen, the soft keyboard comes up for the terminal only from the key bar's keyboard control:
    *  while it is down, the input line and xterm's field carry inputmode="none" (#1635). Off by default. */
   terminalKeyboardOnRequest: boolean;
@@ -238,14 +241,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, terminalKeyboardOnRequest, sidebarFilter, voiceEngine, the agent groups, the
+ * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, sidebarFilter, voiceEngine, the agent groups, the
  * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty"
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "terminalAttachButton"
   | "terminalKeyboardOnRequest">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
@@ -327,6 +330,8 @@ export const SETTING_SCOPE = {
   terminalImages: "device",
   // a phone's browser has less memory for the module and decoded pictures than a desk
   terminalGhostty: "device",
+  // a phone's picker, not a desk's drop
+  terminalAttachButton: "device",
   // a phone's soft keyboard is no desk's
   terminalKeyboardOnRequest: "device",
   // a phone folds a wide mirror, a desk's window may draw it whole
@@ -384,7 +389,9 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalFontFamily: "",
   paneClipboard: true,
   terminalImages: false,
-  terminalGhostty: false,
+  // on by default; it only takes over on a herdr-core server (terminal-history), elsewhere xterm draws
+  terminalGhostty: true,
+  terminalAttachButton: false,
   terminalKeyboardOnRequest: false,
   terminalMirrorWrap: null,
   releasePaneAway: false,
@@ -585,7 +592,8 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
     terminalImages: record["terminalImages"] === true,
-    terminalGhostty: record["terminalGhostty"] === true,
+    terminalGhostty: record["terminalGhostty"] !== false,
+    terminalAttachButton: record["terminalAttachButton"] === true,
     terminalKeyboardOnRequest: record["terminalKeyboardOnRequest"] === true,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
@@ -739,6 +747,8 @@ export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
 export const TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
 /** Settings > Terminal > Draw with libghostty, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_GHOSTTY_STORAGE_KEY = "ovis:terminal-ghostty";
+/** Settings > Terminal > Attach files button, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_ATTACH_BUTTON_STORAGE_KEY = "ovis:terminal-attach-button";
 /** Settings > Terminal > Keyboard only from the key bar, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY = "ovis:terminal-keyboard-on-request";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
@@ -798,6 +808,7 @@ export function loadSettings(): Settings {
     composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
     terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages),
     terminalGhostty: readChatFold(TERMINAL_GHOSTTY_STORAGE_KEY, DEFAULT_SETTINGS.terminalGhostty),
+    terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
     terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest) };
 }
 
@@ -809,7 +820,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, terminalGhostty, terminalKeyboardOnRequest, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
@@ -824,6 +835,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
     window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
     window.localStorage.setItem(TERMINAL_GHOSTTY_STORAGE_KEY, JSON.stringify(terminalGhostty));
+    window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
     window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
