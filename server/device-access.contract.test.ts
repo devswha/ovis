@@ -1225,3 +1225,28 @@ it("a PC in no account whose tombstone file will not parse refuses a code starte
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("a key re-paired on a PC in no account with a code another device started stays when its tombstone comes back", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-repair-starter-"));
+  try {
+    const store = new DeviceStore(stateDir);
+    const fresh = async () => {
+      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      return Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    };
+    const [starterKey, publicKey] = [await fresh(), await fresh()];
+    const starter = store.pairRelay(store.startPairing().code, "Laptop", starterKey);
+    const first = store.pairRelay(store.startPairing().code, "Phone", publicKey);
+    if (!starter || !first) throw new Error("Expected relay enrollment");
+    store.revoke(first.device.id);
+    const tombstones = readFileSync(join(stateDir, "account-tombstones.json"));
+    // a second later, as a person pairing again would be
+    const later = Date.now() + 1_000;
+    expect(store.pairRelay(store.startPairing(later, { remote: true, startedBy: starter.device.id, memberRequired: false }).code, "Phone", publicKey, later)).not.toBeNull();
+    // the revoke's tombstone back, as a stop before it was cleared or a sibling dir's merge leaves it
+    writeFileSync(join(stateDir, "account-tombstones.json"), tombstones, { mode: 0o600 });
+    expect(new DeviceStore(stateDir).hasKey(publicKey)).toBe(true);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

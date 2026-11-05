@@ -493,8 +493,11 @@ export class DeviceStore {
       this.noteRelayFailure("code", now);
       return null;
     }
-    // a device let in by a code started through the relay is its starter's addition, not a pairing made on this PC (removeAccountKey)
-    const paired = this.enrollRelay(label, publicKey, now, true, startedBy ?? undefined);
+    // a device let in by a code started through the relay is its starter's addition, not a pairing made on this PC (removeAccountKey);
+    // one that brings back a key this PC revoked itself (on a PC in no account) undoes that revoke, and is the PC's own
+    // pairing, so a tombstone that comes back (a sibling dir, a stop before it is cleared) takes it only if newer
+    const undoesRevoke = remote && accountless && this.isTombstoned(publicKey);
+    const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
     if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
   }
