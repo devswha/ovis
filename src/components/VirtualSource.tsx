@@ -51,6 +51,8 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   const containerRef = useRef<HTMLElement | null>(null);
   const virtualizerRef = useRef<VirtualizerInstance | undefined>(undefined);
   const reveal = useRef<Reveal | null>(null);
+  // the reader's wheel, finger, scrollbar and key presses so far: a size change's anchor taken before one is stale
+  const readerInputs = useRef(0);
   // what a wrap toggle or a width change keeps in place: the marked line if it was in view, else the
   // line at the top of the view; read after each render and scroll, before the rows re-measure
   const anchor = useRef<{ width: number | null; top: number | null; markedInView: boolean }>({ width: null, top: null, markedInView: false });
@@ -185,7 +187,7 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     const root = hostRef.current?.querySelector<HTMLElement>(".virtual-source-scroll") ?? null;
     if (root === null) return;
     const onScroll = (): void => { readAnchor(); };
-    const onInput = (): void => { reveal.current = null; };
+    const onInput = (): void => { reveal.current = null; readerInputs.current += 1; };
     root.addEventListener("scroll", onScroll, { passive: true });
     for (const type of ["wheel", "touchstart", "pointerdown", "keydown"] as const) root.addEventListener(type, onInput, { passive: true });
     const observer = new ResizeObserver(() => {
@@ -205,15 +207,17 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
 
   // SettingsProvider writes a new --file-source-scale in a passive effect, after this component's: the height is read
   // a frame later, and the file mounted again at it reveals the line the view showed, as a wrap toggle does. The line
-  // is taken now, before the new scale resizes the old rows (a smaller size clamps the scroll to their new end)
+  // is taken now, before the new scale resizes the old rows (a smaller size clamps the scroll to their new end), unless
+  // the reader scrolls before the frame: then the line their scroll left at the top
   const sizedOnce = useRef(false);
   useEffect(() => {
     if (!sizedOnce.current) { sizedOnce.current = true; return; }
     const anchored = anchoredReveal();
+    const inputs = readerInputs.current;
     const frame = requestAnimationFrame(() => {
       const next = measureLine();
       if (next === null || next === lineHeightRef.current) return;
-      reveal.current = anchored;
+      reveal.current = readerInputs.current === inputs ? anchored : anchoredReveal();
       lineHeightRef.current = next;
       setLineHeight(next);
     });
