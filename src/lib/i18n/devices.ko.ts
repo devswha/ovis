@@ -3,7 +3,7 @@
  * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const DEVICES_KO: Record<string, string> = {
@@ -205,4 +205,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} was removed from this PC at {time}, by {by}.": "{time}에 {by}에서 {name}을(를) 이 PC에서 뺐습니다.",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "아직 빠지지 않은 PC: {pcs}. 그 PC에서 계정에 들어 있는 기기로 끊으세요.",
   "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "{pcs}에 보냈습니다. 각 PC가 다음에 켜질 때 뺍니다. 그 뒤에도 남아 있으면 계정에 들어 있는 다른 기기로 끊으세요.",
+  "Add to Home Screen for alerts: {glyph} Share → Add to Home Screen": "알림을 받으려면 홈 화면에 추가하세요: {glyph} 공유 → 홈 화면에 추가",
+  "Install the app for alerts.": "알림을 받으려면 앱을 설치하세요.",
+  "Install the app for alerts: Menu → Install app": "알림을 받으려면 앱을 설치하세요: 메뉴 → 앱 설치",
 };

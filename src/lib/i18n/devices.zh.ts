@@ -3,7 +3,7 @@
  * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const DEVICES_ZH: Record<string, string> = {
@@ -205,4 +205,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "{name} was removed from this PC at {time}, by {by}.": "{time} {by} 已将 {name} 从此 PC 移除。",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "尚未移除的 PC：{pcs}。请用在那台 PC 上属于该账户的设备断开它。",
   "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "已发送到 {pcs}：每台 PC 下次上线时会移除它。如果之后仍然显示，请用账户中的另一台设备断开它。",
+  "Add to Home Screen for alerts: {glyph} Share → Add to Home Screen": "添加到主屏幕即可接收提醒：{glyph} 分享 → 添加到主屏幕",
+  "Install the app for alerts.": "安装应用即可接收提醒。",
+  "Install the app for alerts: Menu → Install app": "安装应用即可接收提醒：菜单 → 安装应用",
 };

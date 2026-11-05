@@ -4,7 +4,7 @@ import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, FrameType, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { PairingIntent } from "../../shared/machines.ts";
 import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
@@ -230,12 +230,15 @@ export class RelaySession {
         if (frame.payload.features.includes(PAIR_SAS_FEATURE)) this.sasBinding = channelBinding(this.options.channel);
         // relay hints are answered in AUTH_OK, not WELCOME: a provisional WELCOME goes out before HELLO is read
         this.hinting = this.options.relayHints !== undefined && frame.payload.features.includes(RELAY_HINTS);
+        // a large session's snapshot goes in one message only to a phone that takes it (#2773)
+        const large = frame.payload.features.includes(LARGE_WS_MESSAGES);
+        if (large) this.mux.sendLargeMessages();
         // an intent is selected only with pair-sas, and only the one offered (docs/account.md, "Negotiation")
         const intents = frame.payload.features.filter((f) => f === PAIR_INTENT_PC || f === PAIR_INTENT_ACCOUNT);
         if (intents.length > 1) { this.close("protocol_error"); return; }
         const selected = [...this.sasBinding ? [PAIR_SAS_FEATURE, ...intents] : [], ...frame.payload.features.includes(ACCOUNT_FEATURE) ? [ACCOUNT_FEATURE] : []];
         // a feature the phone requires has to be one this PC takes on this channel
-        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting))) { this.close("unsupported_extension"); return; }
+        if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
         // after a provisional WELCOME (nothing selected), another goes out only when this one selects something

@@ -3,7 +3,7 @@
  * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const DEVICES_JA: Record<string, string> = {
@@ -205,4 +205,7 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} was removed from this PC at {time}, by {by}.": "{time} に {by} が {name} をこの PC から外しました。",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "まだ外れていない PC: {pcs}。その PC でアカウントに入っているデバイスから切断してください。",
   "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "{pcs} に送りました。各 PC は次にオンラインになったときに外します。まだ残っていたら、アカウントに入っている別のデバイスから切断してください。",
+  "Add to Home Screen for alerts: {glyph} Share → Add to Home Screen": "通知を受け取るにはホーム画面に追加: {glyph} 共有 → ホーム画面に追加",
+  "Install the app for alerts.": "通知を受け取るにはアプリをインストールしてください。",
+  "Install the app for alerts: Menu → Install app": "通知を受け取るにはアプリをインストール: メニュー → アプリをインストール",
 };
