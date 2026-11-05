@@ -147,11 +147,16 @@ export class SessionPlans {
     }
   }
 
-  /** Where a pane's plan is now; what was read of the same file stands. */
+  /**
+   * Where a pane's plan is now; what was read of the same file stands. Another session's context
+   * is not this one's: it goes at once, before the poll reads the new transcript.
+   */
   private track(paneId: string, key: string, where: { source: PlanSource; path: string } | null): void {
     const current = this.panes.get(paneId);
     const same = current !== undefined && current.where?.path === where?.path && current.where?.source === where?.source;
-    this.panes.set(paneId, { key, at: this.now(), where, sig: same ? current.sig : null, summary: current?.summary ?? null, metadata: same ? current.metadata : null, context: current?.context ?? null });
+    const sameSession = same && current.key === key;
+    this.panes.set(paneId, { key, at: this.now(), where, sig: sameSession ? current.sig : null, summary: current?.summary ?? null, metadata: sameSession ? current.metadata : null, context: current?.key === key ? current.context : null });
+    if (current !== undefined && current.key !== key && current.context !== null) this.deps.onContext?.(paneId, null);
   }
 
   /** Reads the transcripts that grew, PLAN_BUDGET bytes in all; a pane whose summary or context changed is told. */

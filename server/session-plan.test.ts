@@ -181,6 +181,25 @@ describe("SessionPlans", () => {
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
     expect(asked.at(-1)).toEqual([s.path, "claude-opus-5-5"]);
+    // When /model switches the session, the window is asked for the model it set, as the chat asks.
+    s.add({ type: "user", message: { role: "user", content: "<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>" } });
+    plans.poll();
+    expect(asked.at(-1)).toEqual([s.path, "claude-sonnet-5-5"]);
+  });
+
+  it("clears a pane's context as soon as it runs another session, before its transcript is read", async () => {
+    // Given a Claude pane whose context was told.
+    const s = claude();
+    s.add({ type: "assistant", timestamp: at(1), message: { role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 30_000 } } });
+    const changes: [string, PaneContext | null][] = [];
+    const plans = new SessionPlans({ claudePath: () => s.path, codexPath: async () => null, onChange: () => {}, onContext: (id, context) => changes.push([id, context]), claudeWindow: () => 200_000 });
+    await plans.refresh([pane("p1", "claude", "A")]);
+    plans.poll();
+    expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
+    // When herdr says the pane runs another session, the old figure goes at once, before any poll.
+    await plans.refresh([pane("p1", "claude", "B")]);
+    expect(plans.contextOf("p1")).toBeNull();
+    expect(changes.at(-1)).toEqual(["p1", null]);
   });
 
   it("reads a Codex pane's context with the window Codex states", async () => {

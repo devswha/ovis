@@ -94,7 +94,7 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
 
 /** The lines that can say what a request filled, or reset or change the model: only these are parsed for the context. */
 const CONTEXT_MARKS: Record<PlanSource, readonly string[]> = {
-  "claude-transcript": ['"usage"', "command-name>"],
+  "claude-transcript": ['"usage"', "command-name>", "local-command-stdout>"],
   "codex-transcript": ['"token_count"', '"turn_context"', '"session_meta"'],
   // OmO's figure has no window: the ring would draw nothing
   "omo-session": [],
