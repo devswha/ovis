@@ -9,7 +9,7 @@ import { AppLayoutContext, appLayoutOf, ReorderContext } from "../lib/machineCon
 import { SettingsProvider } from "../lib/settings.ts";
 import { inactiveSidebarFilter, sidebarFilter, type SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
-import { currentSidebarPins, setSidebarPins } from "../lib/sidebarPins.ts";
+import { currentSidebarPins, setSidebarPins, workspacePinKey } from "../lib/sidebarPins.ts";
 import { ReorderCoordinator } from "../lib/workspaceOrder.ts";
 import { Sidebar } from "./Sidebar.tsx";
 
@@ -130,6 +130,15 @@ describe("background workspaces in the sidebar", () => {
     await act(async () => row("a").props.onKeyDown(keyPress("ArrowDown", true)));
     await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowDown", true)));
     expect(reorder.mock.calls.map((call) => call[2])).toEqual([["bg1", "bg2", "b", "a"], ["a", "bg2", "bg1", "b"]]);
+  });
+
+  it("keeps a tagged worktree with its repository, also once a pin of the repository sets it apart as a row", async () => {
+    turnOn();
+    const repo = (linked: boolean) => ({ is_linked_worktree: linked, repo_key: "r", repo_name: "r", repo_root: "/r", checkout_path: "/r" });
+    setSidebarPins([workspacePinKey("local", "root")]);
+    await draw(roster([{ ...workspace("root"), worktree: repo(false) }, { ...tagged("wt"), worktree: repo(true) }, workspace("a")]), "a:p");
+    expect(shownRows()).toEqual(["root", "wt", "a"]);
+    expect(heading()).toHaveLength(0);
   });
 
   it("keeps a folded part's rows in place, so a move never passes the rows the fold hides", async () => {

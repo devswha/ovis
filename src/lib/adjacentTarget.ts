@@ -62,8 +62,10 @@ export function workspaceRows(groups: readonly WorkspaceGroup<WorkspaceInfo>[], 
  * draws them; null while the setting is off.
  */
 export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedIds: readonly string[], folded: (repoKey: string) => boolean, selectedWorkspaceId: string | null, backgroundFolded: boolean | null = null, blocked: ReadonlySet<string> = new Set()): string[] {
-  const { pinned, rest } = splitPinnedGroups(worktreeGroups(ordered), pinnedIds, (workspace) => workspace.workspace_id);
-  const { people, background } = backgroundFolded === null ? { people: rest, background: [] } : splitBackgroundGroups(rest);
+  const tree = worktreeGroups(ordered);
+  const { pinned, rest } = splitPinnedGroups(tree, pinnedIds, (workspace) => workspace.workspace_id);
+  const worktreeIds = new Set(tree.flatMap((group) => group.children.map((child) => child.workspace_id)));
+  const { people, background } = backgroundFolded === null ? { people: rest, background: [] } : splitBackgroundGroups(rest, worktreeIds);
   const shown = backgroundFolded ? background.filter((group) => [group.workspace, ...group.children].some((member) => member.workspace_id === selectedWorkspaceId || blocked.has(member.workspace_id))) : background;
   return workspaceRows([...pinned, ...people, ...shown], (group) => folded(group.workspace.worktree?.repo_key ?? ""), selectedWorkspaceId);
 }

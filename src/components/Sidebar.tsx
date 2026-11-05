@@ -432,10 +432,12 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   const inSight = (group: WorkspaceGroup<WorkspaceInfo>): boolean => [group.workspace, ...group.children].some((member) => member.workspace_id === viewedWorkspaceId
     || (online && rollupStatus(roster.filter((pane) => pane.workspace_id === member.workspace_id).map((pane) => activity.status(machineId, pane))) === "blocked"));
   const drawnGroup = (group: WorkspaceGroup<WorkspaceInfo>): boolean => roster.some((pane) => pane.workspace_id === group.workspace.workspace_id);
+  // a repository's worktrees file with it, also once a pin of the repository sets them apart as rows of their own
+  const worktreeIds = new Set(worktreeGroups.flatMap((group) => group.children.map((child) => child.workspace_id)));
   type Parts = { people: WorkspaceGroup<WorkspaceInfo>[]; background: WorkspaceGroup<WorkspaceInfo>[]; shown: WorkspaceGroup<WorkspaceInfo>[] };
   const parts = (groups: WorkspaceGroup<WorkspaceInfo>[]): Parts => {
     if (!backgroundApart) return { people: groups, background: [], shown: [] };
-    const { people, background } = splitBackgroundGroups(groups);
+    const { people, background } = splitBackgroundGroups(groups, worktreeIds);
     const drawn = background.filter(drawnGroup);
     return { people, background: drawn, shown: backgroundFolded ? drawn.filter(inSight) : drawn };
   };
@@ -450,7 +452,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // move there would also pass the rows the fold hides
   const stillIds = new Set(backgroundFolded ? movableParts.background.flatMap((group) => [group.workspace, ...group.children].map((member) => member.workspace_id)) : []);
   const movableGroups = [...movableParts.people, ...backgroundFolded ? [] : movableParts.background].filter((group) => !fixedIds.has(group.workspace.workspace_id));
-  const partOf = (group: WorkspaceGroup<WorkspaceInfo>): boolean => backgroundApart && isBackgroundWorkspace(group.workspace);
+  const partOf = (group: WorkspaceGroup<WorkspaceInfo>): boolean => backgroundApart && isBackgroundWorkspace(group.workspace) && !worktreeIds.has(group.workspace.workspace_id);
   // a pin moves the row to the other list, so React draws it anew: the row that had the focus gets it back
   const refocusRow = useRef<string | null>(null);
   useLayoutEffect(() => {

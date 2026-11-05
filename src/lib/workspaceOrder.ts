@@ -84,10 +84,13 @@ export function isBackgroundWorkspace(workspace: { tokens?: Record<string, unkno
 
 /**
  * Settings → Background workspaces apart: the groups whose head is tagged stand after the others, in
- * the same order. A tagged worktree stays under its repository's workspace, where its fold already is.
+ * the same order. A tagged worktree stays under its repository's workspace, where its fold already is,
+ * and with its repository's part when a pin has set it apart as a row of its own: `worktreeIds`, the
+ * worktrees the repository tree (`worktreeGroups`) hangs under another workspace, never file a group.
  */
-export function splitBackgroundGroups<G extends { workspace: { tokens?: Record<string, unknown> } }>(groups: readonly G[]): { people: G[]; background: G[] } {
-  return { people: groups.filter((group) => !isBackgroundWorkspace(group.workspace)), background: groups.filter((group) => isBackgroundWorkspace(group.workspace)) };
+export function splitBackgroundGroups<G extends { workspace: { workspace_id: string; tokens?: Record<string, unknown> } }>(groups: readonly G[], worktreeIds: ReadonlySet<string> = new Set()): { people: G[]; background: G[] } {
+  const background = (group: G): boolean => isBackgroundWorkspace(group.workspace) && !worktreeIds.has(group.workspace.workspace_id);
+  return { people: groups.filter((group) => !background(group)), background: groups.filter(background) };
 }
 
 /** `base`'s order for the workspaces `ids` still has; the ones it lacks follow, in `ids`' order. */
