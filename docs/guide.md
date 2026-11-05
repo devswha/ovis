@@ -1104,7 +1104,7 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 <details>
 <summary><b>Does my code or conversation leave my machine?</b></summary>
 
-Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Ovis has no account service, and its relay is off unless you turn it on. The agents' own connections to model providers depend on their configuration.
+Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Signing in to the account service is optional (see [Through an account](#through-an-account)), and the relay is off unless you turn it on. The agents' own connections to model providers depend on their configuration.
 
 Optional features can send data off the PC:
 - [Voice input](#voice-input) sends recordings to the configured transcription provider; polishing also sends the transcribed text. Without a configured API key, browser speech recognition may use the browser vendor's service.
