@@ -2,9 +2,12 @@
  * Keeps a regional copy of the hosted app (`app.ovis.sh`) on a relay box, for the regional app
  * address (`app-ap.ovis.sh`, shared/relay-regions.ts). Each run asks `app.ovis.sh` which commit it
  * serves (its build.json), finds the GitHub release built from that commit, checks the release's
- * dist-shell.tar.gz against the SHA-256 published with it and against that commit, and makes it
- * current. The copy therefore only ever serves a build `app.ovis.sh` serves too: the same trust
- * root, not a second one. A run with nothing new does nothing.
+ * dist-shell.tar.gz against the SHA-256 published with it and against that commit, then checks
+ * every file it would serve, byte for byte, against the same file fetched from `app.ovis.sh`, and
+ * makes it current only if `app.ovis.sh` still serves that commit. A release asset replaced after
+ * the deploy is refused, so what this copy serves is what `app.ovis.sh` served. The box itself
+ * still delivers the code, so whoever controls it is a trust root too (docs/relay.md). A run with
+ * nothing new does nothing. Precompressed copies are dropped: the web server compresses itself.
  *
  *   bun relay/shell-mirror.ts --dir /opt/ovis-shell
  *
@@ -12,11 +15,16 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 export const APP = "https://app.ovis.sh";
 export const REPOSITORY = "devswha/ovis";
 const KEEP = 3;
+/** Files the Pages build writes for Pages itself, which it never serves. */
+const PAGES_ONLY = new Set(["_headers", "_redirects"]);
+const COMPARE_AT_ONCE = 8;
+/** How long a commit no release was found for is not searched again (GitHub allows 60 unauthenticated calls an hour). */
+const MISS_MS = 60 * 60 * 1000;
 const REVISION = /^[0-9a-f]{40}$/;
 
 interface ReleaseAsset { readonly name: string; readonly browser_download_url: string }
@@ -68,6 +76,11 @@ export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> 
   const unpack = options.unpack ?? tarUnpack;
   const live = revisionOf(await json(fetcher, `${APP}/build.json`));
   if (servedRevision(options.dir) === live) return { kind: "current", revision: live };
+  const miss = join(options.dir, ".missed");
+  try {
+    const last = JSON.parse(readFileSync(miss, "utf8")) as { revision?: unknown; at?: unknown };
+    if (last.revision === live && typeof last.at === "number" && Date.now() - last.at < MISS_MS) throw new Error(`no release was built from ${live} at the last look`);
+  } catch (error) { if (error instanceof Error && error.message.startsWith("no release")) throw error; }
   const releases = await json(fetcher, `https://api.github.com/repos/${REPOSITORY}/releases?per_page=20`) as Release[];
   for (const release of releases) {
     const tarball = release.assets.find((asset) => asset.name === "dist-shell.tar.gz");
@@ -80,13 +93,33 @@ export async function mirrorOnce(options: MirrorOptions): Promise<MirrorResult> 
     if (!/^[0-9a-f]{64}$/.test(expected) || createHash("sha256").update(archive).digest("hex") !== expected) {
       throw new Error(`${release.tag_name}: dist-shell.tar.gz does not match its published SHA-256`);
     }
-    return install(options.dir, release.tag_name, live, archive, unpack);
+    return install(options.dir, release.tag_name, live, archive, unpack, fetcher);
   }
+  mkdirSync(options.dir, { recursive: true });
+  writeFileSync(miss, JSON.stringify({ revision: live, at: Date.now() }));
   throw new Error(`no release with a dist-shell.tar.gz was built from ${live}, the commit ${APP} serves`);
 }
 
+function files(root: string, at = root): string[] {
+  return readdirSync(at, { withFileTypes: true }).flatMap((entry) => entry.isDirectory()
+    ? files(root, join(at, entry.name)) : [relative(root, join(at, entry.name))]);
+}
+
+/** Every file of `staging` as `app.ovis.sh` serves it, or the first one that differs. */
+async function compareWithApp(staging: string, fetcher: typeof fetch): Promise<void> {
+  const queue = files(staging).filter((path) => !PAGES_ONLY.has(path));
+  const worker = async (): Promise<void> => {
+    for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
+      const served = await bytes(fetcher, `${APP}/${path.split("/").map(encodeURIComponent).join("/")}`);
+      const ours = readFileSync(join(staging, path));
+      if (!Buffer.from(served).equals(ours)) throw new Error(`${path} differs from what ${APP} serves`);
+    }
+  };
+  await Promise.all(Array.from({ length: COMPARE_AT_ONCE }, worker));
+}
+
 async function install(dir: string, tag: string, revision: string, archive: Uint8Array,
-  unpack: NonNullable<MirrorOptions["unpack"]>): Promise<MirrorResult> {
+  unpack: NonNullable<MirrorOptions["unpack"]>, fetcher: typeof fetch): Promise<MirrorResult> {
   const releases = join(dir, "releases");
   mkdirSync(releases, { recursive: true });
   const staging = join(releases, `.staging-${tag}`);
@@ -98,6 +131,10 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
     await unpack(tarball, staging);
     const unpacked = revisionOf(JSON.parse(readFileSync(join(staging, "build.json"), "utf8")));
     if (unpacked !== revision) throw new Error(`${tag}: its build.json names ${unpacked}, not ${revision}`);
+    for (const path of files(staging)) if (/\.(br|gz)$/.test(path)) rmSync(join(staging, path));
+    await compareWithApp(staging, fetcher);
+    // app.ovis.sh may have moved on while this run fetched: a copy is made current only while it serves the same
+    if (revisionOf(await json(fetcher, `${APP}/build.json`)) !== revision) throw new Error(`${APP} changed while ${tag} was being checked`);
     const target = join(releases, tag);
     rmSync(target, { recursive: true, force: true });
     renameSync(staging, target);

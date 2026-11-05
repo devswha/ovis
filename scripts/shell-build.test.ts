@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pagePolicy } from "../server/file-view.ts";
 import { CONTENT_SECURITY_POLICY, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../server/static.ts";
+import { REGIONAL_APPS } from "../shared/relay-regions.ts";
 import { RENDER_PATH, SHELL_META, shellCaddyfile, shellFiles, shellHeaders, shellIndexHtml, shellManifest, shellRedirects } from "./shell-build.ts";
 
 const root = join(import.meta.dir, "..");
@@ -91,8 +92,8 @@ describe("the shell's headers", () => {
   const blocks = headerBlocks(shellHeaders());
 
   it("send the policy derived from the app's on every path", () => {
-    expect(blocks.get("/*")).toEqual([`Content-Security-Policy: ${shellContentSecurityPolicy()}`]);
-    expect(shellContentSecurityPolicy()).not.toBe(CONTENT_SECURITY_POLICY);
+    expect(blocks.get("/*")).toEqual([`Content-Security-Policy: ${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}`]);
+    expect(shellContentSecurityPolicy(Object.values(REGIONAL_APPS))).not.toBe(CONTENT_SECURITY_POLICY);
   });
 
   it("give the render host the page policy alone, detaching the shell's first", () => {
@@ -114,11 +115,11 @@ describe("the shell's headers", () => {
 describe("the shell's Caddy site", () => {
   it("sends the policies and caching the Pages headers send", () => {
     const site = shellCaddyfile("app-ap.ovis.sh");
-    expect(site).toContain(`header @notrender Content-Security-Policy "${shellContentSecurityPolicy()}"`);
+    expect(site).toContain(`header @notrender Content-Security-Policy "${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}"`);
     expect(site).toContain(`header @render Content-Security-Policy "${pagePolicy(null)}"`);
     expect(site).toContain(`header /assets/* Cache-Control "${IMMUTABLE_CACHE}"`);
     expect(site).toContain(`Cache-Control "${REVALIDATE}"`);
-    for (const value of [shellContentSecurityPolicy(), pagePolicy(null)]) expect(value).not.toContain('"');
+    for (const value of [shellContentSecurityPolicy(Object.values(REGIONAL_APPS)), pagePolicy(null)]) expect(value).not.toContain('"');
   });
 
   it("refuses a site or folder that would break out of the file", () => {

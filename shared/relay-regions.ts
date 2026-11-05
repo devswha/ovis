@@ -35,3 +35,20 @@ export function regionalAppUrl(location: { origin: string; pathname: string; has
     return app === undefined ? null : app + location.pathname + location.hash;
   } catch { return null; }
 }
+
+/**
+ * Whether `app` serves the same build as `app.ovis.sh` right now: a regional copy that is down,
+ * still empty or a release behind is not moved to, and pairing goes on where it is.
+ */
+export async function regionalAppReady(app: string, fetcher: typeof fetch = fetch, timeoutMs = 3000): Promise<boolean> {
+  const revision = async (origin: string): Promise<string | null> => {
+    const response = await fetcher(`${origin}/build.json`, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    const body: unknown = response.ok ? await response.json() : null;
+    const value = typeof body === "object" && body !== null ? (body as { revision?: unknown }).revision : undefined;
+    return typeof value === "string" ? value : null;
+  };
+  try {
+    const [here, there] = await Promise.all([revision(GLOBAL_APP), revision(app)]);
+    return here !== null && here === there;
+  } catch { return false; }
+}

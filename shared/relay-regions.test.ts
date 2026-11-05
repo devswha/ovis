@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { regionalAppUrl } from "./relay-regions.ts";
+import { GLOBAL_APP, regionalAppReady, regionalAppUrl } from "./relay-regions.ts";
 
 const ID = "0123456789abcdef".repeat(2);
 const link = (offer: unknown) => `#offer=${btoa(JSON.stringify(offer)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
@@ -23,4 +23,18 @@ it("leaves every other page where it is", () => {
     [at("#offer=not*base64"), false],
     [at(link([1])), false],
   ] as const) expect([location, regionalAppUrl(location, native)]).toEqual([location, null]);
+});
+
+it("moves only to a copy that answers with the build app.ovis.sh serves", async () => {
+  const builds = (here: unknown, there: unknown) => (async (input: string | URL | Request) => {
+    const body = String(input).startsWith(GLOBAL_APP) ? here : there;
+    if (body instanceof Error) throw body;
+    return body === null ? new Response("", { status: 503 }) : Response.json(body);
+  }) as typeof fetch;
+  const copy = "https://app-ap.ovis.sh";
+  expect(await regionalAppReady(copy, builds({ revision: "a" }, { revision: "a" }))).toBe(true);
+  expect(await regionalAppReady(copy, builds({ revision: "a" }, { revision: "b" }))).toBe(false);
+  expect(await regionalAppReady(copy, builds({ revision: "a" }, null))).toBe(false);
+  expect(await regionalAppReady(copy, builds({ revision: "a" }, new TypeError("Failed to fetch")))).toBe(false);
+  expect(await regionalAppReady(copy, builds({}, {}))).toBe(false);
 });

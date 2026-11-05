@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { Plugin } from "vite";
 import { pagePolicy } from "../server/file-view.ts";
 import { IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy } from "../server/static.ts";
+import { REGIONAL_APPS } from "../shared/relay-regions.ts";
 
 /** Vite's `--mode` that builds the shell; the build's output directory. */
 export const SHELL_MODE = "shell";
@@ -78,9 +79,9 @@ export function shellRedirects(): string {
  */
 export function shellHeaders(): string {
   return [
-    "# Derived from the PC server's policy: server/static.ts shellContentSecurityPolicy() (scripts/shell-build.ts)",
+    "# Derived from the PC server's policy: server/static.ts shellContentSecurityPolicy(Object.values(REGIONAL_APPS)) (scripts/shell-build.ts)",
     "/*",
-    `  Content-Security-Policy: ${shellContentSecurityPolicy()}`,
+    `  Content-Security-Policy: ${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}`,
     "",
     `${RENDER_PATH}`,
     "  ! Content-Security-Policy",
@@ -112,16 +113,20 @@ export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): 
     `\t@worker path_regexp worker ${scope}/sw\\.js$`,
     `\t@revalidate path / /index.html /sw.js /manifest.webmanifest /s/*`,
     `\t@hidden path /_headers /_redirects`,
-    `\theader @notrender Content-Security-Policy "${shellContentSecurityPolicy()}"`,
+    `\theader @notrender Content-Security-Policy "${shellContentSecurityPolicy(Object.values(REGIONAL_APPS))}"`,
     `\theader @render Content-Security-Policy "${pagePolicy(null)}"`,
     `\theader /assets/* Cache-Control "${IMMUTABLE_CACHE}"`,
     `\theader @revalidate Cache-Control "${REVALIDATE}"`,
+    // as Pages answers it: the first script on app.ovis.sh compares this copy's build with its own
+    `\theader /build.json Access-Control-Allow-Origin "*"`,
     `\trespond @hidden 404`,
     `\thandle @render {\n\t\trewrite * /render.html\n\t}`,
     `\thandle @manifest {\n\t\trewrite * /manifest.webmanifest\n\t}`,
     `\thandle @worker {\n\t\trewrite * /sw.js\n\t}`,
     `\thandle_path /s/* {\n\t\trewrite * /index.html\n\t}`,
-    `\tfile_server {\n\t\tprecompressed br gzip\n\t}`,
+    // relay/shell-mirror.ts drops the precompressed copies, which Pages never serves as files
+    `\tencode zstd gzip`,
+    `\tfile_server`,
     "}",
     "",
   ].join("\n");

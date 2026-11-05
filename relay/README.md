@@ -249,9 +249,11 @@ beside `relay-ap.ovis.sh` (`REGIONAL_APPS` in `shared/relay-regions.ts`):
 3. `relay/shell-mirror.ts --dir /opt/ovis-shell`, run every few minutes (a systemd timer) as a user
    that owns only that folder. Each run reads the commit `app.ovis.sh` serves from its
    `build.json`, finds the GitHub release built from it, checks its `dist-shell.tar.gz` against the
-   SHA-256 published with it and its `build.json` against the commit, and swaps `current` to it. It
-   refuses a tarball with links, special files or paths outside it, and never serves a build
-   `app.ovis.sh` does not.
+   SHA-256 published with it and its `build.json` against the commit, compares every file with
+   the same file fetched from `app.ovis.sh`, and swaps `current` to it only if `app.ovis.sh` still
+   serves that commit. It refuses a tarball with links, special files or paths outside it. A box
+   that serves the app delivers code that holds phones' keys, so keep it to that and the relay,
+   and keep `/opt/ovis-shell` writable by the mirror's user alone.
 
 ## Tests
 
