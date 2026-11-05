@@ -1500,7 +1500,7 @@ export function Composer({
           >
             <Plus aria-hidden="true" />
           </button>
-          {document.documentElement.dataset.ovisDemo !== "true" && window.isSecureContext && typeof navigator.mediaDevices?.getDisplayMedia === "function" && <button
+          {document.documentElement?.dataset.ovisDemo !== "true" && window.isSecureContext && typeof navigator.mediaDevices?.getDisplayMedia === "function" && <button
             type="button"
             className="icon-button composer-window-button"
             aria-label={t("Share a window")}

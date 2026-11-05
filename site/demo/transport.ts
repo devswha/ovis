@@ -31,7 +31,7 @@ import { rollupStatus } from "../../src/lib/status.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
 // The fictional demo has no filesystem for an agent to read a live captured window from.
-document.documentElement.dataset.ovisDemo = "true";
+if (typeof document !== "undefined" && document.documentElement) document.documentElement.dataset.ovisDemo = "true";
 import { DemoHistory } from "./history.ts";
 import { screenAgent, screenCommand, screenFrame } from "./agentScreens.ts";
 import machinesFixture from "./fixtures/machines.json";
