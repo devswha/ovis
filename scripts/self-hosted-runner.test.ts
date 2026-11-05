@@ -791,7 +791,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -830,14 +830,20 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
         symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
       }
       const sha = "5".repeat(40);
+      const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
+      if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
       const answers: Record<string, unknown> = {
         jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
         run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
         pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
       };
       for (const [name, value] of Object.entries(answers)) writeFileSync(join(dir, `${name}.json`), JSON.stringify(value));
+      };
+      answer(github);
       writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$2" >> "\${0%/bin/gh}/gh.log"
+# GitHub failing for a moment
+[ -e "\${0%/bin/gh}/fail" ] && exit 1
 case "$2" in
   repos/owner/repo/actions/runs/7/attempts/1/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
@@ -856,6 +862,7 @@ esac
         spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
         writeFileSync(join(outbox, `${other}.claim`), again);
         callsBefore.push(existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean).length : 0);
+        if (thenGithub) answer(thenGithub);
         // the slot's ten minutes are over
         if (slotHeldOffUntilNow) {
           const old = new Date(Date.now() - 20 * 60_000);
@@ -935,6 +942,17 @@ esac
     expect(same.ghCalls).toHaveLength(same.callsBefore[0]!);
     const other = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"], true);
     expect(other.ghCalls.length).toBeGreaterThan(other.callsBefore[0]!);
+  });
+
+  it("never lets a claim from another slot refuse a trusted run's own claims", () => {
+    // another slot's job names run 7, whose job runs on this slot only once GitHub says so below
+    const run = promote({ runner: "herdr-ci-host-9" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true, { runner: slot });
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("remembers no refusal when GitHub failed to answer", () => {
+    const run = promote({ fail: true }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(run.entries).toHaveLength(1);
   });
 
   it("goes on asking about trusted runs: only refusals are remembered", () => {

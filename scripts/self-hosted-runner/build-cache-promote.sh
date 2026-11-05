@@ -19,17 +19,19 @@ USED="$ROOT/used"
 
 log() { echo "[build-cache] $*" >&2; }
 
-# Whether the runner named $1 is running a job of run $2 (attempt $3), and that run is trusted.
+# Whether the runner named $1 is running a job of run $2 (attempt $3), and that run is trusted: 0 when
+# it is; 1 when GitHub says the run is not trusted; 3 when no job of that run runs on this slot (the
+# claim, not the run, is at fault); 2 when GitHub did not answer, which proves nothing either way.
 trusted() {
-  local name="$1" run="$2" attempt="$3" info default pulls number pull
+  local name="$1" run="$2" attempt="$3" jobs info default pulls number pull
   # every call has a deadline: one GitHub request that hangs must not stop the promotion of every slot
-  timeout 20 gh api "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" |
-    jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null || { log "run $run has no job running on $name"; return 1; }
-  info="$(timeout 20 gh api "repos/$REPO/actions/runs/$run")" || return 1
+  jobs="$(timeout 20 gh api "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100")" || return 2
+  jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null <<<"$jobs" || { log "run $run has no job running on $name"; return 3; }
+  info="$(timeout 20 gh api "repos/$REPO/actions/runs/$run")" || return 2
   [ "$(jq -r '.head_repository.full_name // ""' <<<"$info")" = "$REPO" ] || { log "run $run is not from $REPO"; return 1; }
   case "$(jq -r '.event // ""' <<<"$info")" in
     push)
-      default="$(timeout 20 gh api "repos/$REPO" --jq .default_branch)" || return 1
+      default="$(timeout 20 gh api "repos/$REPO" --jq .default_branch)" || return 2
       [ -n "$default" ] && [ "$(jq -r '.head_branch // ""' <<<"$info")" = "$default" ] || { log "run $run pushed another branch than $default"; return 1; }
       ;;
     pull_request)
@@ -39,7 +41,7 @@ trusted() {
       [ -n "$pulls" ] || { log "run $run names no pull request"; return 1; }
       for number in $pulls; do
         case "$number" in ''|*[!0-9]*) return 1 ;; esac
-        pull="$(timeout 20 gh api "repos/$REPO/pulls/$number")" || return 1
+        pull="$(timeout 20 gh api "repos/$REPO/pulls/$number")" || return 2
         jq -e --arg writer "$WRITER" --arg sha "$(jq -r '.head_sha // ""' <<<"$info")" \
           '.user.login == $writer and .head.sha == $sha' >/dev/null <<<"$pull" || { log "pull request $number of run $run is not $WRITER's"; return 1; }
       done
@@ -95,9 +97,11 @@ mkdir -p "$TAKEN" && chmod 0700 "$TAKEN"
 take() { [ -f "$1" ] && [ ! -L "$1" ] && mv -T "$1" "$2" 2>/dev/null && [ -f "$2" ] && [ ! -L "$2" ]; }
 
 # A refusal is remembered, so a job claiming again and again costs no GitHub calls (this user's token
-# also registers the runners): the run and attempt for a day, and its slot for ten minutes, whatever
-# run the slot's next claims name. Only refusals: an untrusted run's jobs never claim (build-cache.ts
-# mayWrite), so one that does is abnormal, and a slot held off only builds without the cache.
+# also registers the runners): its slot for ten minutes, whatever run the slot's next claims name, and,
+# when GitHub said the run itself is not trusted, that run and attempt for a day. A claim naming a run
+# with no job on its slot marks only its slot (any slot can name any run), and an unanswered call
+# marks nothing. An untrusted run's jobs never claim (build-cache.ts mayWrite), so one that does is
+# abnormal, and a slot held off only builds without the cache.
 REFUSED="$OUTBOXES/.refused"
 mkdir -p "$REFUSED" && chmod 0700 "$REFUSED"
 find "$REFUSED" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null || true
@@ -138,10 +142,15 @@ for name in "$@"; do
       [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ]; then
       if refused_before "$name" "$run" "$attempt"; then
         log "refused $key from $name: run $run or this slot was refused before"
-      elif trusted "$name" "$run" "$attempt"; then
-        if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
       else
-        touch "$REFUSED/run-$run-$attempt" "$REFUSED/slot-$name"
+        verdict=0
+        trusted "$name" "$run" "$attempt" || verdict=$?
+        case "$verdict" in
+          0) if admit "$work/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi ;;
+          1) touch "$REFUSED/run-$run-$attempt" "$REFUSED/slot-$name" 2>/dev/null || true ;;
+          3) touch "$REFUSED/slot-$name" 2>/dev/null || true ;;
+          *) log "refused $key from $name: GitHub did not answer about run $run" ;;
+        esac
       fi
     fi
     # whatever it is (a directory named like a claim included): it must not stop the other slots
