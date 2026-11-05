@@ -8,9 +8,10 @@ import { isRecord } from "./snapshot.ts";
  * that machine's terminals as `lab/t3` beside its own `t3`, and reads its documents with `on`; through
  * this connection they are that machine's own again: only `lab/…` terminals, without the prefix, and
  * its own documents, so the adapter and the attach run unchanged, as they would on that machine.
- * Every address goes back to hc with the prefix, and a new terminal or document is made `on` it.
- * hc names a machine by a name that can be given to another one (`hc machine rename`): each call
- * first checks the name still names this machine's id, so a rename never sends it to another.
+ * Every address goes back to hc under the machine's permanent id (`<id>/t3`, which hc takes as it
+ * takes the name), and a new terminal or document is made `on` that id: a name can be given to
+ * another machine (`hc machine rename`), the id cannot, so no call reaches another machine. hc still
+ * lists and reports terminals by name: each call first checks the name still names this id.
  */
 /** past any event line hc sends (adapter.ts EVENT_LINE_BYTES, 4 MiB) */
 const EVENT_LINE_LIMIT = 4 * 1024 * 1024;
@@ -43,7 +44,7 @@ export class MachineScopedConnection extends HcConnection {
   }
 
   address(local: string): string {
-    return `${this.prefix}${local}`;
+    return `${this.id}/${local}`;
   }
 
   local(address: string): string | null {
@@ -56,7 +57,7 @@ export class MachineScopedConnection extends HcConnection {
       if (typeof out[key] === "string") out[key] = this.address(out[key]);
     }
     // what is made or read without a terminal is this machine's: its terminals, its documents
-    if (method === "terminal.run" || method === "doc.get" || method === "doc.set") out["on"] = this.machine;
+    if (method === "terminal.run" || method === "doc.get" || method === "doc.set") out["on"] = this.id;
     return out as P;
   }
 

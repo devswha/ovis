@@ -134,7 +134,9 @@ async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {
     "terminal.list": () => ({ terminals, hidden_finished: 0 }),
     "doc.get": () => ({ value: LAYOUT, version: 1 }),
     "terminal.get": (params) => {
-      const found = terminals.find((entry) => entry.address === params["terminal"]);
+      // as hc: a machine's id in an address names the same terminal as its name, which the record keeps
+      const asked = machine === undefined ? params["terminal"] : String(params["terminal"]).replace(`${machine}-id/`, `${machine}/`);
+      const found = terminals.find((entry) => entry.address === asked);
       if (!found) throw new Error(`no terminal ${String(params["terminal"])}`);
       return found;
     },
@@ -1169,11 +1171,11 @@ describe("another machine of the core, as its own PC (#2497)", () => {
   const LAB_LAYOUT = { spaces: [{ id: "lab-s1", name: "lab work", tabs: [{ id: "lab-s1t1", name: "", root: { type: "row", id: "r", children: [{ type: "block", id: "b1", content: { terminal: "t1" } }] } }] }] };
 
   it("shows only that machine's terminals, by its own addresses, laid out by its own document", async () => {
-    const { socket, cores } = await setup(listed(), { "doc.get": (params) => ({ value: params["on"] === "lab" ? LAB_LAYOUT : LAYOUT, version: 1 }) }, undefined, "lab");
+    const { socket, cores } = await setup(listed(), { "doc.get": (params) => ({ value: params["on"] === "lab-id" ? LAB_LAYOUT : LAYOUT, version: 1 }) }, undefined, "lab");
     const snapshot = await sessionSnapshot(socket);
     expect(snapshot.workspaces.map((w) => w.label)).toEqual(["lab work"]);
     expect(snapshot.panes.map((p) => [p.pane_id, p.cwd, p.parent_pane_id ?? null])).toEqual([["t1", "/there", null], ["t2", "/home/u", "t1"]]);
-    expect(cores[0]!.calls.filter((call) => call.method === "doc.get").map((call) => call.params["on"])).toEqual(["lab", "lab"]);
+    expect(cores[0]!.calls.filter((call) => call.method === "doc.get").map((call) => call.params["on"])).toEqual(["lab-id", "lab-id"]);
   });
 
   it("reaches each terminal by its address on the core, and starts a new one there", async () => {
@@ -1185,11 +1187,11 @@ describe("another machine of the core, as its own PC (#2497)", () => {
       },
     }, undefined, "lab");
     await paneSendKeys("t1", ["Up"], socket);
-    expect(cores[0]!.calls.find((call) => call.method === "terminal.keys")?.params).toEqual({ terminal: "lab/t1", keys: ["up"] });
+    expect(cores[0]!.calls.find((call) => call.method === "terminal.keys")?.params).toEqual({ terminal: "lab-id/t1", keys: ["up"] });
     const failure = await paneSendText("vps/t1", "x", socket).then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
     expect(failure).toBe("pane_not_found");
     await workspaceCreate({ label: "new" }, socket).catch(() => null);
-    expect(started["on"]).toBe("lab");
+    expect(started["on"]).toBe("lab-id");
   });
 
   it("reaches no other machine that took its name after a rename", async () => {
