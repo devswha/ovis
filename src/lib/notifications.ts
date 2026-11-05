@@ -78,10 +78,20 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
   try {
     const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
     if (registration?.active) {
+      // iOS keeps the pane's earlier alerts despite the tag: close them as a push does (public/sw.js),
+      // only the ones up before this alert, so one shown meanwhile stays
+      const listed = async (): Promise<Notification[]> => {
+        try {
+          return await registration.getNotifications({ tag });
+        } catch {
+          return []; // an older browser without getNotifications: the alert still shows
+        }
+      };
+      const alertIdOf = (alert: Notification) => (alert.data as { alert_id?: string } | null)?.alert_id;
+      const earlier = new Set((await listed()).map(alertIdOf));
       await registration.showNotification(title, options);
-      // iOS keeps the pane's earlier alerts despite the tag: close them as a push does (public/sw.js)
-      for (const older of await registration.getNotifications({ tag })) {
-        if ((older.data as { alert_id?: string } | null)?.alert_id !== alertId) older.close();
+      for (const alert of earlier.size ? await listed() : []) {
+        if (earlier.has(alertIdOf(alert))) alert.close();
       }
       return;
     }

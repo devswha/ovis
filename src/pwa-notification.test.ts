@@ -492,6 +492,38 @@ describe("one alert per pane", () => {
     expect(centre.shown().map((shown) => shown.title)).toEqual(["newer"]);
   });
 
+  it("never lets an earlier alert's slower clean-up close a newer alert", async () => {
+    for (const platform of ["ios", "tagged"] as const) {
+      const centre = notificationCentre(platform);
+      centre.add("old", "herdr-pane-w1:p1", { pane_id: "w1:p1", machine_id: "local", workspace_id: "w1", alert_id: "old" });
+      // hold the earlier alert's clean-up from the moment it is shown until the newer alert is done
+      const held = deferred();
+      const holding = deferred();
+      let earlierShown = false;
+      let holds = 0;
+      const worker = notifications([], undefined, undefined, undefined, {
+        ...centre,
+        showNotification: async (title, options) => {
+          await centre.showNotification(title, options);
+          if (title === "earlier") earlierShown = true;
+        },
+        getNotifications: async (filter) => {
+          if (earlierShown && holds++ === 0) {
+            holding.resolve();
+            await held.promise;
+          }
+          return centre.getNotifications(filter);
+        },
+      });
+      const earlier = worker.push({ ...alert("w1:p1"), title: "earlier" });
+      await holding.promise;
+      await worker.push({ ...alert("w1:p1"), title: "newer" });
+      held.resolve();
+      await earlier;
+      expect(centre.shown().map((shown) => shown.title)).toEqual(["newer"]);
+    }
+  });
+
   it("leaves other panes' and other PCs' alerts alone", async () => {
     const centre = notificationCentre("ios");
     const worker = notifications([], undefined, undefined, undefined, centre);
