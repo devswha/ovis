@@ -166,11 +166,12 @@ export async function piExtensionCommands(
     ? await paneProcessInfo(paneId).catch(() => null)
     : { foreground_processes: [...options.processes] };
   const argvOf = options.argvOf ?? processArgv;
-  const pis = (info?.foreground_processes ?? []).filter((entry): entry is PiProcess & { pid: number } => {
+  const pisOf = (processes: readonly PiProcess[]) => processes.filter((entry): entry is PiProcess & { pid: number } => {
     if (typeof entry.pid !== "number") return false;
     const argv = entry.argv?.length ? entry.argv : argvOf(entry.pid);
     return !!argv?.length && isPiProcess(argv);
   });
+  const pis = pisOf(info?.foreground_processes ?? []);
   if (pis.length !== 1 || signal?.aborted) return null;
   const pi = pis[0]!;
   const socket = await extensionSocket(pi, (options.environOf ?? processEnviron)(pi.pid), options.home ?? userHome());
@@ -191,11 +192,13 @@ export async function piExtensionCommands(
   } catch {
     return null; // too slow, or not the extension answering
   }
-  // the answer is that pi's: one that left the front while it was asked no longer speaks for the pane
+  // the answer is that pi's: one that left the front while it was asked, or now shares it with
+  // another pi, no longer speaks for the pane
   const after = options.processesAfter
     ? await options.processesAfter()
     : (await paneProcessInfo(paneId).catch(() => null))?.foreground_processes ?? null;
-  return after?.some((entry) => entry.pid === pi.pid) ? rows : null;
+  const still = after === null ? [] : pisOf(after);
+  return still.length === 1 && still[0]!.pid === pi.pid ? rows : null;
 }
 
 // the scanned prompt templates and skills stay: this source adds only what the running pi registered

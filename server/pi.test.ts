@@ -691,7 +691,8 @@ it("rejects Pi session-dir command-line overrides it cannot verify", async () =>
 });
 
 it.skipIf(process.platform === "win32")("offers the commands pi's extensions registered, as the pane's one pi names them through the web UI's extension (#1448)", async () => {
-  const profile = join(root, "commands-profile");
+  // short: a unix socket path must fit in about 100 bytes, and macOS's temp dir is long
+  const profile = mkdtempSync(join(tmpdir(), "pic-"));
   const sockets = join(profile, "herdr-web-ui-ask");
   mkdirSync(sockets, { recursive: true, mode: 0o700 });
   let status = 200;
@@ -717,6 +718,8 @@ it.skipIf(process.platform === "win32")("offers the commands pi's extensions reg
     ]);
     // a pi that left the front while its extension answered no longer speaks for the pane
     expect(await piExtensionCommands("pane", undefined, { ...options, processesAfter: async () => [{ pid: 843, argv: ["bash"] }] })).toBeNull();
+    // or another pi joined it in front
+    expect(await piExtensionCommands("pane", undefined, { ...options, processesAfter: async () => [...processes, { pid: 844, argv: ["/usr/bin/pi"] }] })).toBeNull();
     // pi could not say, or the socket answers for another pid
     answer = { version: 1, pid: 840, commands: null };
     expect(await piExtensionCommands("pane", undefined, options)).toBeNull();
