@@ -22,7 +22,9 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 /** git in `cwd`; `at` sets both of a commit's dates (seconds since the epoch), so the order is the fixture's own */
 function git(cwd: string, args: string[], at?: number): string {
-  const dates = at === undefined ? {} : { GIT_AUTHOR_DATE: `${at} +0900`, GIT_COMMITTER_DATE: `${at} +0900` };
+  // a CI runner's own GIT_AUTHOR_* / GIT_COMMITTER_* would outrank `-c user.name`
+  const people = { GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" };
+  const dates = at === undefined ? people : { ...people, GIT_AUTHOR_DATE: `${at} +0900`, GIT_COMMITTER_DATE: `${at} +0900` };
   const result = Bun.spawnSync(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ...dates } });
   if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
