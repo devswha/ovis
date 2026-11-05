@@ -128,6 +128,17 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   await page.keyboard.press("Escape");
   await page.locator(".split-drop.is-visible").waitFor({ state: "detached" });
   await dialog.waitFor({ state: "hidden" });
+  // Settings opened by its shortcut with Files open takes the keyboard: one Escape closes Settings alone, the next Files
+  await page.getByRole("button", { name: "Browse files", exact: true }).click();
+  await dialog.waitFor();
+  await page.keyboard.press("Control+Shift+Comma");
+  const settings = page.locator(".settings-dialog");
+  await settings.waitFor();
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+  assert.equal(await dialog.isVisible(), true, "one Escape closed both Settings and Files");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
 }
 
 async function paintStartupMenu(pane: string): Promise<void> {

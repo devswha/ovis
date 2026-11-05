@@ -54,11 +54,17 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
   // the listener stays put across renders: an earlier listener of the same key that re-renders the app (the split
   // guide Escape puts away) would otherwise swap it out mid-dispatch, and a listener removed then never runs (#2631)
   const onKey = useEffectEvent((event: KeyboardEvent): void => {
-    if (event.key !== "Escape") return;
+    // one Escape closes one dialog, the one with the keyboard: Settings opened with Files open holds the focus
+    // (it closes first), and Settings under Files may have taken this Escape already
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const focusedModal = document.activeElement?.closest("[aria-modal='true']");
+    if (focusedModal && focusedModal !== surface.current) return;
     // docked, the pane beside it is live: Escape there is the terminal's, so only one inside the panel closes it
     if (docked && !surface.current?.contains(document.activeElement)) return;
     // a native modal over it (Add PC, from the palette) takes its own Escape
-    if (!nativeModalOver(surface.current)) onClose();
+    if (nativeModalOver(surface.current)) return;
+    event.preventDefault();
+    onClose();
   });
   useEffect(() => {
     if (viewing) return;
