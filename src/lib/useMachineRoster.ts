@@ -100,8 +100,10 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
   const onRosterStream = useCallback((update: RosterStreamUpdate) => {
     const previous = stream.current.open && stream.current.localConnected;
     if (Array.isArray(update)) stream.current.localConnected = update.some((machine) => machine.id === "local" && machine.state === "connected");
-    else if (update === "opened") stream.current.open = true;
-    else { stream.current.open = false; stream.current.localConnected = false; }
+    // Every opening, a switch from SSE to the terminal socket included, waits for its own first
+    // roster (each subscription sends one at once) rather than trusting the last transport's.
+    else if (update === "opened") stream.current = { open: true, localConnected: false };
+    else stream.current = { open: false, localConnected: false };
     const slow = stream.current.open && stream.current.localConnected;
     // Repeated pushed rosters must not postpone the backstop. Leaving the slow backstop (a lost
     // local PC or stream) reads at once, then watches health as quickly as a tab without push; a

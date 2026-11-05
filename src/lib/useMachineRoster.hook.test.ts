@@ -174,6 +174,20 @@ describe("roster and health polling beside the event stream", () => {
     expect(counts()).toEqual([2, 2, 2]);
   });
 
+  it("does not keep the slow backstop on SSE's roster once the terminal socket takes over", async () => {
+    await healthyStream();
+    await advance(1_000);
+    socketEvents = true;
+    await onSocket({ type: "features", features: ["machine-events"] } as ServerMessage);
+    expect(counts()).toEqual([1, 1, 1]);
+    await advance(5_000);
+    expect(counts()).toEqual([2, 2, 2]);
+    await onSocket({ type: "machine-event", event: { type: "machines", machines: [local()] } satisfies MachineEvent } as ServerMessage);
+    reads.length = 0;
+    await advance(29_999);
+    expect(counts()).toEqual([0, 0, 0]);
+  });
+
   it("watches health immediately and every five seconds while locked, without reading the roster", async () => {
     await healthyStream();
     await act(async () => { locked = true; renderer!.update(createElement(Probe)); });
