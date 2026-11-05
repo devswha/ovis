@@ -5,7 +5,7 @@ const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env:
 
 describe("updatePlan", () => {
   it("updates a packaged build from the feed it was built with", () => {
-    expect(updatePlan(packaged)).toEqual({ enabled: true, feed: null });
+    expect(updatePlan(packaged)).toEqual({ enabled: true, feed: null, installer: "default" });
   });
 
   it("never updates a development run, or with OVIS_UPDATES=0", () => {
@@ -18,13 +18,18 @@ describe("updatePlan", () => {
   });
 
   it("takes OVIS_UPDATE_URL over the built feed, https only", () => {
-    expect(updatePlan({ ...packaged, builtWithFeed: false, env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })).toEqual({ enabled: true, feed: "https://updates.example/desktop" });
+    expect(updatePlan({ ...packaged, builtWithFeed: false, env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })).toEqual({ enabled: true, feed: "https://updates.example/desktop", installer: "default" });
     expect(updatePlan({ ...packaged, env: { OVIS_UPDATE_URL: "http://updates.example/desktop" } }).enabled).toBe(false);
     expect(updatePlan({ ...packaged, env: { OVIS_UPDATE_URL: "not an address" } }).enabled).toBe(false);
   });
 
-  it("updates on Linux only as an AppImage", () => {
-    expect(updatePlan({ ...packaged, platform: "linux" }).enabled).toBe(false);
-    expect(updatePlan({ ...packaged, platform: "linux", env: { APPIMAGE: "/home/u/Ovis.AppImage" } }).enabled).toBe(true);
+  it("updates on Linux as an AppImage or a .deb install, each with its own installer", () => {
+    const linux = { ...packaged, platform: "linux" };
+    expect(updatePlan(linux).enabled).toBe(false);
+    expect(updatePlan({ ...linux, linuxPackage: "rpm" }).enabled).toBe(false);
+    expect(updatePlan({ ...linux, env: { APPIMAGE: "/home/u/Ovis.AppImage" } })).toEqual({ enabled: true, feed: null, installer: "appimage" });
+    expect(updatePlan({ ...linux, linuxPackage: "deb" })).toEqual({ enabled: true, feed: null, installer: "deb" });
+    // electron-builder may leave the deb's package-type file in the AppImage too: a running AppImage stays one
+    expect(updatePlan({ ...linux, linuxPackage: "deb", env: { APPIMAGE: "/home/u/Ovis.AppImage" } })).toEqual({ enabled: true, feed: null, installer: "appimage" });
   });
 });

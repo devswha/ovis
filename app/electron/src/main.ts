@@ -287,16 +287,24 @@ function allowPermissions(): void {
 }
 
 async function startUpdates(): Promise<void> {
-  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")) });
+  let linuxPackage: string | null = null;
+  try { linuxPackage = readFileSync(join(process.resourcesPath, "package-type"), "utf8").trim(); } catch { /* not a Linux package */ }
+  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")), linuxPackage });
   if (!plan.enabled) {
     console.log(`Updates are off: ${plan.reason}.`);
     return;
   }
-  const { autoUpdater } = await import("electron-updater");
+  const updater = await import("electron-updater");
+  const autoUpdater = plan.installer === "deb" ? new updater.DebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
   if (plan.feed) autoUpdater.setFeedURL({ provider: "generic", url: plan.feed });
-  autoUpdater.on("error", (error) => console.error(`Update check failed: ${message(error)}`));
+  // a .deb installs behind a password prompt: only when asked from the tray, never on a plain quit
+  if (plan.installer === "deb") autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on("error", (error) => console.error(`Update failed: ${message(error)}`));
   autoUpdater.on("update-downloaded", () => {
-    updateReady = () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
+    // the .deb installs first and the app quits (stopping the server) only once it did, then starts again;
+    // a cancelled prompt leaves the app and its server running. The AppImage starts its new copy at
+    // once, so the server stops before.
+    updateReady = plan.installer === "deb" ? () => autoUpdater.quitAndInstall() : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
     rebuildTrayMenu();
   });
   const check = () => void autoUpdater.checkForUpdates().catch((error: unknown) => console.error(`Update check failed: ${message(error)}`));
