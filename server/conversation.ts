@@ -692,8 +692,8 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     // screenshot can still be where the session's branch forks
     if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) {
       if (scan.pictures && scan.pictures.blind === null) scan.pictures.blind = base + offset;
-      // it may have been a prompt: a Kimi /undo counting back over it would take back another
-      if (scan.undo) scan.undo.anchors = [];
+      // a message (Kimi names a record's type first) may be a prompt: an /undo counting back over it would take back another
+      if (scan.undo && carry.subarray(0, 256).includes('"context.append_message"')) scan.undo.anchors = [];
       carry = Buffer.alloc(0);
       skipping = true;
     }

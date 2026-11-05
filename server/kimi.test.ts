@@ -202,7 +202,7 @@ it("sees a switch typed while the old lock lingers, or written in two pieces", (
   appendFileSync(history, jsonl([{ content: "/sessions" }]));
   const typed = new Date(Date.now() + 500);
   utimesSync(history, typed, typed);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
   rmSync(lockA);
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
   // a lock taken after it is the new session's
@@ -214,6 +214,15 @@ it("sees a switch typed while the old lock lingers, or written in two pieces", (
   appendFileSync(history, '{"content":"/resu');
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, 'me session_b"}\n');
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  // more typed since than is read at once is no answer either, also while the old lock lingers
+  lock("session_a", { ...liveLock(), startedAt: Date.now() + 2_000 });
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  appendFileSync(history, jsonl([{ content: "/sessions" }, { content: "x".repeat(1024 * 1024) }]));
+  const later = new Date(Date.now() + 3_000);
+  utimesSync(history, later, later);
+  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  rmSync(lockA);
   expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
 });
 

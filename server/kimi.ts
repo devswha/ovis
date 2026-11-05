@@ -135,6 +135,9 @@ function historyPath(sessionDir: string, home: string): string | undefined {
   return join(home, ".kimi-code", "user-history", `${createHash("md5").update(cwd, "utf8").digest("hex")}.jsonl`);
 }
 
+/** How far apart the CLI's history write and its lock for one prompt may lie. */
+const PROMPT_WRITE_MS = 250;
+
 /** A command that moves a Kimi to another session: picking an existing one writes nothing to it. */
 const SWITCH_COMMAND = /^\/(?:sessions|resume|new|clear)(?:\s|$)/;
 
@@ -177,18 +180,24 @@ function historyEnd(path: string): number | null {
 
 /**
  * Where the binding reads the folder's history from after this proof. Proving the same session
- * again moves past what was typed since, unless that holds a switch the proof does not postdate:
- * a lock taken before it (a turn's lock lingers a few seconds) or an open log says nothing of it.
+ * again moves past what was typed since, unless that holds a switch (or could: it cannot be read)
+ * the proof does not postdate. Only a lock taken since the last proof does, by its next prompt: the
+ * CLI writes the prompt to the history as it takes the lock (the same few milliseconds, either one
+ * first), so the lock is no older than the history's last change. The lock the last proof saw
+ * (a turn's lock lingers a few seconds) or an open log says nothing of it. The proof is then
+ * `stale`: the history stays where it was, and the pane shows its terminal until such a lock.
  */
-function historyAfterProof(path: string | undefined, previous: { path: string; size: number } | undefined, since: number | undefined): { path: string; size: number } | undefined {
-  if (path === undefined) return undefined;
+function historyAfterProof(path: string | undefined, previous: { path: string; size: number } | undefined, since: number | undefined, sinceBefore: number | undefined): { history?: { path: string; size: number }; stale: boolean } {
+  if (path === undefined) return { stale: false };
   if (previous?.path === path) {
     const read = readHistory(path, previous.size);
-    if (read !== null && read.switched && !(since !== undefined && since > read.changed)) return previous;
-    if (read !== null) return { path, size: read.end };
+    if (read !== null && !read.switched) return { history: { path, size: read.end }, stale: false };
+    let changed = read?.changed;
+    try { changed ??= statSync(path).mtimeMs; } catch { /* gone: what it held is unknown */ }
+    if (since === undefined || since === sinceBefore || changed === undefined || since + PROMPT_WRITE_MS < changed) return { history: previous, stale: true };
   }
   const end = historyEnd(path);
-  return end === null ? undefined : { path, size: end };
+  return { history: end === null ? undefined : { path, size: end }, stale: false };
 }
 
 /**
@@ -199,7 +208,7 @@ function historyAfterProof(path: string | undefined, previous: { path: string; s
  * /resume there (which switch to an existing session without a write or a lock until its next
  * prompt), its last session is still the one it shows.
  */
-const proven = new Map<string, { path: string; pid: number; program: string; store: number; history?: { path: string; size: number } }>();
+const proven = new Map<string, { path: string; pid: number; since?: number; program: string; store: number; history?: { path: string; size: number } }>();
 
 /**
  * The wire log these processes own: the session they prove now, else the one the same live program
@@ -215,8 +224,9 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
     if (program === null || store === null) proven.delete(paneId);
     else {
       const previous = proven.get(paneId);
-      const history = historyAfterProof(historyPath(dirname(dirname(dirname(proof.path))), home), previous?.path === proof.path ? previous.history : undefined, proof.since);
-      proven.set(paneId, { path: proof.path, pid: proof.pid, program, store, history });
+      const { history, stale } = historyAfterProof(historyPath(dirname(dirname(dirname(proof.path))), home), previous?.path === proof.path ? previous.history : undefined, proof.since, previous?.since);
+      proven.set(paneId, { path: proof.path, pid: proof.pid, since: proof.since, program, store, history });
+      if (stale) return null;
     }
     return proof.path;
   }
