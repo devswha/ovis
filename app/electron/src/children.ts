@@ -5,7 +5,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
@@ -74,7 +74,8 @@ export function serverEnv(base: Env, options: { hc: string; stateDir: string; po
 export function openLog(path: string): WriteStream {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) renameSync(path, `${path}.1`);
-  return createWriteStream(path, { flags: "a" });
+  // opened now, not on a later tick: the file exists once this returns, and a folder removed meanwhile cannot fail the stream
+  return createWriteStream(path, { fd: openSync(path, "a") });
 }
 
 export function tail(text: string, lines = 20): string {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +181,18 @@ describe("openLog", () => {
     await new Promise<void>((resolve) => second.end("second run\n", resolve));
     expect(readFileSync(`${path}.1`, "utf8")).toBe("first run\n");
     expect(readFileSync(path, "utf8")).toBe("second run\n");
+  });
+
+  it("has the file open once it returns, so its folder going away later does not fail the stream", async () => {
+    const dir = tempDir();
+    const path = join(dir, "ovis.log");
+    const log = openLog(path);
+    expect(existsSync(path)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+    const failed = new Promise<Error>((resolve) => log.once("error", resolve));
+    const closed = new Promise<null>((resolve) => log.once("close", () => resolve(null)));
+    log.end("after the folder went\n");
+    expect(await Promise.race([failed, closed])).toBeNull();
   });
 });
 
