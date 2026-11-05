@@ -105,6 +105,8 @@ describe("searchedTurnChanged", () => {
     const linked = found([user("go"), answer("Result: [deploy")], "deploy");
     expect(linked.before).toBe("Result: [");
     expect(searchedTurnChanged(answer("Result: [deploy](https://example.com) is up."), linked)).toBe(true);
+    const linkAfter = found([user("go"), answer("deploy [docs")], "deploy");
+    expect(searchedTurnChanged(answer("deploy [docs](https://example.com) are ready"), linkAfter)).toBe(true);
   });
 
   it("tells apart two answers of one time that the user steered between, and takes none whose words before the match changed", () => {
@@ -163,6 +165,12 @@ describe("pickedTurn", () => {
     const [later, first] = searchTurns(turns, searchPattern("done")!);
     expect(pickedTurn(turns, first!)).toBe(1);
     expect(pickedTurn(turns, later!)).toBe(3);
+    // steered twice: answers after the named one never stop it
+    const thrice = [answer("Done."), user("lint"), answer("Done. Lint passes."), user("tests"), answer("Done. Tests pass.")];
+    expect(pickedTurn(thrice, searchTurns([answer("Done.")], searchPattern("done")!)[0]!)).toBe(0);
+    // turns without a time: by name only
+    const untimed = [user("fix it now", null), answer("ok"), user("fix it", null)];
+    expect(pickedTurn(untimed, searchTurns(untimed, searchPattern("fix it")!)[0]!)).toBe(2);
     const prompts = [user("run tests", null), answer("ok"), user("run tests now", null)];
     expect(pickedTurn(prompts, searchTurns(prompts, searchPattern("run tests")!)[1]!)).toBe(0);
   });
