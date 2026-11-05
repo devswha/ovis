@@ -82,12 +82,19 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
     expect(html).toContain("row 1\nrow 2");
     expect(html.indexOf("Tall")).toBeLessThan(html.indexOf("row 1"));
     expect(html.indexOf("Wide")).toBeLessThan(html.indexOf("Tall"));
-    expect(html).toContain(translate("ko", "{n} more lines in the terminal", { n: 31 }));
+    expect(html).toContain(translate("ko", "{n} more lines Claude left out", { n: 31 }));
+  });
+
+  it("shows it on a multiple choice too", () => {
+    const html = render({ ...layout, multi_select: true, option_preview: { option_index: 1, text: "wide wide" } }, ["en"]);
+    expect(html).toContain("wide wide");
+    expect(html.indexOf("Wide")).toBeLessThan(html.indexOf("wide wide"));
+    expect(html.indexOf("wide wide")).toBeLessThan(html.indexOf("Tall"));
   });
 
   it("shows no preview without one, and no cut note for a whole one", () => {
     expect(render(layout, ["en"])).not.toContain("prompt-card-option-preview");
-    expect(render({ ...layout, option_preview: { option_index: 0, text: "+--+" } }, ["en"])).not.toContain("more lines in the terminal");
+    expect(render({ ...layout, option_preview: { option_index: 0, text: "+--+" } }, ["en"])).not.toContain("more lines Claude left out");
   });
 });
 

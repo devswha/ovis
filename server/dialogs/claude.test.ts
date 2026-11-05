@@ -565,6 +565,17 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
     expect(cards[0]?.options.map((option) => option.label)).toEqual(["Grid", "Wide", "Tall"]);
   });
 
+  test("reads only the box beside the menu, between its edges (#3060 review)", () => {
+    const screen = readFileSync(new URL("../fixtures/claude-question-preview-2.1.312-grid-67.txt", import.meta.url), "utf8");
+    // a box the user drew earlier, above the question at the same column, is no option's preview
+    const box = (text: string) => [`${" ".repeat(34)}┌${"─".repeat(31)}┐`, `${" ".repeat(34)}│ ${text.padEnd(30)}│`, `${" ".repeat(34)}└${"─".repeat(31)}┘`].join("\n");
+    const above = screen.replace(" ☐ Layout", `${box("PRIVATE USER TEXT")}\n ☐ Layout`);
+    expect(parseInteractivePrompt("claude", above)?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
+    // nor is what stands right of the box's edge
+    const beside = screen.replace("│ grid of cards                 │", "│ grid of cards                 │ OUTSIDE PANEL TEXT");
+    expect(parseInteractivePrompt("claude", beside)?.option_preview?.text).toBe("+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards");
+  });
+
   test("shows no preview from a box too narrow to read, and still the card", () => {
     // a 40-column pane: Claude draws the box four columns wide, the grid in pieces
     const screen = readFileSync(new URL("../fixtures/claude-question-preview-2.1.312-grid-40.txt", import.meta.url), "utf8");

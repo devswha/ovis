@@ -139,14 +139,17 @@ const CLAUDE_PREVIEW_MIN_WIDTH = 20;
  * the rows Claude cut from a long preview, which it names on a `├─── ✂ ─── 31 lines hidden ───┤` row
  * (measured on 2.1.312). Only the option under the cursor has its preview drawn.
  */
-function previewText(lines: string[], box: { top: number; column: number }): { text: string; hidden_lines?: number } | null {
+function previewText(lines: string[], box: { top: number; column: number; inner: number }): { text: string; hidden_lines?: number } | null {
   const rows: string[] = [];
   let hidden: number | undefined;
   for (let index = box.top + 1; index < lines.length; index += 1) {
     const line = lines[index]!;
     const at = indexAtColumn(line, box.column);
     const edge = at >= 0 ? line[at] : undefined;
-    if (edge === "│") rows.push(line.slice(at + 1).replace(/│\s*$/, "").replace(/^ /, "").trimEnd());
+    // between its two edges only: whatever stands right of the box is not the preview
+    const right = edge === "│" ? indexAtColumn(line, box.column + box.inner + 1) : -1;
+    if (edge === "│" && line[right] !== "│") return null;
+    if (edge === "│") rows.push(line.slice(at + 1, right).replace(/^ /, "").trimEnd());
     else if (edge === "├") hidden = Number(/(\d+)\s+lines?\s+hidden/i.exec(line)?.[1]) || hidden;
     else if (edge === "└" || edge === "╰") {
       const text = rows.join("\n").replace(/^\n+|\n+$/g, "");
@@ -243,7 +246,8 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
     // cards. On the first question still open it is the title a read without colors gives too
   }, { steps: undefined, can_step_back: undefined });
   // the box follows the cursor: left out of the card's id, like the words over the question
-  const box = preview ? previewBox(raw, Math.max(0, hintIndex - 64), hintIndex) : null;
+  // Claude opens the box on the first option's row: a box drawn higher up is no option's
+  const box = preview ? previewBox(raw, rows[0]!.lineIndex, rows[0]!.lineIndex) : null;
   const drawn = box !== null && box.column >= 2 && box.inner >= CLAUDE_PREVIEW_MIN_WIDTH && rowAt >= 0 && rowAt < optionRows.length ? previewText(raw, box) : null;
   return {
     ...parsed,

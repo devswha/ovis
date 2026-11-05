@@ -2723,7 +2723,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the card shows that box's text (`option_preview`, read off the screen) under that option, in line
   with its label, in a mono box (`--bg`, `--fs-xs`) kept as drawn: Claude's own wrapping stays, and
   the box scrolls both ways (eight lines at most) so a mockup's columns never re-wrap. A preview
-  Claude cut says how many lines are left in the terminal. It follows the cursor as the terminal
+  Claude cut says how many lines it left out (its terminal shows only that count too). It follows the cursor as the terminal
   moves it; the card never moves the cursor to show another option's. A box under 20 columns (a
   pane of about 40) shows the preview in unreadable pieces, so the card shows none. It follows
   Claude Code's terminal, which shows the preview beside the option it belongs to.

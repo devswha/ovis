@@ -28,7 +28,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Or type your own answer": "或输入你自己的回答",
   "From the terminal, until the agent saves this turn": "读自终端，代理保存此轮对话前暂时显示",
   "Preview of {option}": "{option} 的预览",
-  "{n} more lines in the terminal": "其余 {n} 行在终端中显示",
+  "{n} more lines Claude left out": "Claude 省略了其余 {n} 行",
   "Questions": "问题列表",
   "Not answered": "未回答",
   "Note: {note}": "备注：{note}",
