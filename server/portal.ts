@@ -35,6 +35,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkEntry, checkPortalAuth, NO_PORTAL_AUTH, PORTAL_AUTH_PROBLEMS, PORTAL_INVITE_DAYS, PORTAL_OIDC_SECRET_VARIABLE, type PortalAuth, type PortalSignIn } from "../shared/portal.ts";
 import type { DeviceRole, PortalStatus } from "../shared/protocol.ts";
+import { hostName } from "./access.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { chunksOf } from "./remote-bundle.ts";
 import { updateRequestAllowed } from "./update-api.ts";
@@ -517,6 +518,18 @@ export class PortalService {
    */
   vouches(given: string | null): boolean {
     return proofMatches(this.proof, given);
+  }
+
+  /**
+   * Whether `host`, a request's Host, names an address the Portal running now with no sign-in
+   * serves. Such a Portal sends no proof (Portal sends one only beside an identity it verified), so
+   * the visitor's Host it keeps is the one mark it leaves: it says how a request came, never who
+   * sent it. With a sign-in only the proof counts, which every request Portal lets through carries.
+   */
+  serves(host: string | null): boolean {
+    const name = host === null ? null : hostName(host);
+    if (name === null || this.url === null || this.auth.method !== "none") return false;
+    return [this.url, this.shortUrl].some((url) => url !== null && hostName(new URL(url).host) === name);
   }
 
   /** Only private links have invite records; every unrecorded Portal identity may watch. */
