@@ -83,8 +83,12 @@ export function useRefetchTimer() {
   return { refetchTimer };
 }
 
-export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
+const localConnectedIn = (machines: readonly Machine[]): boolean => machines.some((machine) => machine.id === "local" && machine.state === "connected");
+
+export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
   locked: boolean | null;
+  /** this PC's last health read failed: health is watched every five seconds until one answers */
+  healthFailing: boolean;
   rosterIn: () => void;
   setMachines: Dispatch<SetStateAction<Machine[]>>;
   setMachineRosterLoaded: Dispatch<SetStateAction<boolean>>;
@@ -99,7 +103,7 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
   const polling = useRef<((readNow: boolean) => void) | null>(null);
   const onRosterStream = useCallback((update: RosterStreamUpdate) => {
     const previous = stream.current.open && stream.current.localConnected;
-    if (Array.isArray(update)) stream.current.localConnected = update.some((machine) => machine.id === "local" && machine.state === "connected");
+    if (Array.isArray(update)) stream.current.localConnected = localConnectedIn(update);
     // Every opening, a switch from SSE to the terminal socket included, waits for its own first
     // roster (each subscription sends one at once) rather than trusting the last transport's.
     else if (update === "opened") stream.current = { open: true, localConnected: false };
@@ -110,6 +114,13 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
     // stream that never saw a connected local PC was polling every five seconds already.
     if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
   }, []);
+  // a failed health read is not something the stream tells: until one answers, the cadence is a tab's without push
+  const healthFailingRef = useRef(healthFailing);
+  useEffect(() => {
+    if (healthFailingRef.current === healthFailing) return;
+    healthFailingRef.current = healthFailing;
+    polling.current?.(false);
+  }, [healthFailing]);
   useEffect(() => {
     if (locked !== true) return;
     stream.current = { open: false, localConnected: false };
@@ -130,6 +141,12 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
         paneLifetimes.observe(next, displayPaneTitle);
         // a pane's conversation answers stand for the session it was on: the chats read this roster's
         observePaneSessions(next, readAfter);
+        // a read showing this PC away ends the slow backstop as a pushed roster would: a stream can
+        // stay open and say nothing. Only a pushed roster starts it.
+        if (stream.current.localConnected && !localConnectedIn(next)) {
+          stream.current.localConnected = false;
+          polling.current?.(false);
+        }
         reorderCoordinator.roster(next, { kind: "load", started });
         setMachines((previous) => sameData(previous, next) ? previous : next);
         rosterIn();
@@ -157,7 +174,7 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
     const schedule = (readNow: boolean): void => {
       window.clearInterval(timer);
       if (readNow) tick();
-      const slow = lockedRef.current !== true && stream.current.open && stream.current.localConnected;
+      const slow = lockedRef.current !== true && !healthFailingRef.current && stream.current.open && stream.current.localConnected;
       timer = window.setInterval(tick, slow ? STREAM_BACKSTOP_MS : POLL_MS);
     };
     void (async (): Promise<void> => {

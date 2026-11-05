@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useRef } from "react";
+import { createElement, useCallback, useRef, useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine, MachineEvent } from "../../shared/machines.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
@@ -32,14 +32,19 @@ describe("roster and health polling beside the event stream", () => {
     onDisconnect(listener: () => void) { disconnectListeners.add(listener); return () => { disconnectListeners.delete(listener); }; },
   };
   const machineSessions = { get: () => ({ socket }), closeAll: noop } as unknown as MachineSessionRegistry;
-  const loadHealth = async () => {
-    await getTransport().fetch("/api/health?scope=bridge");
-    await getTransport().fetch("/api/health");
-  };
+  // what the server answers: health and this PC's state in a roster read
+  let healthUp: boolean;
+  let readState: Machine["state"];
   function Probe() {
     const lockedRef = useRef(locked); lockedRef.current = locked;
     const refetchTimer = useRef<number | null>(null);
-    const loader = useRosterLoader({ locked, lockedRef, refetchTimer, loadHealth, rosterIn: noop, setMachines: noop, setMachineRosterLoaded: noop, setError: noop, setLocked: noop });
+    // as App's: the last health read's outcome
+    const [healthFailing, setHealthFailing] = useState(false);
+    const loadHealth = useCallback(async () => {
+      await getTransport().fetch("/api/health?scope=bridge");
+      setHealthFailing(!(await getTransport().fetch("/api/health")).ok);
+    }, []);
+    const loader = useRosterLoader({ locked, healthFailing, lockedRef, refetchTimer, loadHealth, rosterIn: noop, setMachines: noop, setMachineRosterLoaded: noop, setError: noop, setLocked: noop });
     useRosterEvents({
       ...loader, locked, machineSessions, onPaneMoved: noop, receivePreferencesRef: { current: noop }, onRoster: noop,
       setMachines: noop, rosterIn: noop, setMachineRosterLoaded: noop, machinesRef: { current: [] },
@@ -56,7 +61,7 @@ describe("roster and health polling beside the event stream", () => {
   beforeEach(async () => {
     for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     locked = false; visibility = "visible"; now = 0; next = 1; timers = new Map(); reads = []; events = new EventTarget();
-    socketEvents = false; socketListeners = new Set(); disconnectListeners = new Set();
+    socketEvents = false; socketListeners = new Set(); disconnectListeners = new Set(); healthUp = true; readState = "connected";
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       location: { hash: "" },
@@ -70,7 +75,8 @@ describe("roster and health polling beside the event stream", () => {
     source = { readyState: 0, onopen: null, onmessage: null, onerror: null, addEventListener: noop, close: noop };
     setTransport({ ...transport, openEventSource: () => source, async fetch(input) {
       const path = String(input); reads.push(path);
-      return Response.json(path === "/api/machines" ? { machines: [local()] } : { ok: true });
+      if (path === "/api/machines") return Response.json({ machines: [local(readState)] });
+      return path === "/api/health" && !healthUp ? Response.json({ error: { code: "down" } }, { status: 500 }) : Response.json({ ok: true });
     } });
     await act(async () => { renderer = create(createElement(Probe)); });
     reads.length = 0; // opening reads are not part of the steady-state minute
@@ -186,6 +192,34 @@ describe("roster and health polling beside the event stream", () => {
     reads.length = 0;
     await advance(29_999);
     expect(counts()).toEqual([0, 0, 0]);
+  });
+
+  it("watches health every five seconds after a failed read while the stream stays healthy, and slows again once it answers", async () => {
+    await healthyStream();
+    healthUp = false;
+    await advance(30_000);
+    expect(counts()).toEqual([1, 1, 1]);
+    await advance(5_000);
+    expect(counts()).toEqual([2, 2, 2]);
+    healthUp = true;
+    await advance(5_000);
+    expect(counts()).toEqual([3, 3, 3]);
+    await advance(29_999);
+    expect(counts()).toEqual([3, 3, 3]);
+    await advance(1);
+    expect(counts()).toEqual([4, 4, 4]);
+  });
+
+  it("returns to five seconds when a roster read shows this PC away under a silent open stream", async () => {
+    await healthyStream();
+    readState = "disconnected";
+    await advance(30_000);
+    expect(counts()).toEqual([1, 1, 1]);
+    await advance(5_000);
+    expect(counts()).toEqual([2, 2, 2]);
+    readState = "connected";
+    await advance(30_000); // a read alone never slows it again: that waits for a pushed roster
+    expect(counts()).toEqual([8, 8, 8]);
   });
 
   it("watches health immediately and every five seconds while locked, without reading the roster", async () => {
