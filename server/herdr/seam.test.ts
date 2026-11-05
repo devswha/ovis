@@ -457,18 +457,27 @@ it("takes a pane herdr brought back without answering as back in its tab, herdr'
   state.dropInto = 1;
   expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("went back into its tab");
   expect(state.tabs.get("source")).toBe("tab");
+  // without a read after it, where the pane is stays unknown
+  state.failInto = 1;
+  state.dropInto = 1;
+  state.reads = 0;
+  state.failSnapshot = (read) => read === 3;
+  expect((await rejection(paneMoveBeside("source", "target", "right", path))).message).toContain("may wait in a tab of its own");
 });
 
-it("reads the layout when a swap's answer is lost, and keeps herdr's focus when the read before it fails", async () => {
-  const { path, state } = await movePeer();
+it("reads the layout when a swap's answer is lost, and leaves herdr's focus alone when the read before it fails", async () => {
+  const { path, state, requests } = await movePeer();
   state.dropSwap = true;
   expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: null });
   expect(state.order.indexOf("source")).toBeLessThan(state.order.indexOf("target"));
   expect(state.focus).toBe("elsewhere");
-  // the read just before the swap (the second of the move) fails
+  // the read just before the swap (the second of the move) fails: no swap, the pane stays right of its target
   state.reads = 0;
   state.failSnapshot = (read) => read === 2;
-  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: null });
+  requests.length = 0;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "internal_error" });
+  expect(changes(requests).some(([method]) => method === "pane.swap")).toBe(false);
+  expect(state.order.indexOf("source")).toBeGreaterThan(state.order.indexOf("target"));
   expect(state.focus).toBe("elsewhere");
 });
 

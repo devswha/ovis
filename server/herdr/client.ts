@@ -922,8 +922,12 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         if (back) break;
       }
       // or one of these moves did, so herdr answered the next same_tab
-      if (!back && panes.length > 0) back = inTab(await sessionSnapshot(socket).catch(() => null), out);
-      if (!back) throw new HerdrError(why.code, `pane ${out} waits in a tab of its own: ${why.message}`);
+      let read = now;
+      if (!back && panes.length > 0) {
+        read = await sessionSnapshot(socket).catch(() => null);
+        back = inTab(read, out);
+      }
+      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`);
       if (left !== null) await restore(out, (at) => at === left);
       throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`);
     };
@@ -957,10 +961,11 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
     if (moved.changed === false) return { changed: false, reason: moved.reason ?? null };
     const id = moved.pane.pane_id;
     if (side === "left" || side === "up") {
-      // the focus just before the swap is the one kept (the one before the move when it cannot be
-      // read), the move's own taken back to the moved pane
-      const focused = await sessionSnapshot(socket).then((now) => now.focused_pane_id, () => before.focused_pane_id);
-      const kept = left !== null && focused === left ? id : focused ?? null;
+      // the focus just before the swap is the one kept, the move's own taken back to the moved pane;
+      // without it the swap would take herdr's focus with nothing to give back, so the pane stays put
+      const focused = await sessionSnapshot(socket).then((now) => now.focused_pane_id ?? null, (error: unknown) => failed(error));
+      if (focused instanceof HerdrError) return { changed: true, reason: focused.code };
+      const kept = left !== null && focused === left ? id : focused;
       // the move is committed whatever the swap does: a swap that fails leaves the pane right of or
       // below its target, and one whose answer is lost is read from the layout
       const swap = await herdrRpc<{ swap: { changed: boolean; reason?: string | null } }>("pane.swap", { source_pane_id: id, target_pane_id: targetPaneId }, socket)
