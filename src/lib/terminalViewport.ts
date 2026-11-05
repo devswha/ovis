@@ -30,6 +30,9 @@ export const SCROLL_POLL_BUSY_MS = 250;
  * is a round trip, and behind a metered relay a billed request). A key, wheel or drag that needs fresh
  * metrics still asks at once. */
 export const SCROLL_POLL_FOLLOW_MS = 2000;
+/** Output after this long a quiet spell starts a burst (a program starting, one entering its alternate screen),
+ * and a burst reads at the busy cadence for this long before it slows to the follow pace. */
+export const SCROLL_POLL_SETTLE_MS = 1000;
 /** the longest an idle, visible pane waits between metrics reads */
 export const SCROLL_POLL_IDLE_MAX_MS = 15_000;
 /** Delay before the next metrics read after `idleReads` reads in a row with no output, scroll,
