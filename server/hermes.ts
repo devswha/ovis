@@ -761,6 +761,9 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           turn.parts.push(orphan);
         }
       }
+      // the row went into the last turn: a pick finds the turn by its rows wherever a page began
+      const last = turns[turns.length - 1];
+      if (last !== undefined) last.rows = [last.rows?.[0] ?? row.id, row.id];
     } catch { /* ignore individual malformed row */ }
   }
 

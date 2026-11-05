@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationTurn } from "./protocol.ts";
 import { createCodexTranscriptParser } from "../server/codex.ts";
+import { parseHermesRows, type HermesMessageRow } from "../server/hermes.ts";
 import { conversationTurnAnchor, matchSnippet, pickedTurn, pickSettled, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
 
 const user = (text: string, ts: string | null = "2026-10-01T00:00:00Z"): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
@@ -234,6 +235,35 @@ describe("pickedTurn", () => {
     expect(pickedTurn([answer(`${lead} deploy [docs](https://example.com) are up.`), user("again"), answer(`${lead} deploy [docs`)], link)).toBe("several");
     const both = searchTurns([answer(`${lead} fruit`)], searchPattern("fruit")!)[0]!;
     expect(pickedTurn([answer(`${lead} fruit`), user("again"), answer(`${lead} fruit`)], both)).toBe("several");
+  });
+
+  it("opens the one of answers of its time sharing their name and the matched words that says what was searched", () => {
+    // Codex dates both answers by the task's start: one name, and both hold the matched words
+    const lead = "x".repeat(90);
+    const turns = [answer(`${lead} first way`), user("again"), answer(`${lead} second way`)];
+    const [second, first] = searchTurns(turns, searchPattern("way")!);
+    expect(pickedTurn(turns, first!)).toBe(0);
+    expect(pickedTurn(turns, second!)).toBe(2);
+    // the first went on from the second's words since: either could be the searched one
+    expect(pickedTurn([answer(`${lead} second way and more`), user("again"), answer(`${lead} second way`)], second!)).toBe("several");
+    // an older server's match has no digest: none is opened, as before
+    const { text_digest: _, ...old } = second!;
+    expect(pickedTurn(turns, old)).toBe("several");
+  });
+
+  it("opens a Hermes answer by its store rows when the chat's page and the search's begin at different rows", () => {
+    const row = (id: number, role: "user" | "assistant", content: string): HermesMessageRow =>
+      ({ id, role, content, tool_call_id: null, tool_calls: null, tool_name: null, reasoning: null, timestamp: 1_700_000_000 + id });
+    const rows = [row(100, "user", "deploy it"), row(101, "assistant", "Checking the deploy."), row(102, "assistant", "The deploy script is ready."), row(103, "user", "thanks")];
+    // the chat's newest page began at row 101; a row came since, so the search's began at row 102
+    const shown = parseHermesRows(rows.slice(1));
+    const match = searchTurns(parseHermesRows(rows.slice(2)), searchPattern("deploy script")!)[0]!;
+    expect(pickSettled(shown, match)).toBe(true);
+    expect(pickedTurn(shown, match)).toBe(0);
+    expect(pickedTurn(parseHermesRows(rows), match)).toBe(1);
+    // a page that does not hold the row reads on, and opens none
+    expect(pickSettled(shown.slice(1), match)).toBe(false);
+    expect(pickedTurn(shown.slice(1), match)).toBe("none");
   });
 });
 

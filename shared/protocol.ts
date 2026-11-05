@@ -549,6 +549,11 @@ export interface ConversationTurn {
   ts: string | null;
   /** Last recorded assistant activity, never the next user's timestamp. */
   end_ts?: string;
+  /**
+   * The ids of the first and last store row the turn was read from (Hermes's message ids): a turn a
+   * page boundary split is still known by them, from whichever row its page began.
+   */
+  rows?: [first: number, last: number];
   parts: ConversationPart[];
 }
 

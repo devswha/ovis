@@ -27,6 +27,11 @@ export interface ConversationSearchMatch {
    * sends none.
    */
   text_digest?: string;
+  /**
+   * the first store row the searched turn was read from (ConversationTurn.rows), for an agent whose
+   * turns have them: the pick opens the turn shown that holds this row, whatever its name
+   */
+  row?: number;
   /** the text before the match, the match and the text after it, each with whitespace runs as one space */
   before: string;
   match: string;
@@ -97,6 +102,9 @@ function textDigest(turn: ConversationTurn): string {
 const saysSearched = (turn: ConversationTurn, match: ConversationSearchMatch): boolean =>
   match.text_digest !== undefined && textDigest(turn) === match.text_digest;
 
+/** Whether `turn` was read from the store row `row` among others (ConversationTurn.rows). */
+const readsRow = (turn: ConversationTurn, row: number): boolean => turn.rows !== undefined && turn.rows[0] <= row && row <= turn.rows[1];
+
 /** The words around the first match in `text`, or null without one. */
 export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSearchMatch, "before" | "match" | "after"> | null {
   const found = pattern.exec(text);
@@ -154,12 +162,20 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
  * changed ones: none is opened, never the wrong one. Turns of its time that share the name (their
  * first 80 characters agree, or their first tool call) go by which still has the matched words
  * anywhere in its text, a progress note's too: an answer's words never leave it, though they can
- * leave the search (Codex marks them commentary later). None when that is not exactly one. Turns
+ * leave the search (Codex marks them commentary later). When several still have them, the one that
+ * says exactly what was searched, unless another may have said it then and changed since (its words
+ * read as an answer still go on from the match's). None when that is not exactly one. Turns
  * without a time (Kimi's prompts) go by name and their whole searched text: the first of the name
  * that still says it, else the one of the name that changed since; by name only for a match of an
- * older server, which has no digest.
+ * older server, which has no digest. A match with a store row (Hermes) opens the turn read from it,
+ * whatever either was named from: a page boundary may split one answer at another row.
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
+  if (match.row !== undefined) {
+    const row = match.row;
+    const index = turns.findIndex((turn) => turn != null && readsRow(turn, row));
+    return index < 0 ? "none" : index;
+  }
   const names = turns.flatMap((turn, index) => turn != null && conversationTurnAnchor(turn) === match.turn ? [index] : []);
   if (match.ts === null) {
     if (match.text_digest === undefined) return names[0] ?? "none";
@@ -171,7 +187,13 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
   const pattern = searchPattern(match.match);
   const holds = (index: number): boolean => pattern !== null
     && pattern.test(turns[index]!.parts.flatMap((part) => part.kind === "text" ? [plainText(part.text)] : []).join("\n\n"));
-  const holding = names.length > 1 ? names.filter(holds) : names;
+  let holding = names.length > 1 ? names.filter(holds) : names;
+  if (holding.length > 1) {
+    const same = holding.filter((index) => saysSearched(turns[index]!, match));
+    // a progress note's words read as an answer: one may have been the searched answer
+    const answered = (turn: ConversationTurn): ConversationTurn => ({ ...turn, parts: turn.parts.map((part) => part.kind === "text" ? { kind: "text", text: part.text } : part) });
+    if (same.length === 1 && holding.every((index) => index === same[0] || !searchedTurnChanged(answered(turns[index]!), match))) holding = same;
+  }
   if (holding.length > 1 || names.length > 1 && holding.length === 0) return "several";
   const named = holding[0] ?? -1;
   let changed: number | null = null;
@@ -194,9 +216,14 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
  * start. A time that cannot be read tells nothing. That holds only while a turn of the name still
  * says what was searched: a clock that went back (Hermes orders by its own ids) puts a turn of the
  * match's time after an earlier one, so when none does the pick reads to the beginning. Turns
- * without a time go by name and searched text alone (by name for an older server's match).
+ * without a time go by name and searched text alone (by name for an older server's match). A match
+ * with a store row settles once the turn read from that row is in.
  */
 export function pickSettled(turns: readonly ConversationTurn[], match: ConversationSearchMatch): boolean {
+  if (match.row !== undefined) {
+    const row = match.row;
+    return turns.some((turn) => readsRow(turn, row));
+  }
   const named = turns.findIndex((turn) => conversationTurnAnchor(turn) === match.turn);
   if (named < 0) return false;
   if (match.text_digest !== undefined && !turns.some((turn) => conversationTurnAnchor(turn) === match.turn && saysSearched(turn, match))) return false;
@@ -211,7 +238,9 @@ export function searchTurns(turns: readonly ConversationTurn[], pattern: RegExp)
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index]!;
     const snippet = matchSnippet(searchableText(turn), pattern);
-    if (snippet !== null) matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...snippet });
+    if (snippet !== null) {
+      matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...(turn.rows === undefined ? {} : { row: turn.rows[0] }), ...snippet });
+    }
   }
   return matches;
 }
