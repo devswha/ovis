@@ -15,5 +15,5 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "Split into rows and columns": "행과 열로 나누기",
   "Drop a pane on the edge of another in the split view to open it beside, above or below that pane, up to four at once, and drag the line between two panes to resize them. Off: the split view keeps two halves side by side.": "분할 보기에서 패널을 다른 패널의 가장자리에 놓으면 그 패널의 옆, 위, 아래에 열립니다. 한 번에 넷까지 열 수 있고, 두 패널 사이의 선을 끌어 크기를 바꿉니다. 끄면 분할 보기는 좌우 두 칸으로 나뉩니다.",
   "Compaction and failed requests": "압축과 실패한 요청",
-  "On this device, a compaction names the token counts the agent recorded with it, and a turn's failed requests show as one row that opens to their errors. OmO, omp and pi record them.": "이 기기에서 대화 압축에 에이전트가 함께 기록한 토큰 수를 보여 주고, 한 턴의 실패한 요청을 한 줄로 묶어 열면 오류를 볼 수 있게 합니다. OmO, omp, pi가 기록합니다.",
+  "On this device, a compaction names the token counts the agent recorded with it, and each run of back-to-back failed requests shows as one row that opens to their errors. OmO, omp and pi record them.": "이 기기에서 대화 압축에 에이전트가 함께 기록한 토큰 수를 보여 주고, 연달아 실패한 요청을 한 줄로 묶어 열면 오류를 볼 수 있게 합니다. OmO, omp, pi가 기록합니다.",
 };
