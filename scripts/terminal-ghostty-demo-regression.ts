@@ -115,13 +115,15 @@ const picture = (page: Page) => page.evaluate(() => {
   return { rgb: [r, g, b], width: canvas.style.width, top: canvas.style.top };
 });
 
-async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", ghostty: boolean, images = false): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
+/** `storedOff`: the old Draw with libghostty switch was turned off on this device; `noModule`: libghostty's module cannot load */
+async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-  await context.addInitScript(([ghostty, images]) => {
+  await context.addInitScript(([storedOff, images]) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
-    localStorage.setItem("ovis:terminal-ghostty", JSON.stringify(ghostty));
+    if (storedOff) localStorage.setItem("ovis:terminal-ghostty", "false");
     localStorage.setItem("ovis:terminal-images", JSON.stringify(images));
-  }, [ghostty, images] as const);
+  }, [storedOff, images] as const);
+  if (noModule) await context.route(/\.wasm$/, (route) => route.abort());
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const wasm: string[] = [];
@@ -156,7 +158,7 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       {
-        const { page, wasm, errors } = await open(browser, server.port, prefix, "core", true);
+        const { page, wasm, errors } = await open(browser, server.port, prefix, "core");
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         assert.equal(wasm.length, 1, "core: the module is fetched once");
@@ -293,9 +295,11 @@ try {
       {
         // an iTerm2 picture (Pictures in the terminal): libghostty cannot draw it, xterm's image addon does and moves its
         // cursor past it, so the text after it must be shown on the row xterm alone shows it on (#2980)
+        // xterm alone: libghostty's module cannot load, and xterm draws the pane by itself, never a blank one
         const shownRow = async (ghostty: boolean) => {
-          const { page, errors } = await open(browser, server.port, prefix, "core", ghostty, true);
+          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true });
           if (ghostty) await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
+          else await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
           // the image addon loads on its own; until then xterm passes the picture by
           await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .xterm") as { imageAt?: unknown } | null)?.imageAt === "function");
           await page.evaluate((data) => window.ghosttyFixture.print(data), `\x1b[2J\x1b[H${itermSquare()}IT2-AFTER\r\n`);
@@ -305,17 +309,21 @@ try {
             const index = rows.findIndex((row) => row.textContent?.includes("IT2-AFTER"));
             return index >= 0 ? { index } : null;
           }).then(async (handle) => (await handle.jsonValue())!.index);
-          assert.deepEqual(errors.filter((error) => !error.includes("libghostty")), [], `core, iTerm2 picture${ghostty ? "" : ", off"}: no page errors`);
+          // libghostty handed the pane to xterm at the picture; xterm draws it, picture included
+          assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), 0, `core, iTerm2 picture${ghostty ? "" : ", no module"}: xterm draws the pane`);
+          const picture = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => unknown }).imageAt?.(0, 0) ?? null);
+          assert.notEqual(picture, null, `core, iTerm2 picture${ghostty ? "" : ", no module"}: the picture is drawn where it was placed`);
+          assert.deepEqual(errors.filter((error) => !error.includes("libghostty") && !error.includes("wasm")), [], `core, iTerm2 picture${ghostty ? "" : ", no module"}: no page errors`);
           await page.context().close();
           return row;
         };
         const xtermRow = await shownRow(false);
-        assert.ok(xtermRow > 0, `core, iTerm2 picture, off: xterm moves past the picture (row ${xtermRow})`);
+        assert.ok(xtermRow > 0, `core, iTerm2 picture, no module: xterm moves past the picture (row ${xtermRow})`);
         assert.equal(await shownRow(true), xtermRow, "core, iTerm2 picture: the text after it is shown on xterm's row");
       }
       {
         // herdr's own server: libghostty draws its panes too, from the bytes xterm was given before the module loaded
-        const { page, wasm, errors } = await open(browser, server.port, prefix, "herdr", true);
+        const { page, wasm, errors } = await open(browser, server.port, prefix, "herdr");
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
         await print(page, "HERDR-LINE\r\n", "HERDR-DONE");
@@ -329,7 +337,7 @@ try {
       }
       for (const kind of ["herdr", "core"] as const) {
         // a device that turned the old Draw with libghostty switch off: there is no switch now, libghostty draws
-        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, false);
+        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, { storedOff: true });
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         await print(page, "STORED-OFF\r\n", "STORED-OFF-DONE");
         assert.equal(wasm.length, 1, `${kind}, switch once turned off: the module is fetched`);
