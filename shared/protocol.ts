@@ -349,12 +349,15 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
+ *  GET    /api/pane/docs?pane_id=       -> PaneDocuments (the Markdown files under the pane's folder,
+ *         newest first, from the same listing; read only: Files' Documents tab, shared/files.ts)
  *  GET    /api/workspace/diff/files?pane_id=&directory=&scope=&base=&head= -> RepoDiffFileList
  *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
  *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
  *         working tree against the index, plus untracked files), staged (index against HEAD),
- *         commit (`base` against `head`, HEAD when absent; each one commit) or branch (the working
+ *         commit (`base` against `head`, HEAD when absent; each one commit, or for `base` the
+ *         empty tree's hash, which a root commit's changes are read against) or branch (the working
  *         tree, untracked files included, against the merge base of `base` and HEAD: what this
  *         branch changed, never what `base` went on to change; `base` is required, `head` is not
  *         taken). The list is capped (`limits`), and `truncated` says when it was. 400
@@ -375,6 +378,21 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/git/log?pane_id=&directory=&ref=&oid=&skip=&limit= -> RepoLog
+ *         (shared/repo-log.ts: a page of the history of `ref`, HEAD when absent, newest first,
+ *         `limit` 1..100 commits (50 by default) from `skip`; each commit carries the branches,
+ *         remote branches and tags at it by full refname. Later pages pass the first page's `oid`,
+ *         so commits made in between do not shift them; `next_skip` is null on the last page. An
+ *         empty page before the first commit. Read like the diff routes, with their folder
+ *         resolution, errors and refusals; 400 invalid_limit / invalid_skip)
+ *  GET    /api/workspace/git/branches?pane_id=&directory= -> RepoBranches (the local branches,
+ *         the current one first and then by last commit, each with its upstream, how far ahead
+ *         and behind it is and whether the upstream is gone; at most `limits.max_branches`)
+ *  GET    /api/workspace/git/show?pane_id=&directory=&rev= -> RepoCommitDetail (one commit's
+ *         whole message, up to `limits.max_message_bytes`, and the `base` its changes are read
+ *         against with the diff routes in the commit scope: its first parent, or the empty tree
+ *         for a root commit). The three are reached on another PC under /api/machines/<id>/,
+ *         as the diff routes are
  *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
  *         pull request of the branch checked out in the pane's folder, or `directory`, read through
  *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
@@ -608,7 +626,20 @@ export type ConversationPart =
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
-  | { kind: "task_result"; tasks: OmoTaskResult[] };
+  | { kind: "task_result"; tasks: OmoTaskResult[] }
+  /** OmO's goal waiting on background work before it continues on its own (its `goal-cache-warmup`
+   * record): a turn of its own while it is the conversation's last, gone once it resumes or anything
+   * else follows. `due_at`: when OmO continues if nothing wakes it first */
+  | { kind: "goal_wait"; due_at: string; waiting_on: GoalWaitSources };
+
+/** What an OmO goal's wait waits on, by kind: background tasks, monitors, background terminals, DAG runs and detached code cells. */
+export interface GoalWaitSources {
+  tasks: number;
+  monitors: number;
+  terminals: number;
+  dags: number;
+  cells: number;
+}
 
 /** One OmO background task that ended (the `senpi-task.completion` OmO wakes its agent with). */
 export interface OmoTaskResult {
@@ -747,9 +778,10 @@ export type { PluginActionContext, PluginAction, PluginActions, PluginActionsRes
 
 export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from "./directories.ts";
 
-export type { FileKind, FileInfo, ProjectFavicon } from "./files.ts";
+export type { FileKind, FileInfo, MarkdownDocument, PaneDocuments, ProjectFavicon } from "./files.ts";
 
 export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
+export type { RepoPerson, RepoCommit, RepoLog, RepoBranch, RepoBranches, RepoCommitDetail } from "./repo-log.ts";
 
 export type { AgentKind } from "./agents.ts";
 
