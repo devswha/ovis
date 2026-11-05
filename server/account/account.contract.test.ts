@@ -15,6 +15,7 @@ import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { applyAccountRecords } from "./records.ts";
+import { createServer } from "../index.ts";
 
 type Fixture = ReturnType<typeof relayFixture>;
 type Link = Awaited<ReturnType<typeof relayConnection>>;
@@ -747,4 +748,28 @@ test("a waiting remove survives a stop right after the service took its page's a
   await queue(await add(key, b.spki));
   await new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test", fetch: service.fetch, pendingPath }).pull();
   expect(f.app.context.services.devices.hasKey(c.spki)).toBe(false);
+});
+
+test("a key paired again in one of two state dirs stays paired, without its tombstone, when the other starts", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const gone = await accountKey();
+  await post(link, "/api/account/records", { records: [await add(key, gone.spki)] });
+  await post(link, "/api/account/records", { records: [await remove(key, gone.spki)] });
+  const sibling = mkdtempSync(join(tmpdir(), "ovis-account-sibling-"));
+  // both dirs share the registry and the removal
+  for (const name of ["devices.json", "account-tombstones.json"]) writeFileSync(join(sibling, name), readFileSync(join(f.stateDir, name)), { mode: 0o600 });
+  const store = f.app.context.services.devices;
+  expect(store.pairRelay(store.startPairing().code, "Mac app", gone.spki)).not.toBeNull();
+  const other = createServer({ port: 0, hostname: "127.0.0.1", stateDir: sibling, siblingStateDir: f.stateDir, token: "t", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    // the merge brings the other dir's tombstone back, and the start-up repair drops it: the row is newer
+    for (const devices of [other.context.services.devices, new DeviceStore(f.stateDir)]) {
+      expect(devices.hasKey(gone.spki)).toBe(true);
+      expect(devices.isTombstoned(gone.spki)).toBe(false);
+    }
+  } finally {
+    other.stop();
+    rmSync(sibling, { recursive: true, force: true });
+  }
 });
