@@ -47,6 +47,15 @@ Until the server answers, or when it stops, the window shows the connection scre
 `<user data>` is Electron's: `~/.config/Ovis` on Linux, `~/Library/Application Support/Ovis` on macOS,
 `%APPDATA%\Ovis` on Windows.
 
+On Windows the installer replaces Ovis for Windows (`app/windows`, the one-file setup app), which has
+no uninstaller of its own (`windows/installer.nsh`):
+- This app's Start menu **Ovis** takes the place of that app's shortcut.
+- That app's sign-in start (the HKCU `Run` value `Ovis` that runs its copy with `--start`) is removed,
+  and so is its copy in `%LOCALAPPDATA%\Programs\Ovis`. A copy whose window is open stays until that
+  window closes; with no shortcut or sign-in start left, nothing runs it again.
+- Its own Remove is never run, because that also takes the Ovis server off the PC.
+- herdr, the Ovis server it installed and their state stay as they are.
+
 On Windows the core and the server start directly (Windows hands a child only the handles marked
 inheritable), without a console window. Windows has no SIGTERM: stopping the server ends its
 process at once, and a server left behind after a crash is found by its command line and start
