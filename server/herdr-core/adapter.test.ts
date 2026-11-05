@@ -656,6 +656,35 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.workspace_id)).toEqual(["S"]);
   });
 
+  it("keeps to what git and the layout say: nested repositories, moved checkouts, quoted paths and the app's cores", async () => {
+    const { dir, git } = repository();
+    // a folder git quotes in its line output: the -z listing names it as it is
+    const repo = join(dir, "앱");
+    expect(Bun.spawnSync(["mv", join(dir, "app"), repo]).exitCode).toBe(0);
+    const nested = join(repo, "nested");
+    expect(git("init", "-q", "-b", "main", nested).exitCode).toBe(0);
+    // the nested repository's workspace comes first: it is no checkout of the outer one
+    const { socket } = await labeling([
+      terminal("t1", { cwd: nested, labels: { "herdr.space": "N", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "U" } }),
+    ]);
+    expect((await worktreeList("S", socket)).source).toMatchObject({ repo_root: repo, source_checkout_path: repo, source_workspace_id: "S" });
+    const created = await worktreeCreate({ workspaceId: "S", branch: "moved", path: join(dir, "old") }, socket);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.repo_root ?? null])).toEqual([["N", null], ["S", repo], [created.workspace.workspace_id, repo]]);
+    // a checkout moved away and another put where it was: neither is deleted for the old workspace
+    expect(git("-C", repo, "worktree", "move", join(dir, "old"), join(dir, "new")).exitCode).toBe(0);
+    await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "other", join(dir, "old")).exitCode).toBe(0);
+    await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect([existsSync(join(dir, "new", "README.md")), existsSync(join(dir, "old", "README.md"))]).toEqual([true, true]);
+
+    // where the Herdr app arranges the core, ping offers no worktrees and the calls are refused
+    const app = await living([terminal("t1", { cwd: repo })]);
+    expect((await ping(app.socket)).layout?.worktrees).toBeFalse();
+    await expect(worktreeCreate({ workspaceId: "s1", branch: "app", path: join(dir, "app-wt") }, app.socket)).rejects.toMatchObject({ code: "unsupported" });
+    expect(existsSync(join(dir, "app-wt"))).toBeFalse();
+  });
+
   it("refuses a worktree from a linked checkout and a folder outside git, as herdr does", async () => {
     const { dir, repo, git } = repository();
     const linked = join(dir, "linked");
