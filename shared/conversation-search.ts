@@ -167,7 +167,8 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
  * anywhere in its text, a progress note's too: an answer's words never leave it, though they can
  * leave the search (Codex marks them commentary later). When several still have them, the one that
  * says exactly what was searched, unless another may have said it then and changed since: any turn
- * went on from the match's words (its name too may have changed), or one of them has a progress note (Codex marks an answer's parts commentary later,
+ * went on from the match's words (its name too may have changed), or a turn of its role and time has a
+ * progress note (Codex marks an answer's parts commentary later,
  * so what it said then is not known). None when that is not exactly one. Turns
  * without a time (Kimi's prompts) go by name and their whole searched text: the first of the name
  * that still says it, else the one of the name that changed since; by name only for a match of an
@@ -199,8 +200,8 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
   if (holding.length > 1) {
     const same = holding.filter((index) => saysSearched(turns[index]!, match));
     const noted = (turn: ConversationTurn): boolean => turn.parts.some((part) => part.kind === "text" && part.phase === "commentary");
-    if (same.length === 1 && holding.every((index) => index === same[0] || !noted(turns[index]!))
-      && turns.every((turn, index) => index === same[0] || turn == null || !searchedTurnChanged(turn, match))) holding = same;
+    if (same.length === 1 && turns.every((turn, index) => index === same[0] || turn == null
+      || (turn.role !== match.role || turn.ts !== match.ts || !noted(turn)) && !searchedTurnChanged(turn, match))) holding = same;
   }
   if (holding.length > 1 || names.length > 1 && holding.length === 0) return "several";
   const named = holding[0] ?? -1;

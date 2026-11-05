@@ -263,6 +263,9 @@ describe("pickedTurn", () => {
       { kind: "tool", name: "exec", summary: "exec", input: "", output }, { kind: "text", text }] });
     const pending = searchTurns([tooled("needle target", "")], searchPattern("needle")!)[0]!;
     expect(pickedTurn([tooled("needle target", ""), user("a"), tooled("needle other", ""), user("b"), tooled("needle target", "ok")], pending)).toBe("several");
+    // nor when its tool's output came and its words became a note, so it left both the name and the search
+    const paired: ConversationTurn = { ...tooled("needle target", "ok"), parts: [tooled("", "ok").parts[0]!, { kind: "text", text: "needle target", phase: "commentary" }] };
+    expect(pickedTurn([paired, user("a"), tooled("needle other", ""), user("b"), tooled("needle target", "")], pending)).toBe("several");
     // nor when the words ran from a part now a note into an answer
     const spans = (note: boolean): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [
       { kind: "text", text: lead }, { kind: "text", text: "needle", ...(note ? { phase: "commentary" as const } : {}) }, { kind: "text", text: "target" }] });
