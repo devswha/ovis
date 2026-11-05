@@ -156,6 +156,22 @@ try {
           await settled(page);
           if (kind === "core") {
             await scrolledAbove(page, shown.viewportY, { x: box.x + box.width / 2, y: box.y + box.height / 3 }, "core: the wheel scrolls back");
+            // read up in the browser's own history, the way back to the newest rows shows; it takes the view there and goes
+            const jump = page.locator(".pane-frame.is-current .terminal-jump-bottom");
+            await jump.waitFor();
+            await jump.click();
+            await page.waitForFunction(() => {
+              const host = document.querySelector(".pane-frame.is-current .pane-terminal") as (HTMLElement & { outputProbe?: () => { history: History } }) | null;
+              const now = host?.outputProbe?.().history;
+              return now !== undefined && now.viewportY === now.baseY;
+            });
+            await jump.waitFor({ state: "detached" });
+            // the keyboard reaches it too: scrolled up again, Enter on the focused button returns to the bottom
+            await page.mouse.wheel(0, -600);
+            await jump.waitFor();
+            await jump.focus();
+            await page.keyboard.press("Enter");
+            await jump.waitFor({ state: "detached" });
             // back to the bottom: the newest rows again
             await page.mouse.wheel(0, 20000);
             await page.waitForFunction(() => {
