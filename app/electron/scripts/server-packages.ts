@@ -12,7 +12,7 @@ const SOURCE = /\.(ts|tsx|js|mjs|cjs)$/;
 
 /** the package a bare import names (`@noble/hashes/sha2.js` is `@noble/hashes`); null for a path or a builtin */
 export function packageOf(specifier: string): string | null {
-  if (/^(\.|\/|node:|bun:?|[a-zA-Z]:)/.test(specifier) || specifier === "bun") return null;
+  if (/^(\.|\/|node:|bun:|[a-zA-Z]:)/.test(specifier) || specifier === "bun") return null;
   const parts = specifier.split("/");
   return specifier.startsWith("@") ? (parts.length > 1 ? `${parts[0]}/${parts[1]}` : null) : parts[0]!;
 }

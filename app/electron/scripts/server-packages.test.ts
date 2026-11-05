@@ -26,6 +26,7 @@ describe("packageOf", () => {
     expect(packageOf("@noble/hashes/sha2.js")).toBe("@noble/hashes");
     expect(packageOf("web-push")).toBe("web-push");
     expect(packageOf("lodash/fp")).toBe("lodash");
+    expect(packageOf("bunyan")).toBe("bunyan");
     for (const specifier of ["./x.ts", "../y", "/abs", "node:fs", "bun", "bun:test", "C:/x"]) expect(packageOf(specifier)).toBeNull();
   });
 });
