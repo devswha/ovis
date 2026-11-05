@@ -99,12 +99,11 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-portal-receipts-"));
   const portal = new PortalService({ stateDir });
   const forwarded: Array<string | undefined> = [];
-  let heard!: () => void;
-  let wanted = 0;
+  let heard: (() => void) | undefined;
   const upstream = Bun.serve({
     port: 0, hostname: "127.0.0.1",
     fetch(request, instance) { return instance.upgrade(request) ? undefined : new Response(null, { status: 426 }); },
-    websocket: { message(_socket, raw) { forwarded.push(JSON.parse(String(raw)).receipt_resume_id); if (forwarded.length === wanted) heard(); } },
+    websocket: { message(_socket, raw) { forwarded.push(JSON.parse(String(raw)).receipt_resume_id); heard?.(); } },
   });
   const endpoint = spyOn(MachineManager.prototype, "endpoint").mockImplementation((id) =>
     id === "remote" ? { url: `http://127.0.0.1:${upstream.port}`, token: "remote" } : undefined);
@@ -123,13 +122,13 @@ it("scopes a remote PC's receipt identity to the Portal user, not only to a brow
       "x-portal-proof": "valid-portal-proof", "x-portal-user": user, "x-portal-auth": "credential",
     } }), ctx);
     expect(response).toBeUndefined();
+    // one attach at a time: each comes over its own upstream socket, so arrival order is not send order
+    const arrived = new Promise<void>((resolve) => { heard = resolve; });
     relays.at(-1)!.message(JSON.stringify({ type: "attach", pane_id: "p", cols: 80, rows: 24, receipt_resume_id: browser }));
+    await arrived;
   };
   try {
-    wanted = 3;
-    const all = new Promise<void>((resolve) => { heard = resolve; });
     await attachAs("alice"); await attachAs("bob"); await attachAs("alice");
-    await all;
     const [alice, bob, aliceAgain] = forwarded;
     expect(alice).toBeString();
     expect(aliceAgain).toBe(alice);
