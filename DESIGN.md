@@ -1297,6 +1297,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
   group of the one of them that needs the reader most. The shared Agents order applies while
   grouping is off.
+- Panes a launcher tags `role=background` (`herdr pane report-metadata --token`, any case),
+  and the helpers they start (`parent_pane_id`), stand after the Agents list's other unpinned
+  rows, under a **Background agents** heading styled like a group's (`.agent-background-toggle`)
+  that folds them, folded at first on every screen and kept per device; its count always shows.
+  The split is herdr's fact, never a guess: an untagged pane stays where it is. A blocked one
+  stands with the other rows until answered, so a question is never folded away; a pinned one
+  stays in the pinned card. Grouping by state groups only the other rows, and a row that draws
+  every token (no herdr rows) leaves the tag out; a herdr rule that hides it takes it off the row,
+  never off the snapshot, so the row still files. The parts are one list, so a row that changes
+  part is moved with its focus and open menu. It follows the Codex
+  app, which keeps background and subagent work in a box at the bottom of its sidebar (#1369).
 - An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
   from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
   `-number`, `-type`, `-variable`, `-meta`), which every theme sets in both modes and keeps
@@ -2012,6 +2023,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   title may shorten with an ellipsis; the crumb never does: when it does not fit whole beside the
   whole title it is not drawn, and the title has the row. The full path is in the context's
   tooltip and at the top of the More menu. With no selection, the brand fills the context slot.
+- After the crumb, from `769px`, the selected chat's session totals (`.context-session`,
+  `lib/sessionStats.ts`, #2017) in the crumb's face: **Worked 2h 5m** (the sum of the agent turns'
+  own durations, each one's "Worked for"; **Worked at least …** until the chat has loaded back to the
+  beginning), the transcript file's size (`transcript_bytes` on the newest conversation page), and
+  a Target glyph with the omo goal's status. It is its own item after the crumb, so it wraps out of
+  sight before the crumb does, and it gives the line to the connection's word. Its tooltip, and the
+  More menu's header under the path at every width, say it in full: the totals (an unknown one says
+  so) and `Goal: objective · status · time`. The Codex desktop app shows a thread's active goal by
+  its title the same way; Ovis puts it on the crumb line because the header is one line. A Codex
+  goal (kept in Codex's own state store, not the rollout) is not read.
 - The More menu (`.header-more-button`, the `RowMenu` popover, a bottom sheet at `<=640px`) opens
   with the location on two lines, "PC › workspace" then the full path in mono. Its first item,
   at every width, is **Search panes and actions**, which opens the command palette (its shortcut
@@ -3162,7 +3183,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerArtifacts`), the Paste and send button (off by default, the device setting
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
-  speed, input mode, Key bar, Clipboard from a pane, Use alongside herdr's own window, Follow
+  speed, input mode, Key bar, Clipboard from a pane, Pictures in the terminal (off by default, the
+  device setting `terminalImages`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
@@ -3874,6 +3896,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for the flow; the states and their words are this app's, in the token gate's own frame, so a
   phone that pairs through the relay and one that pairs with a code see the same room. Neither
   the Codex nor the Claude app has a hosted relay shell to follow.
+- Account part (components/AccountPcs.tsx, lib/account/), only on the front page and only when
+  the page names an account service (`<meta name="ovis-account-service">`); without one the front
+  page is the saved-PC list above, unchanged. Signed out: **Continue with GitHub** and **Continue
+  with Apple**, two equal neutral `.btn`s (App Review 4.8 wants Apple wherever another provider
+  is, and neither is the one to pick), a `--fs-xs` dim line on what the account service learns,
+  then the QR route under a hairline (an `h2`, the page keeps one `h1`). With saved PCs the list
+  comes first and the sign-in follows it. Signed in: **Your PCs** with "Signed in with GitHub"
+  under it, one row per PC of the account merged with the PCs this device is paired with: the
+  name, and under it a `--fs-sm` dim line in words (Paired; This device is not approved on it
+  yet; Offline, last seen 3 h ago; Its Ovis needs an update to join the account), no badge. Only
+  a paired PC is a link with a chevron; the others are plain rows. The `<main>` adds
+  `data-account-state` (`signed-out`, `signing-in`, `signed-in`) for scripts; each row
+  `data-pc-state`. Precedent: Tailscale's admin machine list (every machine of the account, its
+  state in words) for the list, and Signal's linked devices for keeping trust on devices already
+  linked rather than on the sign-in.
 - Relay files keep the existing file viewer and its Paseo-style file bar, rather than adding a
   separate remote-files screen. A client without a resource-capable service worker shows the
   usual file note as an alert when the 64 MiB limit is exceeded. Copy link and new-tab actions

@@ -95,7 +95,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, RelayPairingRequest, RelayPairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -665,6 +665,12 @@ export interface ConversationResponse {
    * agent that keeps no entry tree.
    */
   abandoned?: { count: number; branches: number; summary: string | null };
+  /**
+   * The size in bytes of the transcript file the newest page was read from (Codex: its rollout), as
+   * the read saw it; absent from an older page and from stores that are not one file (OpenCode,
+   * Devin, Hermes, dsh), where the chat says the size is unknown.
+   */
+  transcript_bytes?: number;
 }
 
 export type { PluginActionContext, PluginAction, PluginActions, PluginActionsResponse, PluginActionRequest, PluginActionResult } from "./plugins.ts";
