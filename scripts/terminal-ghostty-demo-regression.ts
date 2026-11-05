@@ -145,6 +145,11 @@ try {
         await print(page, "SPOKEN-LINE\r\n", "SPOKEN-DONE");
         assert.ok((await announced())?.includes("SPOKEN-LINE"), `core: a line the program writes is announced (${JSON.stringify(await announced())})`);
         assert.equal(await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "SPOKEN-LINE" }).count(), 0, "core: xterm no longer redraws its hidden rows");
+        // a full screen that scrolls by one line announces that line, not every row that moved up
+        await print(page, Array.from({ length: 60 }, (_, i) => `OLD-${String(i).padStart(2, "0")}`).join("\r\n") + "\r\n", "FILL-DONE");
+        await print(page, "NEW-ONLY-LINE\r\n", "NEW-DONE");
+        const scrolled = await announced();
+        assert.ok(scrolled?.includes("NEW-ONLY-LINE") && !scrolled.includes("OLD-"), `core: a scroll announces only the new line (${JSON.stringify(scrolled)})`);
 
         await print(page, `\x1b[5;3H${kittySquare(7, [255, 0, 0])}`, "RED-PLACED");
         const red = await picture(page);

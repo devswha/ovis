@@ -15,6 +15,22 @@ const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&"
 
 export interface GhosttyOverlay { dispose(): void }
 
+/**
+ * The lines a frame added: when the screen scrolled up by some rows, the rows that moved are not new, only
+ * the ones that came in at the bottom and any row that changed in place.
+ */
+export function newLines(before: readonly string[], after: readonly string[]): string[] {
+  const rows = after.length;
+  let best = 0;
+  let bestMatches = -1;
+  for (let shift = 0; shift < rows; shift++) {
+    let matches = 0;
+    for (let y = 0; y + shift < rows; y++) if (after[y] && before[y + shift] === after[y]) matches++;
+    if (matches > bestMatches) { best = shift; bestMatches = matches; }
+  }
+  return after.filter((line, y) => line && (y >= rows - best || before[y + best] !== line));
+}
+
 /** lines of one frame read out, so a flood does not drown the reader */
 const ANNOUNCED_LINES = 20;
 
@@ -236,7 +252,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
     const buffer = term.buffer.active;
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
-    const written: string[] = [];
+    const before = [...rowText];
     const changed = vt.frame((y, runs) => {
       const row = rowEls[y];
       if (!row) return;
@@ -246,11 +262,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       if (rowHtml[y] === html) return;
       row.innerHTML = html;
       rowHtml[y] = html;
-      const line = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
-      if (line && line !== rowText[y]) written.push(line);
-      rowText[y] = line;
+      rowText[y] = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
     });
-    if (primed) announce(written);
+    if (primed) announce(newLines(before, rowText));
     primed = true;
     if (changed) {
       const c = vt.cursor();
@@ -260,8 +274,11 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     const images = vt.placedImages();
     if (images) drawImages(images);
-    // xterm may make a new renderer (a font or theme change): that one draws nothing either
-    muteXtermRows();
+    // xterm may make a new renderer (a font or theme change): that one draws nothing either. A folded mirror
+    // (lib/terminalFold.ts) hides this layer and reads xterm's rows and cursor, so xterm draws while folded
+    if (host.hasAttribute("data-folded")) {
+      if (muted) { unmuteXtermRows(); term.refresh(0, term.rows - 1); }
+    } else muteXtermRows();
   };
 
   const schedule = (): void => {
