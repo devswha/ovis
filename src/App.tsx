@@ -499,7 +499,8 @@ export function App() {
           const selectedWorkspaceId = roster.panes.find((pane) => pane.pane_id === selectedPaneId)?.workspace_id ?? null;
           const folded = (repoKey: string) => repoKey !== "" && storedWorktreeCollapsed(selectedMachineId, [repoKey]).has(repoKey);
           const backgroundFolded = settings.sidebarBackgroundWorkspaces ? storedBackgroundFolded(selectedMachineId) : null;
-          return sidebarWorkspaceSteps(ordered, pinnedWorkspaceIds(currentSidebarPins(), selectedMachineId), folded, selectedWorkspaceId, backgroundFolded);
+          const blocked = new Set(roster.panes.filter((pane) => pane.agent_status === "blocked").map((pane) => pane.workspace_id));
+          return sidebarWorkspaceSteps(ordered, pinnedWorkspaceIds(currentSidebarPins(), selectedMachineId), folded, selectedWorkspaceId, backgroundFolded, blocked);
         };
         const order = drawnWorkspaceRows(selectedMachineId) ?? unfolded();
         const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);

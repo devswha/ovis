@@ -1435,7 +1435,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and kept per PC on this device; its count always shows. Only a group's head files it: a tagged
   worktree stays under its repository. A folded part still shows the open workspace and one whose
   agent is blocked; a pinned one stays in the pinned card; under the filter the part opens. Alt+arrows
-  and drags move a row only among the rows of its own part. An untagged workspace stays where it is.
+  and drags move a row only among the rows of its own part, and not while it is folded. An untagged workspace stays where it is.
   It follows the Codex app's bottom box for background work, as the Agents list does (#770).
 - An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
   from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,

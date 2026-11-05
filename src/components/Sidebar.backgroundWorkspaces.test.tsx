@@ -131,4 +131,15 @@ describe("background workspaces in the sidebar", () => {
     await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowDown", true)));
     expect(reorder.mock.calls.map((call) => call[2])).toEqual([["bg1", "bg2", "b", "a"], ["a", "bg2", "bg1", "b"]]);
   });
+
+  it("keeps a folded part's rows in place, so a move never passes the rows the fold hides", async () => {
+    turnOn();
+    const coordinator = await draw(roster([tagged("bg1"), tagged("bg2"), tagged("bg3"), workspace("a")], ["bg1", "bg3"]), "a:p");
+    const reorder = spyOn(coordinator, "reorder").mockImplementation(async () => undefined);
+    expect(shownRows()).toEqual(["a", "bg1", "bg3"]);
+    expect(row("bg1").props["aria-keyshortcuts"]).toBeUndefined();
+    expect(row("bg1").props.draggable).toBe(false);
+    await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowDown", true)));
+    expect(reorder).not.toHaveBeenCalled();
+  });
 });

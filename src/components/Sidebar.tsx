@@ -446,8 +446,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   useEffect(() => publishWorkspaceRows(machineId, drawnRows === "" ? [] : drawnRows.split("\n")), [machineId, drawnRows]);
   // a pinned head's worktrees remain outside the card, but cannot move away from their repository
   const fixedIds = useMemo(() => new Set([...pinnedGroupIds(worktreeGroups, pinnedIds, (workspace) => workspace.workspace_id)].filter((id) => !pinnedIds.includes(id))), [worktreeGroups, pinnedIds]);
-  // a row moves among the rows of its own part, and past only the ones it shows
-  const movableGroups = [...movableParts.people, ...movableParts.shown].filter((group) => !fixedIds.has(group.workspace.workspace_id));
+  // a row moves among the rows of its own part; a folded part's rows stay put, as under a filter, since a
+  // move there would also pass the rows the fold hides
+  const stillIds = new Set(backgroundFolded ? movableParts.background.flatMap((group) => [group.workspace, ...group.children].map((member) => member.workspace_id)) : []);
+  const movableGroups = [...movableParts.people, ...backgroundFolded ? [] : movableParts.background].filter((group) => !fixedIds.has(group.workspace.workspace_id));
   const partOf = (group: WorkspaceGroup<WorkspaceInfo>): boolean => backgroundApart && isBackgroundWorkspace(group.workspace);
   // a pin moves the row to the other list, so React draws it anew: the row that had the focus gets it back
   const refocusRow = useRef<string | null>(null);
@@ -719,7 +721,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // a finger's drag lands where the mouse's does: the same groups, the same index for herdr
   const touchHandlers = useRef<Parameters<typeof watchTouchReorder>[1] | null>(null);
   touchHandlers.current = {
-    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && arrange,
+    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && !stillIds.has(id) && filtered === null && arrange,
     onLift: (id) => { setMenu(null); setTouchDrag({ source: id, over: id }); },
     onOver: (id) => setTouchDrag((current) => current && { ...current, over: id }),
     onDrop: (id, target) => {
@@ -798,7 +800,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const foldedCount = collapsed ? children.filter((child) => !roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)).length : 0;
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;
     // a row that cannot move still drags its pane into half of the pane area; on herdr-core only the move is off
-    const placed = fixedIds.has(workspace.workspace_id) || filtered !== null;
+    const placed = fixedIds.has(workspace.workspace_id) || stillIds.has(workspace.workspace_id) || filtered !== null;
     const fixed = placed || !arrange;
     const filterNote = context && selected ? <span className="sidebar-filter-note">{t("Selected")}</span> : null;
     const menuOpen = menu?.workspace.workspace_id === workspace.workspace_id;

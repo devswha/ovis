@@ -58,12 +58,13 @@ export function workspaceRows(groups: readonly WorkspaceGroup<WorkspaceInfo>[], 
  * The rows a PC's sidebar would draw with no filter, from the order it draws (`ordered`, herdr's or a
  * drag's): pinned rows first in pin order, then the rest. For a PC whose roster is not drawn (folded).
  * `backgroundFolded`, with Settings → Background workspaces apart on: the tagged ones come last, and a
- * folded part keeps only the selected one; null while the setting is off.
+ * folded part keeps only the selected one and those with a workspace in `blocked`, as the sidebar
+ * draws them; null while the setting is off.
  */
-export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedIds: readonly string[], folded: (repoKey: string) => boolean, selectedWorkspaceId: string | null, backgroundFolded: boolean | null = null): string[] {
+export function sidebarWorkspaceSteps(ordered: readonly WorkspaceInfo[], pinnedIds: readonly string[], folded: (repoKey: string) => boolean, selectedWorkspaceId: string | null, backgroundFolded: boolean | null = null, blocked: ReadonlySet<string> = new Set()): string[] {
   const { pinned, rest } = splitPinnedGroups(worktreeGroups(ordered), pinnedIds, (workspace) => workspace.workspace_id);
   const { people, background } = backgroundFolded === null ? { people: rest, background: [] } : splitBackgroundGroups(rest);
-  const shown = backgroundFolded ? background.filter((group) => [group.workspace, ...group.children].some((member) => member.workspace_id === selectedWorkspaceId)) : background;
+  const shown = backgroundFolded ? background.filter((group) => [group.workspace, ...group.children].some((member) => member.workspace_id === selectedWorkspaceId || blocked.has(member.workspace_id))) : background;
   return workspaceRows([...pinned, ...people, ...shown], (group) => folded(group.workspace.worktree?.repo_key ?? ""), selectedWorkspaceId);
 }
 

@@ -76,6 +76,8 @@ describe("sidebarWorkspaceSteps", () => {
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null)).toEqual(["x", "a", "y", "d"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null, false)).toEqual(["a", "d", "x", "y"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, "y", true)).toEqual(["a", "d", "y"]);
+    // one whose agent asks a question stays in a folded part, as the sidebar draws it
+    expect(sidebarWorkspaceSteps(tagged, [], () => false, "a", true, new Set(["x"]))).toEqual(["a", "d", "x"]);
   });
 });
 
