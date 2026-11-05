@@ -64,9 +64,14 @@ const CHUNK = 1024 * 1024;
 /** A session lets the next one have its turn after about this much work (the event loop gets one at every read too). */
 const SLICE_MS = 4;
 /**
- * A read that has not answered in this long is given up for now (TranscriptBusyError) and tried
- * again a second later. A busy reader is no failure of the transcript, so one whose reads keep
- * running out of time is tried every second for as long as it is watched, with no longer backoff.
+ * A read that has not answered this long after its lease began is given up for now
+ * (TranscriptBusyError) and tried again a second later. Its wait for the lease is not counted: an
+ * image lookup of the same transcript holds it for as long as the lookup takes (seconds on a
+ * network home), and a read given up behind it would only wait behind it again. A slice waiting so
+ * holds one of the history's slices as the lease ahead holds one of the reader's: two of them leave
+ * no room for another transcript's read in the reader either. A busy reader is no failure of the
+ * transcript, so one whose reads keep running out of time is tried every second for as long as it
+ * is watched, with no longer backoff.
  */
 const READ_MS = 10_000;
 /** A transcript that changed after a check is checked again this long after, at the soonest, unless a request waits for it. */
@@ -403,14 +408,13 @@ async function step(entry: Entry): Promise<void> {
   let restarted = false;
   // the transcript as known when the stat now on its way was asked for
   let known = entry.version;
-  const deadline = Date.now() + READ_MS;
-  // the transcript is let go of well inside the read's deadline, however long the read waited to begin
-  const held = deadline - READ_MS / 2;
   const signal = cancel.signal;
   // a slice on the event loop counts from here, as main's does: its open and checks hold the loop too
   const began = performance.now();
   try {
     await transcriptReader.read(entry.path, async (file) => {
+      // the transcript is let go of well inside the read's deadline, which counts from its lease (its open included)
+      const held = file.deadline - READ_MS / 2;
       let stop = (file.waited() ? performance.now() : began) + SLICE_MS;
       // the whole lines of the last window that a slice ended before taking in, and the stat taken after they were read
       let rest: { from: number; to: number; bytes: Buffer; version: HistoryVersion } | null = null;
@@ -482,7 +486,7 @@ async function step(entry: Entry): Promise<void> {
         if (after === null) { known = entry.version; after = await file.stat(); }
         now = after;
       }
-    }, { deadline, signal });
+    }, { budget: READ_MS, signal });
     if (entries.get(entry.path) !== entry) return;
     entry.failures = 0;
     entry.retryAt = 0;
