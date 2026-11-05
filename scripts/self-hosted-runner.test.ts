@@ -845,11 +845,12 @@ echo "$2" >> "\${0%/bin/gh}/gh.log"
 # GitHub failing for a moment
 [ -e "\${0%/bin/gh}/fail" ] && exit 1
 case "$2" in
-  repos/owner/repo/actions/runs/7/attempts/1/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
   repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
   repos/owner/repo) echo main ;;
-  *) exit 1 ;;
+  # as GitHub answers for a run or pull request that does not exist
+  *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
@@ -947,6 +948,19 @@ esac
   it("never lets a claim from another slot refuse a trusted run's own claims", () => {
     // another slot's job names run 7, whose job runs on this slot only once GitHub says so below
     const run = promote({ runner: "herdr-ci-host-9" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true, { runner: slot });
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("holds off a slot whose claims name runs that do not exist", () => {
+    const run = promote({}, "files", "devswha", false, false, "99999991 1\n", 0, false, ["99999992 1\n", "99999993 1\n", "99999994 1\n"]);
+    expect(run.callsBefore[0]).toBe(1);
+    expect(run.ghCalls).toHaveLength(1);
+  });
+
+  it("refuses a stale run of the writer's pull request without holding off its slot", () => {
+    // the pull request moved on to another head while run 7's job was still running
+    const run = promote({ prSha: "6".repeat(40) }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 2\n"], false, {});
+    // its re-run on the same slot, at the pull request's head, is taken in
     expect(run.entries).toHaveLength(1);
   });
 
