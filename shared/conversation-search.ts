@@ -22,7 +22,7 @@ export interface ConversationSearchMatch {
   role: "user" | "assistant";
   ts: string | null;
   /**
-   * the turn's whole searched text (searchableText) when it was searched, as a digest (textDigest):
+   * the turn's whole searched text, Markdown marks and all, when it was searched, as a digest (textDigest):
    * which of turns that share the name is the one, and whether it changed since. An older server
    * sends none.
    */
@@ -82,9 +82,12 @@ export function searchPattern(query: string): RegExp | null {
 
 const squash = (text: string): string => text.replace(/\s+/g, " ");
 
-/** A turn's searched text as a 32-bit FNV-1a hash and its length (two texts can still collide). */
+/**
+ * The text parts a search reads (searchableText), as written: marks the search drops still tell two
+ * turns apart. A 32-bit FNV-1a hash and its length (two texts can still collide).
+ */
 function textDigest(turn: ConversationTurn): string {
-  const text = searchableText(turn);
+  const text = turn.parts.flatMap((part) => part.kind === "text" && (turn.role === "user" || part.phase !== "commentary") ? [part.text] : []).join("\n\n");
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
   return `${text.length.toString(36)}.${(hash >>> 0).toString(36)}`;

@@ -187,6 +187,9 @@ describe("pickedTurn", () => {
     expect(pickSettled(turns.slice(2), olderMatch!)).toBe(false);
     expect(pickedTurn(turns.slice(2), olderMatch!)).toBe("none");
     expect(pickSettled(turns, olderMatch!)).toBe(true);
+    // Markdown marks the search does not read still tell two prompts apart
+    const marked = [user(`${lead} **deploy**`, null), answer("ok"), user(`${lead} deploy`, null)];
+    expect(pickedTurn(marked, searchTurns(marked, searchPattern("deploy")!)[0]!)).toBe(2);
     // an older server's match has no digest: by name, as before
     const { text_digest: _, ...old } = laterMatch!;
     expect(pickedTurn(turns, old)).toBe(0);
@@ -260,6 +263,9 @@ describe("pickSettled", () => {
     expect(conversationTurnAnchor(turns[2]!)).toBe(match.turn);
     expect(pickSettled(turns.slice(1), match)).toBe(false);
     expect(pickedTurn(turns, match)).toBe("several");
+    // nor when the later answer reads the same once its Markdown marks are gone
+    const bold = searchTurns([said(`${lead} **deploy**`, "2026-10-01T10:00:10Z")], searchPattern("deploy")!)[0]!;
+    expect(pickSettled([user("again", "2026-10-01T10:00:09Z"), said(`${lead} deploy`, "2026-10-01T10:00:10Z")], bold)).toBe(false);
   });
 
   it("settles on the named turn once a turn before it is of an earlier time, or the match has no time", () => {
