@@ -489,6 +489,19 @@ async function keyboardOnRequest(browser: Browser): Promise<Record<string, unkno
         assert.deepEqual(await fieldState(page, field), { inputmode: held, focused: false }, `${label}: Hide blurs the field and holds it again`);
         results.push({ onRequest, mode, field });
       }
+      if (onRequest) {
+        // offline the control is disabled: the line still takes a draft, so it is not held
+        await switchMode(page, "line");
+        await blur(page);
+        await page.clock.pauseAt(await page.evaluate(() => Date.now()) + FLUSH_MS);
+        await page.evaluate(() => { (window as unknown as QaWindow).recordedSockets.at(-1)!.close(); });
+        await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')?.disabled === true);
+        await lineOf(page).tap();
+        await page.waitForFunction(() => document.activeElement?.classList.contains("terminal-input-text") === true);
+        await nextRender(page);
+        assert.deepEqual(await fieldState(page, "terminal-input-text"), { inputmode: null, focused: true }, "on, offline: with the control disabled a tap on the line raises the keyboard for a draft");
+        await page.clock.resume();
+      }
       assert.deepEqual(errors, []);
       console.log(`PASS keyboard only from the key bar ${onRequest ? "on" : "off"}: line and grid ${onRequest ? "carry inputmode=none until Show, again after Hide or the system's dismissal" : "carry no inputmode, as on main"}`);
     } finally { await context.close(); }

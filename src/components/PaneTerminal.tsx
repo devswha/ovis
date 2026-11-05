@@ -572,7 +572,10 @@ export function PaneTerminal({
   // measurement's, which is blind to a floating keyboard or a zoomed page: it ends at Hide, at a
   // keyboard measured going down (the back gesture), or when the focus leaves this pane's fields
   const [keyboardRequested, setKeyboardRequested] = useState(false);
-  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested;
+  // only while the control can be pressed: offline, held, ended or view only, it is gone or disabled,
+  // and a line still taking a draft must raise the keyboard on a tap as it does with the setting off
+  const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested
+    && connected && inputReady && !held && !ended && !observing;
   useEffect(() => {
     setKeyboardRequested(false);
     let up = keyboardUp();
@@ -589,7 +592,8 @@ export function PaneTerminal({
       timer = window.setTimeout(() => {
         timer = null;
         const focused = document.activeElement;
-        if (!(keyboardTypingField(focused) && stack?.contains(focused) === true)) setKeyboardRequested(false);
+        // the line or xterm's field only: the find bar's search is not where the request was made
+        if (!(focused instanceof HTMLElement && stack?.contains(focused) === true && focused.matches(".terminal-input-text, .xterm-helper-textarea"))) setKeyboardRequested(false);
       }, 0);
     };
     stack?.addEventListener("focusout", onFocusOut);

@@ -3753,7 +3753,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is the tap's own, not the measurement's, which is blind to a floating keyboard or a zoomed page
   (its settle window would otherwise take an unmeasured keyboard back): it ends at Hide, at a
   keyboard measured going down (Android's back gesture), or when the focus leaves the pane's
-  fields, and the attribute comes back. The
+  fields, and the attribute comes back. Nothing is held while the control cannot be pressed
+  (offline, held, ended, view only): the line still takes a draft there, so a tap raises the
+  keyboard as with the setting off. The
   mode switch stays its own key beside the control. The model is Termux's KEYBOARD extra key, the
   keyboard toggle of a phone terminal app: reading is the rest state, typing is asked for.
 - When the row outgrows the viewport it scrolls sideways, and the edge that hides more keys fades
