@@ -310,6 +310,13 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
 });
 
+it("keeps the composer's Paste and send button off until this device turns it on, and keeps that choice its own (#2493)", () => {
+  expect(sanitizeSettings({}).composerPasteSend).toBe(false);
+  expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
+  expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
+  expect(SETTING_SCOPE.composerPasteSend).toBe("device");
+});
+
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
   for (const key of ["expandThinking", "foldWork"] as const) {
     expect(sanitizeSettings({})[key]).toBe(false);
