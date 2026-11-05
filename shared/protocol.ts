@@ -298,6 +298,14 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         -> PaneSwapped { ok: true, changed, reason, target_pane_id } (pane.swap with the neighbour
  *         on that side, prefix+shift+hjkl, or an explicit pane; exactly one destination is required;
  *         changed false names no_neighbor, same_pane, cross_tab or not_found)
+ *  POST   /api/pane/move   { pane_id, target_pane_id, side: left|right|up|down } -> PaneMoved { ok: true, changed, reason }
+ *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
+ *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
+ *         it left of or above the target; herdr's focus stays where it was; changed false names
+ *         same_pane or cross_tab, an unknown pane answers pane_not_found; a pane herdr will not
+ *         bring back beside its target goes back into its tab, beside the target or another pane,
+ *         and the error says so, or says it waits in a tab of its own; changed true with a reason:
+ *         the swap was refused or failed, so the pane stays right of or below its target)
  *  POST   /api/pane/resize { pane_id, direction: left|right|up|down, amount? } -> PaneResized { ok: true, changed, reason }
  *         (pane.resize, herdr's resize mode: the border the pane shares with a neighbour moves that way
  *         by `amount` of the split the border belongs to, not of the tab (0 < amount <= 0.5, herdr's
@@ -355,6 +363,20 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
+ *         pull request of the branch checked out in the pane's folder, or `directory`, read through
+ *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
+ *         the unresolved review threads, whether GitHub would merge now and with which default
+ *         method. 409 gh_missing / gh_signed_out / no_github_remote / not_a_repository, 404
+ *         no_pull_request, 502 gh_failed, 504 gh_timeout. A watching device is refused, as for diffs)
+ *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id=&host= -> PullRequestCheckLog (the last
+ *         lines of that Actions job's log, timestamps and colour codes removed, asked of the pull
+ *         request's host: github.com when absent; 400 invalid_job / invalid_host)
+ *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, base_ref, method } -> { ok: true }
+ *         (`gh pr merge --<method> --match-head-commit <head_oid>`: only the head the view showed is
+ *         merged, into the base it showed (read again first: 409 pull_request_changed), the branch
+ *         is kept; 400 invalid_body, 409 merge_queue (a base merged through a merge queue, where gh
+ *         would only queue it), 409 merge_refused with GitHub's reason)
  *  GET    /api/pane/prompt?pane_id=     -> PanePromptResponse
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and
@@ -514,7 +536,7 @@ export interface DevicesRevokedAll {
   readonly revoked: number;
 }
 
-export type { PushDeliveryFailure, PushKey, PushPayload, PushSubscriptionStatus } from "./push.ts";
+export type { PushAction, PushDeliveryFailure, PushKey, PushPayload, PushSubscriptionStatus } from "./push.ts";
 
 /** One turn of a structured agent conversation (the chat lens source). */
 export interface ConversationTurn {
@@ -629,6 +651,12 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
+  /**
+   * The PC's clock as it answered, which the turns' times are on (ISO time): the browser's clock runs
+   * ahead of it by no more than the time the answer was in hand less this. Absent on a scrollback
+   * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
+   */
+  server_time?: string;
   source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
@@ -694,7 +722,7 @@ export interface AgentRenameRequest {
   name: string | null;
 }
 
-export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
+export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, MovePaneRequest, PaneMoved, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
 
 /** GET /api/pane/commands: one slash command the pane's agent understands. */
 export interface SlashCommand {
@@ -954,6 +982,9 @@ export interface PendingMessage {
   text: string;
   state: "queued" | "sending" | "held" | "uncertain";
   created_at: string;
+  /** The PC's clock as this try went out (`sending`), before anything was typed: its turn is written after
+   * it. Kept while uncertain; gone once it is queued or held again, and from older bridges. */
+  sending_at?: string;
   error?: { code: string; message: string };
   /** its submit was `agent_only`: a resend of a saved copy says so again */
   agent_only?: true;

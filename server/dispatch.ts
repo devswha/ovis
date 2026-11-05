@@ -1,4 +1,5 @@
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
+import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
 import type { ClientConnectionLog } from "./client-connection-log.ts";
 import type { RequestLog } from "./request-log.ts";
@@ -114,9 +115,12 @@ export interface ServerContext {
   readonly relayBodyBudget?: EventStreamBudget;
 }
 
+/** The routes that read or write files and folders on this disk (or run git and gh in them) for a pane, a workspace or a picker. */
+const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|image)$|workspace\/(?:diff\/|directories$|pr(?:$|\/)))/;
+
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
-  const { sidecar, serialize, push, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
+  const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   const startup = portalStartupResult ?? await portalStartup;
   if (!startup.ok) {
@@ -220,6 +224,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe" || pathname === "/api/push/status" || pathname === "/api/connection-diagnostics";
   // a repository's changes are file contents too: the patch of a credential file is that file
   const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/diff\//.test(pathname);
+  // a pull request's review comments and job logs are the repository's contents as well
+  const pullRequest = /^\/api\/(?:machines\/[^/]+\/)?workspace\/pr(?:\/|$)/.test(pathname);
   // earlier sessions carry their first prompts
   const sessionHistory = /^\/api\/(?:machines\/[^/]+\/)?sessions\/history$/.test(pathname);
   // an agent's commands in a folder, and a pane's, are read from that folder's command files (each row
@@ -237,7 +243,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/list$/.test(pathname);
   // the digits of a waiting comparison are what approving it takes (docs/account.md, "Who may admit a device")
   const pairingDigits = pathname === "/api/relay/pairings";
-  if (readOnly && (fileRead || directoryListing || repositoryDiff || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
+  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
@@ -252,6 +258,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     || pathname === "/api/relay" || pathname.startsWith("/api/relay/")
     || pathname.startsWith("/api/account/")
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
+    // a destination keeps getting alerts after the visitor who set it lost access, as a push subscription would
+    || pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test"
   );
   // pairing without a code ends in an approval only a window that hears of it can give (relay-pairings below):
   // an ungated LAN window never does, so it neither makes such a link nor answers one
@@ -284,6 +292,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // request gets it: the routes open without sign-in (health, auth, pairing) keep the default,
   // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
+
+  // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs
+  if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "unsupported", message: "Files on another machine of herdr-core are not reachable from Ovis yet" } }, 501);
+  }
 
   if (pathname === "/api/bridge") {
     setRequestRoute(pathname);
@@ -452,6 +466,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
 
+  // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
+  if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {
+    // its owner as a push subscription's: a paired device, null for a local/token/Tailscale sign-in, undefined for the open LAN
+    const owner = access.level !== "full" ? null : access.device?.id ?? (access.via === "open" ? undefined : null);
+    try { return (await handleAlertWebhookRequest(request, pathname, alertWebhook, owner))!; } catch (error) { return errorResponse(error); }
+  }
   if (pathname === "/api/push" || pathname.startsWith("/api/push/")) {
     try {
       // a paired device owns its alerts; the open LAN (before any pairing) owns them only while
@@ -482,8 +502,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       ? { host: hostname } : undefined;
     // what protects this server, for a client that got in (a watching one too) and nobody else;
     // per request, so never stored. The ingress is this request's, proven or `unknown`.
-    // Portal's proof says how the request came even when the token or a paired device signed it in
-    const ingress = relayPeer !== undefined ? "relay" : portalProven ? "portal" : observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+    // Portal's proof says how the request came even when the token or a paired device signed it in.
+    // A Portal with no sign-in has no proof to send: a request from this PC in the shape it forwards
+    // (X-Forwarded-Proto https) to an address it serves is all there is. Another program here could
+    // send the same and would only mislabel its own answer; nothing here lets anyone in
+    const portalForwarded = portalProven || (loopback && request.headers.get("x-forwarded-proto") === "https" && (options.portal?.serves(requestHost) ?? false));
+    const ingress = relayPeer !== undefined ? "relay" : portalForwarded ? "portal" : observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
     const security: SecuritySummary | undefined = access.level === "full" ? {
       token_configured: token !== "",
       pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",
@@ -569,7 +593,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const receipt = orderSequence.moved();
     void machines?.refreshLocal();
     return receipt;
-  }, shellAgents);
+  }, shellAgents, options.localFiles !== false);
   if (workspaceResponse) return workspaceResponse;
 
   const pluginResponse = await handlePluginRequest(request, url, pathname, options);

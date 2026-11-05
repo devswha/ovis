@@ -6,7 +6,7 @@
  */
 
 import type { TelemetrySettings } from "../../shared/telemetry.ts";
-import { mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
+import { MAX_PINS, mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type ThemeEntry } from "./themes.ts";
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
@@ -93,6 +93,10 @@ export interface Settings {
   agentGroupSort: AgentGroupSort;
   /** Agent logos: brand colors, or without color, so a list of one agent is not a stripe of tiles */
   agentMarks: AgentMarks;
+  /** Settings -> Lock pinned agents (experimental): the Agents list offers Lock agent, and the locks below hold; off, none does */
+  agentLocks: boolean;
+  /** pinned agent rows this app does not close (lib/paneLocks.ts), by their pin key; a lock holds only while its row is pinned */
+  lockedAgents: string[];
   /** the sidebar's state marks: this app's own, or herdr's dots or symbols, as its `[ui] status_indicators` (lib/status.ts) */
   statusIndicators: StatusIndicators;
   /** the chrome color family, keyed as data-palette in src/styles.css */
@@ -116,6 +120,15 @@ export interface Settings {
   /** draw the pictures a pane program prints as sixel or iTerm2 inline images (lib/terminalImages.ts); off by
    *  default. Only herdr-core passes them on: herdr redraws a pane from its own grid, which keeps no pictures. */
   terminalImages: boolean;
+  /** a herdr-core pane is drawn by libghostty over its xterm, Kitty graphics pictures included (lib/ghostty/overlay.ts);
+   *  off by default. herdr's own server redraws a pane from its grid, which keeps no pictures, so it stays with xterm. */
+  terminalGhostty: boolean;
+  /** on a touch screen, an Attach files button in the terminal's input line and a key in the key bar while typing
+   *  straight into the grid pick files to store beside the pane (POST /api/pane/image); off by default */
+  terminalAttachButton: boolean;
+  /** on a touch screen, the soft keyboard comes up for the terminal only from the key bar's keyboard control:
+   *  while it is down, the input line and xterm's field carry inputmode="none" (#1635). Off by default. */
+  terminalKeyboardOnRequest: boolean;
   /** a pane whose grid this device does not size and is wider than this screen (a mirrored pane: a Windows
    *  PC, no terminal attach; an attached pane it only watches, or holds under the keyboard, at the grid
    *  another device gave the pty) is drawn folded to the screen's width (lib/terminalFold.ts); false draws
@@ -133,6 +146,9 @@ export interface Settings {
   chatFontSize: number | null;
   /** fonts tried before the UI font in the chat's prose (code stays mono), as a CSS font-family list; "" keeps the UI font */
   chatFontFamily: string;
+  /** a file's text size in px in the file viewer and reader (a Markdown preview's body text, the source scaled with it);
+   *  null follows the chat's size, and leaves the source at the interface's */
+  fileFontSize: number | null;
   /** prompts per history page in the chat; older turns load a page at a time as the reader scrolls up */
   historyPrompts: number;
   /** the interface's body size in px (--fs-md; every other --fs-* scales with it as --ui-scale); null follows the density.
@@ -232,14 +248,15 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, sidebarFilter, voiceEngine, the agent groups, the
- * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
+ * keyBarExpanded, agentLocks, lockedAgents, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, sidebarFilter, voiceEngine, the agent groups, the
+ * interface font, the file text size, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
-  | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
+  | "quickReplies" | "agentLocks" | "lockedAgents" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages">;
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "terminalAttachButton"
+  | "terminalKeyboardOnRequest" | "fileFontSize">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -310,7 +327,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  */
 export const SETTING_SCOPE = {
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
@@ -318,11 +335,17 @@ export const SETTING_SCOPE = {
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
   // a phone has less memory for decoded pictures than a desk
   terminalImages: "device",
+  // a phone's browser has less memory for the module and decoded pictures than a desk
+  terminalGhostty: "device",
+  // a phone's picker, not a desk's drop
+  terminalAttachButton: "device",
+  // a phone's soft keyboard is no desk's
+  terminalKeyboardOnRequest: "device",
   // a phone folds a wide mirror, a desk's window may draw it whole
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
-  chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
+  chatFontSize: "device", chatFontFamily: "device", fileFontSize: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
   // a desk's composer button: a phone never shows it
@@ -362,6 +385,8 @@ export const DEFAULT_SETTINGS: Settings = {
   agentGroups: false,
   agentGroupSort: "wait",
   agentMarks: "color",
+  agentLocks: false,
+  lockedAgents: [],
   statusIndicators: "classic",
   palette: DEFAULT_THEME,
   paletteLight: DEFAULT_THEME,
@@ -373,10 +398,15 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalFontFamily: "",
   paneClipboard: true,
   terminalImages: false,
+  // on by default; it only takes over on a herdr-core server (terminal-history), elsewhere xterm draws
+  terminalGhostty: true,
+  terminalAttachButton: false,
+  terminalKeyboardOnRequest: false,
   terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
   chatFontSize: null,
+  fileFontSize: null,
   historyPrompts: 10,
   chatFontFamily: "",
   uiFontSize: null,
@@ -484,6 +514,11 @@ export function chatFontSize(settings: Settings): number {
   return settings.chatFontSize ?? uiFontSize(settings);
 }
 
+/** A file's text size in px in the file viewer: the chosen one, or the chat's. */
+export function fileFontSize(settings: Settings): number {
+  return settings.fileFontSize ?? chatFontSize(settings);
+}
+
 /** The Default chat lane never runs narrower than this, in px: --content-w, the Narrow step. */
 export const CHAT_LANE_MIN = 820;
 /** ...or wider than this, in rem: 960px at a 16px root. In rem because Wide is (72rem, styles.css),
@@ -551,6 +586,10 @@ export function sanitizeSettings(raw: unknown): Settings {
     agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,
     agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,
+    agentLocks: typeof record["agentLocks"] === "boolean" ? record["agentLocks"] : DEFAULT_SETTINGS.agentLocks,
+    lockedAgents: Array.isArray(record["lockedAgents"])
+      ? [...new Set(record["lockedAgents"].filter((key): key is string => typeof key === "string" && key.length > 0))].slice(0, MAX_PINS)
+      : [...DEFAULT_SETTINGS.lockedAgents],
     statusIndicators: record["statusIndicators"] === "classic" || record["statusIndicators"] === "dots" || record["statusIndicators"] === "symbols" ? record["statusIndicators"] : DEFAULT_SETTINGS.statusIndicators,
     darkTheme,
     lightTheme,
@@ -564,6 +603,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     chatFontSize: typeof chatFont === "number" && Number.isFinite(chatFont)
       ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(chatFont)))
       : DEFAULT_SETTINGS.chatFontSize,
+    fileFontSize: typeof record["fileFontSize"] === "number" && Number.isFinite(record["fileFontSize"])
+      ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(record["fileFontSize"])))
+      : DEFAULT_SETTINGS.fileFontSize,
     historyPrompts: HISTORY_PROMPTS.includes(record["historyPrompts"] as (typeof HISTORY_PROMPTS)[number])
       ? (record["historyPrompts"] as number)
       : DEFAULT_SETTINGS.historyPrompts,
@@ -572,6 +614,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
     terminalImages: record["terminalImages"] === true,
+    terminalGhostty: record["terminalGhostty"] !== false,
+    terminalAttachButton: record["terminalAttachButton"] === true,
+    terminalKeyboardOnRequest: record["terminalKeyboardOnRequest"] === true,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
@@ -695,6 +740,18 @@ function readVoiceEngine(): VoiceEngineChoice {
 /** Settings → Chat → History page size, kept in a key of its own for the same reason: an old tab's save drops a field it does not know. */
 export const HISTORY_PROMPTS_STORAGE_KEY = "ovis:history-prompts";
 
+/** Settings → File text size, kept in a key of its own for the same reason. */
+export const FILE_FONT_SIZE_STORAGE_KEY = "ovis:file-font-size";
+
+function readFileFontSize(): number | null {
+  try {
+    const raw = window.localStorage.getItem(FILE_FONT_SIZE_STORAGE_KEY);
+    return sanitizeSettings({ fileFontSize: raw === null ? null : JSON.parse(raw) }).fileFontSize;
+  } catch {
+    return DEFAULT_SETTINGS.fileFontSize;
+  }
+}
+
 function readHistoryPrompts(): number {
   try {
     const raw = window.localStorage.getItem(HISTORY_PROMPTS_STORAGE_KEY);
@@ -722,6 +779,12 @@ export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
 /** Settings > Terminal > Pictures in the terminal, in a key of its own for the same reason: off until chosen. */
 export const TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
+/** Settings > Terminal > Draw with libghostty, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_GHOSTTY_STORAGE_KEY = "ovis:terminal-ghostty";
+/** Settings > Terminal > Attach files button, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_ATTACH_BUTTON_STORAGE_KEY = "ovis:terminal-attach-button";
+/** Settings > Terminal > Keyboard only from the key bar, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY = "ovis:terminal-keyboard-on-request";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
 /** Settings > Chat > Composer > Paste and send button, kept in a key of its own for the same reason: off until chosen. */
@@ -773,11 +836,14 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), fileFontSize: readFileFontSize(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
     reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
     composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
-    terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages) };
+    terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages),
+    terminalGhostty: readChatFold(TERMINAL_GHOSTTY_STORAGE_KEY, DEFAULT_SETTINGS.terminalGhostty),
+    terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
+    terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -788,7 +854,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, fileFontSize, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
@@ -796,12 +862,16 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(AGENT_GROUPS_STORAGE_KEY, JSON.stringify(agentGroups));
     window.localStorage.setItem(AGENT_GROUP_SORT_STORAGE_KEY, JSON.stringify(agentGroupSort));
     window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
+    window.localStorage.setItem(FILE_FONT_SIZE_STORAGE_KEY, JSON.stringify(fileFontSize));
     window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
     window.localStorage.setItem(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, JSON.stringify(reuseExternalLinkTab));
     window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
     window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
+    window.localStorage.setItem(TERMINAL_GHOSTTY_STORAGE_KEY, JSON.stringify(terminalGhostty));
+    window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
+    window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
@@ -840,6 +910,13 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   // ChatView.css scales its type tokens by this (the chat's and a Markdown preview's): the chat's size over the
   // interface's, so a chosen chat size is drawn as itself whatever the interface size, and an unchosen one follows it
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));
+  // ChatView.css gives a file viewer's preview this scale in place of the chat's, the same until a file size is chosen;
+  // FileViewer.css scales the source by the second one, which only a chosen size writes (the interface's size till then):
+  // the chosen size over the chat's, where the stepper starts, so choosing that size changes nothing and a step moves the
+  // source the way it moves the preview
+  root.style.setProperty("--file-scale", String(fontScale(fileFontSize(settings), uiPx)));
+  if (settings.fileFontSize === null) root.style.removeProperty("--file-source-scale");
+  else root.style.setProperty("--file-source-scale", String(fontScale(settings.fileFontSize, chatFontSize(settings))));
   // Settings → Appearance → Interface font, written as the token itself: the chosen list in front of the built-in stack
   const uiFont = uiFontStack(settings.uiFontFamily, language);
   if (uiFont === null) root.style.removeProperty("--font-ui");
