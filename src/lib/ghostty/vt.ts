@@ -96,6 +96,7 @@ const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 1
 const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE_DEFAULT = 33, OPT_MODE = 34;
 /** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
+const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3;
 const DATA_KITTY_GRAPHICS = 30;
 const SCROLL_BOTTOM = 1, SCROLL_DELTA = 2;
 const IMAGE_ID = 2, IMAGE_GENERATION = 3, IMAGE_LAYER = 4, IMAGE_Z = 5, IMAGE_COL = 6, IMAGE_ROW = 7, IMAGE_OFFSET_X = 10, IMAGE_OFFSET_Y = 11;
@@ -160,6 +161,10 @@ export class GhosttyVt {
   private readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id", Bits>;
   private readonly flagsOffset: number;
   private readonly encoder = new TextEncoder();
+  /** where the bytes so far stand in a `CSI ? Pm l`, carried from one write to the next */
+  private csi = CSI_GROUND;
+  private param = 0;
+  private sawGraphemeMode = false;
 
   private constructor(exports: Exports, layout: TypeLayout, cols: number, rows: number) {
     this.x = exports;
@@ -222,21 +227,40 @@ export class GhosttyVt {
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
     // xterm ignores a program's own 2027 off (CSI ? ... 2027 ... l): so does the layer, which turns it
-    // back on right after the sequence, or the two grids drift apart
+    // back on right after the sequence, or the two grids drift apart. The sequence may span writes.
     let start = 0;
-    for (let at = bytes.indexOf(0x32); at !== -1; at = bytes.indexOf(0x32, at + 1)) {
-      if (bytes[at + 1] !== 0x30 || bytes[at + 2] !== 0x32 || bytes[at + 3] !== 0x37) continue;
-      let end = at + 4;
-      while (end < bytes.length && (bytes[end] === 0x3b || (bytes[end]! >= 0x30 && bytes[end]! <= 0x39))) end++;
-      if (bytes[end] !== 0x6c) continue;
-      this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, end + 1 - start);
-      this.setGraphemeClusters(OPT_MODE);
-      start = end + 1;
-      at = end;
+    let at = this.csi === CSI_GROUND ? bytes.indexOf(0x1b) : 0;
+    for (; at !== -1 && at < bytes.length; at++) {
+      const byte = bytes[at]!;
+      if (byte === 0x1b) { this.csi = CSI_ESC; continue; }
+      switch (this.csi) {
+        case CSI_GROUND:
+          at = bytes.indexOf(0x1b, at) - 1;
+          if (at < 0) at = bytes.length;
+          continue;
+        case CSI_ESC:
+          this.csi = byte === 0x5b ? CSI_BRACKET : CSI_GROUND;
+          continue;
+        case CSI_BRACKET:
+          this.csi = byte === 0x3f ? CSI_PRIVATE : CSI_GROUND;
+          this.param = 0;
+          this.sawGraphemeMode = false;
+          continue;
+      }
+      if (byte >= 0x30 && byte <= 0x39) this.param = Math.min(this.param * 10 + byte - 0x30, 1e6);
+      else if (byte === 0x3b || byte === 0x3a) {
+        if (this.param === MODE_GRAPHEME_CLUSTER) this.sawGraphemeMode = true;
+        this.param = 0;
+      } else if (byte === 0x18 || byte === 0x1a || byte >= 0x20) {
+        if (byte === 0x6c && (this.sawGraphemeMode || this.param === MODE_GRAPHEME_CLUSTER)) {
+          this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, at + 1 - start);
+          this.setGraphemeClusters(OPT_MODE);
+          start = at + 1;
+        }
+        this.csi = CSI_GROUND;
+      }
     }
     if (start < bytes.length) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, bytes.length - start);
-    // a sequence split across two writes is off only until the end of the first
-    this.setGraphemeClusters(OPT_MODE);
   }
 
   private setGraphemeClusters(option: number): void {
@@ -249,6 +273,7 @@ export class GhosttyVt {
 
   reset(): void {
     this.x.ghostty_terminal_reset(this.terminal);
+    this.csi = CSI_GROUND;
     this.placementsGeneration = -1;
   }
 
@@ -406,7 +431,23 @@ export class GhosttyVt {
     dv.setUint32(this.scratch + 240, buf, true);
     dv.setUint32(this.scratch + 244, cap, true);
     dv.setUint32(this.scratch + 248, 0, true);
-    if (x.ghostty_render_state_row_cells_get(this.cells, CELLS_GRAPHEMES_UTF8, this.scratch + 240) !== 0) return " ";
+    if (x.ghostty_render_state_row_cells_get(this.cells, CELLS_GRAPHEMES_UTF8, this.scratch + 240) !== 0) {
+      // a long ZWJ sequence: the call names the room it needs
+      const need = this.view().getUint32(this.scratch + 248, true);
+      if (need <= cap) return " ";
+      const big = x.ghostty_wasm_alloc(need);
+      try {
+        dv = this.view();
+        dv.setUint32(this.scratch + 240, big, true);
+        dv.setUint32(this.scratch + 244, need, true);
+        dv.setUint32(this.scratch + 248, 0, true);
+        if (x.ghostty_render_state_row_cells_get(this.cells, CELLS_GRAPHEMES_UTF8, this.scratch + 240) !== 0) return " ";
+        const n = this.view().getUint32(this.scratch + 248, true);
+        return new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, big, n).slice()) || " ";
+      } finally {
+        x.ghostty_wasm_free(big, need);
+      }
+    }
     dv = this.view();
     const n = dv.getUint32(this.scratch + 248, true);
     return new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, buf, n)) || " ";

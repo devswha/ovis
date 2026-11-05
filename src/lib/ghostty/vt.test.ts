@@ -7,10 +7,10 @@ import { GhosttyVt } from "./vt.ts";
 interface Layout { cells: [number, string][]; cursor: number }
 
 /** Each drawn cell's column and grapheme on the first row, and the cursor's column, as libghostty lays out `text`. */
-async function ghosttyLayout(text: string): Promise<Layout> {
+async function ghosttyLayout(...chunks: string[]): Promise<Layout> {
   const vt = await GhosttyVt.create(40, 2);
   try {
-    vt.write(text);
+    for (const chunk of chunks) vt.write(chunk);
     const cells: [number, string][] = [];
     vt.frame((y, runs) => {
       if (y !== 0) return;
@@ -86,4 +86,14 @@ describe("GhosttyVt widths", () => {
       expect(await ghosttyLayout(`${prefix}ABC👨‍👩‍👧XYZ`)).toEqual(await xtermLayout(`${prefix}ABC👨‍👩‍👧XYZ`));
     });
   }
+
+  it("keeps grapheme clusters when a mode 2027 off is split between two writes", async () => {
+    expect(await ghosttyLayout("\x1b[?20", "27lABC👨‍👩‍👧XYZ")).toEqual(await xtermLayout("\x1b[?2027lABC👨‍👩‍👧XYZ"));
+    expect(await ghosttyLayout("\x1b[?2027", "lABC👨‍👩‍👧XYZ")).toEqual(await xtermLayout("\x1b[?2027lABC👨‍👩‍👧XYZ"));
+  });
+
+  it("draws a ZWJ sequence longer than the grapheme buffer", async () => {
+    const long = `👩${"\u200d👩".repeat(18)}X`;
+    expect(await ghosttyLayout(long)).toEqual(await xtermLayout(long));
+  });
 });
