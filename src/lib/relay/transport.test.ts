@@ -33,7 +33,7 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
   const carriers: { open: boolean }[] = [];
   const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
   const attempts = { count: 0, failures: 0, offline: 0, unreachable, refusal: null as Error | null,
-    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[] };
+    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[] };
   const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
     server_public_key: "", relay };
@@ -43,7 +43,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
     openChannel: async (channelOffer, config = {}) => {
       attempts.count++;
       attempts.pcAnswerMs.push(config.pcAnswerMs);
-      attempts.relays.push(channelOffer.relay);
+      attempts.relays.push(config.carrier ?? channelOffer.relay);
+      attempts.offered.push(channelOffer.relay);
       if (attempts.unreachable > 0) { attempts.unreachable--; throw new RelayUnreachableError(null, true); }
       if (attempts.refusal !== null) { const refusal = attempts.refusal; attempts.refusal = null; throw refusal; }
       if (attempts.failures > 0) { attempts.failures--; throw new TypeError("Network offline"); }
@@ -914,6 +915,8 @@ it("falls back to the global relay when a regional one cannot be reached, and re
   // Then the first open went on through the global relay, which the PC also keeps a link to
   expect(f.attempts.relays).toEqual([REGIONAL_RELAYS[0]!, GLOBAL_RELAY]);
   expect(f.connections).toHaveLength(1);
+  // And the device is still saved with the regional relay the offer named
+  expect(f.attempts.offered).toEqual([REGIONAL_RELAYS[0]!, REGIONAL_RELAYS[0]!]);
   // And a reconnect starts where the last connection got through
   await f.drop();
   await f.transport.connect();

@@ -738,3 +738,15 @@ it("keeps a PC whose OVIS_RELAY_URL names a regional relay on the global relay t
   expect((await f.offer()).relay).toBe("wss://relay-ap.ovis.sh");
   expect(existsSync(join(f.dir, "relay", "region.json"))).toBe(false);
 });
+
+it("opens the regional link and keeps running when the choice cannot be saved", async () => {
+  // Given a state folder where the choice cannot be written
+  const dir = mkdtempSync(join(tmpdir(), "ovis-relay-region-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "relay", "region.json"), { recursive: true });
+  const f = await regionalFixture({ stateDir: dir });
+  expect((await f.post("/start")).status).toBe(200);
+  // Then the PC is on both relays all the same, and offers name the regional one
+  await bounded(Promise.all([f.synced.global.promise, f.synced.regional.promise]));
+  expect((await f.offer()).relay).toBe("wss://regional.test");
+});

@@ -82,6 +82,8 @@ export interface RelayChannelOptions {
   readonly onClose?: (error: Error) => void;
   /** how long the relay may hold the connection for the PC before it is called offline; PC_ANSWER_MS by default */
   readonly pcAnswerMs?: number;
+  /** The relay to connect through when it is not the offer's own (a fallback); the device keeps the offer's. */
+  readonly carrier?: string;
 }
 export interface RelayChannel {
   readonly mux: MuxEngine;
@@ -106,8 +108,9 @@ export interface RelayServerInfo {
 /** Resolves only after protected Noise, WELCOME and device admission all succeeded. Never retries. */
 export async function openRelayChannel(offer: RelayOffer, options: RelayChannelOptions = {}): Promise<RelayChannel> {
   if (typeof offer.relay !== "string" || !isWssOrigin(offer.relay)) throw new UnsafeRelayDestinationError("relay");
+  if (options.carrier !== undefined && !isWssOrigin(options.carrier)) throw new UnsafeRelayDestinationError("relay");
   if (typeof offer.server_id !== "string" || !SERVER_ID_PATTERN.test(offer.server_id)) throw new UnsafeRelayDestinationError("server_id");
-  const url = new URL("/v1/ws", offer.relay);
+  const url = new URL("/v1/ws", options.carrier ?? offer.relay);
   url.searchParams.set("server_id", offer.server_id);
   url.searchParams.set("role", "client");
   url.searchParams.set("v", "1");

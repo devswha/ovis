@@ -171,7 +171,9 @@ export class RelayTransport implements Transport {
         this.failed(error);
       },
     };
-    const open = (relay: string) => (this.options.openChannel ?? openRelayChannel)({ ...offer, relay }, options);
+    // the device keeps the offer's relay whichever one carries this connection
+    const open = (relay: string) => (this.options.openChannel ?? openRelayChannel)(offer,
+      relay === offer.relay ? options : { ...options, carrier: relay });
     let channel: RelayChannel;
     try { channel = await open(this.relay); }
     catch (error) {

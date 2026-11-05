@@ -133,7 +133,8 @@ export class RelayService {
       // stopped, restarted or reset meanwhile: that start chooses again, and this measurement is not kept
       if (!choice || this.link !== link || this.regionalLink) return;
       const { relay } = choice;
-      if (choice.save) writePrivateState(this.regionPath(), { relay });
+      // An unsaved choice only means measuring again at the next start; the link opens either way.
+      if (choice.save) try { writePrivateState(this.regionPath(), { relay }); } catch { /* measured again next start */ }
       const regional = new RelayLink({
         relay, identity, services, port: this.port,
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
