@@ -58,7 +58,8 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   markedRef.current = markedLine;
   // the row estimate is the host's line-height, measured when the file mounts and again when Settings → File text size
   // changes it: the metrics are read when the file mounts, so a new height mounts the file again (keyed on it below)
-  const { fileFontSize } = useSettings().settings;
+  // the source's size follows the chosen size over the chat's, and the interface's through --fs-xs
+  const { fileFontSize, chatFontSize, uiFontSize, density } = useSettings().settings;
   const [lineHeight, setLineHeight] = useState<number | null>(null);
   const lineHeightRef = useRef<number | null>(null);
   const measureLine = useCallback((): number | null => {
@@ -210,7 +211,7 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
       setLineHeight(next);
     });
     return () => cancelAnimationFrame(frame);
-  }, [fileFontSize, measureLine, anchoredReveal]);
+  }, [fileFontSize, chatFontSize, uiFontSize, density, measureLine, anchoredReveal]);
 
   // the wrap toggle re-measures the rows: the anchor is taken before the new option renders
   const lastWrap = useRef(wrap);

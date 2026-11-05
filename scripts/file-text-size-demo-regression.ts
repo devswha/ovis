@@ -188,6 +188,25 @@ try {
           } finally { await close(); }
         }
 
+        // with a size chosen the source scales by it over the chat's: a chat size changed while a long file is open
+        // re-measures its rows too, so its end is still reached
+        {
+          const { page, errors, close } = await open(browser, width, { fileFontSize: 24 }, "&file=long.log&settings=chat");
+          try {
+            await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
+            const before = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
+            const increase = page.locator(".settings-dialog").getByRole("button", { name: "Increase chat font size", exact: true });
+            for (let step = 0; step < 10; step++) await increase.click();
+            await page.keyboard.press("Escape");
+            await page.locator(".settings-dialog").waitFor({ state: "detached" });
+            await page.waitForFunction((was) => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight) < was, before);
+            const height = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
+            await page.waitForFunction((row) => Math.abs(document.querySelector<HTMLElement>(".virtual-source-scroll")!.scrollHeight - 3000 * row) < 3000 * row * 0.05, height);
+            assert.deepEqual(errors, []);
+            console.log(`PASS ${width}px: a chat size change re-measures a long file's rows (${before}px → ${height}px)`);
+          } finally { await close(); }
+        }
+
         // the control: a step sets a size of its own, kept for the device; Follow chat drops it
         const { page, errors, close } = await open(browser, width, { chatFontSize: 16 }, "&settings=appearance&section=typography");
         try {
