@@ -224,6 +224,18 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalAttachButton).toBe(false);
   });
 
+  it("keeps Fold the key bar in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    saveSettings(sanitizeSettings({ terminalFoldKeyBar: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalFoldKeyBar");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalFoldKeyBar).toBe(true);
+    saveSettings({ ...loadSettings(), terminalFoldKeyBar: false });
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    records.set("ovis:terminal-fold-key-bar", "\"true\"");
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+  });
+
   it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
     saveSettings(sanitizeSettings({ terminalKeyboardOnRequest: true }));
@@ -260,8 +272,8 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerPasteSend).toBe(false);
   });
 
-  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
-    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+  it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["filesPanel", "ovis:files-panel"]] as const) {
       expect(loadSettings()[key]).toBe(false);
       saveSettings(sanitizeSettings({ [key]: true }));
       expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
@@ -703,6 +715,13 @@ it("raises the terminal's keyboard on every tap until this device asks for it on
   expect(sanitizeSettings({ terminalKeyboardOnRequest: "true" }).terminalKeyboardOnRequest).toBe(false);
   expect(sanitizeSettings({ terminalKeyboardOnRequest: true }).terminalKeyboardOnRequest).toBe(true);
   expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
+});
+
+it("keeps the key bar under the input line until this device folds it", () => {
+  expect(sanitizeSettings({}).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: "true" }).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: true }).terminalFoldKeyBar).toBe(true);
+  expect(SETTING_SCOPE.terminalFoldKeyBar).toBe("device");
 });
 
 it("draws no Attach files control in the terminal until this device turns it on", () => {
@@ -1328,6 +1347,10 @@ it("keeps where web links open to a tab or the panel, a tab by default", () => {
   expect(DEFAULT_SETTINGS.webLinks).toBe("tab");
   expect(DEFAULT_SETTINGS.reuseExternalLinkTab).toBe(false);
   expect(DEFAULT_SETTINGS.fileOpen).toBe("popup");
+  // Files beside the pane is opt-in: the dialog stays the default
+  expect(DEFAULT_SETTINGS.filesPanel).toBe(false);
+  expect(sanitizeSettings({ filesPanel: true }).filesPanel).toBe(true);
+  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ filesPanel: bad }).filesPanel).toBe(false);
   expect(sanitizeSettings({ fileOpen: "panel" }).fileOpen).toBe("panel");
   for (const bad of ["tab", "", null, true]) expect(sanitizeSettings({ fileOpen: bad }).fileOpen).toBe("popup");
   expect(sanitizeSettings({ webLinks: "panel" }).webLinks).toBe("panel");
@@ -1358,6 +1381,13 @@ describe("shared settings", () => {
     expect(SETTING_SCOPE.lockedAgents).toBe("shared");
     expect(sanitizeSettings({ lockedAgents: ["local:p1", 3, "", "local:p1", "pc:w1:p2"] }).lockedAgents).toEqual(["local:p1", "pc:w1:p2"]);
     expect(sanitizeSettings({ lockedAgents: "local:p1" }).lockedAgents).toEqual([]);
+  });
+
+  it("draws no named agent group until one is turned on, shared by every browser (#2431)", () => {
+    expect(DEFAULT_SETTINGS.agentNamedGroups).toBe(false);
+    for (const key of ["agentNamedGroups", "agentGroupNames", "agentGroupOf"] as const) expect(SETTING_SCOPE[key]).toBe("shared");
+    const kept = sanitizeSettings({ agentNamedGroups: true, agentGroupNames: ["Tasks", "", "Tasks"], agentGroupOf: { "local:p1": "Tasks", "local:p2": 1 } });
+    expect([kept.agentNamedGroups, kept.agentGroupNames, kept.agentGroupOf]).toEqual([true, ["Tasks"], { "local:p1": "Tasks" }]);
   });
 });
 

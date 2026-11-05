@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationTurn } from "./protocol.ts";
 import { createCodexTranscriptParser } from "../server/codex.ts";
-import { conversationTurnAnchor, matchSnippet, pickedTurn, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
+import { conversationTurnAnchor, matchSnippet, pickedTurn, pickSettled, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
 
 const user = (text: string, ts: string | null = "2026-10-01T00:00:00Z"): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
 
@@ -71,8 +71,8 @@ describe("searchTurns", () => {
   it("lists each matching turn once, newest first, named as the chat names its rows", () => {
     const turns = [user("fix the build"), { role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [{ kind: "text", text: "The build is fixed. The build passes." }] } satisfies ConversationTurn, user("thanks")];
     expect(searchTurns(turns, searchPattern("build")!)).toEqual([
-      { turn: conversationTurnAnchor(turns[1]!), role: "assistant", ts: "2026-10-01T00:00:01Z", before: "The ", match: "build", after: " is fixed. The build passes." },
-      { turn: "user|2026-10-01T00:00:00Z|text|fix the build", role: "user", ts: "2026-10-01T00:00:00Z", before: "fix the ", match: "build", after: "" },
+      { turn: conversationTurnAnchor(turns[1]!), role: "assistant", ts: "2026-10-01T00:00:01Z", text_digest: expect.any(String), before: "The ", match: "build", after: " is fixed. The build passes." },
+      { turn: "user|2026-10-01T00:00:00Z|text|fix the build", role: "user", ts: "2026-10-01T00:00:00Z", text_digest: expect.any(String), before: "fix the ", match: "build", after: "" },
     ]);
   });
 });
@@ -175,6 +175,26 @@ describe("pickedTurn", () => {
     expect(pickedTurn(prompts, searchTurns(prompts, searchPattern("run tests")!)[1]!)).toBe(0);
   });
 
+  it("tells apart prompts without a time that begin alike by their whole words (Kimi)", () => {
+    const lead = "y".repeat(90);
+    const older = user(`${lead} the first way`, null), later = user(`${lead} the second way`, null);
+    expect(conversationTurnAnchor(older)).toBe(conversationTurnAnchor(later));
+    const turns = [older, answer("ok"), later, answer("ok")];
+    const [laterMatch, olderMatch] = searchTurns(turns, searchPattern("way")!);
+    expect(pickedTurn(turns, olderMatch!)).toBe(0);
+    expect(pickedTurn(turns, laterMatch!)).toBe(2);
+    // only the later one loaded: it is not the older one, so the pick reads on
+    expect(pickSettled(turns.slice(2), olderMatch!)).toBe(false);
+    expect(pickedTurn(turns.slice(2), olderMatch!)).toBe("none");
+    expect(pickSettled(turns, olderMatch!)).toBe(true);
+    // Markdown marks the search does not read still tell two prompts apart
+    const marked = [user(`${lead} **deploy**`, null), answer("ok"), user(`${lead} deploy`, null)];
+    expect(pickedTurn(marked, searchTurns(marked, searchPattern("deploy")!)[0]!)).toBe(2);
+    // an older server's match has no digest: by name, as before
+    const { text_digest: _, ...old } = laterMatch!;
+    expect(pickedTurn(turns, old)).toBe(0);
+  });
+
   it("opens the first of turns that share the match's name, as without a changed one", () => {
     const turns = [user("continue", null), answer("ok one"), user("continue", null), answer("ok two")];
     for (const match of searchTurns(turns, searchPattern("continue")!)) expect(pickedTurn(turns, match)).toBe(0);
@@ -191,5 +211,72 @@ describe("pickedTurn", () => {
   it("opens none when the answer grew and a later answer of its time took its old name", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
+  });
+
+  it("opens the one of answers of its time sharing their first words whose text still holds the match, or none", () => {
+    // both begin with the same 80 characters (or the same tool call), so they share a name
+    const lead = "x".repeat(90);
+    const apples = answer(`${lead} APPLES`), bananas = answer(`${lead} BANANAS`);
+    expect(conversationTurnAnchor(apples)).toBe(conversationTurnAnchor(bananas));
+    const picked = searchTurns([bananas], searchPattern("bananas")!)[0]!;
+    expect(pickedTurn([apples, user("again"), bananas], picked)).toBe(2);
+    expect(pickedTurn([bananas], picked)).toBe(0);
+    const tooled = (text: string): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [
+      { kind: "tool", name: "exec_command", summary: "git status", input: '{"cmd":"git status"}', output: "clean" }, { kind: "text", text }] });
+    const apple = searchTurns([tooled("APPLE result")], searchPattern("apple")!)[0]!;
+    expect(pickedTurn([tooled("APPLE result"), user("again"), tooled("BANANA result")], apple)).toBe(0);
+    // the searched answer's words became a progress note (Codex pairs its event later): it still holds
+    // them, so neither opens
+    const noted: ConversationTurn = { ...bananas, parts: [{ kind: "text", text: `${lead} BANANAS`, phase: "commentary" }] };
+    expect(pickedTurn([noted, user("again"), bananas], picked)).toBe("several");
+    // a link that closed since still holds the words
+    const link = searchTurns([answer(`${lead} deploy [docs`)], searchPattern("deploy")!)[0]!;
+    expect(pickedTurn([answer(`${lead} deploy [docs](https://example.com) are up.`), user("again"), answer(`${lead} deploy [docs`)], link)).toBe("several");
+    const both = searchTurns([answer(`${lead} fruit`)], searchPattern("fruit")!)[0]!;
+    expect(pickedTurn([answer(`${lead} fruit`), user("again"), answer(`${lead} fruit`)], both)).toBe("several");
+  });
+});
+
+describe("pickSettled", () => {
+  const said = (text: string, ts: string): ConversationTurn => ({ role: "assistant", ts, parts: [{ kind: "text", text }] });
+
+  it("reads on past a later answer that took a grown answer's name until the grown one is read", () => {
+    // the answer was searched while it said only its first words, then went on; the user steered and
+    // the next answer, dated by the task's start (Codex) as well, began with those words
+    const task = "2026-10-01T00:01:00Z";
+    const match = searchTurns([user("check the deploy", task), said("The deploy script", task)], searchPattern("deploy script")!)[0]!;
+    const turns = [user("list the files", "2026-10-01T00:00:00Z"), said("Done.", "2026-10-01T00:00:00Z"),
+      user("check the deploy", task), said("The deploy script is ready.", task), user("run it again", "2026-10-01T00:01:03Z"), said("The deploy script", task)];
+    // pages read newest first: the steer and the later answer, the grown answer and its prompt, then the earlier task
+    expect(pickSettled(turns.slice(4), match)).toBe(false);
+    expect(pickSettled(turns.slice(2), match)).toBe(false);
+    expect(pickSettled(turns, match)).toBe(true);
+    expect(pickedTurn(turns, match)).toBe("several");
+  });
+
+  it("reads on when the named answer no longer says what was searched, as after a clock went back (Hermes)", () => {
+    // the searched answer grew; the clock went back for the next prompt, and the later answer began
+    // with the searched answer's old words, more than a name holds
+    const lead = "x".repeat(90);
+    const match = searchTurns([said(`${lead} deploy script`, "2026-10-01T10:00:10Z")], searchPattern("deploy script")!)[0]!;
+    const turns = [said(`${lead} deploy script is ready.`, "2026-10-01T10:00:10Z"), user("again", "2026-10-01T10:00:09Z"), said(`${lead} deploy script passes.`, "2026-10-01T10:00:10Z")];
+    expect(conversationTurnAnchor(turns[2]!)).toBe(match.turn);
+    expect(pickSettled(turns.slice(1), match)).toBe(false);
+    expect(pickedTurn(turns, match)).toBe("several");
+    // nor when the later answer reads the same once its Markdown marks are gone
+    const bold = searchTurns([said(`${lead} **deploy**`, "2026-10-01T10:00:10Z")], searchPattern("deploy")!)[0]!;
+    expect(pickSettled([user("again", "2026-10-01T10:00:09Z"), said(`${lead} deploy`, "2026-10-01T10:00:10Z")], bold)).toBe(false);
+  });
+
+  it("settles on the named turn once a turn before it is of an earlier time, or the match has no time", () => {
+    const at = (text: string, ts: string | null): ConversationTurn => ({ role: "assistant", ts, parts: [{ kind: "text", text }] });
+    const match = searchTurns([at("The deploy script", "2026-10-01T00:00:01Z")], searchPattern("deploy script")!)[0]!;
+    expect(pickSettled([user("go"), at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(true);
+    expect(pickSettled([at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    expect(pickSettled([user("go"), at("Another answer", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    // a time that cannot be read tells nothing
+    expect(pickSettled([user("go", "yesterday"), at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    const untimed = searchTurns([at("The deploy script", null)], searchPattern("deploy script")!)[0]!;
+    expect(pickSettled([at("The deploy script", null)], untimed)).toBe(true);
   });
 });
