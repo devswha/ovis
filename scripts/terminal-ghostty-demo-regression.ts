@@ -2,8 +2,8 @@
  * Settings -> Terminal -> Draw with libghostty: on a herdr-core server (`terminal-history`) libghostty
  * draws the pane over its xterm from every byte xterm was given, the ones before its module loaded
  * included; a Kitty graphics picture is drawn where it was placed and goes when the program deletes
- * it; typing still goes through xterm. herdr's own server, or the setting off, keep xterm alone and
- * never fetch the module. Demo fixtures only: no herdr, hc or user state.
+ * it; typing still goes through xterm. herdr's own server is drawn by libghostty too; the setting off
+ * keeps xterm alone and never fetches the module. Demo fixtures only: no herdr, hc or user state.
  */
 import { deflateSync } from "node:zlib";
 import assert from "node:assert/strict";
@@ -250,7 +250,21 @@ try {
         assert.ok(xtermRow > 0, `core, iTerm2 picture, off: xterm moves past the picture (row ${xtermRow})`);
         assert.equal(await shownRow(true), xtermRow, "core, iTerm2 picture: the text after it is shown on xterm's row");
       }
-      for (const [kind, ghostty] of [["herdr", true], ["core", false]] as const) {
+      {
+        // herdr's own server: libghostty draws its panes too, from the bytes xterm was given before the module loaded
+        const { page, wasm, errors } = await open(browser, server.port, prefix, "herdr", true);
+        await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
+        await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
+        await print(page, "HERDR-LINE\r\n", "HERDR-DONE");
+        assert.equal(wasm.length, 1, "herdr: the module is fetched once");
+        assert.equal(await page.locator(".pane-frame.is-current .xterm-rows").evaluate((rows) => getComputedStyle(rows).visibility), "hidden", "herdr: xterm's own text is hidden under libghostty's");
+        await page.locator(".pane-frame.is-current .pane-terminal").click();
+        await page.keyboard.type("y");
+        await page.waitForFunction(() => window.ghosttyFixture.inputs.some((frame) => frame.type === "input" && frame.text === "y"));
+        assert.deepEqual(errors, [], "herdr: no page errors");
+        await page.context().close();
+      }
+      for (const [kind, ghostty] of [["herdr", false], ["core", false]] as const) {
         const { page, wasm, errors } = await open(browser, server.port, prefix, kind, ghostty);
         await page.evaluate((data) => window.ghosttyFixture.print(data), `${kittySquare(8, [0, 0, 255])}AFTER\r\n`);
         await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "AFTER" }).waitFor({ state: "attached" });
@@ -261,7 +275,7 @@ try {
         assert.deepEqual(errors, [], `${kind}${ghostty ? "" : ", off"}: no page errors`);
         await page.context().close();
       }
-      console.log("PASS libghostty: draws a herdr-core pane from its first byte with Kitty pictures; herdr's own and off stay xterm");
+      console.log("PASS libghostty: draws a herdr-core pane from its first byte with Kitty pictures, and herdr's own panes; off stays xterm");
     } finally {
       await browser.close();
     }
