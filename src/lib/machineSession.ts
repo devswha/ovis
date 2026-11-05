@@ -84,9 +84,10 @@ export class MachineSession {
         for (const item of message.messages) {
           if (item.state === "sending" && !this.going.has(item.id)) {
             // that frame can come after the row's Enter (replayed after a reconnect, or handled late): the
-            // PC's answer would bound the skew too tightly for its time, so only the turns' times do
-            const after = waitingBaseline(key);
-            this.going.set(item.id, { at: Date.now(), after: after === null ? null : { ...after, pcTime: null } });
+            // PC's clock now would bound it too tightly, but the PC stamped the row before typing it. An
+            // older bridge does not: only the turns' times do then
+            const after = waitingBaseline(key), stamped = item.sending_at === undefined ? Number.NaN : Date.parse(item.sending_at);
+            this.going.set(item.id, { at: Date.now(), after: after === null ? null : { ...after, pcFloor: Number.isFinite(stamped) ? stamped : null } });
           }
           else if (item.state === "queued" || item.state === "held") this.going.delete(item.id);
         }
