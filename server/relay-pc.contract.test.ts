@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../relay/bun.ts";
-import type { Machine, MachineEvent } from "../shared/machines.ts";
+import type { HerdrIdentity, Machine, MachineEvent } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
 import { RelayService } from "./relay/service.ts";
@@ -43,7 +43,7 @@ async function twoPcs() {
     return socket;
   };
   const bState = stateDir();
-  const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local });
+  const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}` });
   const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
@@ -61,13 +61,21 @@ async function twoPcs() {
     cleanup.push(stop);
     return { app: a, base: `http://127.0.0.1:${a.port}`, stop };
   };
-  return { b, link, aState, startA, delay };
+  return { b, bBase, link, aState, startA, delay };
 }
 
+const findRelayPc = (base: string, code: string) => postRelay(base, { code }, "/code");
+
+const errorCode = async (response: Response) => (await response.json() as { error: { code: string } }).error.code;
+
 function addRelayPc(base: string, link: string, name?: string): Promise<Response> {
-  return fetch(`${base}/api/machines/relay`, {
+  return postRelay(base, { link, ...(name === undefined ? {} : { name }) });
+}
+
+function postRelay(base: string, body: Record<string, string>, path = ""): Promise<Response> {
+  return fetch(`${base}/api/machines/relay${path}`, {
     method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" },
-    body: JSON.stringify({ link, ...(name === undefined ? {} : { name }) }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -122,6 +130,12 @@ it("adds a PC through the relay, shows its panes, signs in again after a restart
   expect(proxied.status).toBe(200);
   expect((await proxied.json() as { snapshot: SessionSnapshot }).snapshot.panes.length).toBe(direct.snapshot.panes.length);
 
+  // A knows what runs B's terminals, as an SSH PC's bridge tells it, so its header shows no "herdr offline"
+  const health = await (await fetch(`http://127.0.0.1:${b.port}/api/health`, { headers: { origin: `http://127.0.0.1:${b.port}` } })).json() as { herdr: HerdrIdentity };
+  expect(health.herdr.protocol).toBeNumber();
+  const known = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.herdr !== undefined);
+  expect(known.herdr).toEqual(health.herdr);
+
   // a terminal socket for that PC goes through the same tunnel
   const opened = deferred<string>();
   const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
@@ -149,6 +163,40 @@ it("adds a PC through the relay, shows its panes, signs in again after a restart
   expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);
 }, 60_000);
 
+it("finds a PC by the code it shows, keeps its offer while its ID is compared, and adds it once that ID is confirmed", async () => {
+  const { bBase, startA } = await twoPcs();
+  const a = startA();
+  const notACode = await findRelayPc(a.base, "hello");
+  expect(notACode.status).toBe(400);
+  expect(await errorCode(notACode)).toBe("typed_code_not-a-code");
+  const noPc = await findRelayPc(a.base, "ZZZZZ-ZZZZZ");
+  expect(noPc.status).toBe(404);
+  expect(await errorCode(noPc)).toBe("typed_code_no-pc");
+
+  const minted = await fetch(`${bBase}/api/relay/code`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } });
+  expect(minted.status).toBe(200);
+  const { code, server_id } = await minted.json() as { code: string; server_id: string };
+  const found = await findRelayPc(a.base, code.toLowerCase());
+  expect(found.status).toBe(200);
+  // the ID to compare with B's screen, and no pairing code: the offer that holds one stays on A
+  const answer = await found.json() as { ticket: string; server_id: string; name: string };
+  expect(answer).toEqual({ ticket: expect.any(String), server_id, name: expect.any(String) });
+  // one exchange spends the code: nothing finds B with it again
+  expect(await errorCode(await findRelayPc(a.base, code))).toBe("typed_code_no-pc");
+
+  // only the window holding the ticket adds it: another client naming B's public ID takes nothing
+  const other = await postRelay(a.base, { found: server_id });
+  expect(other.status).toBe(400);
+  expect((await other.json() as { error: { message: string } }).error.message).toContain("no longer waiting");
+  const added = await postRelay(a.base, { found: answer.ticket });
+  expect(added.status).toBe(201);
+  const { machine } = await added.json() as { machine: Machine };
+  expect(machine.relay?.server_id).toBe(server_id);
+  await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
+  // and only once
+  expect((await postRelay(a.base, { found: answer.ticket })).status).toBe(400);
+}, 60_000);
+
 it("refuses a link without a pairing code and a PC already added", async () => {
   const { link, startA } = await twoPcs();
   const a = startA();
@@ -161,6 +209,28 @@ it("refuses a link without a pairing code and a PC already added", async () => {
   const again = await addRelayPc(a.base, link);
   expect(again.status).toBe(400);
   expect((await again.json() as { error: { message: string } }).error.message).toContain("already added");
+}, 60_000);
+
+it("leaves no relay PC behind when its registration cannot be saved", async () => {
+  const { link, aState, startA } = await twoPcs();
+  let a = startA();
+  // the add's save fails at machines.json, which other saves write after relay-pcs.json
+  const registrations = join(aState, "machines.json");
+  mkdirSync(registrations);
+  const failed = await addRelayPc(a.base, link, "Lab");
+  expect(failed.status).toBe(400);
+  expect((await failed.json() as { error: { message: string } }).error.message).toContain("could not be saved");
+  const keys = join(aState, "relay-pcs");
+  expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);
+  // the PC's registration was never written, not written and then taken back: no relay-pcs.json where none was
+  expect(existsSync(join(aState, "relay-pcs.json"))).toBe(false);
+
+  // a restart brings back no PC without its key
+  a.stop();
+  rmSync(registrations, { recursive: true });
+  a = startA();
+  const { machines } = await (await fetch(`${a.base}/api/machines`, { headers: { origin: a.base } })).json() as { machines: Machine[] };
+  expect(machines.filter((machine) => machine.kind === "relay")).toEqual([]);
 }, 60_000);
 
 it("waits for a PC that answers slower than an idle connection's default limit", async () => {

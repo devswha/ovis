@@ -3,6 +3,7 @@ import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
+import { worktreeOfLabels } from "./worktrees.ts";
 
 /**
  * How herdr-core's terminals look to the rest of the server: herdr's session snapshot, built from
@@ -53,8 +54,8 @@ export type HcTerminal = Pick<Terminal, "address" | "cols" | "rows" | "cwd" | "s
 
 /**
  * A terminal on another machine the core reaches (`hc machine add vps`): hc lists and reports it
- * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Until those machines
- * show as PCs of their own, none of their terminals is this PC's: no workspace, tab, pane or event.
+ * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Each such machine is
+ * a PC of its own (machine-scope.ts), so none of their terminals is this PC's: no workspace, tab, pane or event.
  */
 export function onOtherMachine(address: string): boolean {
   return address.includes("/");
@@ -467,7 +468,11 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
       });
     }
     panes.push(...groupPanes);
+    // a checkout Ovis opened as a worktree, or the repository's own it was opened from (worktrees.ts);
+    // only where Ovis places workspaces: the app may put a labeled terminal beside others
+    const worktree = !own || group.id === OTHER_WORKSPACE_ID ? null : group.tabs.flatMap((tab) => tab.terminals).map((terminal) => worktreeOfLabels(terminal.labels)).find((facts) => facts !== null) ?? null;
     workspaces.push({
+      ...(worktree ? { worktree } : {}),
       workspace_id: group.id,
       label: group.label,
       number: index + 1,
