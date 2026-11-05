@@ -56,4 +56,6 @@ export const RELAY_ZH: Record<string, string> = {
   "ID of the key this link carries": "此链接所带密钥的 ID",
   "ID of the key this phone saved": "此手机保存的密钥的 ID",
   "Only the PC itself shows its ID, under Settings → Phone & devices. Marked groups differ.": "只有电脑自己在设置 → 手机与设备中显示它的 ID。标记出的分组就是不同之处。",
+  "{name} is not taking new phones right now": "{name} 现在不接受新手机",
+  "It may be paused after too many tries, or already busy with other phones. Wait a few minutes, then open the link again.": "可能因尝试次数过多而暂停，或正在处理其他手机。请等几分钟后再打开链接。",
 };

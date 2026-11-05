@@ -247,3 +247,15 @@ describe("a link without a code on a phone that holds an old key", () => {
     expect(pairsAgainWithoutKey(new MuxProtocolError("timeout", "timeout"), { code: false, paired: false, codeless: true })).toBe(false);
   });
 });
+
+describe("a link without a code that the PC refused before any digits", () => {
+  const refused = new MuxProtocolError("auth_failed", "auth_failed");
+  it("says the PC is not taking new phones now, not that a code expired", () => {
+    expect(failureOf(refused, { code: false, paired: false, codeless: true })).toBe("pair-unavailable");
+  });
+  it("keeps the code and saved-key screens for the attempts that have them", () => {
+    expect(failureOf(refused, { code: true, paired: false })).toBe("code-expired");
+    expect(failureOf(refused, { code: false, paired: true })).toBe("revoked");
+    expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("pair-declined");
+  });
+});

@@ -140,6 +140,13 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}
+        {state.kind === "failed" && state.failure === "pair-unavailable" && (
+          <>
+            <h1 className="relay-shell-title">{t("{name} is not taking new phones right now", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("It may be paused after too many tries, or already busy with other phones. Wait a few minutes, then open the link again.")}</p>
+            {back && <div className="relay-shell-actions">{back}</div>}
+          </>
+        )}
         {state.kind === "failed" && state.failure === "pc-offline" && (
           <>
             <h1 className="relay-shell-title">{t("{name} is offline", { name: pc })}</h1>

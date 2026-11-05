@@ -300,7 +300,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const approver = access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "relay" && access.via !== "portal";
       const pairings = { subscribe: (listener: (event: DevicePairedEvent | RelayPairingsEvent) => void) => {
         const stopPaired = devices.onPaired((event, origin) => { if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event); });
+        // a window that may not approve is told the list is empty, so one that lost the right (drive to watch) drops its prompts
         const stopRelay = approver ? ctx.services.relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list })) : undefined;
+        if (!approver) listener({ type: "relay-pairings", pairings: [] });
         return () => { stopPaired(); stopRelay?.(); };
       } };
       const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget);
@@ -349,7 +351,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         const stopPaired = devices.onPaired((event, origin) => {
           if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event);
         });
+        // a window that may not approve is told the list is empty, so one that lost the right (drive to watch) drops its prompts
         const stopRelay = approver ? ctx.services.relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list })) : undefined;
+        if (!approver) listener({ type: "relay-pairings", pairings: [] });
         return () => { stopPaired(); stopRelay?.(); };
       } },
     } : undefined;

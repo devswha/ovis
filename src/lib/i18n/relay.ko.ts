@@ -56,4 +56,6 @@ export const RELAY_KO: Record<string, string> = {
   "ID of the key this link carries": "이 링크가 가진 키의 ID",
   "ID of the key this phone saved": "이 폰에 저장된 키의 ID",
   "Only the PC itself shows its ID, under Settings → Phone & devices. Marked groups differ.": "PC의 ID는 PC 자신의 설정 → 폰 및 기기에서만 확인할 수 있습니다. 표시된 묶음이 다른 부분입니다.",
+  "{name} is not taking new phones right now": "{name}이(가) 지금은 새 휴대폰을 받지 않습니다",
+  "It may be paused after too many tries, or already busy with other phones. Wait a few minutes, then open the link again.": "시도가 너무 많아 잠시 멈췄거나, 다른 휴대폰을 처리하는 중일 수 있습니다. 몇 분 뒤 링크를 다시 여세요.",
 };

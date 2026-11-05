@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import {
   channelBinding, exportPublicKey, generateKeyPair, openClientSecureChannel, openDaemonSecureChannel,
 } from "../../shared/relay-e2ee.ts";
@@ -208,6 +208,32 @@ test("revoking every device withdraws a prompt still waiting", async () => {
   expect(await sessionError(p)).toBe("auth_failed");
 });
 
+test("a phone that requires the feature is given it where this PC can bind the digits", async () => {
+  const f = fixture();
+  const { p } = await direct(f);
+  await p.send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
+    payload: { protocol: "ovis-mux", versions: [1], features: [PAIR_SAS_FEATURE], required_features: [PAIR_SAS_FEATURE] } });
+  const welcome = await p.inbox.next();
+  expect(welcome.type === FrameType.WELCOME && welcome.payload.features).toEqual([PAIR_SAS_FEATURE]);
+});
+
+test("an answer that lands after the comparison's deadline makes no device", async () => {
+  const f = fixture();
+  const { p } = await direct(f);
+  await p.hello();
+  const waiting = prompts(f, (list) => list.length === 1);
+  await compare(p);
+  const [request] = await waiting;
+  f.app.context.services.relay.approvals.decide(request!.id, true);
+  // the wall clock past the deadline while the session's own timer has not run yet
+  setSystemTime(new Date(Date.now() + PAIR_APPROVAL_MS + 1_000));
+  try {
+    await confirm(p);
+    expect(await sessionError(p)).toBe("timeout");
+  } finally { setSystemTime(); }
+  expect(f.app.context.services.devices.list(null).some((device) => device.label === "New phone")).toBe(false);
+});
+
 test("the phone's word alone does not pair it: it waits for the owner", async () => {
   const f = fixture();
   const { p } = await direct(f);
@@ -387,6 +413,7 @@ async function intercepted(f: Fixture, rewrite: boolean) {
   let toPc: SecureChannel | undefined;
   let toPhone: SecureChannel | undefined;
   const fromPc = new Inbox();
+  let relayChallenge: Uint8Array | undefined;
   const fromPhone: MuxFrame[] = [];
   const relayPhoneNonce = randomPairNonce();
   const relayDeviceKey = await (async () => {
@@ -424,6 +451,7 @@ async function intercepted(f: Fixture, rewrite: boolean) {
       await back.send(encodeFrame({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
         payload: { label: frame.payload.label, public_key: relayDeviceKey, commitment: toBase64Url(pairCommitment(binding, relayDeviceKey, relayPhoneNonce)) } }).slice().buffer);
       const challenge = await fromPc.next();
+      if (challenge.type === FrameType.PAIR_CHALLENGE) relayChallenge = fromBase64Url(challenge.payload.nonce);
       await toPhone!.send(encodeFrame(challenge).slice().buffer);
     } else if (frame.type === FrameType.PAIR_REVEAL) {
       await back.send(encodeFrame({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(relayPhoneNonce) } }).slice().buffer);
@@ -437,7 +465,9 @@ async function intercepted(f: Fixture, rewrite: boolean) {
   toPhone = await front;
   await bounded(pcOpened.promise);
   await end.start();
-  return { p };
+  // what the relay's own comparison with the PC is made of, to work out the digits the PC shows
+  const relaySide = () => ({ binding: channelBinding(back)!, deviceKey: relayDeviceKey, phoneNonce: relayPhoneNonce, pcNonce: relayChallenge! });
+  return { p, relaySide };
 }
 
 test("a relay in the middle that passes the comparison on unchanged is refused: the commitment is bound to the phone's channel", async () => {
@@ -449,13 +479,15 @@ test("a relay in the middle that passes the comparison on unchanged is refused: 
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
 });
 
-test("a relay in the middle that runs its own comparison with the PC shows the owner other digits than the phone's", async () => {
+test("a relay in the middle that runs its own comparison with the PC shows the owner digits bound to another channel than the phone's", async () => {
   const f = fixture();
-  const { p } = await intercepted(f, true);
+  const { p, relaySide } = await intercepted(f, true);
   await p.hello();
   const waiting = prompts(f, (list) => list.length === 1);
-  const phoneDigits = await compare(p);
+  await compare(p);
   const [request] = await waiting;
-  // one in a million tries would match; the owner sees two different numbers and declines
-  expect(request?.digits).not.toBe(phoneDigits);
+  const relay = relaySide();
+  // the PC shows the relay's comparison, made over the relay's own handshake with it, never the phone's
+  expect(request?.digits).toBe(pairDigits(relay.binding, relay.deviceKey, relay.phoneNonce, relay.pcNonce));
+  expect(Buffer.from(relay.binding).equals(Buffer.from(p.binding()))).toBe(false);
 });

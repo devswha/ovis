@@ -43,7 +43,7 @@ export function keyMismatch(serverId: string, keys: readonly { key: string; from
 }
 
 /** Why a connection did not come up; each is a screen with its own `data-relay-state`. */
-export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "bad-offer";
+export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer";
 
 /**
  * Where a PC below MIN_SERVER_VERSION is in its update (skew.ts): its update status being read, an
@@ -112,8 +112,12 @@ export function offerOf(device: RelayDevice): RelayOffer {
  * never assigned the connection could not be reached, a PC that never answered once it had is
  * offline, and a PC that answered but never finished admitting the device is unresponsive.
  */
-export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean }): RelayFailure {
+export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; codeless?: boolean }): RelayFailure {
   if (error instanceof UnsafeRelayDestinationError) return "bad-offer";
+  // a link without a code that the PC refused before any digits: no code to blame, and the wire does not say why
+  // (pairing paused after failures, three phones already waiting, a serve-only PC)
+  if (attempt.codeless && !attempt.code && !attempt.paired && !attempt.compared
+    && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-unavailable";
   // once digits were shown, the PC answered: a refusal or a deadline there means it was not approved in time
   if (attempt.compared && (error instanceof RelayAdmissionTimeoutError
     || error instanceof MuxProtocolError && (error.code === "auth_failed" || error.code === "timeout"))) return "pair-declined";

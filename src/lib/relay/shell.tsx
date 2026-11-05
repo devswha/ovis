@@ -135,11 +135,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     comparison = null;
     if (pairsAgainWithoutKey(error, { ...attempt, codeless: attempt.codeless === true })) {
+      // a Cancel or another link while the key goes ends this recovery: the newer attempt owns the screen
+      if (last !== attempt) return;
       await store.remove(attempt.offer.server_id);
+      if (last !== attempt) return;
       await connect({ ...attempt, refreshed: true });
       return;
     }
-    const failure = failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true });
+    const failure = failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
     if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
     // the relay's close code is the one fact the sentence does not carry; a plain refusal adds nothing
     const detail = error instanceof RelayUnreachableError && error.closeCode !== null ? error.message : null;
