@@ -119,7 +119,30 @@ async function run(browser: Browser, origin: string, port: number, width: number
   await page.locator('.palette-filter[data-status="idle"]').click();
   await page.locator('.palette-filter[data-status="idle"][aria-checked="true"]').waitFor();
   assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row under a status filter`);
+  // Open a page on this PC… starts the address with every pane again, so the typed port is offered
+  await search.fill(">open a page");
+  await page.getByRole("option", { name: "Open a page on this PC…", exact: true }).click();
+  await page.locator('.palette-filter[data-status="all"][aria-checked="true"]').waitFor();
+  await search.pressSequentially(String(port));
+  await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).waitFor();
   await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+
+  if (!phone) {
+    // any other dialog over the pane, such as a workspace's Earlier sessions, leaves the page out too
+    await page.locator(".workspace-select").first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Earlier sessions…", exact: true }).click();
+    const history = page.getByRole("dialog", { name: /^Earlier sessions/ });
+    await history.waitFor();
+    await page.keyboard.press("ControlOrMeta+Shift+K");
+    await search.fill(`localhost:${port}`);
+    await page.getByText("No matching panes or actions", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row over Earlier sessions`);
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+    await page.keyboard.press("Escape");
+    await history.waitFor({ state: "detached" });
+  }
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
   console.log(`PASS local page from the palette ${tag}`);

@@ -26,6 +26,7 @@ import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { localPageAddress, panelUrl } from "../lib/webPanel.ts";
+import { paneCovered } from "../lib/panePresentation.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -340,7 +341,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ...(actions.openFiles ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: actions.openFiles }] : []),
     ...(online ? [{ id: "browse-folders", label: t("Browse folders"), icon: FolderSearch, keepOpen: true, run: () => browseTo(browseStart ?? home ?? "~") }] : []),
     // starts the address a page this PC serves is typed as (below), the port left to type
-    ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
+    ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
   ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, online, browseTo, browseStart, home]);
 
@@ -403,9 +404,11 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     }
     // an address on this PC leads the list, the page opened in the web panel (as VS Code's Simple
     // Browser takes one); not one the panel refuses (lib/webPanel.ts panelUrl), the app itself included.
-    // A status filter is about panes: it leaves the page out, as it does the actions
+    // A status filter is about panes: it leaves the page out, as it does the actions. So does a dialog
+    // under the palette (a popup file, Files, Settings, Earlier sessions…): the page would open beneath
+    // it, where no link of a pane opens one. A page popup it replaces is no such dialog
     const { openLocalPage } = actions;
-    const page = openLocalPage === null || (!actionsOnly && filter !== "all") ? null : localPageAddress(text, window.location);
+    const page = openLocalPage === null || (!actionsOnly && filter !== "all") || paneCovered(".command-palette, .web-panel-popup") ? null : localPageAddress(text, window.location);
     if (openLocalPage !== null && page !== null && panelUrl(page, window.location) !== null) {
       const { host, pathname, search, hash } = new URL(page);
       const rest = `${pathname}${search}${hash}`;
