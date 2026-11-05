@@ -264,6 +264,30 @@ describe("pickedTurn", () => {
     // a page that does not hold the row reads on, and opens none
     expect(pickSettled(shown.slice(1), match)).toBe(false);
     expect(pickedTurn(shown.slice(1), match)).toBe("none");
+    // the answer split the other way: the part holding the words is opened, once its first row is read
+    const whole = searchTurns(parseHermesRows(rows), searchPattern("deploy script")!)[0]!;
+    const split = [...parseHermesRows(rows.slice(0, 2)), ...parseHermesRows(rows.slice(2))];
+    expect(pickSettled(split.slice(2), whole)).toBe(false);
+    expect(pickedTurn(split, whole)).toBe(2);
+    // a row gone since joins the turns around it: the user's row a match was in is no answer
+    const prompt = searchTurns(parseHermesRows(rows), searchPattern("deploy it")!)[0]!;
+    const joined = parseHermesRows([row(99, "assistant", "deploy it, you said"), row(101, "assistant", "Checking.")]);
+    expect(pickSettled(joined, prompt)).toBe(true);
+    expect(pickedTurn(joined, prompt)).toBe("none");
+    // turns a page from an older server brought, without rows, go by name
+    const older = parseHermesRows(rows).map(({ rows: _, ...turn }) => turn);
+    expect(pickSettled(older, whole)).toBe(true);
+    expect(pickedTurn(older, whole)).toBe(1);
+  });
+
+  it("reads a Hermes tool result into the answer that called it, though a prompt came between", () => {
+    const at = (id: number, fields: Partial<HermesMessageRow>): HermesMessageRow =>
+      ({ id, role: "assistant", content: null, tool_call_id: null, tool_calls: null, tool_name: null, reasoning: null, timestamp: 1_700_000_000 + id, ...fields });
+    const turns = parseHermesRows([
+      at(1, { tool_calls: JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]) }),
+      at(2, { role: "user", content: "stop" }), at(3, { role: "tool", content: "done", tool_call_id: "c1", tool_name: "bash" }),
+    ]);
+    expect(turns.map((turn) => turn.rows)).toEqual([[1, 3], [2, 2]]);
   });
 });
 

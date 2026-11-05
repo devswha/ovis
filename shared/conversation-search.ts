@@ -28,10 +28,10 @@ export interface ConversationSearchMatch {
    */
   text_digest?: string;
   /**
-   * the first store row the searched turn was read from (ConversationTurn.rows), for an agent whose
-   * turns have them: the pick opens the turn shown that holds this row, whatever its name
+   * the store rows the searched turn was read from (ConversationTurn.rows), for an agent whose turns
+   * have them: the pick opens a turn shown from those rows, whatever either was named from
    */
-  row?: number;
+  rows?: [first: number, last: number];
   /** the text before the match, the match and the text after it, each with whitespace runs as one space */
   before: string;
   match: string;
@@ -102,8 +102,8 @@ function textDigest(turn: ConversationTurn): string {
 const saysSearched = (turn: ConversationTurn, match: ConversationSearchMatch): boolean =>
   match.text_digest !== undefined && textDigest(turn) === match.text_digest;
 
-/** Whether `turn` was read from the store row `row` among others (ConversationTurn.rows). */
-const readsRow = (turn: ConversationTurn, row: number): boolean => turn.rows !== undefined && turn.rows[0] <= row && row <= turn.rows[1];
+/** Every text part's words as the chat draws them, a progress note's too. */
+const allText = (turn: ConversationTurn): string => turn.parts.flatMap((part) => part.kind === "text" ? [plainText(part.text)] : []).join("\n\n");
 
 /** The words around the first match in `text`, or null without one. */
 export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSearchMatch, "before" | "match" | "after"> | null {
@@ -167,14 +167,19 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
  * read as an answer still go on from the match's). None when that is not exactly one. Turns
  * without a time (Kimi's prompts) go by name and their whole searched text: the first of the name
  * that still says it, else the one of the name that changed since; by name only for a match of an
- * older server, which has no digest. A match with a store row (Hermes) opens the turn read from it,
- * whatever either was named from: a page boundary may split one answer at another row.
+ * older server, which has no digest. A match with store rows (Hermes) opens the first turn of its
+ * role read from any of them that still has the matched words, whatever either was named from: a
+ * page boundary may split one answer at another row, and the first part holding the words is where
+ * the match was. Turns of a page read without rows (an older server) go by name.
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
-  if (match.row !== undefined) {
-    const row = match.row;
-    const index = turns.findIndex((turn) => turn != null && readsRow(turn, row));
-    return index < 0 ? "none" : index;
+  if (match.rows !== undefined) {
+    const [first, last] = match.rows, pattern = searchPattern(match.match);
+    const index = turns.findIndex((turn) => turn?.rows !== undefined && turn.role === match.role
+      && turn.rows[0] <= last && first <= turn.rows[1] && pattern !== null && pattern.test(allText(turn)));
+    if (index >= 0) return index;
+    const { rows: _, ...named } = match;
+    return pickedTurn(turns.map((turn) => turn?.rows === undefined ? turn : null), named);
   }
   const names = turns.flatMap((turn, index) => turn != null && conversationTurnAnchor(turn) === match.turn ? [index] : []);
   if (match.ts === null) {
@@ -185,8 +190,7 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
     return changed.length > 1 ? "several" : changed[0] ?? "none";
   }
   const pattern = searchPattern(match.match);
-  const holds = (index: number): boolean => pattern !== null
-    && pattern.test(turns[index]!.parts.flatMap((part) => part.kind === "text" ? [plainText(part.text)] : []).join("\n\n"));
+  const holds = (index: number): boolean => pattern !== null && pattern.test(allText(turns[index]!));
   let holding = names.length > 1 ? names.filter(holds) : names;
   if (holding.length > 1) {
     const same = holding.filter((index) => saysSearched(turns[index]!, match));
@@ -217,12 +221,15 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
  * says what was searched: a clock that went back (Hermes orders by its own ids) puts a turn of the
  * match's time after an earlier one, so when none does the pick reads to the beginning. Turns
  * without a time go by name and searched text alone (by name for an older server's match). A match
- * with a store row settles once the turn read from that row is in.
+ * with store rows settles once the turns read go back to its first row (rows come in id order, so
+ * every row of it still there is read), or by name on turns of a page read without rows.
  */
 export function pickSettled(turns: readonly ConversationTurn[], match: ConversationSearchMatch): boolean {
-  if (match.row !== undefined) {
-    const row = match.row;
-    return turns.some((turn) => readsRow(turn, row));
+  if (match.rows !== undefined) {
+    const first = match.rows[0];
+    if (turns.some((turn) => turn.rows !== undefined && turn.rows[0] <= first)) return true;
+    const { rows: _, ...named } = match;
+    return pickSettled(turns.filter((turn) => turn.rows === undefined), named);
   }
   const named = turns.findIndex((turn) => conversationTurnAnchor(turn) === match.turn);
   if (named < 0) return false;
@@ -239,7 +246,7 @@ export function searchTurns(turns: readonly ConversationTurn[], pattern: RegExp)
     const turn = turns[index]!;
     const snippet = matchSnippet(searchableText(turn), pattern);
     if (snippet !== null) {
-      matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...(turn.rows === undefined ? {} : { row: turn.rows[0] }), ...snippet });
+      matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...(turn.rows === undefined ? {} : { rows: turn.rows }), ...snippet });
     }
   }
   return matches;

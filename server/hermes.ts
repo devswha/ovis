@@ -672,7 +672,10 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
   const turns: ConversationTurn[] = [];
   const pendingTools = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
   const makeRef = (callId: string) => identity ? hermesOutputRef(identity, callId) : callId;
+  /** the turn each call went into: its result row is read into that turn, though a prompt came between */
+  const callTurns = new Map<Extract<ConversationPart, { kind: "tool" }>, ConversationTurn>();
   for (const row of rows) {
+    let owner: ConversationTurn | undefined;
     try {
       const ts = parseTimestamp(row.timestamp);
 
@@ -719,7 +722,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
                   output: "",
                 };
                 turn.parts.push(toolPart);
-                if (callId) pendingTools.set(callId, toolPart);
+                if (callId) { pendingTools.set(callId, toolPart); callTurns.set(toolPart, turn); }
               }
             }
           } catch { /* malformed tool_calls json */ }
@@ -743,6 +746,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           trimOutput(toolPart, output, makeRef(callId), row.output_size ?? undefined);
           if (isFailed) toolPart.error = true;
           pendingTools.delete(callId);
+          owner = callTurns.get(toolPart);
         } else {
           let turn = turns[turns.length - 1];
           if (!turn || turn.role !== "assistant") {
@@ -761,9 +765,9 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           turn.parts.push(orphan);
         }
       }
-      // the row went into the last turn: a pick finds the turn by its rows wherever a page began
-      const last = turns[turns.length - 1];
-      if (last !== undefined) last.rows = [last.rows?.[0] ?? row.id, row.id];
+      // a pick finds the turn by its rows wherever a page began (rows come in id order)
+      const read = owner ?? turns[turns.length - 1];
+      if (read !== undefined) read.rows = [read.rows?.[0] ?? row.id, row.id];
     } catch { /* ignore individual malformed row */ }
   }
 
