@@ -448,7 +448,7 @@ function codexCredits(value: unknown): UsageCredits | null {
 /**
  * The resets Codex counts in its usage answer; when one is left, when the soonest expires, from the
  * list Codex itself reads, waited on no longer than Codex waits (5 s). That list is extra: when it
- * cannot be read the count stands alone, except a 429, whose wait holds for the account's next read.
+ * cannot be read the count stands alone, and the windows read with it are kept.
  */
 async function codexResets(ctx: UsageContext, signIn: SignIn, summary: unknown): Promise<UsageResets | null> {
   const available = number(record(summary)["available_count"]) ?? 0;
@@ -464,8 +464,7 @@ async function codexResets(ctx: UsageContext, signIn: SignIn, summary: unknown):
       .filter((credit) => credit["status"] === "available")
       .flatMap((credit) => isoTime(credit["expires_at"]) ?? []).sort();
     return { available, expires_at: expiries[0] ?? null };
-  } catch (error) {
-    if (error instanceof UsageHttpError && error.status === 429) throw error;
+  } catch {
     return { available, expires_at: null };
   }
 }

@@ -199,18 +199,15 @@ describe("providers", () => {
     expect(later).not.toHaveProperty("resets");
   });
 
-  it("holds the account for a 429 from Codex's list of resets, as for one from its usage", async () => {
+  it("keeps a fresh Codex reading when its list of resets answers 429", async () => {
     signInCodex();
     const reply = codexReply();
     replies.set(CODEX_USAGE, { body: { ...(reply.body as object), rate_limit_reset_credits: { available_count: 1 } } });
     replies.set(CODEX_RESETS, { status: 429, headers: { "retry-after": "3600" } });
-    const service = new UsageService(context(), only("codex"));
-    const [usage] = (await service.report()).providers;
-    expect(usage!.problem).toBe("rate_limited");
-    requests.length = 0;
-    now += MIN_REFRESH_MS;
-    await service.report(true);
-    expect(requests).toEqual([]);
+    const [usage] = (await new UsageService(context(), only("codex")).report()).providers;
+    expect(usage!.problem).toBeNull();
+    expect(usage!.windows.map((window) => window.used_percent)).toEqual([12, 77]);
+    expect(usage!.resets).toEqual({ available: 1, expires_at: null });
   });
 
   it("keeps the last credits and resets through a failed read, as it keeps the windows", async () => {
