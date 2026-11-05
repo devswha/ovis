@@ -48,11 +48,12 @@ Until the server answers, or when it stops, the window shows the connection scre
 `%APPDATA%\Ovis` on Windows.
 
 On Windows the installer replaces Ovis for Windows (`app/windows`, the one-file setup app), which has
-no uninstaller of its own (`windows/installer.nsh`):
-- This app's Start menu **Ovis** takes the place of that app's shortcut.
-- That app's sign-in start (the HKCU `Run` value `Ovis` that runs its copy with `--start`) is removed,
-  and so is its copy in `%LOCALAPPDATA%\Programs\Ovis`. A copy whose window is open stays until that
-  window closes; with no shortcut or sign-in start left, nothing runs it again.
+no uninstaller of its own (`windows/installer.nsh` runs `windows/replace-old-setup.ps1`):
+- This app's Start menu **Ovis** takes the place of that app's shortcut, and any other shortcut to it
+  in the Start menu or on the desktop goes.
+- That app's sign-in start (the HKCU `Run` value `Ovis` that runs its copy with `--start`, word for
+  word) is removed. So is its copy in `%LOCALAPPDATA%\Programs\Ovis`, only when the file's version
+  information says it is Ovis for Windows; an open window of it is closed first.
 - Its own Remove is never run, because that also takes the Ovis server off the PC.
 - herdr, the Ovis server it installed and their state stay as they are.
 

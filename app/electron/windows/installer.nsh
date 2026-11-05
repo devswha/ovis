@@ -1,26 +1,19 @@
-; The desktop app replaces Ovis for Windows (app/windows), the one-file setup app. That app has no
-; uninstaller of its own, and its Remove button also takes the Ovis server off the PC, so it is never
-; run. What it leaves on the PC is three things (app/windows/src/LoginItem.cs): its copy at
-; %LOCALAPPDATA%\Programs\Ovis\Ovis.exe, a Start menu Ovis.lnk, and an HKCU Run value "Ovis" that
-; starts that copy with --start at sign-in. By the time customInstall runs, this app's own Ovis.lnk has
-; replaced that Start menu shortcut (same name), so the Run value and the copy are what go here.
-; herdr, the Ovis server it installed and their state stay as they are.
+; The desktop app replaces Ovis for Windows (app/windows, the one-file setup app):
+; replace-old-setup.ps1 takes that app's copy, sign-in start and shortcuts off the PC, and leaves herdr,
+; the Ovis server and their state as they are. customInstall runs after this app's Start menu shortcut
+; is made, so a shortcut that script removed (one of that app's, kept by an update) is made again here.
 
 !macro customInstall
-  StrCpy $0 "$LOCALAPPDATA\Programs\Ovis"
-  ; never this app's own folder, whatever it is installed as
-  ${if} "$INSTDIR" != "$0"
-  ${andIf} ${FileExists} "$0\Ovis.exe"
-    ReadRegStr $1 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Ovis"
-    ; only the value that app writes: one the user pointed elsewhere is theirs
-    ${if} $1 == '"$0\Ovis.exe" --start'
-      DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Ovis"
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\replace-old-setup.ps1" "${PROJECT_DIR}\windows\replace-old-setup.ps1"
+  ; a failure leaves that app as it was: nothing of this app's depends on it
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\replace-old-setup.ps1" -NewExe "$appExe"'
+  Pop $0
+  !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+    ${ifNot} ${FileExists} "$newStartMenuLink"
+      CreateShortCut "$newStartMenuLink" "$appExe" "" "$appExe" 0 "" "" "${APP_DESCRIPTION}"
+      ClearErrors
+      WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
     ${endIf}
-    ; an open window holds the file: it stays then, with no Start menu entry or sign-in start left to run it
-    ClearErrors
-    Delete "$0\Ovis.exe"
-    ; only when nothing else is in the folder
-    RMDir "$0"
-    ClearErrors
-  ${endIf}
+  !endif
 !macroend
