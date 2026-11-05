@@ -9,6 +9,7 @@ import { rosterPanes } from "./dagPane.ts";
 import { knownStatus } from "./status.ts";
 
 type Roster = Pick<SessionSnapshot, "tabs" | "panes">;
+type Layouts = SessionSnapshot["layouts"] | undefined;
 
 export interface TabPosition {
   /** 1-based, in the tab strip's order */
@@ -46,13 +47,21 @@ export function sessionCounts<T extends PaneInfo>(panes: readonly T[], status: (
   return counts;
 }
 
-/** The waiting pane after the selected one in the roster's order, wrapping around; never the selected one itself. */
-export function nextWaitingPane<T extends PaneInfo>(panes: readonly T[], status: (pane: T) => AgentStatus | undefined, selectedPaneId: string | null): string | null {
+/**
+ * The waiting pane after the selected one in the roster's order, wrapping around; never the selected
+ * one itself, and never one its tab's zoom hides: a pick of it lands on the zoomed pane
+ * (lib/useSelection.ts useSelectedLayout), so the button would open the same pane again and again.
+ */
+export function nextWaitingPane<T extends PaneInfo>(panes: readonly T[], status: (pane: T) => AgentStatus | undefined, selectedPaneId: string | null, layouts?: Layouts): string | null {
   const shown = rosterPanes(panes, selectedPaneId);
+  const hiddenByZoom = (pane: T): boolean => {
+    const layout = layouts?.find((candidate) => candidate.tab_id === pane.tab_id);
+    return !!layout?.zoomed && layout.focused_pane_id !== pane.pane_id && panes.some((other) => other.pane_id === layout.focused_pane_id);
+  };
   const at = shown.findIndex((pane) => pane.pane_id === selectedPaneId);
   for (let step = 1; step <= shown.length; step += 1) {
     const pane = shown[(at + step + shown.length) % shown.length]!;
-    if (pane.pane_id !== selectedPaneId && knownStatus(status(pane)) === "blocked") return pane.pane_id;
+    if (pane.pane_id !== selectedPaneId && knownStatus(status(pane)) === "blocked" && !hiddenByZoom(pane)) return pane.pane_id;
   }
   return null;
 }

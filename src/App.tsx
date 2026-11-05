@@ -404,7 +404,7 @@ export function App() {
   const rosterPanesShown = selectedMachine?.state === "connected" ? snapshot?.panes ?? [] : [];
   const shownStatus = (pane: (typeof rosterPanesShown)[number]) => activity.status(selectedMachineId, pane);
   const sessionTally = sessionCounts(rosterPanesShown, shownStatus);
-  const nextWaiting = nextWaitingPane(rosterPanesShown, shownStatus, selectedPaneId);
+  const nextWaiting = nextWaitingPane(rosterPanesShown, shownStatus, selectedPaneId, snapshot?.layouts);
   const tabPlace = snapshot ? tabPosition(snapshot, selectedPaneId) : null;
   const position = tabPlace && { ...tabPlace, words: t("Tab {index} of {count}", { index: tabPlace.index, count: tabPlace.count }) };
 

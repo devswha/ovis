@@ -29,3 +29,11 @@ it("opens the next waiting pane after the selected one, wrapping, never the sele
   expect(nextWaitingPane([pane("a", "blocked"), pane("b", "idle")], raw, "a")).toBeNull();
   expect(nextWaitingPane([pane("a", "idle")], raw, "a")).toBeNull();
 });
+
+it("skips a waiting pane its tab's zoom hides, which a pick would never reach", () => {
+  const panes = [pane("a", "working", "t1"), pane("b", "blocked", "t1"), pane("c", "blocked", "t2")];
+  const zoomed = [{ tab_id: "t1", zoomed: true, focused_pane_id: "a" }] as unknown as Parameters<typeof nextWaitingPane>[3];
+  expect(nextWaitingPane(panes, raw, "a", zoomed)).toBe("c");
+  expect(nextWaitingPane(panes, raw, "c", zoomed)).toBeNull();
+  expect(nextWaitingPane(panes, raw, "a")).toBe("b");
+});
