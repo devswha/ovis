@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BETA_FEED, updateChannel, updatePlan } from "./updates.ts";
+import { BETA_FEED, debInstallCommand, updateChannel, updatePlan } from "./updates.ts";
 
 const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env: {} };
 
@@ -40,6 +40,8 @@ describe("updatePlan", () => {
     const inherited = { APPIMAGE: "/home/u/Terminal.AppImage", APPDIR: "/tmp/.mount_TermXy" };
     expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: inherited })).toEqual(plan("deb"));
     expect(updatePlan({ ...linux, execPath: "/opt/Ovis/ovis", env: inherited }).enabled).toBe(false);
+    // an inherited APPDIR of / would contain every program
+    expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: { APPIMAGE: "/home/u/Other.AppImage", APPDIR: "/" } })).toEqual(plan("deb"));
   });
 
   it("takes the beta builds from the beta feed only on the beta channel", () => {
@@ -48,6 +50,21 @@ describe("updatePlan", () => {
     // a build without a feed stays off, and OVIS_UPDATE_URL stays the feed on beta
     expect(updatePlan({ ...packaged, builtWithFeed: false, channel: "beta" }).enabled).toBe(false);
     expect(updatePlan({ ...packaged, channel: "beta", env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })).toEqual({ enabled: true, feed: "https://updates.example/desktop", channel: "beta", installer: "default" });
+  });
+});
+
+describe("debInstallCommand", () => {
+  // electron-updater's installerPath (LinuxUpdater) escapes these for one shell, but leaves ' alone
+  const escaped = (path: string) => path.replace(/\\/g, "\\\\").replace(/([`$!" ;|&()<>])/g, "\\$1");
+  const printed = (shellLine: string) => Bun.spawnSync(["/bin/sh", "-c", shellLine]).stdout.toString();
+  const path = "/home/O'Brien/.cache/my app (1)/Ovis-linux-x64.deb";
+
+  it("hands apt-get the whole path behind the prompt's bash -c '…', and when Ovis already runs as root", () => {
+    // how electron-updater runs it: `pkexec … /bin/bash -c '<command>'`, or the command alone as root, both through a shell
+    const prompted = debInstallCommand(escaped(path), true).at(-1);
+    expect(printed(`/bin/bash -c 'printf %s ${prompted}'`)).toBe(path);
+    const asRoot = debInstallCommand(escaped(path), false).at(-1);
+    expect(printed(`printf %s ${asRoot}`)).toBe(path);
   });
 });
 

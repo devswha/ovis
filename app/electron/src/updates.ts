@@ -30,9 +30,13 @@ export type UpdatePlan = { enabled: false; reason: string } | { enabled: true; f
  * dependencies in the same command, fails when it did not install, and with --no-remove stops
  * rather than remove another package. No --allow-* flags: the feed only ever offers a newer
  * version, and a local file needs no repository signature.
+ *
+ * `file` is electron-updater's installerPath, escaped for one shell except for `'`. Behind the
+ * prompt (`prompted`) it runs the command as `bash -c '<command>'`, where a `'` would end the
+ * quotes: it goes in as `\'\''`. Run as root, one shell reads the command, and `\'` is enough.
  */
-export function debInstallCommand(file: string): string[] {
-  return ["apt-get", "install", "-y", "--no-remove", file];
+export function debInstallCommand(file: string, prompted: boolean): string[] {
+  return ["apt-get", "install", "-y", "--no-remove", file.replace(/'/g, prompted ? "\\'\\''" : "\\'")];
 }
 
 /** OVIS_UPDATE_CHANNEL when it names a channel, else the state dir's `update-channel` file, else stable. */
@@ -55,8 +59,9 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
     // depends on which target builds first). An AppImage only when this program runs from its mount:
     // APPIMAGE alone may be left over from another AppImage that started this one, and the
     // AppImage updater would overwrite that file.
-    const mount = env["APPDIR"];
-    if (env["APPIMAGE"] && mount && options.execPath?.startsWith(`${mount.replace(/\/+$/, "")}/`)) installer = "appimage";
+    // (an APPDIR of / would contain every program)
+    const mount = env["APPDIR"]?.replace(/\/+$/, "");
+    if (env["APPIMAGE"] && mount && options.execPath?.startsWith(`${mount}/`)) installer = "appimage";
     else if (options.linuxPackage === "deb") installer = "deb";
     else return { enabled: false, reason: "only the AppImage and the .deb install update themselves" };
   }

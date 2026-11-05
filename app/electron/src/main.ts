@@ -307,7 +307,7 @@ async function startUpdates(): Promise<void> {
         return false;
       }
       try {
-        this.runCommandWithSudoIfNeeded(debInstallCommand(file));
+        this.runCommandWithSudoIfNeeded(debInstallCommand(file, !this.isRunningAsRoot()));
       } catch (error) {
         this.dispatchError(error instanceof Error ? error : new Error(String(error)));
         return false;
