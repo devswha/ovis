@@ -120,7 +120,10 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false, terminalImages: true })));
+      await context.addInitScript(() => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
+        localStorage.setItem("ovis:terminal-images", "true");
+      });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
       const errors: string[] = [];

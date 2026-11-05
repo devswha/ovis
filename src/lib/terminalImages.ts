@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { IDisposable, Terminal } from "@xterm/xterm";
 import type { IImageAddonOptions, ImageAddon } from "@xterm/addon-image";
 
@@ -18,6 +18,8 @@ interface Loaded {
   addon: ImageAddon;
   /** the window reports the terminal answered before the addon turned its pixel size reports on */
   windowOptions: Terminal["options"]["windowOptions"];
+  /** whether the setting is on for it now */
+  enabled: boolean;
 }
 
 /**
@@ -51,6 +53,9 @@ const SIZE_REPORTS = { getWinSizePixels: true, getCellSizePixels: true, getWinSi
  * and drops them; a pane drawn again (attached anew) comes back without its pictures either way.
  */
 export function useTerminalImages(terminal: Terminal | null, enabled: boolean, coarse: boolean): void {
+  // the addon takes the caps of the pointer at the moment it loads, not at the moment its import began
+  const coarseRef = useRef(coarse);
+  coarseRef.current = coarse;
   useEffect(() => {
     if (terminal === null) return;
     const present = loaded.get(terminal);
@@ -58,6 +63,10 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       if (present === undefined) return;
       // off: its pictures go, and the next ones are taken before the addon sees them
       present.addon.reset();
+      // an iTerm2 picture still decoding places itself once done: cleared again after what came before
+      // (the parser waits for a decode before it reads on)
+      terminal.write("", () => { if (!present.enabled) present.addon.reset(); });
+      present.enabled = false;
       terminal.options.windowOptions = present.windowOptions;
       const swallowed: IDisposable[] = [
         terminal.parser.registerDcsHandler({ final: "q" }, () => true),
@@ -66,6 +75,7 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       return () => { for (const handler of swallowed) handler.dispose(); };
     }
     if (present !== undefined) {
+      present.enabled = true;
       terminal.options.windowOptions = { ...present.windowOptions, ...SIZE_REPORTS };
       return;
     }
@@ -75,13 +85,13 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       // the addon turns xterm's pixel size reports on (the bridge passes the cell size on to hc, which
       // answers the program with it); turned off, the terminal answers as it did before
       const windowOptions = { ...terminal.options.windowOptions };
-      const addon = new ImageAddon(terminalImageOptions(coarse));
+      const addon = new ImageAddon(terminalImageOptions(coarseRef.current));
       terminal.loadAddon(addon);
       // XTSMGRAPHICS goes unanswered, as without the addon: hc leaves it to its viewers, and two
       // browsers on one pane answered it late, into the program's next read (measured on hc 0.1.17).
       // xterm disposes the handler with the terminal, as it does the addon.
       terminal.parser.registerCsiHandler({ prefix: "?", final: "S" }, () => true);
-      loaded.set(terminal, { addon, windowOptions });
+      loaded.set(terminal, { addon, windowOptions, enabled: true });
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && terminal.element) {
         // browser scripts ask which picture a cell holds (never in a release build)
         Object.assign(terminal.element, { imageAt: (col: number, row: number) => pictureColour(addon.getImageAtBufferCell(col, row)) });

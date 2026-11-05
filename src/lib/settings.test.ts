@@ -150,6 +150,19 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalImages).toBe(false);
+    saveSettings(sanitizeSettings({ terminalImages: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalImages");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalImages).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalImages: false });
+    expect(loadSettings().terminalImages).toBe(false);
+    records.set("ovis:terminal-images", "\"true\"");
+    expect(loadSettings().terminalImages).toBe(false);
+  });
+
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
     saveSettings(sanitizeSettings({ composerArtifacts: true }));

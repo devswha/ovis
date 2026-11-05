@@ -680,6 +680,8 @@ function readComposerArtifacts(): boolean {
 /** Settings > Chat > Expand thinking and Collapse work, each kept in a key of its own for the same reason: off until chosen. */
 export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
+/** Settings > Terminal > Pictures in the terminal, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
 
@@ -731,7 +733,8 @@ export function loadSettings(): Settings {
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
   return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
-    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab) };
+    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
+    terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -742,7 +745,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, historyPrompts, composerArtifacts, expandThinking, foldWork, reuseExternalLinkTab, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, historyPrompts, composerArtifacts, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
@@ -752,6 +755,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
     window.localStorage.setItem(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, JSON.stringify(reuseExternalLinkTab));
+    window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
