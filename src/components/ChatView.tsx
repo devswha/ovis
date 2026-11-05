@@ -45,7 +45,7 @@ import { dropPendingListScroll, listEndPadded } from "../lib/followScroll.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { statusEdgeRead } from "../lib/status.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
-import { settleWaitingSends, waitingKey } from "../lib/sentWaiting.ts";
+import { forgetWaitingBaseline, settleWaitingSends, waitingKey } from "../lib/sentWaiting.ts";
 import { SentWaitingList, useWaitingSends } from "./SentWaiting.tsx";
 import { ConversationRefresh } from "../lib/conversationRefresh.ts";
 import { teammateMessageParts, type TeammateMessage } from "../lib/teammateMessage.ts";
@@ -1724,7 +1724,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           const between = await turnsBetween(held, conversation.cursor, signal);
           if (cancelled || generation !== olderGeneration.current) return;
           if (between === null) {
-            dropOlder(); setState(EMPTY_STATE); setLoaded(false); signature.current = ""; lastAnswer.current = null;
+            dropOlder(); setState(EMPTY_STATE); setLoaded(false); forgetWaitingBaseline(waitingKey(machineId, paneId)); signature.current = ""; lastAnswer.current = null;
             setPollKey((key) => key + 1); return;
           }
           else { moved = between; heldFrom.current = conversation.cursor; }
@@ -1752,7 +1752,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         showAnswer(conversation, next, moved);
         setReadPresentation(proved ? readKey : undefined);
       } catch (cause) {
-        if (cancelled || generation !== olderGeneration.current) return;
+        // a read given up for a reconnect is no failure: the read after it answers
+        if (cancelled || generation !== olderGeneration.current || (cause instanceof DOMException && cause.name === "AbortError")) return;
         setLoaded(true);
         setError(userFailure(cause));
         setErrorStatus(cause instanceof ApiError ? cause.status : null);
@@ -1808,7 +1809,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (connected) wasConnected.current = true;
     if (!connected || before || !visible) return;
     if (!reconnect && conversationRefresh.reading) return;
-    conversationRefresh.refresh();
+    // a read sent before the reconnect may wait on the connection lost with it
+    conversationRefresh.restart();
   }, [connected, visible, conversationRefresh]);
 
   const loadOlder = useCallback(async (): Promise<void> => {
@@ -1825,7 +1827,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (shownPane.current !== paneId || olderGeneration.current !== generation) return;
         if (autoTabNames.current) learnFromConversation(machineId, paneId, page);
         if (page.history_id !== history.current) {
-          dropOlder(); setState(EMPTY_STATE); setLoaded(false); signature.current = ""; lastAnswer.current = null;
+          dropOlder(); setState(EMPTY_STATE); setLoaded(false); forgetWaitingBaseline(waitingKey(machineId, paneId)); signature.current = ""; lastAnswer.current = null;
           setPollKey((key) => key + 1); return;
         }
         // a bridge without pages answers with its newest turns: nothing older to add
@@ -1847,7 +1849,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       } catch (cause) {
         if (shownPane.current !== paneId || olderGeneration.current !== generation) return;
         if (cause instanceof ApiError && cause.status === 409) {
-          dropOlder(); setState(EMPTY_STATE); setLoaded(false); signature.current = ""; lastAnswer.current = null;
+          dropOlder(); setState(EMPTY_STATE); setLoaded(false); forgetWaitingBaseline(waitingKey(machineId, paneId)); signature.current = ""; lastAnswer.current = null;
           setPollKey((key) => key + 1);
         }
         else setOlderState("failed");
