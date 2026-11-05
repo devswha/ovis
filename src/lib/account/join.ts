@@ -5,7 +5,7 @@
  * call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
  * its devices is asking.
  */
-import { ACCOUNT_RECORDS_MAX, AccountRecordError, accountDeviceId, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
+import { ACCOUNT_ENROLL_MAX, AccountRecordError, accountDeviceId, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import type { RemotePairingRequest } from "../../../shared/protocol.ts";
@@ -302,9 +302,10 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   const done: string[] = [];
   const send = async (records: readonly { id: string }[]): Promise<boolean> => {
     let all = true;
-    for (let start = 0; start < records.length; start += ACCOUNT_RECORDS_MAX) {
-      const batch = records.slice(start, start + ACCOUNT_RECORDS_MAX);
-      const answer = await (await post(options.fetch, "/api/account/records", { records: batch })).json() as { results?: unknown };
+    // through the enrollment, which also ends the PC's wait for this client (docs/account.md, "Enrolling a PC"): sent even with nothing in it
+    for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
+      const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
+      const answer = await (await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch })).json() as { results?: unknown };
       const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
       for (const record of batch) {
         const result = results.find((entry) => entry.id === record.id);

@@ -7,7 +7,15 @@ import { accountDeviceId, AccountRecordError, ACCOUNT_RECORDS_MAX, parseAccountR
 import type { DeviceStore } from "../devices.ts";
 import type { PairedDevice } from "../../shared/protocol.ts";
 
-export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable";
+export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending";
+
+/** What holds an `add` back on this PC (mailbox.ts `gates`, docs/account.md "Enrolling a PC"). */
+export interface AddGates {
+  /** the PC waits for the member that linked it first to hand it the account's devices */
+  enrolling(): boolean;
+  /** a waiting remove or a held key names `key`, or what waits cannot be trusted to be complete */
+  held(key: string): boolean;
+}
 export type RecordOutcome = { id: string | null; outcome: "applied" | "unchanged" } | { id: string | null; outcome: "refused"; code: RecordRefusal };
 
 async function read(value: unknown): Promise<AccountRecord | { refused: RecordRefusal; id: string | null }> {
@@ -21,7 +29,7 @@ async function read(value: unknown): Promise<AccountRecord | { refused: RecordRe
 }
 
 /** One `add` or `remove`, after its signature held. A `link` never applies here: only its own row's session sends it. */
-function apply(store: DeviceStore, record: AccountRecord, serverId: string | null, now: number): RecordOutcome {
+function apply(store: DeviceStore, record: AccountRecord, serverId: string | null, now: number, gates?: AddGates): RecordOutcome {
   const refused = (code: RecordRefusal): RecordOutcome => ({ id: record.id, outcome: "refused", code });
   if (record.kind === "link") return refused("link_not_owner");
   if (store.accountError !== null) return refused("account_unavailable");
@@ -35,24 +43,79 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
   if (store.isTombstoned(record.key)) return refused("tombstoned");
-  if (store.hasKey(record.key)) return { id: record.id, outcome: "unchanged" };
+  if (store.hasKey(record.key)) {
+    // kept on the row this signer's approval made here, so a client can hand it to a PC it enrolls later
+    store.keepAccountAdd(record, signer.id);
+    return { id: record.id, outcome: "unchanged" };
+  }
+  if (gates?.enrolling()) return refused("enrolling");
+  if (gates?.held(record.key)) return refused("removal_pending");
   // the new row's id is derived from this PC's relay id (docs/account.md), so without one there is no row to make
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
   if (store.has(id)) return refused("record_invalid");
-  store.addAccountDevice({ id, key: record.key, label: record.label, role: record.role, account: record.account, addedBy: signer.id }, now);
+  store.addAccountDevice({ id, key: record.key, label: record.label, role: record.role, account: record.account, addedBy: signer.id, record }, now);
   return { id: record.id, outcome: "applied" };
 }
 
 /** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */
-export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now()): Promise<RecordOutcome[]> {
+export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
   for (const value of values) {
     const record = await read(value);
-    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : apply(store, record, serverId, now));
+    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : apply(store, record, serverId, now, gates));
   }
   return outcomes;
+}
+
+/**
+ * An enrollment (POST /api/account/enroll, docs/account.md "Enrolling a PC"), in the server's order
+ * whatever the client's: every `remove` first, in the order signed, then the `add`s in rounds, so an
+ * add whose signer another add of the batch lets in applies in the next round. After each round
+ * `settle` retries what waits here, so a remove whose signer just became a member applies before the
+ * next round's adds. `wait` keeps a remove refused only for its signer; false when it could not.
+ */
+export async function applyEnrollment(store: DeviceStore, values: readonly unknown[], serverId: string | null, options: {
+  gates: AddGates; wait: (record: unknown) => boolean; settle: () => Promise<unknown>; now?: number;
+}): Promise<RecordOutcome[]> {
+  const now = options.now ?? Date.now();
+  const outcomes: (RecordOutcome | undefined)[] = values.map(() => undefined);
+  const records = await Promise.all(values.map(read));
+  const removes: number[] = [];
+  let adds: number[] = [];
+  records.forEach((record, index) => {
+    if ("refused" in record) outcomes[index] = { id: record.id, outcome: "refused", code: record.refused };
+    else if (record.kind === "remove") removes.push(index);
+    else adds.push(index);
+  });
+  const record = (index: number): AccountRecord => {
+    const value = records[index];
+    if (value === undefined || "refused" in value) throw new Error("Only a record that verified is applied");
+    return value;
+  };
+  const signed = (index: number) => record(index).issued_at;
+  for (const index of removes.sort((a, b) => signed(a) < signed(b) ? -1 : signed(a) > signed(b) ? 1 : 0)) {
+    const outcome = apply(store, record(index), serverId, now, options.gates);
+    const waiting = outcome.outcome === "refused" && outcome.code === "signer_not_member";
+    outcomes[index] = waiting && !options.wait(values[index]) ? { id: outcome.id, outcome: "refused", code: "account_unavailable" } : outcome;
+  }
+  for (let progress = true; progress && adds.length;) {
+    progress = false;
+    const next: number[] = [];
+    for (const index of adds) {
+      const outcome = apply(store, record(index), serverId, now, options.gates);
+      outcomes[index] = outcome;
+      if (outcome.outcome === "refused" && outcome.code === "signer_not_member") next.push(index);
+      else if (outcome.outcome === "applied") progress = true;
+    }
+    adds = next;
+    if (progress) await options.settle();
+  }
+  return outcomes.map((outcome) => {
+    if (outcome === undefined) throw new Error("Every record of an enrollment has an outcome");
+    return outcome;
+  });
 }
 
 export type LinkRefusal = RecordRefusal | "key_in_use";

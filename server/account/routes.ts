@@ -1,14 +1,15 @@
-import { ACCOUNT_RECORDS_MAX } from "../../shared/account-records.ts";
+import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKey } from "../../shared/account-records.ts";
 import type { Access } from "../access.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import { sameOrigin } from "../machine-security.ts";
 import { parseIntroducedPcs } from "./introductions.ts";
-import { applyAccountRecords, applyLink, type LinkRefusal } from "./records.ts";
+import { ACCOUNT_HELD_MAX } from "./holds.ts";
+import { applyAccountRecords, applyEnrollment, applyLink, type LinkRefusal } from "./records.ts";
 
 const LINK_STATUS: Record<LinkRefusal, number> = {
   record_invalid: 400, signature_invalid: 400, account_mismatch: 409, signer_not_member: 403,
-  tombstoned: 409, link_not_owner: 403, key_in_use: 409, account_unavailable: 503,
+  tombstoned: 409, link_not_owner: 403, key_in_use: 409, account_unavailable: 503, enrolling: 409, removal_pending: 409,
 };
 
 /**
@@ -30,7 +31,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
     const mailbox = context.services.accountMailbox;
-    return reply({ account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error } });
+    // a client about to enroll another PC reads this one's removals after its mailbox, so one waiting there counts too
+    if (new URL(request.url).searchParams.get("fresh") === "1") await mailbox.freshen();
+    const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
+    return reply({
+      account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
+      enrolling: context.services.accountHolds.enrolling(), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
+    });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
@@ -51,32 +58,51 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       setRequestRoute(pathname);
       // a link proves the key of the row whose session sends it, and only the relay carries a row's key
       if (peer.kind !== "relay") return fail("link_not_owner", "Link a device from its own connection through the relay", 403);
+      const holds = context.services.accountHolds;
+      // the first link brings this PC into an account: account adds wait until that member enrolls it (on disk first, so a stop keeps them waiting)
+      const first = devices.account() === null;
+      if (first) holds.startEnrolling(peer.device.id);
       const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId });
-      if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
+      if ("refused" in linked) {
+        if (first && devices.account() === null) holds.endEnrolling();
+        return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
+      }
       return reply({ device: linked.device });
     }
-    case "/api/account/records":
-    case "/api/account/enroll": {
+    case "/api/account/records": {
       setRequestRoute(pathname);
       const records = body.records;
       if (!Array.isArray(records) || records.length > ACCOUNT_RECORDS_MAX) return fail("record_invalid", `Send at most ${ACCOUNT_RECORDS_MAX} records`, 400);
-      if (pathname === "/api/account/enroll") {
-        // what a member hands a PC it just paired: the caller is a member of that account here already
-        const member = peer.kind === "relay" ? devices.isAccountApproverSession(peer.device.id, peer.key) : access.device !== undefined && devices.isAccountApprover(access.device.id);
-        if (typeof body.account !== "string" || !member || devices.account() !== body.account) {
-          return fail("account_required", "Link this device to the account on this PC first", 403);
-        }
-        if (!records.every((record) => typeof record === "object" && record !== null && (record as { kind?: unknown }).kind === "add")) {
-          return fail("record_invalid", "An enrollment carries add records only", 400);
-        }
-      }
-      const results = await applyAccountRecords(devices, records, serverId);
+      const mailbox = context.services.accountMailbox;
+      const results = await applyAccountRecords(devices, records, serverId, Date.now(), mailbox.gates());
       // a removal whose signer is not a member here yet waits for it, as one from the mailbox does; only
-      // a member's session (a client relaying the account's removals: enrollPc) may leave one waiting
+      // a member's session (a client relaying the account's removals) may leave one waiting. One the
+      // queue cannot take is undecided, so the client sends it again.
       const member = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
-      results.forEach((result, index) => {
-        if (member && result.outcome === "refused" && result.code === "signer_not_member" && (records[index] as { kind?: unknown }).kind === "remove") context.services.accountMailbox.wait(records[index]);
+      return reply({
+        results: results.map((result, index) => member && result.outcome === "refused" && result.code === "signer_not_member" && (records[index] as { kind?: unknown }).kind === "remove"
+          && !mailbox.wait(records[index]) ? { ...result, code: "account_unavailable" as const } : result),
       });
+    }
+    case "/api/account/enroll": {
+      setRequestRoute(pathname);
+      const { records, held } = body;
+      if (!Array.isArray(records) || records.length > ACCOUNT_ENROLL_MAX) return fail("record_invalid", `Send at most ${ACCOUNT_ENROLL_MAX} records`, 400);
+      if (held !== undefined && (!Array.isArray(held) || held.length > ACCOUNT_HELD_MAX || !held.every(isAccountKey))) return fail("record_invalid", `Hold at most ${ACCOUNT_HELD_MAX} account keys`, 400);
+      // what a member hands a PC it brought into the account: the caller is a member of that account here already
+      const member = peer.kind === "relay" ? devices.isAccountApproverSession(peer.device.id, peer.key) : access.device !== undefined && devices.isAccountApprover(access.device.id);
+      if (typeof body.account !== "string" || !member || devices.account() !== body.account) {
+        return fail("account_required", "Link this device to the account on this PC first", 403);
+      }
+      const holds = context.services.accountHolds;
+      const mailbox = context.services.accountMailbox;
+      // before any add, and before the barrier lifts: the keys the member found removed elsewhere stay out of every path
+      holds.hold(held ?? []);
+      const gates = mailbox.gates();
+      const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => false, held: gates.held }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
+      holds.endEnrolling();
+      // adds the barrier held back now pass every gate in their turn
+      await mailbox.settle();
       return reply({ results });
     }
     default: return fail("not_found", "Unknown account action", 404);

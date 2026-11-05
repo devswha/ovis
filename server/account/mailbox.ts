@@ -13,7 +13,8 @@ import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
-import { applyAccountRecords } from "./records.ts";
+import type { AccountHolds } from "./holds.ts";
+import { applyAccountRecords, type AddGates, type RecordOutcome } from "./records.ts";
 
 export const MAILBOX_PULL_MS = 5 * 60_000;
 /** How old an admission may be for the PC to take an account join outside the pairing window. */
@@ -35,15 +36,32 @@ export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"
   return url.origin;
 }
 
-/** Records refused only because their signer was not a member yet, kept across pulls (and restarts) until they apply. */
-const PENDING_MAX = 1000;
+/**
+ * Records that wait, across pulls (and restarts), until they apply: a remove whose signer is not a
+ * member yet, and an add held back by the enrollment barrier or a waiting remove. At this many every
+ * add waits too, and a page that would pass it is not acknowledged.
+ */
+export const PENDING_MAX = 1000;
 
-function readPending(path: string | undefined): unknown[] {
+/** Refusals that keep a record waiting instead of dropping it. */
+const WAITING = new Set(["signer_not_member", "enrolling", "removal_pending"]);
+
+const waits = (outcome: RecordOutcome | undefined): boolean => outcome?.outcome === "refused" && WAITING.has(outcome.code);
+
+/** Null for a file that exists and will not parse: it is not an empty queue (it may hold the removes that gate adds). */
+function readPending(path: string | undefined): unknown[] | null {
   if (!path) return [];
-  try {
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(value) ? value.slice(-PENDING_MAX) : [];
-  } catch { return []; } // absent or unreadable: nothing waits; a record that never applies is the service's to resend
+  let value: unknown;
+  try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
+  }
+  return Array.isArray(value) ? value : null;
+}
+
+function removedKey(record: unknown): string | null {
+  if (typeof record !== "object" || record === null) return null;
+  const { kind, key } = record as { kind?: unknown; key?: unknown };
+  return kind === "remove" && typeof key === "string" ? key : null;
 }
 
 export interface AccountMailboxOptions {
@@ -55,6 +73,8 @@ export interface AccountMailboxOptions {
   /** The account service's origin, or why none can be used (a bad OVIS_ACCOUNT_SERVICE_URL), shown as the mailbox's error. */
   readonly service: string | Error;
   readonly fetch?: (request: Request) => Promise<Response>;
+  /** The enrollment barrier and held keys (holds.ts); none in tests that do not need them. */
+  readonly holds?: AccountHolds;
 }
 
 export class AccountMailbox {
@@ -69,10 +89,33 @@ export class AccountMailbox {
   private pending: unknown[];
   /** The waiting records a pull took out of `pending` to retry, until it puts them back. */
   private draining: unknown[] = [];
+  /** Why the waiting records cannot be read: no add applies and nothing is pulled until it is fixed. */
+  private readonly pendingError: string | null;
 
   constructor(private readonly options: AccountMailboxOptions) {
-    this.pending = readPending(options.pendingPath);
+    const pending = readPending(options.pendingPath);
+    this.pending = pending ?? [];
+    this.pendingError = pending === null ? `Cannot read ${options.pendingPath}: account adds wait until it is restored or fixed.` : null;
   }
+
+  /**
+   * What holds an add back here (docs/account.md, "Enrolling a PC"): the enrollment barrier, a waiting
+   * remove for its key (whatever its signer), a held key, and a queue that is full or cannot be read.
+   */
+  gates(): AddGates {
+    return {
+      enrolling: () => this.options.holds?.enrolling() ?? false,
+      held: (key) => this.pendingError !== null || this.waiting().length >= PENDING_MAX
+        || this.waiting().some((record) => removedKey(record) === key) || (this.options.holds?.holds(key) ?? false),
+    };
+  }
+
+  /** The keys of the removes waiting here: /api/account/status lists them as `blocked`. */
+  waitingRemoveKeys(): string[] {
+    return [...new Set(this.waiting().flatMap((record) => removedKey(record) ?? []))];
+  }
+
+  private waiting(): unknown[] { return [...this.draining, ...this.pending]; }
 
   /** Pulls now unless a pull is under way; how many records changed something. Never throws. */
   pull(): Promise<number> {
@@ -102,28 +145,72 @@ export class AccountMailbox {
       return at !== undefined && now - at < ADMISSION_TTL_MS && at <= now + 60_000;
     };
     if (fresh()) return true;
+    await this.freshen();
+    return fresh();
+  }
+
+  /** A pull a request asked for: waits for one under way, else pulls, at most once every 10 seconds. */
+  async freshen(): Promise<void> {
     if (this.pulling) await this.pulling;
     else if (Date.now() - this.lastAskedPull >= ASKED_PULL_MS) {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
-    return fresh();
+  }
+
+  /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
+  async settle(): Promise<number> {
+    if (this.pulling) await this.pulling;
+    const identity = this.options.identity();
+    if (!identity || this.pendingError !== null || this.pending.length === 0) return 0;
+    const early = this.pending.splice(0);
+    this.draining = early;
+    try {
+      const applied = await this.retry(early, identity.server_id);
+      return applied;
+    } finally {
+      this.pending = [...early, ...this.pending];
+      this.draining = [];
+      if (this.options.pendingPath) writePrivateState(this.options.pendingPath, this.pending);
+    }
+  }
+
+  /** Until a pass applies nothing more, so a chain of adds read in any order still reaches the remove at its end. */
+  private async retry(early: unknown[], serverId: string): Promise<number> {
+    let applied = 0;
+    for (let progress = true; progress && early.length;) {
+      progress = false;
+      for (let start = 0; start < early.length;) {
+        const batch = early.slice(start, start + ACCOUNT_RECORDS_MAX);
+        // a record leaves the list only once its outcome is known: a failure here keeps every one of them
+        const outcomes = await applyAccountRecords(this.options.devices, batch, serverId, Date.now(), this.gates());
+        const keep = batch.filter((_record, index) => waits(outcomes[index]));
+        applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
+        if (keep.length !== batch.length) progress = true;
+        early.splice(start, batch.length, ...keep);
+        start += keep.length;
+      }
+    }
+    return applied;
   }
 
   /**
    * A `remove` a client relayed (POST /api/account/records) that was refused only because its signer
    * is not a member here yet: kept with the mailbox's own such records, so it applies on the pull after
    * its signer joins (#2956). One already waiting is not kept twice, and none is kept once PENDING_MAX
-   * wait: a relayed record never pushes out one that waits already.
+   * wait: a relayed record never pushes out one that waits already. False when it could not be kept,
+   * so the client hears the outcome is undecided and sends it again.
    */
-  wait(record: unknown): void {
-    const waiting = [...this.draining, ...this.pending];
+  wait(record: unknown): boolean {
+    const waiting = this.waiting();
     const text = JSON.stringify(record);
-    if (waiting.length >= PENDING_MAX || waiting.some((kept) => JSON.stringify(kept) === text)) return;
+    if (waiting.some((kept) => JSON.stringify(kept) === text)) return true;
+    if (this.pendingError !== null || waiting.length >= PENDING_MAX) return false;
     const next = [...this.pending, record];
     // on disk first, with the ones a pull is retrying, so a stop (or a failed write) loses none of them
     if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...this.draining, ...next]);
     this.pending = next;
+    return true;
   }
 
   stop(): void {
@@ -142,30 +229,19 @@ export class AccountMailbox {
     if (this.options.service instanceof Error) { this.error = this.options.service.message; return 0; }
     // a removal refused for a local reason would be acknowledged and lost: collect nothing until it is fixed
     if (this.options.devices.accountError !== null) { this.error = this.options.devices.accountError; return 0; }
+    if (this.pendingError !== null) { this.error = this.pendingError; return 0; }
     let applied = 0;
     let ack: number | null = null;
-    // refused because their signer was not a member yet: a later add, in this pull or a later one, may make it one
+    // waiting on a signer, the barrier or a remove: a later add, in this pull or a later one, may let it apply
     const early: unknown[] = this.pending.splice(0);
     this.draining = early;
-    /** Until a pass applies nothing more, so a chain of adds read in any order still reaches the remove at its end. */
-    const retry = async () => {
-      for (let progress = true; progress && early.length;) {
-        progress = false;
-        for (let start = 0; start < early.length;) {
-          const batch = early.slice(start, start + ACCOUNT_RECORDS_MAX);
-          // a record leaves the list only once its outcome is known: a failure here keeps every one of them
-          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id);
-          const keep = batch.filter((_record, index) => outcomes[index]?.outcome === "refused" && (outcomes[index] as { code?: string }).code === "signer_not_member");
-          applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
-          if (keep.length !== batch.length) progress = true;
-          early.splice(start, batch.length, ...keep);
-          start += keep.length;
-        }
-      }
-    };
+    const retry = async () => { applied += await this.retry(early, identity.server_id); };
     /** On disk before any page that put a record here is acknowledged, so a stop never loses one. */
     // with any a client relayed meanwhile (wait), which this.pending holds until the pull ends
-    const save = () => { if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending].slice(-PENDING_MAX)); };
+    const save = () => {
+      this.trim(early);
+      if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending]);
+    };
     try {
       const admissions = new Map<string, number>();
       await retry();
@@ -176,9 +252,12 @@ export class AccountMailbox {
         if (entries.length === 0 || page === MAX_PAGES) break;
         for (let start = 0; start < entries.length; start += ACCOUNT_RECORDS_MAX) {
           const batch = entries.slice(start, start + ACCOUNT_RECORDS_MAX).map(({ record }) => record);
-          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id);
+          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id, Date.now(), this.gates());
           applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
-          outcomes.forEach((outcome, index) => { if (outcome.outcome === "refused" && outcome.code === "signer_not_member") early.push(batch[index]); });
+          outcomes.forEach((outcome, index) => {
+            const text = JSON.stringify(batch[index]);
+            if (waits(outcome) && !early.some((kept) => JSON.stringify(kept) === text)) early.push(batch[index]);
+          });
         }
         // before this page is acknowledged (with the next request), retry what waited on a signer, and keep the rest on disk
         await retry();
@@ -186,9 +265,9 @@ export class AccountMailbox {
         // every record read is acknowledged, refused ones too, so a refused one cannot hold the rest back
         ack = Math.max(...entries.map(({ seq }) => seq));
       }
-      // still waiting on a signer: kept for later pulls, the oldest dropped past PENDING_MAX
+      // still waiting: kept for later pulls, within PENDING_MAX (trim)
       save();
-      this.pending = [...early, ...this.pending].slice(-PENDING_MAX);
+      this.pending = [...early, ...this.pending];
       this.draining = [];
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
@@ -196,10 +275,25 @@ export class AccountMailbox {
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
-      this.pending = [...early, ...this.pending].slice(-PENDING_MAX);
+      this.pending = [...early, ...this.pending];
       this.draining = [];
     }
     return applied;
+  }
+
+  /**
+   * Keeps `early` and what was relayed meanwhile within PENDING_MAX: adds go first, oldest first. A
+   * waiting remove dropped is evidence lost, so then every add is held back for good (holds.ts) rather
+   * than let one in that this remove would have kept out; removes keep flowing either way.
+   */
+  private trim(early: unknown[]): void {
+    let over = early.length + this.pending.length - PENDING_MAX;
+    for (let index = 0; over > 0 && index < early.length;) {
+      if (removedKey(early[index]) === null) { early.splice(index, 1); over--; } else index++;
+    }
+    if (over <= 0) return;
+    early.splice(0, over);
+    this.options.holds?.overflow();
   }
 
   private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[] }> {

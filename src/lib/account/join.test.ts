@@ -263,7 +263,7 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     const sent: string[] = [];
     const watching = async (path: string, init?: RequestInit) => {
-      if (path === "/api/account/records") sent.push(...(JSON.parse(String(init?.body)) as { records: { id: string }[] }).records.map(({ id }) => id));
+      if (path === "/api/account/enroll") sent.push(...(JSON.parse(String(init?.body)) as { records: { id: string }[] }).records.map(({ id }) => id));
       return pcFetch(await connect(y, onY))(path, init);
     };
     expect(await enrollPc({ fetch: watching, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).toBe(true);
@@ -313,7 +313,7 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     const sent: unknown[] = [];
     const watching = async (path: string, init?: RequestInit) => {
-      if (path === "/api/account/records") sent.push(...(JSON.parse(String(init?.body)) as { records: unknown[] }).records);
+      if (path === "/api/account/enroll") sent.push(...(JSON.parse(String(init?.body)) as { records: unknown[] }).records);
       return pcFetch(await connect(y, onY))(path, init);
     };
     expect(await enrollPc({ fetch: watching, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).toBe(true);
@@ -401,7 +401,7 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     const busy = async (path: string, init?: RequestInit) => {
       const sent = JSON.parse(String(init?.body)) as { records: { id: string }[] };
-      return path === "/api/account/records" ? Response.json({ results: sent.records.map(({ id }) => ({ id, outcome: "refused", code: "account_unavailable" })) }) : pcFetch(await connect(y, onY))(path, init);
+      return path === "/api/account/enroll" ? Response.json({ results: sent.records.map(({ id }) => ({ id, outcome: "refused", code: "account_unavailable" })) }) : pcFetch(await connect(y, onY))(path, init);
     };
     expect(await enrollPc({ fetch: busy, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).toBe(false);
     expect((await accountStore.get("enrolls"))?.[y.identity.server_id]?.done).toEqual([]);

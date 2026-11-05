@@ -195,12 +195,18 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
 `removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
-Revoke on the PC has none). A client trusts none of them before it checks it (below).
+Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
+that made a row, or the approver's own for a row its remote approval made. `blocked` lists every key
+an add cannot bring in here: every tombstone (signed or not), every key a waiting remove names, and
+every key an enrollment held ([Enrolling a PC](#enrolling-a-pc)). `enrolling` is true while the PC
+waits for its first member's enrollment. A client trusts none of them before it checks it (below).
+With `?fresh=1` the PC first pulls its mailbox (at most once every 10 seconds, as a join that
+missed does), so a remove waiting there is counted; `mailbox.last_pull_at` says whether it did.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -220,11 +226,39 @@ Outcomes: `applied`, `unchanged` (an `add` for a key already present; a `remove`
 removed and absent, or signed before this PC paired the key again) and `refused` with a code. A
 `remove` for a key this PC never had still leaves its tombstone, so the key cannot be added later.
 A `remove` refused `signer_not_member` waits on the PC with the mailbox's own such records
-(`account-pending.json`) and applies once its signer becomes a member there.
+(`account-pending.json`) and applies once its signer becomes a member there; when that queue cannot
+take it, its outcome is `account_unavailable` instead, and the client sends it again. An `add` is
+refused `enrolling` while the PC waits for its first member's enrollment, and `removal_pending`
+while its key is held ([Enrolling a PC](#enrolling-a-pc)).
 
-`POST /api/account/enroll` `{ "account": "acct_1", "records": [<add>, …] }`: what a member sends a
-PC it just paired. The request's own device must already be a member of `account` (it links itself
-first). Same answer as `records`.
+`POST /api/account/enroll` `{ "account": "acct_1", "records": [<remove or add>, …], "held": ["<key>", …] }`:
+what a member sends a PC it brought into the account. The request's own device must already be a
+member of `account` (it links itself first). At most 512 records and 4096 held keys. Same answer
+as `records`, in the order sent; the PC applies them in its own order (below).
+
+### Enrolling a PC
+
+The link that gives a PC its first member also starts its **enrollment barrier**
+(`account-enrolling.json`, written before the link): until a member's `enroll` succeeds, no `add`
+applies here from `records` or the mailbox. One from the mailbox waits in `account-pending.json`
+and is tried again after the enrollment. A link that is refused lifts the barrier it started. There
+is no timeout: a client that never enrolls leaves the account's adds waiting, and its devices join
+this PC by comparing digits instead.
+
+An enrollment applies, whatever the order sent:
+
+1. `held`: kept for good in `account-held.json` (at most 4096; past that every add is refused).
+   These are keys the member found removed, or suspected, on the account's other PCs.
+2. every `remove`, in the order signed; one whose signer is not a member here waits, as above;
+3. the `add`s in rounds: an add whose signer another add of the batch lets in applies in the next
+   round. After each round the PC tries its waiting records again, so a remove whose signer just
+   became a member applies before the next round's adds;
+4. then the barrier lifts, and the adds that waited for it are tried in turn.
+
+At every step an `add` is refused `removal_pending` when its key is held: a waiting remove names it
+(whatever that remove's signer), an enrollment held it, the waiting queue is full or cannot be read,
+or waiting removes were ever pushed out of a full queue. A key already on a row is not affected (its
+add is `unchanged`), so a pairing done on this PC settles it.
 
 What a client keeps: on each connection to a PC of its account it reads that PC's `removals` and
 keeps, verbatim, each one that verifies, is for its account and is signed by its own key or by a
@@ -234,7 +268,8 @@ signed by a key the PC made up, and it signs nothing for any of them.
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it sends that PC, over a session signed in with
 the account key, the `remove`s it signed itself and the ones it kept, as signed (through
-`records`), so the PC tombstones those keys, now or once their signer is a member there. It takes
+`enroll`, which also lifts the PC's barrier), so the PC tombstones those keys, now or once their
+signer is a member there. It takes
 no key from another PC's device list or status. It reads every record's outcome and sends again, on
 its next connection to that PC, each one the PC did not answer or answered `account_unavailable`,
 and any removal it signed while the enrollment ran.
@@ -306,8 +341,12 @@ is what authenticates the PC.
   account; a client adds it again by pairing with its new identity, after the client's usual "this
   PC's identity changed" notice.
 - A record refused only because its signer is not a member yet (a `remove` that arrived before its
-  signer's own `add`) is kept in `account-pending.json` and tried again on every pull, a restart
-  included, until it applies; at most 1000 wait, the oldest dropped first.
+  signer's own `add`), or an `add` held back ([Enrolling a PC](#enrolling-a-pc)), is kept in
+  `account-pending.json` and tried again on every pull, a restart included, until it applies. At
+  most 1000 wait: past that the oldest adds go first, and if a remove has to go, every add is refused
+  from then on (`account-held.json` says `full`; remove that file to lift it). A pending file that
+  will not parse is not an empty one: adds are refused and the mailbox pulls nothing until it is
+  restored.
 - The PC collects its mailbox from `OVIS_ACCOUNT_SERVICE_URL` (https, or http on loopback only;
   `https://account.ovis.sh` when unset, none when `off`), only while it has members and a relay identity (one on disk counts, the relay on or off; none is ever made for it). An address
   it cannot use shows as the mailbox's error in `/api/account/status`.
@@ -470,6 +509,8 @@ the account service gets an answer the relay refuses.
 | `introduction_invalid` | 400 | an introduction's PC list does not parse, or a `server_id` does not derive from its key |
 | `introduction_none` | 404 | no introduction waits for this device |
 | `account_unavailable` | 503 | the tombstone file cannot be read; no account record applies |
+| `enrolling` | — | the PC waits for its first member's enrollment; an add waits too (a record outcome) |
+| `removal_pending` | — | the key is held: a waiting remove or an enrollment named it, or the waiting queue cannot be trusted (a record outcome) |
 
 ## What this does not protect against
 
