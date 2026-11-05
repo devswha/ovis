@@ -35,32 +35,52 @@ if ($present -and -not (IsOldSetup $exe)) {
     exit 0
 }
 
-# herdr's own answer, as that app reads it (Model.FindPlugin): the Ovis plugin under its id, or the one
-# releases up to 0.4.13 used. No herdr, or no answer within 15 s, is no plugin.
-function OvisPluginInstalled {
-    $herdr = $Herdr
-    if (-not $herdr) {
-        $dirs = @((Join-Path $env:USERPROFILE '.bun\bin'), (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin')) +
-            ([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') + ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')
-        $herdr = @($dirs | Where-Object { $_ } | ForEach-Object { Join-Path ([Environment]::ExpandEnvironmentVariables($_)) 'herdr.exe' } |
-            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+# herdr as that app finds it (Paths.RefreshPath, Paths.Which): its installers' folders first, then the
+# machine's and the user's PATH, each folder's herdr.exe, .cmd or .bat; a PATH entry no path can be is skipped
+function FindHerdr {
+    $dirs = @((Join-Path $env:USERPROFILE '.bun\bin'), (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin')) +
+        ([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') + ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')
+    foreach ($dir in $dirs) {
+        if (-not $dir.Trim()) { continue }
+        foreach ($extension in '.exe', '.cmd', '.bat') {
+            try {
+                $candidate = Join-Path ([Environment]::ExpandEnvironmentVariables($dir.Trim())) ('herdr' + $extension)
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+            } catch { }
+        }
     }
-    if (-not $herdr) { return $false }
-    $start = New-Object System.Diagnostics.ProcessStartInfo $herdr
-    $start.Arguments = 'plugin list --json'
-    $start.UseShellExecute = $false
-    $start.RedirectStandardOutput = $true
-    $start.CreateNoWindow = $true
-    $process = [System.Diagnostics.Process]::Start($start)
-    $output = $process.StandardOutput.ReadToEndAsync()
-    if (-not $process.WaitForExit(15000)) { $process.Kill(); return $false }
-    if ($process.ExitCode -ne 0) { return $false }
-    # as Setup.ParsePlugin reads it: an entry with that plugin_id and a plugin_root
-    $listed = @((ConvertFrom-Json $output.Result).result.plugins | Where-Object { ($_.plugin_id -eq 'devswha.ovis' -or $_.plugin_id -eq 'devswha.herdr-web-ui') -and $_.plugin_root })
-    return $listed.Count -gt 0
+    return $null
 }
-$keepStart = $false
-Step 'ask herdr for the Ovis plugin' { $script:keepStart = OvisPluginInstalled }
+
+# herdr's own answer, as that app reads it (Model.FindPlugin, Setup.ParsePlugin): 'present' for the
+# Ovis plugin under its id or the one releases up to 0.4.13 used, 'absent' when herdr is not on the PC or
+# answers without it, 'unknown' when herdr does not answer cleanly within 15 s. Only 'absent' lets the
+# sign-in start go: a herdr that did not answer may still have the plugin.
+function OvisPluginState {
+    $herdr = if ($Herdr) { $Herdr } else { FindHerdr }
+    if (-not $herdr) { return 'absent' }
+    try {
+        $start = New-Object System.Diagnostics.ProcessStartInfo $herdr
+        $start.Arguments = 'plugin list --json'
+        $start.UseShellExecute = $false
+        $start.RedirectStandardOutput = $true
+        $start.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::Start($start)
+        $output = $process.StandardOutput.ReadToEndAsync()
+        if (-not $process.WaitForExit(15000)) { $process.Kill(); return 'unknown' }
+        if ($process.ExitCode -ne 0) { return 'unknown' }
+        # the answer is the JSON line; anything printed before it is not
+        $json = @($output.Result -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') })[0]
+        $plugins = (ConvertFrom-Json $json).result.plugins
+        if ($null -eq $plugins) { return 'unknown' }
+        $listed = @($plugins | Where-Object { ($_.plugin_id -eq 'devswha.ovis' -or $_.plugin_id -eq 'devswha.herdr-web-ui') -and $_.plugin_root })
+        return $(if ($listed.Count -gt 0) { 'present' } else { 'absent' })
+    } catch {
+        return 'unknown'
+    }
+}
+$plugin = OvisPluginState
+$keepStart = $plugin -ne 'absent'
 
 # every open window of it, the installed copy's or one opened from a download: an open one could set
 # its shortcut and sign-in start up again, or run its Remove. It only drives herdr and the Ovis server,
@@ -69,8 +89,13 @@ Step 'close its windows' {
     # a second download saves as Ovis (1).exe
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name LIKE 'Ovis%.exe'")) {
         if (IsOldSetup $process.ExecutablePath) {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-            Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+            # asked to close first, as its own close button would; ended only when it does not within 10 s
+            $running = Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
+            if ($running -and $running.CloseMainWindow()) { Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue }
+            if (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue) {
+                Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+                Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+            }
             Write-Output "closed its window $($process.ExecutablePath) (pid $($process.ProcessId))"
         }
     }
@@ -78,8 +103,10 @@ Step 'close its windows' {
 
 # the sign-in start it writes, word for word (also when its copy is already gone); a value the user
 # pointed elsewhere is theirs. With the Ovis plugin installed it stays: it starts herdr's server at sign-in.
-if ($keepStart) {
+if ($plugin -eq 'present') {
     Write-Output "kept its sign-in start and $exe`: they start herdr's server at sign-in for the Ovis plugin"
+} elseif ($plugin -eq 'unknown') {
+    Write-Output "kept its sign-in start and $exe`: herdr did not say whether the Ovis plugin is installed"
 } else {
     Step 'remove its sign-in start' {
         $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -94,11 +121,18 @@ if ($keepStart) {
 # its shortcuts (the Start menu one, also in a folder, and any the user copied to the desktop); this app's own are left
 Step 'remove its shortcuts' {
     $shell = New-Object -ComObject WScript.Shell
-    $links = @(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue) +
-        @(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Desktop')) -Filter '*.lnk' -File -ErrorAction SilentlyContinue)
+    $links = @()
+    foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
+        if (-not $folder) { continue }
+        $links += @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -Recurse:($folder -eq [Environment]::GetFolderPath('Programs')) -ErrorAction SilentlyContinue)
+    }
     foreach ($file in $links) {
         if ($shell.CreateShortcut($file.FullName).TargetPath -ieq $exe) {
-            Remove-Item -LiteralPath $file.FullName -Force
+            # Explorer may hold a shortcut open for a moment
+            for ($try = 1; ; $try++) {
+                try { Remove-Item -LiteralPath $file.FullName -Force; break }
+                catch { if ($try -ge 5) { throw }; Start-Sleep -Milliseconds 500 }
+            }
             Write-Output "removed its shortcut $($file.FullName)"
         }
     }
