@@ -294,6 +294,7 @@ bun scripts/agent-skill-menu-demo-regression.ts [agent …] # each agent's `/` (
 bun scripts/install-state-demo-regression.ts  # Install app against a real CDP install on a throwaway profile and HOME: never in the sidebar; Settings > Install shows the help or the prompt before, Installed in the app window and a tab of its origin, the help again after uninstall
 bun scripts/terminal-paste-insert-demo-regression.ts # a phone's Paste key into the terminal's input line and Insert without Enter on the demo shell: the caret, a held or refused clipboard read, the acknowledged clear, an older bridge; with UI_EVIDENCE_DIR, every state at 390 and 1440, light and dark, and Korean
 bun scripts/link-menu-demo-regression.ts       # a long press on a chat link in the Android app: Copy link, Open link and, where the WebView shares, Share link; a tap, other words, a mouse's menu, a swipe and a browser keep their own; with UI_EVIDENCE_DIR, the sheet at 390 in English and Korean
+bun scripts/external-link-tab-regression.ts  # the app's link opener in Chromium on loopback pages: with Reuse tab for external links on, a second link replaces the first one's tab; off, each gets its own tab with no opener; no referrer either way
 ```
 
 `FILE_VIEWER_CASE=landscape-notch` selects a viewer case; `FILE_VIEWER_CSS=/path/to/before.css` compares another stylesheet. These checks use Chromium mobile emulation and synthetic safe-area/keyboard geometry; they cannot verify actual iOS Safari keyboard dismissal or notch insets. The existing `bun scripts/file-viewer-regression.ts` separately checks history with an owned herdr pane. The original `scripts/mobile-viewport-regression.ts` exports `checkMobileViewport` for the real-app `bun run test:ui` suite; it also checks the command palette and xterm focus transitions. The demo runners build the real client into a temporary directory, inject the committed fictional-session transport and serve it only on loopback; they do not use a live herdr session or download website media. Run on its own, each builds the client itself (`scripts/demo-build.ts`); the browser lane builds it once and names the directory in `HERDR_DEMO_BUILD`, and each runner copies that instead. They exercise real-app viewport and alert geometry, but not live herdr connectivity.
@@ -739,17 +740,20 @@ The **Desktop app** job (`.github/workflows/desktop.yml`) builds the desktop app
 without the version, so `releases/latest/download/<name>` always gives the newest:
 `Ovis-linux-x64.deb`, `Ovis-linux-arm64.deb` (the download for Ubuntu and Debian),
 `Ovis-linux-x64.AppImage`, `Ovis-linux-arm64.AppImage`, `Ovis-mac-arm64.dmg`, `Ovis-mac-x64.dmg`, and
-`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), with their `.blockmap` files.
+`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), and `Ovis-win-x64.exe` (a
+per-user NSIS installer; signed only once the repository variable `DESKTOP_WIN_SIGN` is `true`, with
+the `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` secrets), with their `.blockmap` files.
 The AppImage carries the static AppImage runtime (electron-builder's `toolsets.appimage`), so it
 needs no libfuse2, only the fuse3 a desktop has; without FUSE at all it runs with
 `APPIMAGE_EXTRACT_AND_RUN=1`. Its version is the tag's: the build
 stops unless `package.json` says the same. It attaches them with the update feed: `latest-linux.yml`,
-`latest-linux-arm64.yml` and one `latest-mac.yml` for both Macs (the two Mac builds' feeds merged by
-`bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
+`latest-linux-arm64.yml`, `latest.yml` for Windows and one `latest-mac.yml` for both Macs (the two Mac
+builds' feeds merged by `bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
 `https://github.com/devswha/ovis/releases/latest/download` (electron-updater's generic provider), so
 an installed app sees a version once it is GitHub's latest, the same moment `ovis.sh/Ovis.dmg` and
-`ovis.sh/Ovis.exe` move. Only the AppImage and the Mac app update themselves; a deb is updated by
-installing the new one.
+`ovis.sh/Ovis.exe` move (that `Ovis.exe` is still the Windows setup app, `windows-app.yml`). The
+AppImage, the Mac app and the Windows app update themselves; a deb is updated by installing the new
+one.
 The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
 variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
 `MAC_*` secrets as Ovis for Mac ([app/electron](../app/electron/README.md)'s signing, with

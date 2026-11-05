@@ -150,8 +150,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let connectionId = "";
     const limits = { ...LIMITS_V1 };
     let welcome: Uint8Array | undefined;
+    /** a provisional WELCOME a phone comparing digits passed over, counted with the setup frames at admission */
+    let passed: Uint8Array | undefined;
     let server: RelayServerInfo = { version: "", relayProtocol: RELAY_PROTOCOL };
-    let hinted = false;
     let receipt: Uint8Array | undefined;
     let incoming = Promise.resolve();
     const stop = (error: Error): void => {
@@ -205,11 +206,12 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       if (phase === "welcome" && frame.type === FrameType.WELCOME) {
+        // sent before the PC read HELLO, so it cannot select comparing digits: the WELCOME answering HELLO follows
+        if (comparing && frame.payload.provisional && !passed) { passed = bytes; return; }
         // before any credential: a PC of another relay generation is an update, not a pairing
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol };
-        if (frame.payload.features.some((feature) => feature !== RELAY_HINTS && (!comparing || feature !== PAIR_SAS_FEATURE))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
-        hinted = frame.payload.features.includes(RELAY_HINTS);
+        if (frame.payload.features.some((feature) => !comparing || feature !== PAIR_SAS_FEATURE)) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
@@ -264,12 +266,14 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (!kept || kept.server_public_key !== device.server_public_key || kept.public_spki !== device.public_spki) {
           throw new MuxProtocolError("auth_changed", "Stored relay identity changed during authentication");
         }
-        // inside the Noise channel the PC authenticated: the relay cannot have written these
-        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, hinted ? frame.payload.relays : undefined) };
+        // the PC's answer to the relay-hints this phone offered in HELLO, inside the Noise channel the
+        // PC authenticated: the relay cannot have written these
+        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.
       // Outgoing HELLO/AUTH already used the mux ledger, so inbound receipts are safe.
+      if (passed) mux.receive(passed);
       mux.receive(welcome);
       if (challenge) mux.receive(challenge);
       mux.receive(bytes);
