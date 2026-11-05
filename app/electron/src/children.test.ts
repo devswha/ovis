@@ -285,5 +285,6 @@ describe("endLeftover", () => {
     const gone = Bun.spawn(process.platform === "win32" ? ["cmd.exe", "/c", "exit"] : ["true"]);
     await gone.exited;
     expect(await processStart(gone.pid)).toBeNull();
-  });
+    // each lookup on Windows starts PowerShell for its CIM query: over 5 s for the four on a cold runner
+  }, 30_000);
 });
