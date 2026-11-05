@@ -12,6 +12,8 @@ import type { IDisposable, Terminal } from "@xterm/xterm";
 import { terminalDrawsPictures } from "../terminalImages.ts";
 import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminalGlyphs.ts";
 import { readableColor } from "../terminalFold.ts";
+import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
+import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
@@ -38,6 +40,8 @@ export function newLines(before: readonly string[], after: readonly string[]): s
 const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
 /** Powerline's separators run from the top of the row to the bottom: made smaller, a prompt's coloured segments would not join, so they are only narrowed */
 const POWERLINE = /^[\ue0b0-\ue0d7]$/u;
+/** Powerline glyphs xterm draws in their own colour whatever the contrast (its isPowerlineGlyph) */
+const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
 /** distinct glyphs measured before the measures start over: a long session of ever new graphemes must not grow without end */
 const MEASURED_MAX = 4096;
 
@@ -50,6 +54,8 @@ export function hasXtermPicture(data: string | Uint8Array): boolean {
 
 /** how long after a wheel or a swipe a frame is taken for herdr's repaint of the scrolled screen, not for output */
 const VIEW_REPAINT_MS = 1000;
+/** a wheel or swipe, and herdr's view moved by the viewport tools (TerminalViewportTools.tsx) */
+const VIEW_GESTURES = ["wheel", "touchmove", VIEW_MOVED_EVENT];
 
 /** lines of one frame read out, so a flood does not drown the reader */
 const ANNOUNCED_LINES = 20;
@@ -120,7 +126,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   // on herdr's own server xterm keeps no history: a wheel or a swipe scrolls herdr's screen, which comes back as
   // written bytes (TerminalViewportTools.tsx). Frames until a moment after the gesture tell nothing
   let viewMovedUntil = 0;
-  const viewMoved = (): void => { viewMovedUntil = performance.now() + VIEW_REPAINT_MS; };
+  const viewMoved = (): void => { if (!term.options.scrollback) viewMovedUntil = performance.now() + VIEW_REPAINT_MS; };
   // the screen at the bottom as the last frame there drew it
   let bottomText: string[] = [];
   // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
@@ -260,35 +266,45 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     const theme = themeColors(term);
     if (run.flags & STYLE_INVERSE) [fg, bg] = [bg ?? theme.background, fg ?? theme.foreground];
     // xterm's minimumContrastRatio, as its own rows and a folded mirror draw it (terminalFold.ts cellStyle)
+    const drawn = fg;
     if (fg !== null || bg !== null) {
       const text = fg ?? theme.foreground;
       const readable = readableColor(text, bg ?? theme.background, term.options.minimumContrastRatio ?? 1);
       if (fg !== null || readable !== text) fg = readable;
     }
+    // a box, block or Powerline glyph is part of a drawing, its colour against the next one's: xterm keeps it as written
+    // (treatGlyphAsBackgroundColor), and so does this layer
+    const keepsColour = (text: string): boolean => fg !== drawn && (isBoxGlyph(text) || POWERLINE_GLYPH.test(text));
     // what the run's box alone takes
     const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
     if (bg) box.push(`background:${bg}`);
     if (run.flags & STYLE_BOLD) box.push("font-weight:bold");
-    // what its text inherits: a faint run dims its text, not its background, as xterm draws it
-    const glyph: string[] = [];
-    if (fg) glyph.push(`color:${fg}`);
-    if (run.flags & STYLE_FAINT) glyph.push(`color:color-mix(in srgb, ${fg ?? "currentColor"} 60%, transparent)`);
-    if (run.flags & STYLE_ITALIC) glyph.push("font-style:italic");
-    if (run.flags & STYLE_INVISIBLE) glyph.push("color:transparent");
+    // what its text inherits: a faint run dims its text, not its background, as xterm and a folded mirror draw it
+    const colours = (colour: string | null): string[] => {
+      const css: string[] = [];
+      if (colour) css.push(`color:${colour}`);
+      if (run.flags & STYLE_FAINT) css.push(`color:color-mix(in srgb, ${colour ?? "currentColor"} 50%, transparent)`);
+      if (run.flags & STYLE_INVISIBLE) css.push("color:transparent");
+      return css;
+    };
+    const rest: string[] = [];
+    if (run.flags & STYLE_ITALIC) rest.push("font-style:italic");
     // an underline or strikethrough takes the colour of the element that draws it: it goes with the colour
     const lines = [run.flags & STYLE_UNDERLINE_MASK ? "underline" : "", run.flags & STYLE_STRIKE ? "line-through" : ""].filter(Boolean);
-    if (lines.length) glyph.push(`text-decoration:${lines.join(" ")}`);
+    if (lines.length) rest.push(`text-decoration:${lines.join(" ")}`);
+    const glyph = [...colours(fg), ...rest];
+    const kept = colours(drawn ?? theme.foreground);
     // an element whose parent has an inherited value of its own (a colour) misses the browser's style cache and is
     // styled from scratch: on a screen of Korean in a colour a cell, three elements a cell made each frame's style
     // recalculation several times longer than xterm's. A run that is only boxed cells (a wide or icon cell each)
     // gives the inherited values to the innermost box instead, so no element sits under a parent with a colour of its own
-    let boxed = run.cells.map((cell) => fittedCell(cell, run.flags, ""));
+    let boxed = run.cells.map((cell) => fittedCell(cell, run.flags, keepsColour(cell.text) ? kept.join(";") : ""));
     const leaves = glyph.length > 0 && boxed.every((html) => html !== null);
-    if (leaves) boxed = run.cells.map((cell) => fittedCell(cell, run.flags, glyph.join(";")));
+    if (leaves) boxed = run.cells.map((cell) => fittedCell(cell, run.flags, [...(keepsColour(cell.text) ? kept : colours(fg)), ...rest].join(";")));
     let body = "";
     let plain = "";
     run.cells.forEach((cell, index) => {
-      const fitted = boxed[index];
+      const fitted = boxed[index] ?? (keepsColour(cell.text) ? `<span style="${kept.join(";")}">${escapeHtml(cell.text)}</span>` : null);
       if (fitted) {
         if (plain) { body += escapeHtml(plain); plain = ""; }
         body += fitted;
@@ -469,7 +485,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     term.onRender(() => schedule()),
     term.onScroll(() => schedule()),
   ];
-  for (const gesture of ["wheel", "touchmove"]) host.addEventListener(gesture, viewMoved, { capture: true, passive: true });
+  for (const gesture of VIEW_GESTURES) host.addEventListener(gesture, viewMoved, { capture: true, passive: true });
   const screenResize = new ResizeObserver(() => fit());
   screenResize.observe(screen);
 
@@ -502,7 +518,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       term.reset = reset;
       for (const subscription of subscriptions) subscription.dispose();
       screenResize.disconnect();
-      for (const gesture of ["wheel", "touchmove"]) host.removeEventListener(gesture, viewMoved, { capture: true });
+      for (const gesture of VIEW_GESTURES) host.removeEventListener(gesture, viewMoved, { capture: true });
       lateFaces.stop();
       layer.remove();
       decoded.clear();
