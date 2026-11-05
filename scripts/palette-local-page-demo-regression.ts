@@ -66,9 +66,19 @@ async function run(browser: Browser, origin: string, port: number, width: number
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
   if (EVIDENCE) await page.screenshot({ path: join(EVIDENCE, `local-page-panel-${width}-${theme}.png`) });
   if (phone) {
+    // a second page from the palette over the popup: the palette's entry becomes the new page's, and
+    // its closing does not step back onto the first page's entry
+    await page.keyboard.press("ControlOrMeta+Shift+K");
+    await search.fill(`localhost:${port}/second`);
+    await search.press("Enter");
+    await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+    await page.waitForFunction(() => window.history.state?.["ovis:web-panel"]?.url?.endsWith("/second") === true && window.history.state?.["ovis:sheet"] === undefined);
+    assert.equal(await page.locator(".web-panel-page").getAttribute("src"), `http://127.0.0.1:${port}/second`, `${tag}: the second page replaces the first in the popup`);
+    await page.goBack();
+    await page.waitForFunction((first) => document.querySelector(".web-panel-page")?.getAttribute("src") === first, pageUrl);
     await page.goBack();
     await page.locator(".web-panel-popup").waitFor({ state: "detached" });
-    assert.equal(page.url(), before, `${tag}: Back closes the page and stays in the app`);
+    assert.equal(page.url(), before, `${tag}: Back goes through the pages and closes the popup in the app`);
   } else {
     await page.getByRole("button", { name: "Close page", exact: true }).click();
     await page.locator(".web-panel").waitFor({ state: "detached" });
