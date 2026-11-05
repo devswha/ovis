@@ -1524,8 +1524,9 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       // an Escape that cancels an IME composition (the editor's Character field) is the IME's, and one that
       // closed Files drawn over Settings (focused by a click) is spent: one Escape closes one dialog
       if (event.key !== "Escape" || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
-      // Files opened from the palette over Settings holds the focus: its Escape, though this listener runs first
-      if (focusInOtherModal(surface.current)) return;
+      // Files opened from the palette over Settings holds the focus: its Escape, though this listener runs first.
+      // A preview under Settings (a file opened from that Files) waits for Settings to close, focused or not
+      if (!overPreview && focusInOtherModal(surface.current)) return;
       event.preventDefault();
       // out of the key bar editor first; from any page, a phone's included, it closes the dialog
       if (keyBarOpen) setKeyBarOpen(false);
@@ -1533,7 +1534,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose, keyBarOpen]);
+  }, [onClose, keyBarOpen, overPreview]);
 
   /** the list is one Tab stop: the arrows walk it, and beside an open page they turn the page too */
   const onTabKey = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number): void => {
