@@ -52,8 +52,9 @@ no uninstaller of its own (`windows/installer.nsh` runs `windows/replace-old-set
 - This app's Start menu **Ovis** takes the place of that app's shortcut, and any other shortcut to it
   in the Start menu or on the desktop goes.
 - That app's sign-in start (the HKCU `Run` value `Ovis` that runs its copy with `--start`, word for
-  word) is removed. So is its copy in `%LOCALAPPDATA%\Programs\Ovis`, only when the file's version
-  information says it is Ovis for Windows; an open window of it is closed first.
+  word) is removed, and so is its copy in `%LOCALAPPDATA%\Programs\Ovis`, only when the file's version
+  information says it is Ovis for Windows (then its sign-in start goes too); any open window of it,
+  also one opened from a download, is closed first. A shortcut the user deleted is not made again.
 - Its own Remove is never run, because that also takes the Ovis server off the PC.
 - herdr, the Ovis server it installed and their state stay as they are.
 
