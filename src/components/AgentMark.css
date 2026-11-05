@@ -16,17 +16,17 @@
 }
 
 /* A kind with no mark of its own: its initial in a disc tinted by its kind (data-hue, AgentMark.tsx),
-   one of the theme's terminal colors, so each theme keeps it legible. Mono leaves the disc quiet. */
-.agent-mark svg[data-hue="red"] { --mark-hue: var(--term-red); }
-.agent-mark svg[data-hue="green"] { --mark-hue: var(--term-green); }
-.agent-mark svg[data-hue="yellow"] { --mark-hue: var(--term-yellow); }
-.agent-mark svg[data-hue="blue"] { --mark-hue: var(--term-blue); }
-.agent-mark svg[data-hue="magenta"] { --mark-hue: var(--term-magenta); }
-.agent-mark svg[data-hue="cyan"] { --mark-hue: var(--term-cyan); }
+   one of the theme's syntax colors, which every theme sets in both modes. Mono leaves the disc quiet. */
+.agent-mark svg[data-hue="keyword"] { --mark-hue: var(--syntax-keyword); }
+.agent-mark svg[data-hue="string"] { --mark-hue: var(--syntax-string); }
+.agent-mark svg[data-hue="number"] { --mark-hue: var(--syntax-number); }
+.agent-mark svg[data-hue="type"] { --mark-hue: var(--syntax-type); }
+.agent-mark svg[data-hue="variable"] { --mark-hue: var(--syntax-variable); }
+.agent-mark svg[data-hue="meta"] { --mark-hue: var(--syntax-meta); }
 
 .agent-mark .agent-mark-disc {
-  fill: color-mix(in srgb, var(--mark-hue) 24%, var(--bg-elevated));
-  stroke: color-mix(in srgb, var(--mark-hue) 60%, var(--border));
+  fill: color-mix(in srgb, var(--mark-hue, var(--border)) 24%, var(--bg-elevated));
+  stroke: color-mix(in srgb, var(--mark-hue, var(--border)) 60%, var(--border));
 }
 
 [data-marks="mono"] .agent-mark .agent-mark-disc {

@@ -94,9 +94,9 @@
   text-transform: uppercase;
 }
 
-.agent-group:first-child .agent-group-label { margin-top: 0; }
+.agent-group-label:first-child { margin-top: 0; }
 
-.agent-group[data-group="blocked"] .agent-group-label { color: var(--status-blocked); }
+.agent-group-label[data-group="blocked"] { color: var(--status-blocked); }
 
 .agent-group-count {
   width: var(--side-box);

@@ -1297,7 +1297,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   group of the one of them that needs the reader most. The shared Agents order applies while
   grouping is off.
 - An agent kind with no mark of its own draws its initial in a disc tinted by its kind: one of
-  the theme's terminal colors (`--term-red` … `--term-cyan`), picked from the kind's name, so
+  the theme's syntax colors (`--syntax-keyword`, `-string`, `-number`, `-type`, `-variable`,
+  `-meta`, set by every theme in both modes), picked from the kind's name, so
   it is the same on every device and two unknown kinds tell apart. Agent logos → Mono leaves
   the disc quiet.
 - A DONE opened here draws as ready in the Agents list and its workspace roll-up, as herdr's

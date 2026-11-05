@@ -387,10 +387,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           <p className="sidebar-pinned-label" aria-hidden="true"><span><Pin />{t("Pinned")}</span></p>
           <ul className="agent-list agent-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{split.pinned.map(agentItem)}</ul>
         </>}
-        {groups ? groups.map(({ group, rows: groupRows }) => <div className="agent-group" key={group} data-group={group}>
-          <p className="agent-group-label" aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></p>
-          <ul className="agent-list" aria-label={groupLabel(group, t)}>{groupRows.map(agentItem)}</ul>
-        </div>)
+        {/* one list, so a row that changes groups is moved, not drawn anew: its focus and open menu stay with it */}
+        {groups ? <ul className="agent-list agent-list-grouped">{groups.flatMap(({ group, rows: groupRows }) => [
+          <li className="agent-group-label" key={`group:${group}`} data-group={group} aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></li>,
+          ...groupRows.map(agentItem),
+        ])}</ul>
           : split.rest.length > 0 && <ul className="agent-list">{split.rest.map(agentItem)}</ul>}
       </>}
     </div>
