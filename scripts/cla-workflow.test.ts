@@ -43,6 +43,7 @@ test.each<[string, Pr, boolean]>([
   ["the maintainer opening an organization's fork", { opener: "devswha", head: fork("acme", "Organization"), authors: ["devswha"] }, false],
   ["the maintainer opening a PR whose fork was deleted", { opener: "devswha", head: null, authors: ["devswha"] }, false],
   ["an outsider opening an organization's fork with their own commit", { opener: "alice", head: fork("acme", "Organization"), authors: ["alice"] }, true],
+  ["an outsider opening another person's fork with their own commit", { opener: "bob", head: fork("alice"), authors: ["bob"] }, true],
 ])("the CLA guard on %s", (_, pr, passes) => {
   const result = runGuard(pr);
   expect({ passed: result.code === 0, output: result.output }).toMatchObject({ passed: passes });

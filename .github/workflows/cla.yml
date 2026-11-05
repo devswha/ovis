@@ -29,9 +29,9 @@ jobs:
       # The action checks only commit authors, which anyone can set to another account's email, so
       # the account that opened the PR must also author one of its commits and sign. Without a
       # linked account the action falls back to the free-text git author name, which the allowlist
-      # would accept (`devswha`, `x[bot]`), and it reads only the first 100 commits. A PR from a
-      # fork can be opened by the maintainer, so the fork's owner must author a commit too; a fork
-      # with no personal owner (an organization's, or a deleted one) needs an outside opener.
+      # would accept (`devswha`, `x[bot]`), and it reads only the first 100 commits. When the
+      # maintainer opens a PR from someone else's fork, the fork's owner stands in for the opener;
+      # a fork with no personal owner (an organization's, or a deleted one) needs an outside opener.
       # Co-authors are not checked: agents co-author as ordinary accounts (`claude`, `cursoragent`),
       # and the action takes a signature only from a commit author.
       - name: Require a GitHub account on every commit
@@ -59,14 +59,13 @@ jobs:
             echo "::error title=CLA::No commit in this pull request is authored by @$opener, who opened it, so @$opener cannot sign the CLA here. Add a commit made with an email linked to @$opener's GitHub account and push again."
             exit 1
           fi
-          if [ "$head_repo" != "$REPO" ] && ! exempt "$head_owner"; then
-            if [ "$head_type" = User ]; then
-              if ! authored "$head_owner"; then
-                echo "::error title=CLA::No commit in this pull request is authored by @$head_owner, whose fork $head_repo it comes from, so @$head_owner cannot sign the CLA here. Add a commit made with an email linked to @$head_owner's GitHub account and push again."
-                exit 1
-              fi
-            elif exempt "$opener"; then
+          if exempt "$opener" && [ "$head_repo" != "$REPO" ] && ! exempt "$head_owner"; then
+            if [ "$head_type" != User ]; then
               echo "::error title=CLA::This pull request comes from $head_repo, which has no personal owner to sign the CLA. Ask the contributor to open it from their own account."
+              exit 1
+            fi
+            if ! authored "$head_owner"; then
+              echo "::error title=CLA::No commit in this pull request is authored by @$head_owner, whose fork $head_repo it comes from, so @$head_owner cannot sign the CLA here. Add a commit made with an email linked to @$head_owner's GitHub account and push again."
               exit 1
             fi
           fi
