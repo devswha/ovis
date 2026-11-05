@@ -349,6 +349,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
+ *  GET    /api/pane/docs?pane_id=       -> PaneDocuments (the Markdown files under the pane's folder,
+ *         newest first, from the same listing; read only: Files' Documents tab, shared/files.ts)
  *  GET    /api/workspace/diff/files?pane_id=&directory=&scope=&base=&head= -> RepoDiffFileList
  *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
@@ -611,7 +613,20 @@ export type ConversationPart =
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
-  | { kind: "task_result"; tasks: OmoTaskResult[] };
+  | { kind: "task_result"; tasks: OmoTaskResult[] }
+  /** OmO's goal waiting on background work before it continues on its own (its `goal-cache-warmup`
+   * record): a turn of its own while it is the conversation's last, gone once it resumes or anything
+   * else follows. `due_at`: when OmO continues if nothing wakes it first */
+  | { kind: "goal_wait"; due_at: string; waiting_on: GoalWaitSources };
+
+/** What an OmO goal's wait waits on, by kind: background tasks, monitors, background terminals, DAG runs and detached code cells. */
+export interface GoalWaitSources {
+  tasks: number;
+  monitors: number;
+  terminals: number;
+  dags: number;
+  cells: number;
+}
 
 /** One OmO background task that ended (the `senpi-task.completion` OmO wakes its agent with). */
 export interface OmoTaskResult {
@@ -750,7 +765,7 @@ export type { PluginActionContext, PluginAction, PluginActions, PluginActionsRes
 
 export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from "./directories.ts";
 
-export type { FileKind, FileInfo, ProjectFavicon } from "./files.ts";
+export type { FileKind, FileInfo, MarkdownDocument, PaneDocuments, ProjectFavicon } from "./files.ts";
 
 export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
 

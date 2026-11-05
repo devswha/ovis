@@ -1106,7 +1106,7 @@ function usageReport(): UsageReport {
         { kind: "session", scope: null, used_percent: 38, ...session(2.4) },
         { kind: "week", scope: null, used_percent: 61, ...week(78) },
         ...(demoStatusline ? [] : [{ kind: "week" as const, scope: "Sonnet", used_percent: 12, ...week(78) }]),
-      ], credits: { kind: "spend", currency: "USD", used: 12.19, limit: 15.39, used_percent: 79.2 }, resets: { available: 2, expires_at: at(30) } },
+      ], credits: { kind: "spend", currency: "USD", used: 12.19, limit: 15.39, used_percent: 79.2 } },
     { id: "codex", key: "codex:demo-codex-work", account: "sam@work.example", plan: "pro", problem: null, checked_at: checked, windows: [
       { kind: "session", scope: null, used_percent: 22, ...session(1.2) },
       { kind: "week", scope: null, used_percent: 84, ...week(97) },
@@ -1680,6 +1680,13 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/pane/files") {
     const q = (query.get("q") ?? "").toLowerCase();
     return json({ files: DEMO_FILES.filter((file) => file.toLowerCase().includes(q)).slice(0, Number(query.get("limit") ?? 20)) });
+  }
+  // Files' Documents tab (off by default): the demo folder's Markdown files, changed an hour apart
+  if (path === "/api/pane/docs") {
+    const pane = paneOf(paneId);
+    if (!pane) return error("pane_not_found", "no such pane", 404);
+    const documents = DEMO_FILES.filter((file) => file.endsWith(".md")).map((file, index) => ({ path: file, size: 512, modified: new Date(Date.now() - (index + 1) * 3_600_000).toISOString() }));
+    return json({ root: pane.foreground_cwd ?? pane.cwd ?? "", documents, truncated: false });
   }
   if (path === "/api/pane/input" || path === "/api/pane/keys") return json({ ok: true });
   if (path === "/api/plugins/actions") return json({ plugins: PLUGINS } satisfies PluginActionsResponse);
