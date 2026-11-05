@@ -413,11 +413,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         </>}
         {/* one list, so a row that changes groups or parts is moved, not drawn anew: its focus and open menu stay with it */}
         {(parts.people.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups ? " agent-list-grouped" : ""}`}>
-          {groups ? groups.flatMap(({ group, rows: groupRows }) => [
+          {/* one array of children: React moves a keyed row only among the siblings of its own array */}
+          {[...groups ? groups.flatMap(({ group, rows: groupRows }) => [
             <li className="agent-group-label" key={`group:${group}`} data-group={group} aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></li>,
             ...groupRows.map((row) => agentItem(row)),
-          ]) : parts.people.map((row) => agentItem(row))}
-          {parts.background.length > 0 && [
+          ]) : parts.people.map((row) => agentItem(row)),
+          ...parts.background.length === 0 ? [] : [
             <li className="agent-background-label" key="background">
               <button type="button" className="agent-background-toggle" aria-expanded={!backgroundFolded} onClick={() => {
                 if (filter.active) { setBackgroundFilterFold(!backgroundFolded); return; }
@@ -429,7 +430,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
               </button>
             </li>,
             ...parts.background.map((row) => agentItem(row, backgroundFolded)),
-          ]}
+          ]]}
         </ul>}
       </>}
     </div>

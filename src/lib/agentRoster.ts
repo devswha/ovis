@@ -109,9 +109,10 @@ export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: Age
   const people: AgentRow[] = [];
   const background: AgentRow[] = [];
   for (const row of rows) (tagged(row) && knownStatus(status(row)) !== "blocked" ? background : people).push(row);
-  // a helper whose agent stayed with the people's rows stands as a root here, not under another row
+  // each part is laid out anew: a helper whose agent went to the other part stands as a root, not under another row
   const keyOf = ({ machine, entry }: AgentRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
-  return { people, background: nestRows(background, keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id)) };
+  const nest = (part: AgentRow[]): AgentRow[] => nestRows(part, keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id));
+  return { people: nest(people), background: nest(background) };
 }
 
 /** Settings → Group agents by state: the groups, in the order the list draws them */

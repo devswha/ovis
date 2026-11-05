@@ -78,6 +78,12 @@ describe("agent roster", () => {
       const machines = [machine("local", "connected", [["a", "working", undefined, background], ["b", "blocked", "a"], ["c", "working", "b"], ["d", "working", "a"]])];
       expect(parts(machines)).toEqual({ people: ["local/b"], background: ["local/a", "local/d", "local/c"] });
     });
+
+    it("lays out the people's rows anew too, a blocked helper of a background helper standing as a root", () => {
+      // c's agent b went to the background part: d stays right under a, c follows as a root
+      const machines = [machine("local", "connected", [["a", "idle"], ["b", "working", "a", background], ["c", "blocked", "b"], ["d", "working", "a"]])];
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/d", "local/c"], background: ["local/b"] });
+    });
   });
 
   describe("in groups by state", () => {
