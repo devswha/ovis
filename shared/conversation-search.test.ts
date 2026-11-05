@@ -134,6 +134,14 @@ describe("pickedTurn", () => {
     expect(pickedTurn([user("go"), null, answer("The deploy script")], match)).toBe(2);
     expect(pickedTurn([user("go"), answer("The deploy script is ready."), user("thanks")], match)).toBe(1);
     expect(pickedTurn([user("go"), answer("Another deploy script")], match)).toBe("none");
+    // an answer that begins with the match: an answer of its time with words before it is another one
+    const opening = searchTurns([answer("deploy script")], searchPattern("deploy script")!)[0]!;
+    expect(pickedTurn([answer("deploy script"), user("again"), answer("Meanwhile deploy script fails")], opening)).toBe(0);
+    // a long answer's snippet is cut: a closed link moves the cut, and the words still end alike
+    const long = `${"word ".repeat(20)}see [deploy`;
+    const cut = searchTurns([answer(long)], searchPattern("deploy")!)[0]!;
+    expect(cut.before.startsWith("…")).toBe(true);
+    expect(pickedTurn([answer(`${long}](https://example.com) now`)], cut)).toBe(0);
   });
 
   it("opens none when the answer grew and a later answer of its time took its old name", () => {

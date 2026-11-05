@@ -2532,9 +2532,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
     if (pick === null || list === null || node === null) return;
-    if (pick.read === "named" && !timelineRows.some((row) => row.turn !== null && chatTurnAnchor(row.turn) === pick.match.turn)) return;
-    revealing.current = null;
     const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
+    // a page read is in the rows by now; a turn found by its name and changed since still counts
+    if (index === "none" && pick.read === "named") return;
+    revealing.current = null;
     if (typeof index !== "number") { pick.done("missing"); return; }
     placeRow(list, node, index, 0);
     pick.done("shown");

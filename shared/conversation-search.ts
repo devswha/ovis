@@ -106,11 +106,12 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   const pattern = searchPattern(match.match);
   const snippet = pattern === null ? null : matchSnippet(searchableText(turn), pattern);
   if (snippet === null || snippet.match !== match.match) return false;
-  // a snippet keeps the last words before the match, so a mark gone moves where it is cut: one
-  // ends the other
+  // a snippet keeps the last words before the match, so a mark gone moves where a long one is cut:
+  // then one ends the other
   const words = (before: string): string => before.replace(/^…/, "").replace(/[[\]*`]/g, "");
   const was = words(match.before), now = words(snippet.before);
-  return now.endsWith(was) || was.endsWith(now);
+  if (!match.before.startsWith("…") && !snippet.before.startsWith("…")) return was === now;
+  return was !== "" && now !== "" && (now.endsWith(was) || was.endsWith(now));
 }
 
 /**
