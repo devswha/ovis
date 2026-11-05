@@ -20,7 +20,8 @@ The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this ap
    the bundled one (left by a newer app before a rollback) is kept, since hc does not go back.
 2. Starts the Ovis server on the bundled Bun with `OVIS_RUNTIME=herdr-core`, `OVIS_HC_BIN` set to
    that hc, `HOST=127.0.0.1` and its own state folder (`<user data>/server`, or
-   `OVIS_STATE_DIR`). The server is the same code the installer runs; the app only starts it.
+   `OVIS_STATE_DIR`), and `OVIS_DESKTOP_APP=1`, so Settings → About says updates come with the app. The
+   server is the same code the installer runs; the app only starts it.
 3. Opens a window on the server's address. It keeps the port it had last time while that port is
    free, so the page keeps its storage (drafts, settings); otherwise it takes a free one.
 
@@ -127,6 +128,34 @@ $env:HC_SESSION = 'ovis-try'
 # afterwards
 & "$d\app\bin\herdr-core.exe" server stop
 ```
+
+## End-to-end checks
+
+`scripts/e2e.ts` checks a built app the way a new user meets it. The app runs in a temporary HOME
+with its own PATH (no herdr, no hc), hc session and user data folder, on Linux on an Xvfb display
+of its own (install `xvfb`), so the PC's own herdr, hc core and Ovis state are never touched:
+
+```sh
+bun scripts/e2e.ts dist/Ovis-*.AppImage       # Linux
+bun scripts/e2e.ts dist/mac-arm64/Ovis.app    # macOS, from a logged-in desktop session
+bun scripts/e2e.ts --update                   # Linux: packages 0.0.1 and 0.0.2 from stage/ and out/,
+                                              # then updates the first from a local https feed
+```
+
+It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
+stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
+stays), the tray's items, a killed app (the next start ends the server left behind) and, with
+`--update`, Restart to Update. The app's main process is driven through its inspector. Terminals
+are made and typed into through the server's API, and the window is checked to list them. Tray
+items are pressed through their menu (enabled, with their handlers); whether the desktop draws the
+tray icon is not checked. The update feed uses a certificate made for the run, which the app is
+told to accept, and `--update` packages with electron-builder's usual caches.
+
+Screenshots, the app's output and `results.json` go to `--out` (by default a new temporary
+folder, kept); the exit code is 0 when every check passed. A check that fails for a filed bug says
+KNOWN with the issue and does not fail the run. Without `libfuse.so.2` the AppImage runs unpacked
+(`APPIMAGE_EXTRACT_AND_RUN=1`). Every process the run starts carries its id in its environment;
+cleanup ends those and nothing else.
 
 ## Licenses
 
