@@ -19,8 +19,10 @@ export interface Machine {
   herdr_profile_id?: string;
   id: string;
   name: string;
-  kind: "local" | "ssh";
+  kind: "local" | "ssh" | "relay";
   target?: SshTarget;
+  /** a PC added through the Ovis relay (no SSH): its relay ID and the relay it is reached through */
+  relay?: { server_id: string; relay: string };
   enabled: boolean;
   state: MachineState;
   error: string | null;
@@ -84,11 +86,44 @@ export interface HerdrIdentity {
   /** without attach, the terminal lens shows the pane's screen repainted a few times a second (server/mirror.ts) */
   terminal_mirror?: boolean;
   /**
-   * `herdr-core`: the PC's terminals are herdr-core's (OVIS_RUNTIME=herdr-core), whose workspaces,
-   * tabs and splits belong to the Herdr app's window; renaming, moving, splitting and resizing
-   * them is not offered. Absent: herdr's TUI server.
+   * `herdr-core`: the PC's terminals are herdr-core's (OVIS_RUNTIME=herdr-core), which has no
+   * workspaces, tabs or splits of its own: reordering, zoom, swap, resize and worktrees are never
+   * offered there, and the rest only as `layout` says. Absent: herdr's TUI server.
    */
   runtime?: "herdr-core";
+  /** herdr-core only: which layout calls it answers (HerdrCoreLayout); absent, none */
+  layout?: HerdrCoreLayout;
+}
+
+/**
+ * What a herdr-core PC lets Ovis do with its workspaces, tabs and splits. On a core no Herdr app
+ * arranges (its `herdr-app` document was never written, as on the desktop app's own core) Ovis keeps
+ * them in terminal labels: it renames workspaces and tabs and moves a one-pane tab to another
+ * workspace. It splits no pane yet (`split` stays false). Where the Herdr app arranges them, they are
+ * the app's, and none is offered.
+ */
+export interface HerdrCoreLayout {
+  rename: boolean;
+  split: boolean;
+  move: boolean;
+}
+/** where this server's runtime came from: OVIS_RUNTIME, the choice saved from Settings, or what the PC has */
+export type RuntimeSource = "env" | "saved" | "detected";
+/** why Settings cannot switch the runtime: OVIS_RUNTIME decides, the server was not started by Ovis's launcher, or herdr-core is not served on this OS */
+export type RuntimeLock = "env" | "unmanaged" | "platform";
+/**
+ * Which runtime this server serves and what Settings may switch it to (GET /api/health, a driving
+ * owner only). `switch_to`: the other runtime when this PC has it and nothing locks the choice.
+ * `fallback`: the saved choice was herdr-core, but no herdr-core answered, so herdr is served.
+ */
+export interface HerdrRuntimeFacts {
+  serving: "herdr" | "herdr-core";
+  source: RuntimeSource;
+  tui: { installed: boolean; running: boolean };
+  app_installed: boolean;
+  switch_to: "herdr" | "herdr-core" | null;
+  locked: RuntimeLock | null;
+  fallback?: "no_herdr_core";
 }
 /**
  * What this PC has of herdr-core, the Herdr app's runtime, whichever runtime the server serves
@@ -174,7 +209,12 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | { type: "seen"; finishes: SeenFinish[] }
   | DevicePairedEvent;
 /** `security`: authenticated requests only, absent from an older server (shared/protocol.ts SecuritySummary) */
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary }
+/**
+ * `web_ui.boot_id`: this server lifetime's id, as in the full health answer. `runtime`: the runtime it
+ * serves. `accepted`: its launcher took it as its own past the startup check (absent when no launcher
+ * runs it). All three absent from older servers.
+ */
+export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: "herdr" | "herdr-core"; accepted?: boolean; /** a driving owner only, as on the whole answer */ herdr_runtime?: HerdrRuntimeFacts }
 export interface BridgeIdentity {
   pid: number;
   managed_remote: boolean;

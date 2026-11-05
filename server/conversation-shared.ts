@@ -30,7 +30,7 @@ const COPILOT_SETTLED = new Set<string>(["copilot_session_unregistered", "copilo
 export const copilotRecoverable = (diagnostic: string | undefined): boolean =>
   diagnostic !== undefined && diagnostic.startsWith("copilot_") && !COPILOT_SETTLED.has(diagnostic);
 /** Fixed stages a diagnostic may name: Copilot's rejections, and an agent pane herdr gives no folder. */
-export const UNAVAILABLE_DIAGNOSTICS = [...COPILOT_UNAVAILABLE_REASONS, "agent_cwd_missing"] as const;
+export const UNAVAILABLE_DIAGNOSTICS = [...COPILOT_UNAVAILABLE_REASONS, "agent_cwd_missing", "devin_current_session_unverified"] as const;
 
 export class ConversationUnavailable extends Error {
   /** `screen`: the model and effort the agent's own live status line states (start-screen.ts), for the scrollback standing in */
