@@ -3,7 +3,7 @@ import { describe, expect, it, jest } from "bun:test";
 import { ApiError } from "./api.ts";
 import { createFileNameLookup } from "./fileNameLookup.ts";
 
-const failure = (status: number) => new ApiError("/api/fs/stat", status, "no", null);
+const failure = (status: number, code: string | null = status === 404 ? "not_found" : null) => new ApiError("/api/fs/stat", status, "no", code);
 let scopes = 0;
 /** a lookup of its own: answers are kept per PC, pane and folder, so each test asks in a fresh one */
 function lookup({ stat, folder = () => Promise.reject(failure(400)), remote = false, turn = 1, scope = `test-${++scopes}` }: {
@@ -33,6 +33,14 @@ describe("a bare name in a code span", () => {
     for (const reason of [failure(403), failure(503), new TypeError("offline")]) {
       const { names, listed } = lookup({ stat: () => Promise.reject(reason) });
       expect(await names.ask("foo.service")).toBe(true);
+      expect(listed).toEqual([]);
+    }
+  });
+
+  it("stays a link, kept as found, when the PC could not read the pane's folder", async () => {
+    for (const remote of [false, true]) {
+      const { names, listed } = lookup({ stat: () => Promise.reject(failure(404, "pane_unknown")), remote });
+      expect(await names.ask("README.md")).toBe(true);
       expect(listed).toEqual([]);
     }
   });
@@ -123,17 +131,19 @@ describe("a bare name in a code span", () => {
     expect(asked).toHaveLength(6);
   });
 
-  it("frees the slot of a name the PC does not answer, which keeps its link", async () => {
+  it("keeps the link of a name the PC does not answer, and never asks more than four at once meanwhile", async () => {
     jest.useFakeTimers();
     try {
-      const { names, asked } = lookup({ stat: (name) => name.startsWith("stuck") ? new Promise(() => {}) : Promise.reject(failure(404)) });
-      const stuck = Array.from({ length: 4 }, (_, index) => names.ask(`stuck-${index}.slice`));
-      const later = names.ask("later.slice");
+      const stuck: Array<() => void> = [];
+      const { names, asked } = lookup({ stat: (name) => name.startsWith("stuck") ? new Promise((resolve) => { stuck.push(() => resolve({})); }) : Promise.reject(failure(404)) });
+      const waiting = Array.from({ length: 12 }, (_, index) => names.ask(`stuck-${index}.slice`));
       await Promise.resolve();
+      for (let step = 0; step < 3; step++) { jest.advanceTimersByTime(10_000); await Promise.resolve(); await Promise.resolve(); }
+      expect(await Promise.all(waiting)).toEqual(Array(12).fill(true));
       expect(asked).toHaveLength(4);
-      jest.advanceTimersByTime(10_000);
-      expect(await Promise.all(stuck)).toEqual([true, true, true, true]);
-      expect(await later).toBe(false);
+      // the PC answers at last: the slots go to names asked from then on
+      while (stuck.length > 0) { stuck.shift()!(); await Promise.resolve(); await Promise.resolve(); }
+      expect(await names.ask("later.slice")).toBe(false);
       expect(asked).toContain("later.slice");
     } finally {
       jest.useRealTimers();

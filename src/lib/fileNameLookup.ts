@@ -28,7 +28,7 @@ const KEPT_MS = 60_000;
 const KEPT = 500;
 /** names asked at once, so an answer full of them does not hold every file thread of the PC */
 const RUNNING = 4;
-/** a name not answered by then keeps its link and frees its slot: a PC that stopped answering holds up no other name */
+/** a name not answered by then, waiting included, keeps its link; its request keeps its slot until it ends, so a PC that stopped answering is never asked more */
 const ANSWER_MS = 10_000;
 
 interface Kept { at: number; turn: unknown; found: Promise<boolean>; answer?: boolean }
@@ -36,17 +36,28 @@ const answers = new Map<string, Kept>();
 let running = 0;
 const waiting: Array<() => void> = [];
 
-/** `work` once one of the RUNNING slots is free, or `late` after ANSWER_MS; a slot freed goes straight to the next in line. */
+/**
+ * `work` once one of the RUNNING slots is free, or `late` once ANSWER_MS have passed since the ask.
+ * A slot is freed only when its work ends, and goes straight to the next in line; one whose answer
+ * is no longer waited for by then is skipped.
+ */
 async function inSlot<T>(work: () => Promise<T>, late: T): Promise<T> {
-  if (running < RUNNING) running++;
-  else await new Promise<void>((resolve) => waiting.push(resolve));
+  let expired = false;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  const run = (async () => {
+    if (running < RUNNING) running++;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return expired ? late : await work();
+    } finally {
+      const next = waiting.shift();
+      if (next) next(); else running--;
+    }
+  })();
   try {
-    return await Promise.race([work(), new Promise<T>((resolve) => { deadline = setTimeout(() => resolve(late), ANSWER_MS); })]);
+    return await Promise.race([run, new Promise<T>((resolve) => { deadline = setTimeout(() => { expired = true; resolve(late); }, ANSWER_MS); })]);
   } finally {
     clearTimeout(deadline);
-    const next = waiting.shift();
-    if (next) next(); else running--;
   }
 }
 
@@ -55,7 +66,8 @@ async function opens(name: string, stat: (name: string) => Promise<unknown>, fol
     await stat(name);
     return true;
   } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 404) return true;
+    // a 404 without `not_found` is a pane whose folder the PC could not read (server/file-routes.ts): not a miss
+    if (!(error instanceof ApiError) || error.status !== 404 || error.code !== "not_found") return true;
   }
   if (folder === null) return false;
   try {
