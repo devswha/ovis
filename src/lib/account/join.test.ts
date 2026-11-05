@@ -239,6 +239,48 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   expect(x.f.app.context.services.devices.hasKey(key.public_spki)).toBe(true);
 });
 
+it("names a PC this device is linked on that the account does not list, instead of passing it over", async () => {
+  const [x, y] = [pc(), pc()];
+  const phone = new MemoryDeviceStore();
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  const onY = await linkThisDevice({ fetch: pcFetch(await connect(y, await qrPairing(y, phone, "nuc"))), device: (await phone.get(y.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  const lost = await accountKey();
+  for (const [at, member] of [[x, onX], [y, onY]] as const) {
+    at.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(at.identity.server_id, lost.public_spki), key: lost.public_spki, label: "Lost phone", role: "drive", account: ACCOUNT, addedBy: member.device_id! });
+  }
+  const service = new FakeAccountService();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  const account = new AccountService({ store: accountStore, fetch: service.fetch });
+  for (const at of [x]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+  const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
+  expect(result.unconfirmed).toEqual([y.identity.server_id]);
+  expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
+});
+
+it("still disconnects it on the PC in view when the account service refuses the mailbox, and names the others", async () => {
+  const [x, y] = [pc(), pc()];
+  const phone = new MemoryDeviceStore();
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  const onY = await linkThisDevice({ fetch: pcFetch(await connect(y, await qrPairing(y, phone, "nuc"))), device: (await phone.get(y.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  const lost = await accountKey();
+  for (const [at, member] of [[x, onX], [y, onY]] as const) {
+    at.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(at.identity.server_id, lost.public_spki), key: lost.public_spki, label: "Lost phone", role: "drive", account: ACCOUNT, addedBy: member.device_id! });
+  }
+  const service = new FakeAccountService();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  const account = new AccountService({ store: accountStore, fetch: (async (input: RequestInfo | URL, init?: RequestInit) => new URL(input instanceof Request ? input.url : String(input)).pathname === "/v1/records" ? Response.json({ error: "mailbox_full" }, { status: 429 }) : service.fetch(input, init)) as typeof fetch });
+  for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+  const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
+  expect(result.unconfirmed).toEqual([y.identity.server_id]);
+  expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
+});
+
 it("keeps a pairing the account does not list when this device leaves, and says which", async () => {
   const [a, hidden] = [pc(), pc()];
   const phone = new MemoryDeviceStore();

@@ -70,14 +70,23 @@ export async function removeFromAccount(options: {
   }, own.private_key);
   // a PC applies the remove only where this device is a member: pairings that PC confirmed for this account
   const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki && device.account === session.account).map((device) => device.server_id));
-  const listed = (await options.service.listPcs()).map((pc) => pc.server_id);
-  const reached = listed.filter((id) => linked.has(id));
-  for (let start = 0; start < reached.length; start += 32) await options.service.postRecord(reached.slice(start, start + 32), remove);
+  // the PC in view first: it answers at once, whatever the account service does next
   if (options.here) {
     // the PC answers every record's outcome with 200: a refusal there is a failure here
     const answer = await (await post(options.here, "/api/account/records", { records: [remove] })).json() as { results?: { outcome?: string; code?: string }[] };
     const outcome = answer.results?.[0];
     if (outcome?.outcome === "refused") throw new Error(`This PC refused the removal (${outcome.code ?? "refused"})`);
   }
-  return { remove, unconfirmed: listed.filter((id) => !linked.has(id) && id !== options.hereId), queued: reached.filter((id) => !(options.here && id === options.hereId)) };
+  const done = (id: string) => options.here !== undefined && id === options.hereId;
+  const listed = (await options.service.listPcs()).map((pc) => pc.server_id);
+  const reached = listed.filter((id) => linked.has(id) && !done(id));
+  const failed: string[] = [];
+  for (let start = 0; start < reached.length; start += 32) {
+    const batch = reached.slice(start, start + 32);
+    // a refused or failed post leaves those PCs to be named, not the whole disconnect undone
+    try { await options.service.postRecord(batch, remove); } catch { failed.push(...batch); }
+  }
+  // not reached: listed PCs this device is not a member of, linked PCs the account does not list, and failed posts
+  const unconfirmed = [...listed.filter((id) => !linked.has(id)), ...[...linked].filter((id) => !listed.includes(id)), ...failed].filter((id) => !done(id));
+  return { remove, unconfirmed, queued: reached.filter((id) => !failed.includes(id)) };
 }
