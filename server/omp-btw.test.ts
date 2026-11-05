@@ -30,7 +30,7 @@ describe("ompBtwTopics", () => {
     save(history, topic("bbb", 1_792_642_171_669, { status: "error", error: "model refused" }));
     writeFileSync(join(history, "entry-aaa.title"), "Named topic");
 
-    expect(ompBtwTopics(transcript)).toEqual([
+    expect(ompBtwTopics(transcript).topics).toEqual([
       { id: "bbb", title: null, question: "question bbb", answer: "answer bbb", status: "error", error: "model refused", at: new Date(1_792_642_171_669).toISOString(), follow_ups: [] },
       {
         id: "aaa", title: "Named topic", question: "question aaa", answer: "answer aaa", status: "complete", error: null, at: new Date(1_792_642_086_836).toISOString(),
@@ -57,7 +57,7 @@ describe("ompBtwTopics", () => {
     writeFileSync(outside, JSON.stringify(topic("linked", 6)));
     symlinkSync(outside, join(history, "entry-linked.json"));
 
-    expect(ompBtwTopics(transcript).map((found) => found.id)).toEqual(["kept"]);
+    expect(ompBtwTopics(transcript).topics.map((found) => found.id)).toEqual(["kept"]);
   });
 
   it("reads only the hundred most recently written topics and a short title, and none through a linked history folder", () => {
@@ -71,7 +71,7 @@ describe("ompBtwTopics", () => {
     save(history, topic("n0", 999_999));
     utimesSync(join(history, "entry-n0.json"), new Date(Date.UTC(2026, 9, 1)), new Date(Date.UTC(2026, 9, 1)));
     writeFileSync(join(history, "entry-n100.title"), "t".repeat(5000));
-    const read = ompBtwTopics(transcript);
+    const read = ompBtwTopics(transcript).topics;
     expect(read).toHaveLength(100);
     expect(read.map((found) => found.id)).not.toContain("n0");
     expect(read[0]).toMatchObject({ id: "n100", title: null });
@@ -80,7 +80,7 @@ describe("ompBtwTopics", () => {
     writeFileSync(linked, "");
     mkdirSync(join(root, "linked"));
     symlinkSync(history, join(root, "linked", "btw-history"));
-    expect(ompBtwTopics(linked)).toEqual([]);
+    expect(ompBtwTopics(linked).topics).toEqual([]);
   });
 
   it("keeps what it answers and remembers to a bounded amount of text, the most recently written first", () => {
@@ -91,7 +91,7 @@ describe("ompBtwTopics", () => {
       utimesSync(join(history, `entry-w${index}.json`), written, written);
     }
     for (let poll = 0; poll < 3; poll++) {
-      const read = ompBtwTopics(transcript);
+      const read = ompBtwTopics(transcript).topics;
       expect(read.length).toBeLessThan(40);
       expect(read.reduce((sum, found) => sum + found.answer.length, 0)).toBeLessThanOrEqual(4 * 1024 * 1024);
       expect(read[0]?.id).toBe("w39");
@@ -103,16 +103,52 @@ describe("ompBtwTopics", () => {
     const when = new Date(Date.UTC(2026, 10, 1));
     save(history, { ...topic("r1", 1), answer: "first" });
     utimesSync(join(history, "entry-r1.json"), when, when);
-    expect(ompBtwTopics(transcript)[0]?.answer).toBe("first");
+    expect(ompBtwTopics(transcript).topics[0]?.answer).toBe("first");
     save(history, { ...topic("r1", 1), answer: "again" });
     utimesSync(join(history, "entry-r1.json"), when, when);
-    expect(ompBtwTopics(transcript)[0]?.answer).toBe("again");
+    expect(ompBtwTopics(transcript).topics[0]?.answer).toBe("again");
   });
 
   it("answers none for a session that never used /btw", () => {
     const transcript = join(root, "quiet.jsonl");
     writeFileSync(transcript, "");
-    expect(ompBtwTopics(transcript)).toEqual([]);
+    expect(ompBtwTopics(transcript).topics).toEqual([]);
+  });
+});
+
+describe("GET /api/pane/btw hard caps", () => {
+  let root: string;
+  beforeAll(() => { root = mkdtempSync(join(tmpdir(), "ovis-btw-caps-")); });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const history = (name: string): { transcript: string; folder: string } => {
+    const transcript = join(root, `${name}.jsonl`);
+    writeFileSync(transcript, "");
+    const folder = join(root, name, "btw-history");
+    mkdirSync(folder, { recursive: true });
+    return { transcript, folder };
+  };
+  const answer = async (transcript: string): Promise<{ bytes: number; body: { topics: { id: string; follow_ups: unknown[] }[]; more: boolean } }> => {
+    const url = new URL("http://localhost/api/pane/btw?pane_id=w1:p1");
+    const text = await (await handleBtwRequest(new Request(url), url, url.pathname, { transcript: async () => transcript }))!.text();
+    return { bytes: Buffer.byteLength(text), body: JSON.parse(text) };
+  };
+
+  it("answers at most a megabyte, saying there is more, for a topic with 300,000 empty follow-ups", async () => {
+    const { transcript, folder } = history("followups");
+    const empty = exchange("", "", 1);
+    writeFileSync(join(folder, "entry-x.json"), JSON.stringify({ ...topic("x", 1), followUps: Array.from({ length: 300_000 }, () => empty) }));
+    const { bytes, body } = await answer(transcript);
+    expect(bytes).toBeLessThanOrEqual(1024 * 1024);
+    expect(body.more).toBe(true);
+    expect(body.topics.map((found) => found.id)).toEqual(["x"]);
+  });
+
+  it("stops listing a folder of thousands of topic files, and says it stopped", async () => {
+    const { transcript, folder } = history("crowded");
+    for (let index = 0; index < 5000; index++) writeFileSync(join(folder, `entry-f${index}.json`), JSON.stringify(topic(`f${index}`, index)));
+    const { body } = await answer(transcript);
+    expect(body.more).toBe(true);
+    expect(body.topics.length).toBeLessThanOrEqual(100);
   });
 });
 
@@ -135,7 +171,7 @@ describe("GET /api/pane/btw", () => {
     const found = await ask("/api/pane/btw?pane_id=w1:p1", panes);
     expect(found?.status).toBe(200);
     expect(((await found?.json()) as { topics: { id: string }[] }).topics.map((entry) => entry.id)).toEqual(["t1"]);
-    expect(await (await ask("/api/pane/btw?pane_id=w1:p2", panes))?.json()).toEqual({ topics: [] });
+    expect(await (await ask("/api/pane/btw?pane_id=w1:p2", panes))?.json()).toEqual({ topics: [], more: false });
     expect((await ask("/api/pane/btw", panes))?.status).toBe(400);
     expect((await ask("/api/pane/btw?pane_id=w1:p1", panes, "POST"))?.status).toBe(400);
     expect(await ask("/api/pane/plan?pane_id=w1:p1", panes)).toBeNull();

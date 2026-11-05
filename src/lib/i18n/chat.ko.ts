@@ -155,6 +155,7 @@ export const CHAT_KO: Record<string, string> = {
   "{n} follow-ups": "후속 질문 {n}개",
   "answering": "답하는 중",
   "interrupted": "중단됨",
+  "Some side conversations are left out. The terminal shows them all.": "일부 곁가지 대화는 빠져 있습니다. 터미널에서 모두 볼 수 있습니다.",
   "Couldn't load the background tasks": "백그라운드 작업을 불러오지 못했습니다",
   "No background tasks to show yet": "아직 보여줄 백그라운드 작업이 없습니다",
   "Running": "실행 중",

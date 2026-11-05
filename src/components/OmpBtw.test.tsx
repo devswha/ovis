@@ -87,6 +87,13 @@ test("says the list is as it last read when a later read fails", async () => {
   expect(text()).toContain("Which port does the dev server use?");
 });
 
+test("says some side conversations are left out when the PC capped its answer", async () => {
+  jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ topics: [TOPIC], more: true }), globalThis.fetch));
+  await act(async () => { renderer = create(pane()); });
+  await act(async () => renderer!.root.findAllByType("button")[0]!.props.onClick());
+  expect(text()).toContain("Some side conversations are left out");
+});
+
 test("gives up a read that never answers at its deadline and asks again", async () => {
   // The HTTP boundary holds every request open until the client aborts it.
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(

@@ -155,6 +155,7 @@ export const CHAT_JA: Record<string, string> = {
   "{n} follow-ups": "追加の質問 {n} 件",
   "answering": "回答中",
   "interrupted": "中断",
+  "Some side conversations are left out. The terminal shows them all.": "一部のサイド会話は表示されていません。ターミナルではすべて表示されます。",
   "Couldn't load the background tasks": "バックグラウンドタスクを読み込めませんでした",
   "No background tasks to show yet": "表示できるバックグラウンドタスクはまだありません",
   "Running": "実行中",

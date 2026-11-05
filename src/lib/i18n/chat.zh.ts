@@ -155,6 +155,7 @@ export const CHAT_ZH: Record<string, string> = {
   "{n} follow-ups": "{n} 个追问",
   "answering": "回答中",
   "interrupted": "已中断",
+  "Some side conversations are left out. The terminal shows them all.": "部分旁支对话未显示。终端中可查看全部。",
   "Couldn't load the background tasks": "无法加载后台任务",
   "No background tasks to show yet": "暂时没有可显示的后台任务",
   "Running": "运行中",
