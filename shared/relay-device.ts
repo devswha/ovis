@@ -24,6 +24,8 @@ export interface RelayDevice {
   readonly name?: string;
   /** the account key a link was sent for, before the PC's answer came: tried once if the PC refuses this key (src/lib/account/join.ts) */
   readonly pending_key?: { readonly private_key: CryptoKey; readonly public_spki: string };
+  /** the account this PC confirmed this pairing is a member of (a link it applied, or its account status): what leaving and disconnecting count as reached */
+  readonly account?: string;
   /** when an introduction saved this PC: until its mailbox brings the add, the PC may not know this device yet */
   readonly introduced_at?: number;
 }

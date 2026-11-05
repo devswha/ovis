@@ -189,12 +189,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await showFront();
     try {
       const directory = await account.listPcs();
-      accountView = { ...signedIn, pcs: myPcs(directory, await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki }) };
+      accountView = { ...signedIn, pcs: myPcs(directory, await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account }) };
     } catch (error) {
       if (error instanceof SignedOutError) accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
       else {
         console.warn("Ovis: the account's PCs could not be read", error);
-        accountView = { ...signedIn, pcs: myPcs([], await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki }), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+        accountView = { ...signedIn, pcs: myPcs([], await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account }), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
       }
     }
     await showFront();
@@ -366,6 +366,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (linking || fresh) opened.renew();
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) return;
+      // the PC lists this row as a member: only now does it count as in the account here
+      if (!linking && device.account !== session.account && device.device_id !== null && !status.unlinked.includes(device.device_id)) {
+        const known = device;
+        device = await store.update(serverId, (current) => ({ ...(current ?? known), account: session.account }));
+      }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
       // the approver hands the introduction over once this device's row exists, which may be a moment after it

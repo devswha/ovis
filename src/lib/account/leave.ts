@@ -32,8 +32,10 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   const listed = new Set(pcs);
   const unconfirmed: string[] = [];
   for (const device of await options.relayStore.list()) {
-    if (device.public_spki !== key.public_spki) continue;
-    if (listed.has(device.server_id)) await options.relayStore.remove(device.server_id);
+    const accountKeyed = device.public_spki === key.public_spki || device.pending_key?.public_spki === key.public_spki;
+    if (!accountKeyed) continue;
+    // reached only where the PC confirmed this pairing is a member of this account, and the remove went to it
+    if (listed.has(device.server_id) && device.account === session.account) await options.relayStore.remove(device.server_id);
     else unconfirmed.push(device.server_id);
   }
   // the removes are queued: the sign-in ends here whatever the service answers to the sign-out
@@ -63,7 +65,8 @@ export async function removeFromAccount(options: {
     v: 1, kind: "remove", account: session.account, key: options.key,
     issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: own.public_spki,
   }, own.private_key);
-  const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki).map((device) => device.server_id));
+  // a PC applies the remove only where this device is a member: pairings that PC confirmed for this account
+  const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki && device.account === session.account).map((device) => device.server_id));
   const listed = (await options.service.listPcs()).map((pc) => pc.server_id);
   const reached = listed.filter((id) => linked.has(id));
   for (let start = 0; start < reached.length; start += 32) await options.service.postRecord(reached.slice(start, start + 32), remove);

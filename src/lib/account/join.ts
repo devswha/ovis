@@ -85,7 +85,7 @@ export async function linkThisDevice(options: { fetch: PcFetch; device: RelayDev
       throw new TypeError("This PC's pairing changed while it was being linked");
     }
     const { pending_key: _sent, ...rest } = current;
-    return { ...rest, private_key: key.private_key, public_spki: key.public_spki };
+    return { ...rest, private_key: key.private_key, public_spki: key.public_spki, account: options.account };
   });
 }
 

@@ -51,7 +51,7 @@ const ORDER: Record<MyPcState, number> = { paired: 0, "needs-update": 1, "needs-
  * PC is offline only once the directory has seen it and not lately: one that never pulled may just
  * not belong to the account yet.
  */
-export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayDevice[], options: { now: number; outdated?: ReadonlySet<string>; accountKey?: string }): MyPc[] {
+export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayDevice[], options: { now: number; outdated?: ReadonlySet<string>; accountKey?: string; account?: string }): MyPc[] {
   const listed = new Map(directory.map((pc) => [pc.server_id, pc]));
   const rows: MyPc[] = [];
   const stateOf = (serverId: string, isPaired: boolean, lastSeen: string | null): MyPcState => {
@@ -64,7 +64,7 @@ export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayD
     const entry = listed.get(device.server_id);
     listed.delete(device.server_id);
     const lastSeen = entry?.last_seen_at ?? null;
-    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, listed: entry !== undefined, paired: true, linked: entry !== undefined && device.public_spki === options.accountKey });
+    rows.push({ server_id: device.server_id, name: device.name ?? device.server_id.slice(0, 8), state: stateOf(device.server_id, true, lastSeen), last_seen_at: lastSeen, listed: entry !== undefined, paired: true, linked: entry !== undefined && device.public_spki === options.accountKey && device.account !== undefined && device.account === (options.account ?? device.account) });
   }
   for (const pc of listed.values()) {
     rows.push({ server_id: pc.server_id, name: pc.label, state: stateOf(pc.server_id, false, pc.last_seen_at), last_seen_at: pc.last_seen_at, listed: true, paired: false, linked: false, ...(joinRoute(pc) ? { join: joinRoute(pc) } : {}) });

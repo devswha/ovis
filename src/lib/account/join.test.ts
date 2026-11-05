@@ -308,3 +308,23 @@ it("introduces only the PCs the approver is in the account on, not a pairing it 
   expect(introduced.map((device) => device.server_id)).toEqual([y.identity.server_id]);
   expect(introduced[0]?.introduced_at).toBeGreaterThan(0);
 });
+
+it("does not count a PC as reached when this device holds the account key there but the PC never confirmed it a member", async () => {
+  const [x, y] = [pc(), pc()];
+  const phone = new MemoryDeviceStore();
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  // paired with the account key, but the link never went through: not a member there
+  await phone.update(y.identity.server_id, () => ({ server_id: y.identity.server_id, server_public_key: y.identity.public_key, relay: "wss://relay.example", device_id: "ab".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone" }));
+  const lost = await accountKey();
+  x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, lost.public_spki), key: lost.public_spki, label: "Lost phone", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
+  const service = new FakeAccountService();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  const account = new AccountService({ store: accountStore, fetch: service.fetch });
+  for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+  const { unconfirmed } = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  expect(unconfirmed).toEqual([y.identity.server_id]);
+  const left = await leaveAccount({ service: account, accountStore, relayStore: phone });
+  expect(left.unconfirmed).toEqual([y.identity.server_id]);
+});
