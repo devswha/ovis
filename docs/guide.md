@@ -861,10 +861,16 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
 - **Chat:** while a line the terminal wrapped is on screen, its colors cannot be matched to the
   screen's text, so a grey suggestion Claude Code or Hermes leaves in an empty input box then reads
   as typed text, and a send waits for you to confirm it.
-- **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
-  splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
-  those actions on such a PC. Search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees are not available either. Remote PCs keep running herdr's TUI server.
+- **Layout:** on a herdr-core no Herdr app arranges (the desktop app's own core, or one where the
+  app never ran), Ovis keeps the layout itself: renaming, reordering and moving workspaces and
+  tabs, and splitting, resizing, swapping, zooming and naming panes work as on herdr. Names and
+  places are terminal labels and the order and splits one document of Ovis's own
+  ([its format](herdr-core-layout.md)). Where the Herdr app arranges the core, the layout is the
+  app's window's: Ovis shows it and hides those actions. A Herdr app started later on a core
+  Ovis arranged takes in its terminals, grouped and named as they were, but not their split
+  ratios or order; from then on the app arranges them.
+- **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
+  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 
@@ -880,7 +886,7 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_TAILSCALE_OWNER` | this PC's Tailscale login | The Tailscale login that gets in through `tailscale serve` without pairing. Set it on a PC whose Tailscale node is tagged, which has no login of its own |
 | `OVIS_TAILSCALE_SERVE_ONLY` | unset (off) | `1` declares `tailscale serve` the only way anything reaches this port. Then the owner's own device gets in through serve without a code, on a tailnet one login owns with no tagged node. Enable it only when no public reverse proxy, tunnel or other forwarding server exposes this port: a visitor through one would otherwise get the owner's access. It also keeps the [Ovis relay](#through-the-ovis-relay) off |
 | `OVIS_TAILSCALE_HTTPS_PORT` | unset (first free of 443, 8443, 7317, 17317) | The HTTPS port the installer publishes the app on with `tailscale serve`, and the one **Settings → Phone & devices** suggests. When another service already uses it, the installer stops and says so instead of taking another port, since an app installed on a phone stays on the address it came from. An address that already serves the app is kept |
-| `OVIS_RELAY_URL` | `wss://relay.ovis.sh` | The [Ovis relay](#through-the-ovis-relay) this PC connects to while the relay is on: a `wss://` address with no path, such as [your own](#running-your-own-relay). Read when the server starts; a value that is not such an address keeps the server from starting |
+| `OVIS_RELAY_URL` | `wss://relay.ovis.sh` | The [Ovis relay](#through-the-ovis-relay) this PC connects to while the relay is on: a `wss://` address with no path, such as [your own](#running-your-own-relay). Unset, the PC uses `relay.ovis.sh` and, when a [regional relay](relay.md#regional-relays) answers much faster, that one too. Read when the server starts; a value that is not such an address keeps the server from starting |
 | `OVIS_RELAY_APP_URL` | `https://app.ovis.sh` | The address the relay's QR codes open on a phone: an `https://` address with no path. Set it when you [host the app yourself](#running-your-own-relay). A value that is not such an address keeps the server from starting |
 | `OVIS_STATE_DIR` | `~/.config/ovis` | Push keys, device subscriptions, PC registrations, update builds, the app's Portal and relay identities, and the Portal sign-in you chose |
 | `OVIS_PORTAL_OIDC_CLIENT_SECRET` | unset | The OIDC client secret for **Google or company login** in Portal's panel ([Who may open the address](#who-may-open-the-address)). Read at each start into Portal's environment only; set here, it cannot be changed from the app |
