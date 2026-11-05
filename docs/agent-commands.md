@@ -2,7 +2,8 @@
 
 How the chat lists an agent's `/` commands and skills, sends them, and says what became of them.
 It covers every agent the bridge knows (Claude Code, Codex, OpenCode, pi, omp, OmO, gjc, Hermes,
-Grok, Antigravity, Devin CLI, Command Code and GitHub Copilot CLI) and is written for people who change that code.
+Grok, Antigravity, Devin CLI, Command Code and GitHub Copilot CLI) and is written for people who
+change that code.
 For what a user sees, read the [user guide](guide.md#features); for skill status inside an
 answer, read [Skill activity in chat](chat-skill-activity.md).
 
