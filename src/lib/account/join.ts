@@ -46,8 +46,8 @@ export interface PcAccountStatus {
   readonly account: string | null;
   /** its relay rows that are not members */
   readonly unlinked: readonly string[];
-  /** the keys its account removed: every member's `remove`, not only this client's */
-  readonly removed: readonly string[];
+  /** the keys its account removed, every member's `remove`, and when this PC applied each */
+  readonly removed: readonly { key: string; removed_at: string }[];
 }
 
 export async function pcAccountStatus(fetch: PcFetch): Promise<PcAccountStatus> {
@@ -55,7 +55,9 @@ export async function pcAccountStatus(fetch: PcFetch): Promise<PcAccountStatus> 
   if (!response.ok) throw await refusal(response);
   const body = await response.json() as { account?: unknown; unlinked?: unknown; removed?: unknown };
   const strings = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-  return { account: typeof body.account === "string" ? body.account : null, unlinked: strings(body.unlinked), removed: strings(body.removed) };
+  const removed = Array.isArray(body.removed) ? body.removed.filter((entry): entry is { key: string; removed_at: string } => typeof entry === "object" && entry !== null
+    && typeof (entry as { key?: unknown }).key === "string" && typeof (entry as { removed_at?: unknown }).removed_at === "string").map(({ key, removed_at }) => ({ key, removed_at })) : [];
+  return { account: typeof body.account === "string" ? body.account : null, unlinked: strings(body.unlinked), removed };
 }
 
 /** Whether this device's row on the PC should be linked to `account` now. */
@@ -210,47 +212,40 @@ export async function admitToAccount(options: {
   // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again
   await options.store.update("adds", (current) => ({ ...current, [add.id]: { account: options.account, record: add, to: others } }));
   // a device this client checked itself: a PC it brings into the account later gets this add too
-  await rememberApproved(options.store, add);
+  await rememberDevice(options.store, add);
   await sendQueuedAdds({ service: options.service, store: options.store, account: options.account });
   return add;
 }
 
-/** Keeps `add` as a device this client approved itself; an approval again after a removal takes the removal back here. */
-export async function rememberApproved(store: AccountStore, add: AddRecord): Promise<void> {
-  await store.update("approved", (current) => ({ ...current, [add.key]: add }));
-  await store.update("removed", (current) => {
-    if (current?.[add.key] === undefined) return current;
-    const { [add.key]: _approvedAgain, ...rest } = current;
-    return Object.keys(rest).length === 0 ? undefined : rest;
-  });
+/**
+ * Keeps the latest record this client signed for a device of the account: an `add` for one it
+ * approved itself, a `remove` for one it or the account removed. One entry per key, written in one
+ * transaction, so an approval and a removal at once leave one of them, never neither.
+ */
+export async function rememberDevice(store: AccountStore, record: AddRecord | RemoveRecord): Promise<void> {
+  await store.update("devices", (current) => ({ ...current, [record.key]: record }));
 }
 
 /**
- * A PC of the account says it removed some of the devices this client approved (another member's
- * `remove`, perhaps): they leave the approved list, and this client signs a `remove` of its own for
- * each, so a PC it brings into the account later tombstones them too. A PC that names a key wrongly
- * only keeps that device out of the PCs this client enrolls.
+ * Keys a PC of the account says the account removed (`removed` in its status, any member's
+ * `remove`): this client signs a `remove` of its own for each, dated when that PC applied the
+ * removal (never later than now), so a PC it enrolls later tombstones them too, and a pairing made
+ * there after the removal is left be. Its own key is never taken. A PC that names a key wrongly can
+ * only keep that device out of the PCs this client enrolls.
  */
-export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly string[]; now?: () => number }): Promise<void> {
-  const approved = (await options.store.get("approved")) ?? {};
-  const gone = options.removed.filter((key) => approved[key]?.account === options.account);
-  for (const key of gone) {
+export async function forgetRemoved(options: { store: AccountStore; key: AccountKey; account: string; removed: readonly { key: string; removed_at: string }[]; now?: () => number }): Promise<void> {
+  const now = (options.now ?? Date.now)();
+  for (const { key, removed_at } of options.removed) {
+    if (key === options.key.public_spki) continue;
+    const known = (await options.store.get("devices"))?.[key];
+    if (known?.kind === "remove" && known.account === options.account) continue;
+    const at = Date.parse(removed_at);
     const remove: RemoveRecord = await signAccountRecord({
       v: 1, kind: "remove", account: options.account, key,
-      issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
+      issued_at: new Date(Number.isFinite(at) ? Math.min(at, now) : now).toISOString(), id: newRecordId(), signer: options.key.public_spki,
     }, options.key.private_key);
-    await rememberRemoved(options.store, remove);
+    await rememberDevice(options.store, remove);
   }
-}
-
-/** Keeps a `remove` this client signed: its key leaves the approved list, and a PC it enrolls tombstones it first. */
-export async function rememberRemoved(store: AccountStore, remove: RemoveRecord): Promise<void> {
-  await store.update("removed", (current) => ({ ...current, [remove.key]: remove }));
-  await store.update("approved", (current) => {
-    if (current?.[remove.key] === undefined) return current;
-    const { [remove.key]: _removed, ...rest } = current;
-    return Object.keys(rest).length === 0 ? undefined : rest;
-  });
 }
 
 /** Marks a PC this client is about to link while it had no account: enrollPc hands it the account's devices. */
@@ -272,10 +267,11 @@ const UNDECIDED = new Set(["account_unavailable"]);
 export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return true;
-  const ofAccount = <R extends { account: string; id: string }>(records: Readonly<Record<string, R>> | undefined) =>
-    Object.values(records ?? {}).filter((record) => record.account === options.account && !planned.done.includes(record.id));
-  const removes = ofAccount(await options.store.get("removed"));
-  const adds = ofAccount(await options.store.get("approved"));
+  const pending = async () => Object.values((await options.store.get("devices")) ?? {})
+    .filter((record) => record.account === options.account && !planned.done.includes(record.id));
+  const known = await pending();
+  const removes = known.filter((record) => record.kind === "remove");
+  const adds = known.filter((record) => record.kind === "add");
   const done: string[] = [];
   const send = async (path: string, records: readonly { id: string }[]): Promise<boolean> => {
     let all = true;
@@ -293,7 +289,9 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
     return all;
   };
   // the adds go only once every removal has its outcome there: a removed key is tombstoned first
-  const finished = await send("/api/account/records", removes) && await send("/api/account/enroll", adds);
+  const sent = await send("/api/account/records", removes) && await send("/api/account/enroll", adds);
+  // a removal or approval signed meanwhile (another tab) is not finished here: it goes on the next call
+  const finished = sent && (await pending()).every((record) => done.includes(record.id));
   await options.store.update("enrolls", (current) => {
     const entry = current?.[options.serverId];
     if (current === undefined || entry === undefined || entry.account !== options.account) return current;

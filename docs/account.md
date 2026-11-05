@@ -195,11 +195,12 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removed": ["<key>"], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removed": [{ "key": "<key>", "removed_at": "2026-11-05T01:00:00.000Z" }], "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
-`removed` lists the keys the account removed here (a `remove` record), not the ones revoked on the PC.
+`removed` lists the keys the account removed here (a `remove` record) and when this PC applied each,
+not the ones revoked on the PC.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -228,11 +229,11 @@ its link brings a PC that had no account into it, it sends that PC, over a sessi
 the account key, first the `remove`s it signed (through `records`, so the PC tombstones those keys),
 then the `add`s it signed for devices it approved itself, with their role (rule 6). It never takes
 a key from another PC's device list. It reads every record's outcome and sends again, on its next
-connection to that PC, each one the PC did not answer or answered `account_unavailable`. A key a PC
-of the account lists under `removed` (another member's removal) leaves this client's approved list
-when it next reads that PC's status, and the client signs its own `remove` for it, so a PC it enrolls
-after that tombstones it. A device another member approved is not in this client's list, so this
-enrollment does not add it.
+connection to that PC, each one the PC did not answer or answered `account_unavailable`, and any
+record it signed while the enrollment ran. A key a PC of the account lists under `removed` (any
+member's removal) makes the client sign its own `remove` for it, dated at that PC's `removed_at`, so
+a PC it enrolls after that tombstones it, and a pairing made there after the removal is left be. A
+device another member approved is not in this client's list, so this enrollment does not add it.
 
 ### Introductions
 

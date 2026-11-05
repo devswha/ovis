@@ -46,12 +46,11 @@ interface Records {
   /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
   adds: Readonly<Record<string, QueuedAdd>>;
   /**
-   * By key: the `add` this device signed for a device it approved itself (docs/account.md, rule 6),
-   * what it hands a PC it brings into the account (account/join.ts, enrollPc)
+   * By key: the latest record this device signed for a device of the account, an `add` for one it
+   * approved itself (docs/account.md, rule 6) or a `remove`: what it hands a PC it brings into the
+   * account (account/join.ts, enrollPc)
    */
-  approved: Readonly<Record<string, AddRecord>>;
-  /** by key: the `remove` this device signed for a device of the account, which such a PC gets first */
-  removed: Readonly<Record<string, RemoveRecord>>;
+  devices: Readonly<Record<string, AddRecord | RemoveRecord>>;
   /** by server_id: a PC this device brought into the account, and the records whose outcome it read there */
   enrolls: Readonly<Record<string, PlannedEnroll>>;
 }
