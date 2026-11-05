@@ -1584,6 +1584,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   note is dim, red for an expired sign-in or a failed request.
 
 ### PC load (`.machine-stats`)
+- Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
+  it is flipped it follows the roster: on while two or more PCs are connected, off for a lone PC,
+  whose load is not what tells PCs apart.
 - Under an expanded, connected PC's name and above its workspaces: one button holding three
   meters in a row, each a label, the percent in `tabular-nums` and a 3px bar on a `--border-strong`
   track (the plan meters' construction): **CPU**, **Memory** (without the file cache) and
@@ -3362,7 +3365,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
   **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
   Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
-  **Remote PCs** (Add PC, Update PC bridges automatically; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
+  **Remote PCs** (Add PC, Update PC bridges automatically, PC load in the sidebar; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
   Updates opens the dialog on About.
 - Every page is built from the same parts (`components/SettingsControls.tsx`). A group is an
   optional caption (`--fs-sm`, `--fw-semibold`, `--text-dim`, sentence case) over one card:

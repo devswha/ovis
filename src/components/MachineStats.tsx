@@ -3,6 +3,8 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import type { Machine } from "../../shared/machines.ts";
 import type { SystemDisk, SystemReport } from "../../shared/system.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
+import { pcLoadOn, useSettings } from "../lib/settings.ts";
+import { SettingsRow, Toggle } from "./SettingsControls.tsx";
 import { useSystemStats } from "../lib/system.ts";
 import { formatBytes, formatPercentValue, formatUptime, fullestDisk, SYSTEM_HIGH_PERCENT } from "../lib/systemReport.ts";
 import "./MachineStats.css";
@@ -80,4 +82,16 @@ export function MachineStats({ machine }: { machine: Machine }) {
     </button>
     {open && <div id={id}><Details report={report} /></div>}
   </div>;
+}
+
+/**
+ * Settings → Remote PCs' switch for the line above, on this device only. Until it is flipped it
+ * follows the roster: on while two or more PCs are connected, where telling them apart is the point.
+ */
+export function PcLoadSetting({ machines }: { machines: readonly Machine[] }) {
+  const t = useT();
+  const { settings, update } = useSettings();
+  return <SettingsRow label={t("PC load in the sidebar")} description={t("CPU, memory and the fullest disk under each open PC, on this device only. On by default when two or more PCs are connected.")}>
+    <Toggle label={t("PC load in the sidebar")} checked={pcLoadOn(settings, machines)} onChange={(pcLoad) => update({ pcLoad })} />
+  </SettingsRow>;
 }

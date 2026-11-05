@@ -138,4 +138,6 @@ export const MACHINES_JA: Record<string, string> = {
   "CPU {value}": "CPU {value}",
   "Memory {value}": "メモリ {value}",
   "Disk {value}": "ディスク {value}",
+  "PC load in the sidebar": "サイドバーに PC の負荷を表示",
+  "CPU, memory and the fullest disk under each open PC, on this device only. On by default when two or more PCs are connected.": "開いている各 PC の下に CPU、メモリ、最も使用率の高いディスクを表示します（このデバイスのみ）。2 台以上の PC が接続されているときは既定でオンです。",
 };

@@ -12,7 +12,7 @@ import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, saveSettings } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, saveSettings } from "./settings.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
 
@@ -445,6 +445,21 @@ it("keeps the composer's New tab button off until this device turns it on, and k
   expect(sanitizeSettings({ composerNewTabButton: true }).composerNewTabButton).toBe(true);
   expect(sanitizeSettings({ composerNewTabButton: "true" }).composerNewTabButton).toBe(false);
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
+});
+
+it("shows each PC's load while two or more PCs are connected, until this device chooses", () => {
+  const pc = (state: string) => ({ state });
+  expect(sanitizeSettings({}).pcLoad).toBeNull();
+  for (const pcLoad of ["true", 1, null]) expect(sanitizeSettings({ pcLoad }).pcLoad).toBeNull();
+  expect(sanitizeSettings({ pcLoad: false }).pcLoad).toBe(false);
+  // unchosen: a second PC that is not connected does not count
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(false);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("disconnected")])).toBe(false);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(true);
+  // a choice holds whatever the roster says
+  expect(pcLoadOn({ pcLoad: true }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: false }, [pc("connected"), pc("connected")])).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("pcLoad");
 });
 
 it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
