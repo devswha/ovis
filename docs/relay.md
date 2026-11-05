@@ -330,7 +330,7 @@ oversized frame ends the session before anything in it is parsed.
 | `0x0C` | `PAIR_CHALLENGE` | PC | `nonce`: the PC's 32 random bytes |
 | `0x0D` | `PAIR_REVEAL` | phone | `nonce`: the 32 bytes the commitment was made with |
 | `0x0E` | `PAIR_CONFIRM` | phone | `confirmed: true`: the person said both screens show the same digits |
-| `0x04` | `AUTH_OK` | PC | `session_id`, `device_id`, `role` (`drive` or `watch`), and with `relay-hints` `relays`: up to four `wss:` origins, the one new connections should use first |
+| `0x04` | `AUTH_OK` | PC | `session_id`, `device_id`, `role` (`drive` or `watch`), and with `relay-hints` `relays`: up to two `wss:` origins, the one new connections should use first |
 | `0x05` | `SESSION_ERROR` | either | a `code` from [Errors](#errors-and-close-codes) and a short `message` |
 | `0x06` | `GOAWAY` | either | `shutdown` or `id_exhausted`, the last stream ID taken, how long to drain (up to 5 seconds) |
 | `0x07`, `0x08` | `PING`, `PONG` | either | a 64-bit number, echoed |
@@ -606,8 +606,8 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   link is online (the global one otherwise), and the relay status is the global link's. Each link
   has its own session limits.
 - **It tells phones paired before.** A phone that offers `relay-hints` is told in `AUTH_OK` the
-  relay new offers name, then `relay.ovis.sh`, and saves the first for that PC; it takes effect on
-  its next connection. This comes inside the encrypted channel from the PC the phone authenticated,
+  relay new offers name, then `relay.ovis.sh`, and saves the first for that PC; the app uses it from
+  the next time it opens that PC. This comes inside the encrypted channel from the PC the phone authenticated,
   so the relay cannot change it, and a phone only ever moves between Ovis's own relays: one saved
   with any other relay, and a named relay that is not Ovis's, are left as they are (`hintedRelay`
   in [`shared/relay-regions.ts`](../shared/relay-regions.ts)). An older phone or PC offers or takes

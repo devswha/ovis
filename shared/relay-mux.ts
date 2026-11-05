@@ -342,7 +342,7 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { confirmed: true } };
     case FrameType.AUTH_OK:
       return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
-        ...(v.relays === undefined ? {} : { relays: list(v.relays, 4, relayOrigin) }) } };
+        ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
     case FrameType.GOAWAY:

@@ -151,6 +151,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     const limits = { ...LIMITS_V1 };
     let welcome: Uint8Array | undefined;
     let server: RelayServerInfo = { version: "", relayProtocol: RELAY_PROTOCOL };
+    let hinted = false;
     let receipt: Uint8Array | undefined;
     let incoming = Promise.resolve();
     const stop = (error: Error): void => {
@@ -208,6 +209,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol };
         if (frame.payload.features.some((feature) => feature !== RELAY_HINTS && (!comparing || feature !== PAIR_SAS_FEATURE))) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
+        hinted = frame.payload.features.includes(RELAY_HINTS);
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
@@ -263,7 +265,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           throw new MuxProtocolError("auth_changed", "Stored relay identity changed during authentication");
         }
         // inside the Noise channel the PC authenticated: the relay cannot have written these
-        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays) };
+        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, hinted ? frame.payload.relays : undefined) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.

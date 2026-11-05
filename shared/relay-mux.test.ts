@@ -354,9 +354,15 @@ describe("relay hints", () => {
     expect(decodeFrame(encodeFrame(authOk())).payload).not.toHaveProperty("relays");
   });
 
+  it("fits two of the longest relay origins in one AUTH_OK", () => {
+    const longest = (letter: string) => `wss://${letter.repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(49)}.example`;
+    expect(longest("a").length).toBeLessThanOrEqual(256);
+    expect(() => encodeFrame(authOk([longest("a"), longest("e")]))).not.toThrow();
+  });
+
   it("takes only a few wss origins", () => {
     for (const relays of [["https://relay.ovis.sh"], ["wss://relay.ovis.sh/path"], ["wss://user@relay.ovis.sh"], "wss://relay.ovis.sh",
-      ["wss://a.example", "wss://b.example", "wss://c.example", "wss://d.example", "wss://e.example"]]) {
+      ["wss://a.example", "wss://b.example", "wss://c.example"]]) {
       expect(() => encodeFrame(authOk(relays))).toThrow(MuxProtocolError);
     }
   });

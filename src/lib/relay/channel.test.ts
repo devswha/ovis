@@ -51,7 +51,7 @@ class FakeSocket implements RelaySocket {
 }
 
 async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" | "auth-ok" | "features" | "assigned" | "receipt" | "silence" | "protocol", onClose?: (error: Error) => void,
-  pc: { relay?: string; hints?: readonly string[] } = {}) {
+  pc: { relay?: string; hints?: readonly string[]; unselected?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-channel-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const registry = new DeviceStore(dir);
@@ -138,7 +138,7 @@ async function fixture(pairing: boolean, attack?: "welcome" | "nonce" | "ping" |
           payload: { device_id: "ab".repeat(8), session_id: "cd".repeat(16), role: "drive" } }).slice().buffer);
         return;
       }
-      const welcome = { protocol: "ovis-mux" as const, version: 1 as const, features: attack === "features" ? ["unoffered"] : hinting ? ["relay-hints"] : [],
+      const welcome = { protocol: "ovis-mux" as const, version: 1 as const, features: attack === "features" ? ["unoffered"] : hinting && !pc.unselected ? ["relay-hints"] : [],
         limits: { ...LIMITS_V1, max_streams: 2 }, nonce: attack === "nonce" ? base64url(nonce.slice(1)) : base64url(nonce),
         server_version: "test", relay_protocol: attack === "protocol" ? 2 : 1, min_supported_client: "0.0.0" };
       trace.push("server:WELCOME");
@@ -414,6 +414,14 @@ it("keeps a self-hosted relay whatever relays the PC names", async () => {
   f.allowAuth.resolve();
   const channel = await f.opening;
   expect((await f.store.get(f.offer.server_id))?.relay).toBe("wss://relay.example");
+  channel.close();
+});
+
+it("takes no relays from a PC that did not select relay hints", async () => {
+  const f = await fixture(false, undefined, undefined, { relay: GLOBAL_RELAY, hints: [REGIONAL, GLOBAL_RELAY], unselected: true });
+  f.allowAuth.resolve();
+  const channel = await f.opening;
+  expect((await f.store.get(f.offer.server_id))?.relay).toBe(GLOBAL_RELAY);
   channel.close();
 });
 
