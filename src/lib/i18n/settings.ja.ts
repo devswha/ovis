@@ -266,8 +266,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "localhost の開発サーバーなど、この PC が配信するページだけがペインの横に開きます。Shift キーを押しながらクリックすると、もう一方で開きます。",
   "Pages this PC serves, such as Tailscale reports, can open in the app. Shift-click opens the other way.": "Tailscale レポートなど、この PC が配信するページはアプリ内で開けます。Shift キーを押しながらクリックすると、もう一方で開きます。",
   "Beside the pane": "ペインの横",
-  "Files beside the pane": "ペインの横にファイル一覧",
-  "On a wide window, Browse files opens as a panel on the right of the pane instead of a popup. A file opened from it shows in its place, and closing the file brings the list back.": "広いウィンドウでは、ファイルの参照がポップアップではなくペインの右側のパネルで開きます。一覧から開いたファイルはその場所に表示され、閉じると一覧に戻ります。",
   "In a new tab": "新しいタブ",
   "Reuse tab for external links": "外部リンク用のタブを再利用",
   "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "外部リンクを開くたびに新しいタブを作らず、1 つのブラウザータブを再利用します。そのタブのサイトはこの Ovis タブを参照して別のページへ移動させられるため、既定ではオフです。",
