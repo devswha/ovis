@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping } from "../herdr/client.ts";
+import { HerdrError, herdrRpc, paneGet, paneRead, paneSendKeys, paneSendText, sessionSnapshot, subscribeEvents, type EventFrame, paneClose, paneMoveToNewTab, tabClose, tabCreate, tabRename, workspaceClose, workspaceCreate, workspaceRename, agentManifests, agentStart, ping, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "../herdr/client.ts";
 import { claudeInputDraft, viewportShowsLive } from "../claude-input.ts";
 import { paintedScreen, type SeenObserver, startHerdrCoreAdapter } from "./adapter.ts";
 import { SeenMarker } from "./seen-label.ts";
@@ -162,15 +162,15 @@ describe("herdr-core adapter", () => {
 
   it("says it is herdr-core, so the browser offers only what herdr-core can do", async () => {
     const { socket } = await setup([terminal("t1")]);
-    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false, arrange: false } });
+    expect(await ping(socket)).toEqual({ version: "0.1.14", protocol: 22, terminal_attach: true, runtime: "herdr-core", layout: { rename: false, split: false, move: false, arrange: false, worktrees: false } });
   });
 
   it("offers Ovis's own layout calls only on a core whose Herdr app document was never written", async () => {
     const { socket } = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }) });
-    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    expect((await ping(socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false, worktrees: true });
     // splits, zoom and order need a core that writes documents, as its hello says
     const writes = await setup([terminal("t1")], { "doc.get": () => ({ value: null, version: 0 }), "doc.set": () => ({ version: 1 }) });
-    expect((await ping(writes.socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true });
+    expect((await ping(writes.socket)).layout).toEqual({ rename: true, split: true, move: true, arrange: true, worktrees: true });
   });
 
   it("answers herdr's session snapshot with the app's spaces over hc's terminals", async () => {
@@ -602,6 +602,80 @@ describe("herdr-core adapter, new and closed terminals", () => {
   /** a core no Herdr app arranges: its layout document was never written */
   const NO_DOC = { "doc.get": () => ({ value: null, version: 0 }) };
 
+  /** a repository with one commit on `main`, in a folder of the test's own, and git run in it */
+  function repository() {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ovis-hc-worktree-")));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const repo = join(dir, "app");
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    expect(git("init", "-q", "-b", "main", repo).exitCode).toBe(0);
+    writeFileSync(join(repo, "README.md"), "worktree fixture\n");
+    expect(git("-C", repo, "add", "README.md").exitCode).toBe(0);
+    expect(git("-C", repo, "commit", "-q", "-m", "fixture").exitCode).toBe(0);
+    return { dir, repo, git };
+  }
+  /** a core Ovis lays out whose terminals keep the labels it writes */
+  async function labeling(start: HcTerminal[]) {
+    const ready = await living(start, {
+      ...NO_DOC,
+      "terminal.label": (params) => {
+        const found = start.find((entry) => entry.address === params["terminal"])!;
+        found.labels = { ...found.labels, ...(params["labels"] as Record<string, string>) };
+        return found;
+      },
+    });
+    return ready;
+  }
+
+  it("makes, lists, opens and removes a worktree with git on a core Ovis lays out, grouped under the repository's workspace", async () => {
+    const { dir, repo } = repository();
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    expect((await ping(socket)).layout?.worktrees).toBeTrue();
+
+    const listed = await worktreeList("S", socket);
+    expect(listed.source).toMatchObject({ repo_root: repo, repo_name: "app", source_checkout_path: repo, source_workspace_id: "S" });
+    expect(listed.worktrees).toEqual([expect.objectContaining({ path: repo, branch: "main", is_linked_worktree: false, open_workspace_id: "S" })]);
+
+    const checkout = join(dir, "checkouts", "feature-x");
+    const created = await worktreeCreate({ workspaceId: "S", branch: "feature/x", path: checkout }, socket);
+    expect(existsSync(join(checkout, "README.md"))).toBeTrue();
+    expect(created).toMatchObject({ type: "worktree_created", workspace: { label: "feature-x" }, worktree: { path: checkout, branch: "feature/x", is_linked_worktree: true, open_workspace_id: created.workspace.workspace_id } });
+    const facts = (await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.is_linked_worktree, workspace.worktree?.repo_root]);
+    expect(facts).toEqual([["S", false, repo], [created.workspace.workspace_id, true, repo]]);
+
+    const again = await worktreeOpen({ workspaceId: "S", path: checkout }, socket);
+    expect(again).toMatchObject({ type: "worktree_opened", already_open: true, workspace: { workspace_id: created.workspace.workspace_id } });
+    // as herdr: the repository's workspace closes over its worktrees only when the group is meant
+    await expect(workspaceClose("S", socket)).rejects.toMatchObject({ code: "workspace_group_close_required" });
+
+    writeFileSync(join(checkout, "unsaved.txt"), "dirty\n");
+    await expect(worktreeRemove(created.workspace.workspace_id, false, socket)).rejects.toMatchObject({ code: "dirty_worktree_requires_force" });
+    expect(existsSync(checkout)).toBeTrue();
+    expect(await worktreeRemove(created.workspace.workspace_id, true, socket)).toMatchObject({ type: "worktree_removed", path: checkout, forced: true });
+    expect(existsSync(checkout)).toBeFalse();
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.workspace_id)).toEqual(["S"]);
+  });
+
+  it("refuses a worktree from a linked checkout and a folder outside git, as herdr does", async () => {
+    const { dir, repo, git } = repository();
+    const linked = join(dir, "linked");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "linked", linked).exitCode).toBe(0);
+    const { socket, runs } = await labeling([
+      terminal("t1", { cwd: linked, labels: { "herdr.space": "L", "herdr.tab": "T" } }),
+      terminal("t2", { cwd: dir, labels: { "herdr.space": "P", "herdr.tab": "U" } }),
+    ]);
+    await expect(worktreeCreate({ workspaceId: "L", branch: "other", path: join(dir, "other") }, socket)).rejects.toMatchObject({ code: "linked_worktree_source" });
+    expect((await worktreeList("L", socket)).source).toMatchObject({ source_checkout_path: linked, source_workspace_id: null });
+    await expect(worktreeList("P", socket)).rejects.toMatchObject({ code: "not_git_worktree" });
+    expect(existsSync(join(dir, "other"))).toBeFalse();
+    // a repository with no commit yet: git's refusal, which the route turns into repository_without_commits
+    expect(git("init", "-q", "-b", "main", join(dir, "empty")).exitCode).toBe(0);
+    const empty = await labeling([terminal("t1", { cwd: join(dir, "empty"), labels: { "herdr.space": "E", "herdr.tab": "T" } })]);
+    await expect(worktreeCreate({ workspaceId: "E", branch: "first", path: join(dir, "first") }, empty.socket)).rejects.toMatchObject({ code: "worktree_create_failed", message: expect.stringMatching(/invalid reference: HEAD\b/u) });
+    expect(existsSync(join(dir, "first"))).toBeFalse();
+    expect([...runs, ...empty.runs]).toEqual([]);
+  });
+
   it("keeps a renamed workspace's name on a new tab, so it stays when the tab it was given in closes", async () => {
     const { socket, runs } = await living([terminal("t1", { labels: { "herdr.space": "S", "herdr.tab": "T", "ovis.workspace": "Named" } })], NO_DOC);
     await tabCreate({ workspaceId: "S" }, socket);
@@ -1004,7 +1078,7 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     const foreign = documents();
     foreign.docs.set("ovis-layout", { value: { schema: 2 }, version: 3 });
     const refused = await core([labeled("t1")], foreign);
-    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false });
+    expect((await ping(refused.socket)).layout).toEqual({ rename: true, split: false, move: true, arrange: false, worktrees: true });
     await expect(herdrRpc("pane.split", { target_pane_id: "t1", direction: "down" }, refused.socket)).rejects.toMatchObject({ code: "unsupported" });
     expect(refused.terminals.map((held) => held.address)).toEqual(["t1"]);
     // two writers came first: the shell runs, and the answer says where it went
