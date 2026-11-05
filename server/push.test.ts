@@ -1583,6 +1583,9 @@ describe("answer buttons on a question's alert (#2916)", () => {
       prompt({ multi_select: true }),
       prompt({ custom_option_index: 1 }),
       prompt({ kind: "plan" }),
+      // what it allows does not fit the alert whole: the part cut off could be the one that matters
+      prompt({ body: `npm run build && ${"x".repeat(300)}; rm -rf production` }),
+      prompt({ body: "one\ntwo\nthree\nfour\nrm -rf production" }),
       prompt({ options: [{ label: "Yes", description: "and remember it for this folder" }, { label: "No", description: null }] }),
       prompt({ kind: "menu" }),
       prompt({ steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: false, current: false }] }),

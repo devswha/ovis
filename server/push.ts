@@ -90,7 +90,7 @@ const PUSH_TIMEOUT_MS = 10_000;
 const PROMPT_LOOKUP_MS = 3_000;
 /** The longest option label an alert's button carries: a longer one is cut by the platform, so its alert opens the pane. */
 const ACTION_LABEL_MAX = 24;
-/** How much of the prompt an alert with buttons shows: the lines of its body, and its length in all. */
+/** The most of a prompt an alert with buttons shows whole: the lines of its body, and its length in all. A longer one gets no buttons. */
 const PROMPT_SUMMARY_LINES = 4;
 const PROMPT_SUMMARY_MAX = 300;
 const DEFAULT_SUBJECT = "https://github.com/devswha/ovis";
@@ -333,12 +333,17 @@ export function promptActions(prompt: InteractivePrompt | null): PushAction[] | 
   return prompt.options.map((option, index) => ({ option_index: index, label: option.label.trim() }));
 }
 
-/** What an alert with buttons says: the prompt's title, its question and the first lines of what it shows (the command, the file). */
-export function promptSummary(prompt: InteractivePrompt): string {
-  const lines = [prompt.title, prompt.question, ...(prompt.body ?? "").split("\n").slice(0, PROMPT_SUMMARY_LINES)]
+/**
+ * What an alert with buttons says: the prompt's title, its question and what it shows (the command, the file).
+ * Null when that does not fit an alert whole: a button must not approve what the alert cut off.
+ */
+export function promptSummary(prompt: InteractivePrompt): string | null {
+  const body = (prompt.body ?? "").split("\n");
+  if (body.length > PROMPT_SUMMARY_LINES) return null;
+  const lines = [prompt.title, prompt.question, ...body]
     .map((line) => line.trim()).filter((line, index, all) => line !== "" && all.indexOf(line) === index);
   const text = lines.join("\n");
-  return text.length > PROMPT_SUMMARY_MAX ? `${text.slice(0, PROMPT_SUMMARY_MAX - 1)}…` : text;
+  return text.length > PROMPT_SUMMARY_MAX ? null : text;
 }
 
 export function endedMessage(paneId: string, title: string): PushPayload {
@@ -734,7 +739,8 @@ export function createPushService(options: PushServiceOptions): PushService {
         new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null), { once: true })),
       ]);
       const actions = promptActions(prompt);
-      return prompt && actions ? { promptId: prompt.id, body: promptSummary(prompt), actions } : null;
+      const body = prompt && actions ? promptSummary(prompt) : null;
+      return prompt && actions && body !== null ? { promptId: prompt.id, body, actions } : null;
     } catch {
       // herdr busy or the pane gone: the alert opens the pane, as it always did
       return null;
@@ -915,6 +921,8 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (!onThisPc(key) || present.has(key) || newerKeys.has(key)) continue;
         // closed while events were lost: no alert may still speak for it
         callOff(key);
+        // gone: a question still reading its prompt finds no count, which is no longer the one it saw
+        changes.delete(key);
         turnStart.delete(key);
         lastStatus.delete(key);
       }
@@ -1018,6 +1026,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     async onEnded(paneId, machineId = "local") {
       const key = paneStorageId(machineId, paneId);
       callOff(key);
+      changes.delete(key);
       turnStart.delete(key);
       if (muted(machineId, paneId)) return;
       // an ended terminal is a finish of its own: a device that wants none hears none

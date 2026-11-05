@@ -530,10 +530,11 @@ Each pane keeps one alert: a new one replaces its last. iOS lets an alert be rem
 
 An alert for an approval or a question with two short options (**Allow** / **Deny**, **Yes** /
 **No**) carries them as buttons on desktop browsers and Android, under the question and what it is
-about (the command or the file): a tap answers it without opening the app, and the card closes everywhere. If the question changed or was answered on another device
-meanwhile, nothing is sent and a new alert says so; tap it to open the pane. Questions with more or
-longer options, typed answers and forms of several questions open the pane, as do alerts on iOS, in
-the relay app, and on a device paired to watch only.
+about (the command or the file): a tap answers it without opening the app, and the card closes
+everywhere. If the question changed or was answered on another device meanwhile, nothing is sent
+and a new alert says so; tap it to open the pane. Questions with more or longer options, a command
+too long to show whole, typed answers and forms of several questions open the pane, as do alerts
+on iOS, in the relay app, and on a device paired to watch only.
 
 ### Using the app
 
