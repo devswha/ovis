@@ -20,7 +20,7 @@ import { loadSettings, useSettings } from "../lib/settings.ts";
 import { assignAgentGroup, folderAgentGroup, rememberFolderAgentGroup } from "../lib/namedAgentGroups.ts";
 import { sidebarPinKey } from "../lib/sidebarPins.ts";
 import { learnTabLabel } from "../lib/tabLabels.ts";
-import { launchCapabilities, modelSuggestions } from "../lib/agentLaunchMode.ts";
+import { launchCapabilities, modelSuggestions, recordedChoices, type ChatLaunch } from "../lib/agentLaunchMode.ts";
 import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
 import { createRequest, dialogLaunch, firstMessageOutcome, startNewSession } from "../lib/newSession.ts";
 import { useMachineSessions } from "../lib/machineSessionContext.tsx";
@@ -38,6 +38,8 @@ export interface NewTabTarget {
   workspaceLabel: string;
   cwd: string | null;
   number: number;
+  /** opened from a chat's composer: the agent, model and effort the dialog starts on in place of the last ones picked */
+  chat?: ChatLaunch | null;
 }
 
 export interface NewSessionDialogProps {
@@ -157,15 +159,21 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   defaultCwdRef.current = defaultCwd;
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
+  const chatRef = useRef(tab?.chat ?? null);
+  chatRef.current = tab?.chat ?? null;
 
   // The previous launch may have left disabled fields: reset them before the opening paint.
   useLayoutEffect(() => {
     if (!open) return;
     const filled = prefillRef.current;
+    const chat = chatRef.current;
+    const remembered = rememberedAgent();
+    const stored = filled?.agent ?? chat?.agent ?? remembered;
+    const carried = chat !== null && chat.agent === stored ? recordedChoices(stored, chat) : { model: "", effort: "" };
     setCwd(filled?.cwd ?? defaultCwdRef.current ?? "");
     setName(filled?.name ?? "");
-    setModel("");
-    setEffort("");
+    setModel(carried.model);
+    setEffort(carried.effort);
     setUltracode(false);
     setPrompt("");
     setGroupPicked(false);
@@ -179,8 +187,6 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     setAdding(false);
     setRefreshing(false);
     setRecentFolders(recentDirectories.read(machineId));
-    const remembered = rememberedAgent();
-    const stored = filled?.agent ?? remembered;
     setAgentKind(stored);
     let cancelled = false;
     const latest = agentReads.current();
