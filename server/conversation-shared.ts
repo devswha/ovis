@@ -24,9 +24,15 @@ export const COPILOT_UNAVAILABLE_REASONS = [
   "copilot_peer_process_replaced", "copilot_handoff_unproved", "copilot_peer_conflict",
   "copilot_foreground_unproved", "copilot_resume_unproved",
   "copilot_report_missing", "copilot_report_mismatch", "copilot_transcript_unreadable",
+  "copilot_api_unsupported_platform", "copilot_api_process_unproved", "copilot_api_endpoint_unproved",
+  "copilot_api_process_changed", "copilot_api_rpc_failed", "copilot_api_rpc_timeout",
+  "copilot_api_malformed_rpc", "copilot_api_rpc_rejected", "copilot_api_unsupported_protocol",
+  "copilot_api_foreground_changed", "copilot_api_no_foreground", "copilot_api_transcript_unproved",
 ] as const;
 /** Copilot evidence that the pane's conversation ended or moved on; any other rejection may be waited out. */
-const COPILOT_SETTLED = new Set<string>(["copilot_session_unregistered", "copilot_peer_conflict", "copilot_report_mismatch"]);
+const COPILOT_SETTLED = new Set<string>(["copilot_session_unregistered", "copilot_peer_conflict", "copilot_report_mismatch",
+  // the --ui-server API answered that no session, or another one, holds the foreground
+  "copilot_api_no_foreground", "copilot_api_foreground_changed"]);
 export const copilotRecoverable = (diagnostic: string | undefined): boolean =>
   diagnostic !== undefined && diagnostic.startsWith("copilot_") && !COPILOT_SETTLED.has(diagnostic);
 /** Fixed stages a diagnostic may name: Copilot's rejections, and an agent pane herdr gives no folder. */

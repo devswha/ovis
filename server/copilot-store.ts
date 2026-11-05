@@ -375,6 +375,54 @@ type ProcessSession = { sessionId: string; path: string } & (
   | { logged: false }
 );
 
+function copilotStoreLayout(environment: readonly string[] | null, argv: readonly string[]): { store: string; logs: string[] } | null {
+  if (environment === null) return null;
+  const values = (key: string) => environment.filter((item) => item.startsWith(`${key}=`)).map((item) => item.slice(key.length + 1));
+  const home = values("HOME");
+  const explicit = values("COPILOT_HOME");
+  if (home.length > 1 || explicit.length > 1) return null;
+  const config: string[] = [];
+  for (let i = 1; i < argv.length; i++) {
+    const option = argv[i]!;
+    if (option === "--") break;
+    if (option.startsWith("--config-dir=")) config.push(option.slice("--config-dir=".length));
+    else if (option === "--config-dir") config.push(argv[++i] ?? "");
+  }
+  if (config.length > 1) return null;
+  const chosen = config[0] ?? explicit[0] ?? (home[0] ? join(home[0], ".copilot") : "");
+  if (!isAbsolute(chosen)) return null;
+  try {
+    const canonicalHome = realpathSync(chosen);
+    if (!statSync(canonicalHome).isDirectory()) return null;
+    const store = join(canonicalHome, "session-state");
+    if (realpathSync(store) !== store) return null;
+    const logOptions: string[] = [];
+    for (let i = 1; i < argv.length; i++) {
+      if (argv[i] === "--") break;
+      if (argv[i] === "--log-dir") logOptions.push(argv[++i] ?? "");
+      else if (argv[i]?.startsWith("--log-dir=")) logOptions.push(argv[i]!.slice("--log-dir=".length));
+    }
+    if (logOptions.length > 1 || (logOptions.length && !isAbsolute(logOptions[0]!))) return null;
+    const logs = logOptions.length ? logOptions : [join(canonicalHome, "logs"), ...(home[0] ? [join(home[0], ".copilot", "logs")] : [])];
+    return { store, logs };
+  } catch { return null; }
+}
+
+/** The API names the session; its file must still belong to this process's canonical store. */
+export function copilotApiTranscript(sessionId: string, environment: readonly string[] | null, argv: readonly string[]): string | null {
+  if (!SESSION_ID.test(sessionId)) return null;
+  const layout = copilotStoreLayout(environment, argv);
+  if (layout === null) return null;
+  try {
+    const directory = join(layout.store, sessionId);
+    if (realpathSync(directory) !== directory) return null;
+    const path = join(directory, "events.jsonl");
+    const fd = openCopilotFile(path);
+    closeSync(fd);
+    return path;
+  } catch { return null; }
+}
+
 /** Resolve once per validation pass; never reuse this evidence across a transcript read. */
 export function copilotProcessSession(environment: readonly string[] | null, argv: readonly string[], pid: number, mode: "current" | "unregistered" = "current"): ProcessSession | null {
   return readCopilotProcessSession(environment, argv, pid, mode).session;
@@ -386,36 +434,11 @@ type ProcessResolution = { session: ProcessSession; diagnostic?: never } | { ses
 export function readCopilotProcessSession(environment: readonly string[] | null, argv: readonly string[], pid: number, mode: "current" | "unregistered" = "current"): ProcessResolution {
   const fail = (diagnostic: StoreDiagnostic): ProcessResolution => ({ session: null, diagnostic });
   if (!Number.isSafeInteger(pid) || pid < 1) return fail("copilot_process_unproved");
-  if (environment === null) return fail("copilot_store_unproved");
-  const values = (key: string) => environment.filter((item) => item.startsWith(`${key}=`)).map((item) => item.slice(key.length + 1));
-  const home = values("HOME");
-  const explicit = values("COPILOT_HOME");
-  if (home.length > 1 || explicit.length > 1) return fail("copilot_store_unproved");
-  const config: string[] = [];
-  for (let i = 1; i < argv.length; i++) {
-    const option = argv[i]!;
-    if (option === "--") break;
-    if (option.startsWith("--config-dir=")) config.push(option.slice("--config-dir=".length));
-    else if (option === "--config-dir") config.push(argv[++i] ?? "");
-  }
-  if (config.length > 1) return fail("copilot_store_unproved");
-  const chosen = config[0] ?? explicit[0] ?? (home[0] ? join(home[0], ".copilot") : "");
-  if (!isAbsolute(chosen)) return fail("copilot_store_unproved");
-  let stage: StoreDiagnostic = "copilot_store_unproved";
+  const layout = copilotStoreLayout(environment, argv);
+  if (layout === null) return fail("copilot_store_unproved");
+  const { store, logs } = layout;
+  let stage: StoreDiagnostic = "copilot_log_unreadable";
   try {
-    const canonicalHome = realpathSync(chosen);
-    if (!statSync(canonicalHome).isDirectory()) return fail("copilot_store_unproved");
-    const store = join(canonicalHome, "session-state");
-    if (realpathSync(store) !== store) return fail("copilot_store_unproved");
-    const logOptions: string[] = [];
-    for (let i = 1; i < argv.length; i++) {
-      if (argv[i] === "--") break;
-      if (argv[i] === "--log-dir") logOptions.push(argv[++i] ?? "");
-      else if (argv[i]?.startsWith("--log-dir=")) logOptions.push(argv[i]!.slice("--log-dir=".length));
-    }
-    if (logOptions.length > 1 || (logOptions.length && !isAbsolute(logOptions[0]!))) return fail("copilot_store_unproved");
-    const logs = logOptions.length ? logOptions : [join(canonicalHome, "logs"), ...(home[0] ? [join(home[0], ".copilot", "logs")] : [])];
-    stage = "copilot_log_unreadable";
     const foreground = loggedForeground(pid, logs);
     if (foreground.kind === "unavailable") return fail(foreground.diagnostic);
     stage = "copilot_session_directory_unproved";

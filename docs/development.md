@@ -770,17 +770,20 @@ The **Desktop app** job (`.github/workflows/desktop.yml`) builds the desktop app
 without the version, so `releases/latest/download/<name>` always gives the newest:
 `Ovis-linux-x64.deb`, `Ovis-linux-arm64.deb` (the download for Ubuntu and Debian),
 `Ovis-linux-x64.AppImage`, `Ovis-linux-arm64.AppImage`, `Ovis-mac-arm64.dmg`, `Ovis-mac-x64.dmg`, and
-`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), with their `.blockmap` files.
+`Ovis-mac-arm64.zip`, `Ovis-mac-x64.zip` (what a Mac app updates from), and `Ovis-win-x64.exe` (a
+per-user NSIS installer; signed only once the repository variable `DESKTOP_WIN_SIGN` is `true`, with
+the `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` secrets), with their `.blockmap` files.
 The AppImage carries the static AppImage runtime (electron-builder's `toolsets.appimage`), so it
 needs no libfuse2, only the fuse3 a desktop has; without FUSE at all it runs with
 `APPIMAGE_EXTRACT_AND_RUN=1`. Its version is the tag's: the build
 stops unless `package.json` says the same. It attaches them with the update feed: `latest-linux.yml`,
-`latest-linux-arm64.yml` and one `latest-mac.yml` for both Macs (the two Mac builds' feeds merged by
-`bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
+`latest-linux-arm64.yml`, `latest.yml` for Windows and one `latest-mac.yml` for both Macs (the two Mac
+builds' feeds merged by `bun app/electron/scripts/build.ts merge-feed`). The app is built to update from
 `https://github.com/devswha/ovis/releases/latest/download` (electron-updater's generic provider), so
 an installed app sees a version once it is GitHub's latest, the same moment `ovis.sh/Ovis.dmg` and
-`ovis.sh/Ovis.exe` move. Only the AppImage and the Mac app update themselves; a deb is updated by
-installing the new one.
+`ovis.sh/Ovis.exe` move (that `Ovis.exe` is still the Windows setup app, `windows-app.yml`). The
+AppImage, the Mac app and the Windows app update themselves; a deb is updated by installing the new
+one.
 The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
 variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
 `MAC_*` secrets as Ovis for Mac ([app/electron](../app/electron/README.md)'s signing, with
@@ -1103,13 +1106,24 @@ queued and running jobs of every workflow that target those labels. When that co
 pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
-JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline. `pages.yml`
-and `release.yml` stay on `ubuntu-24.04` unless the variable holds labels. The variable routes:
+JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
+`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). `release.yml`
+stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
-- in `pages.yml`: the site build and the deploy after successful same-repository main push CI,
-  or on a manual dispatch with reusable CI validation;
 - in `release.yml`: the preflight and publish jobs.
+
+Light jobs, which wait longest in GitHub's hosted queue for the few seconds they run, take the
+self-hosted runners for every same-repository run: Detect changes, the herdr-core live contract and
+the Integration and browser summary in `ci.yml`, `pr-title.yml`, `remote-bundles.yml`'s Windows
+bundle, and `pages.yml`'s site build and deploy (after successful same-repository main push CI, or
+on a manual dispatch with reusable CI validation). Their `runs-on` sends a fork pull request to
+`ubuntu-24.04` before it reads any variable; a push to main then takes `CI_MAIN_SELF_HOSTED_LABELS`
+when it is set (on a push or a run started from main), so main's Detect changes never waits behind pull requests; otherwise the job takes the repository variable `CI_LIGHT_LABELS`,
+else `CI_SELF_HOSTED_LABELS`, else `["self-hosted","self-hosted-ovis"]`; `"ubuntu-24.04"` in
+either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input, and
+`scripts/ci-runner-route.sh` leaves them out of the busy count, since each holds a runner for seconds. `scripts/light-runner-workflow.test.ts` fails when a job a pull
+request runs can reach a self-hosted runner without that guard or the route below.
 
 A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over
 `CI_SELF_HOSTED_LABELS` when it is set: `["self-hosted","self-hosted-ovis-main"]` sends main's Linux
@@ -1118,9 +1132,9 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
 or main's jobs wait for one.
 
-Detect changes, the Integration and browser summary, the Windows and macOS jobs,
-`remote-bundles.yml`, `windows-install.yml`, `windows-terminal-qa.yml` and `pr-title.yml` always
-stay GitHub-hosted.
+The Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
+`remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
+`desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` always stay GitHub-hosted.
 
 In `ci.yml`, Detect changes picks the runner with `scripts/ci-runner-route.sh`. A fork pull request
 always gets `ubuntu-24.04`, whatever the variable says. Since that script runs from the pull
