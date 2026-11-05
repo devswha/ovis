@@ -4,6 +4,7 @@
  * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
  */
 import type { Machine } from "../../shared/machines.ts";
+import { isBackgroundRole, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { AgentGroupSort } from "./settings.ts";
@@ -84,8 +85,7 @@ export function agentRoster(machines: readonly Machine[], options: AgentRosterOp
  * without the token is one a person drives.
  */
 export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
-  const role = (pane.tokens ?? agent?.tokens)?.["role"];
-  return typeof role === "string" && role.trim().toLowerCase() === "background";
+  return isBackgroundRole((pane.tokens ?? agent?.tokens)?.[ROLE_TOKEN]);
 }
 
 /**

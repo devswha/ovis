@@ -1303,7 +1303,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that folds them, folded at first on every screen and kept per device; its count always shows.
   The split is herdr's fact, never a guess: an untagged pane stays where it is. A blocked one
   stands with the other rows until answered, so a question is never folded away; a pinned one
-  stays in the pinned card. Grouping by state groups only the other rows. It follows the Codex
+  stays in the pinned card. Grouping by state groups only the other rows, and a row that draws
+  every token (no herdr rows) leaves the tag out. It follows the Codex
   app, which keeps background and subagent work in a box at the bottom of its sidebar (#1369).
 - An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
   from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
