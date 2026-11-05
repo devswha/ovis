@@ -15,6 +15,6 @@ const MARK_HUES = ["keyword", "string", "number", "type", "variable", "meta"] as
 /** The color a kind without a mark of its own is drawn in: the same for the same kind, on every device. */
 export function fallbackHue(agent: string): (typeof MARK_HUES)[number] {
   let hash = 0;
-  for (const char of agent.trim().toLowerCase()) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;
+  for (const char of agent.normalize("NFKC").trim().toLowerCase()) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;
   return MARK_HUES[hash % MARK_HUES.length]!;
 }

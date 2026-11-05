@@ -4,4 +4,4 @@
   Name. Pinned agents stay on top.
 
 ### Changed
-- An agent without a logo of its own draws its initial in a disc tinted by its kind.
+- An agent without a logo of its own draws its initial in a color picked by its kind.

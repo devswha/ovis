@@ -1297,11 +1297,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
   group of the one of them that needs the reader most. The shared Agents order applies while
   grouping is off.
-- An agent kind with no mark of its own draws its initial in a disc tinted by its kind: one of
-  the theme's syntax colors (`--syntax-keyword`, `-string`, `-number`, `-type`, `-variable`,
-  `-meta`, set by every theme in both modes), picked from the kind's name, so
-  it is the same on every device and two unknown kinds tell apart. Agent logos → Mono leaves
-  the disc quiet.
+- An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
+  from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
+  `-number`, `-type`, `-variable`, `-meta`), which every theme sets in both modes and keeps
+  readable on `--bg-elevated`, the disc's fill. It is the same on every device, and two unknown
+  kinds tell apart. Agent logos → Mono leaves the mark quiet.
 - A DONE opened here draws as ready in the Agents list and its workspace roll-up, as herdr's
   own client does. This follows the Codex app's [unread completion dot](https://github.com/openai/codex/issues/50856).
   A finish read in one browser is read in every browser of the server (a phone and
