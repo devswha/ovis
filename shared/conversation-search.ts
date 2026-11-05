@@ -96,16 +96,37 @@ export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSe
 /**
  * Whether `turn` may be the one `match` was found in after it changed since the search, so its name
  * (conversationTurnAnchor) changed too: an answer that went on, or whose first tool's output came. It
- * has the match's role and time and still holds the match with the same words before it (a turn only
- * grows after them). Two answers of one time (Codex, when the user steers mid-task) can both pass:
- * a pick takes such a turn only when it is the one in the conversation (ChatView revealTurn).
+ * has the match's role and time and still holds the match after the same words (a turn only grows
+ * after them, though a Markdown mark that streamed in may close: `[deploy` became a link). Two
+ * answers of one time (Codex, when the user steers mid-task) can both pass: see pickedTurn.
  */
 export function searchedTurnChanged(turn: ConversationTurn, match: ConversationSearchMatch): boolean {
   if (turn.role !== match.role || turn.ts !== match.ts) return false;
   // the matched words find what the query found: the same words, any whitespace, case ignored
   const pattern = searchPattern(match.match);
   const snippet = pattern === null ? null : matchSnippet(searchableText(turn), pattern);
-  return snippet !== null && snippet.before === match.before && snippet.match === match.match;
+  if (snippet === null || snippet.match !== match.match) return false;
+  // a snippet keeps the last words before the match, so a mark gone moves where it is cut: one
+  // ends the other
+  const words = (before: string): string => before.replace(/^…/, "").replace(/[[\]*`]/g, "");
+  const was = words(match.before), now = words(snippet.before);
+  return now.endsWith(was) || was.endsWith(now);
+}
+
+/**
+ * The row a pick opens among the turns shown (null: a row that is no turn): the one turn that is
+ * `match`, by its name or changed since (searchedTurnChanged). `several` when two are, as when an
+ * answer grew and a later answer of its time took its old name: none is opened, never the wrong one.
+ */
+export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
+  let picked: number | "none" = "none";
+  for (let index = 0; index < turns.length; index++) {
+    const turn = turns[index];
+    if (turn == null || (conversationTurnAnchor(turn) !== match.turn && !searchedTurnChanged(turn, match))) continue;
+    if (picked !== "none") return "several";
+    picked = index;
+  }
+  return picked;
 }
 
 /** The turns that hold the pattern, newest first, each with its first match. */

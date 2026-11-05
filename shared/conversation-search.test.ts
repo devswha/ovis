@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationTurn } from "./protocol.ts";
 import { createCodexTranscriptParser } from "../server/codex.ts";
-import { conversationTurnAnchor, matchSnippet, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
+import { conversationTurnAnchor, matchSnippet, pickedTurn, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
 
 const user = (text: string, ts: string | null = "2026-10-01T00:00:00Z"): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
 
@@ -101,6 +101,10 @@ describe("searchedTurnChanged", () => {
     const grown = answer("The deploy script is ready, and it ran on both hosts without a single error.");
     expect(conversationTurnAnchor(grown)).not.toBe(match.turn);
     expect(searchedTurnChanged(grown, match)).toBe(true);
+    // a link that streamed in closes, and its mark leaves the words before the match
+    const linked = found([user("go"), answer("Result: [deploy")], "deploy");
+    expect(linked.before).toBe("Result: [");
+    expect(searchedTurnChanged(answer("Result: [deploy](https://example.com) is up."), linked)).toBe(true);
   });
 
   it("tells apart two answers of one time that the user steered between, and takes none whose words before the match changed", () => {
@@ -119,5 +123,21 @@ describe("searchedTurnChanged", () => {
     expect(searchedTurnChanged(rewritten, first!)).toBe(false);
     expect(searchedTurnChanged({ ...turns[1]!, ts: "2026-10-01T00:00:09Z" }, first!)).toBe(false);
     expect(searchedTurnChanged({ ...turns[1]!, role: "user" }, first!)).toBe(false);
+  });
+});
+
+describe("pickedTurn", () => {
+  const answer = (text: string): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [{ kind: "text", text }] });
+  const match = searchTurns([answer("The deploy script")], searchPattern("deploy script")!)[0]!;
+
+  it("opens the one turn that is the match, by its name or changed since, past rows that are no turn", () => {
+    expect(pickedTurn([user("go"), null, answer("The deploy script")], match)).toBe(2);
+    expect(pickedTurn([user("go"), answer("The deploy script is ready."), user("thanks")], match)).toBe(1);
+    expect(pickedTurn([user("go"), answer("Another deploy script")], match)).toBe("none");
+  });
+
+  it("opens none when the answer grew and a later answer of its time took its old name", () => {
+    expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
+    expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
   });
 });

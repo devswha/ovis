@@ -103,7 +103,7 @@ import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import type { ConversationSearchMatch } from "../../shared/conversation-search.ts";
-import { searchedTurnChanged } from "../../shared/conversation-search.ts";
+import { pickedTurn } from "../../shared/conversation-search.ts";
 import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, PendingMessage, SlashCommand } from "../../shared/protocol.ts";
 import { chatIsBlank, type ChatRead } from "../lib/greeting.ts";
 import { TurnTime } from "./TurnTime.tsx";
@@ -1500,7 +1500,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   /** where the reader left this pane before (lib/chatScrollMemory.ts), until the first answer puts it back */
   const restoring = useRef<ChatPosition | null>(null);
   /** the turn a search's pick opens the chat at (revealTurn), until its row is in; bumped for each pick */
-  const revealing = useRef<((turn: ConversationTurn) => boolean) | null>(null);
+  const revealing = useRef<{ match: ConversationSearchMatch; read: "named" | "all"; done: (result: RevealResult) => void } | null>(null);
   const [revealTick, setRevealTick] = useState(0);
   const stopRestore = useRef<(() => void) | null>(null);
   const [pollKey, setPollKey] = useState(0);
@@ -2526,39 +2526,42 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (index === null || list === null || node === null) return;
     placeRow(list, node, index, saved.offset);
   }, [loaded, error, state.source, timelineRows]);
-  // a search's pick (revealTurn): its turn at the top of the view, once its page is in
+  // a search's pick (revealTurn): its turn at the top of the view, once its page is in; decided on
+  // the rows shown then, which a refresh may have changed while earlier pages were read
   useLayoutEffect(() => {
-    const picked = revealing.current;
+    const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
-    if (picked === null || list === null || node === null) return;
-    const index = timelineRows.findIndex((row) => row.turn !== null && picked(row.turn));
-    if (index < 0) return;
+    if (pick === null || list === null || node === null) return;
+    if (pick.read === "named" && !timelineRows.some((row) => row.turn !== null && chatTurnAnchor(row.turn) === pick.match.turn)) return;
     revealing.current = null;
+    const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
+    if (typeof index !== "number") { pick.done("missing"); return; }
     placeRow(list, node, index, 0);
+    pick.done("shown");
   }, [timelineRows, revealTick]);
   /**
    * Opens the chat at a search's pick: the pages before the oldest shown are read, the largest page
    * at a time, until its turn is in. A turn that changed since the search has another name: once the
-   * beginning came without it, the one turn in the conversation that is still that match
-   * (searchedTurnChanged) is taken, never one of two. `missing`: no such turn, or its transcript was
-   * replaced meanwhile.
+   * beginning came without it, the one turn still that match is opened (pickedTurn), never one of
+   * two. `missing`: no such turn, or its transcript was replaced meanwhile.
    */
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
     const named = (turn: ConversationTurn): boolean => chatTurnAnchor(turn) === match.turn;
-    const changed = (turn: ConversationTurn): boolean => searchedTurnChanged(turn, match);
-    const reveal = (picked: (turn: ConversationTurn) => boolean): RevealResult => { revealing.current = picked; setRevealTick((tick) => tick + 1); return "shown"; };
-    if (shownTurns.some(named)) return reveal(named);
-    let alike = shownTurns.filter(changed).length;
+    const reveal = (read: "named" | "all"): Promise<RevealResult> => new Promise((done) => {
+      revealing.current?.done("missing");
+      revealing.current = { match, read, done };
+      setRevealTick((tick) => tick + 1);
+    });
+    if (shownTurns.some(named)) return reveal("named");
     const generation = olderGeneration.current;
     for (let before = olderCursor; typeof before === "string";) {
       const page = await loadOlder({ before, prompts: LARGEST_PAGE });
       if (olderGeneration.current !== generation) return "missing";
       if (page === null) return "failed";
-      if (page.turns.some(named)) return reveal(named);
-      alike += page.turns.filter(changed).length;
+      if (page.turns.some(named)) return reveal("named");
       before = page.cursor;
     }
-    return alike === 1 ? reveal(changed) : "missing";
+    return reveal("all");
   };
   // Covers first layout, restored short chats and a fresh read that changes no scroll offset.
   useLayoutEffect(() => { measureEnd(); });
