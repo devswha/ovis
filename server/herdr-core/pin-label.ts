@@ -89,11 +89,17 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
   /**
    * A write of ours landed: both sides held `pinned` then. Once the agent quit, its queued writes never
    * start and the list may prune its row, so Ovis's newest choice, as the mark against the agreement
-   * last told it while the agent ran, stays pending when it differs from what landed.
+   * last told it while the agent ran, stays pending when it differs from what landed. While the agent
+   * runs, a differing list is a change queued behind this write: marked as one still being sent.
    */
   const landed = (address: string, pinned: boolean) => {
     const key = agreedKey(address);
-    const choice = agents.has(address) || !agreed.has(key) ? pinned : agreed.get(key) !== pending.has(key);
+    if (agents.has(address)) {
+      setAgreed(address, pinned);
+      if (listed(address) !== pinned && !refused.has(address)) { pending.add(key); sending.add(key); }
+      return;
+    }
+    const choice = agreed.has(key) ? agreed.get(key) !== pending.has(key) : pinned;
     setAgreed(address, pinned);
     if (choice === pinned) return;
     pending.add(key);
@@ -201,6 +207,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         if (!echo.answered && (agents.has(address) || agreed.has(agreedKey(address)))) landed(address, labelPinned);
         return;
       }
+      // another label changed, not the pin: our write's event is still to come
+      if (before === labelPinned) return;
       // a label neither of our writes set: the app's, and what we sent no longer tells its order
       queued.length = 0;
     }

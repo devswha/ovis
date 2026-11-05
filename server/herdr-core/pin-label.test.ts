@@ -678,6 +678,59 @@ describe("bridgePins", () => {
     expect(terminals[0]!.labels).toEqual({ "herdr.pinned": "1" });
   });
 
+  for (const order of ["another label changes while its unpin waits", "its pin's event comes before the agent quits"] as const) {
+    it(`keeps Ovis's last change after the agent quit when ${order} (#2913)`, async () => {
+      const dir = stateDir();
+      const unpinOnly = order === "another label changes while its unpin waits";
+      const preferences = store(dir, unpinOnly ? ["local:t1"] : []);
+      const terminals: Held[] = [{ address: "t1", state: "live", labels: unpinOnly ? { "herdr.pinned": "1" } : {} }];
+      const core = fakeCore(terminals);
+      const beforeWrite = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<void>();
+      const hc = core.hc as unknown as { call: (method: string, params: unknown) => Promise<unknown> };
+      const call = hc.call;
+      const slow = { on: false };
+      hc.call = async (method, params) => {
+        if (slow.on) { reached.resolve(); await beforeWrite.promise; }
+        return call(method, params);
+      };
+      const pins = bridge(core, preferences, dir);
+      await core.opened();
+      await pins.idle();
+      slow.on = true;
+      core.state.answer = answer.promise;
+      if (unpinOnly) {
+        // Ovis unpins t1; t1's agent quits and another client sets an unrelated label before the unpin lands
+        preferences.set({ settings: {}, pins: [] });
+        await reached.promise;
+        core.tell({ type: "status", terminal: "t1", data: { status: null } });
+        terminals[0]!.labels["other"] = "x";
+        core.tell({ type: "labels", terminal: "t1", data: { labels: { ...terminals[0]!.labels } } });
+        const wrote = core.writing();
+        beforeWrite.resolve();
+        await wrote;
+      } else {
+        // Ovis pins t1 and unpins it again; the pin's event comes while the agent runs, then the agent quits
+        preferences.set({ settings: {}, pins: ["local:t1"] });
+        await reached.promise;
+        preferences.set({ settings: {}, pins: [] });
+        const wrote = core.writing();
+        beforeWrite.resolve();
+        await wrote;
+        core.tell({ type: "status", terminal: "t1", data: { status: null } });
+      }
+      slow.on = false;
+      answer.resolve();
+      await pins.idle();
+      core.state.answer = null;
+      core.tell({ type: "status", terminal: "t1", data: { status: AGENT } });
+      await pins.idle();
+      expect(preferences.get().pins).toEqual([]);
+      expect(terminals[0]!.labels["herdr.pinned"]).toBeUndefined();
+    });
+  }
+
   it("saves the pending mark of a failed Ovis unpin on a later failed write when the first save failed", async () => {
     const dir = stateDir();
     const preferences = store(dir, ["local:t1"]);
