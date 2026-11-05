@@ -23,31 +23,6 @@
 
 .machine-list > .tree-state { padding-left: calc(var(--side-gutter) + var(--side-box)); }
 
-/* PCs kept out on this device (Settings → Remote PCs): one quiet line under the PCs shown, which
-   opens the page that shows them again */
-.machine-hidden-note {
-  display: block;
-  margin: var(--space-2) 0 0;
-  padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--side-gutter) + var(--side-box));
-  background: transparent;
-  border: 0;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: var(--fs-xs);
-  text-align: left;
-  cursor: pointer;
-}
-
-.machine-hidden-note:hover,
-.machine-hidden-note:focus-visible {
-  color: var(--text);
-  text-decoration: underline;
-}
-
-@media (pointer: coarse) {
-  .machine-hidden-note { min-height: var(--touch-target); }
-}
-
 .machine-group {
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
@@ -78,6 +53,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* a sidebar menu's head, in the popover and in a phone's sheet: what it lists, and a note on it (the PCs head's
+   hidden PCs, MachineSidebar.tsx) */
+.machine-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  line-height: var(--lh-tight);
+}
+
+.machine-menu-name {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a phone's sheet names its row a size up (RowMenu.css .row-sheet-title) */
+.row-sheet-head .machine-menu-name { font-size: var(--fs-md); }
+
+.machine-menu-note {
+  margin-top: var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
 }
 
 .machine-kind {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
-import { ArrowLeftRight, ChevronDown, ChevronRight, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, ChevronRight, EyeOff, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
@@ -15,12 +15,13 @@ import { SidebarActivityProvider, type SidebarActivity } from "../lib/sidebarAct
 import { filterSuggestions, machineFilter, sidebarFilter, type SidebarBranchLabels } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { UsageMeters } from "./UsageMeters.tsx";
-import { rowMenuAnchor } from "./RowMenu.tsx";
+import { RowMenu, rowMenuAnchor } from "./RowMenu.tsx";
 import "./Machines.css";
 import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { requestSettingsPage } from "../lib/paletteSettings.ts";
+import { setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway } from "../lib/userError.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
@@ -49,7 +50,7 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
 
 /** `activity`: App's live counters per PC and finishes looked at here; both sidebar lists draw from it.
  *  `machines` are the PCs this device shows; `hiddenCount` says how many it keeps out (Settings → Remote PCs) */
-interface Props { machines: Machine[]; hiddenCount?: number; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; /** whether the Herdr app's window owns a PC's workspaces (lib/machineContext.tsx AppLayoutContext); none without it */ appLayout?: (machineId: string) => LayoutOffer; /** a phone's drawer is out: closing it clears the filter */ drawerOpen?: boolean; /** counts the command palette's Filter workspaces and agents: each new count shows the field and focuses it */ filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; /** a sign-in tab the usage popover opened */ onUsageLogin(paneId: string): void }
+interface Props { machines: Machine[]; hiddenCount?: number; /** every PC of the roster, the hidden ones too: the PCs head's hidden menu names those (lib/hiddenMachines.ts) */ allMachines?: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; /** whether the Herdr app's window owns a PC's workspaces (lib/machineContext.tsx AppLayoutContext); none without it */ appLayout?: (machineId: string) => LayoutOffer; /** a phone's drawer is out: closing it clears the filter */ drawerOpen?: boolean; /** counts the command palette's Filter workspaces and agents: each new count shows the field and focuses it */ filterRequest?: number; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void; /** a sign-in tab the usage popover opened */ onUsageLogin(paneId: string): void }
 export function MachineSidebar(props: Props) {
   const t = useT();
   const activity = props.activity;
@@ -179,6 +180,32 @@ export function MachineSidebar(props: Props) {
   };
   const drawerOpen = props.drawerOpen === true;
   const hiddenCount = props.hiddenCount ?? 0;
+  // The PCs this device keeps out (Settings → Remote PCs → Show in sidebar) are said in the PCs head: an eye
+  // crossed out and their count, which opens a menu that shows each again in place or goes to that setting.
+  // Showing one follows the setting's rules (lib/hiddenMachines.ts): ids of PCs gone from the roster drop
+  // out, and a selection stays where it is.
+  const hiddenIds = useHiddenMachines();
+  const roster = props.allMachines ?? props.machines;
+  const hiddenList = roster.filter((machine) => !props.machines.some((shown) => shown.id === machine.id));
+  const hiddenWords = hiddenCount === 1 ? t("1 PC hidden on this device") : t("{n} PCs hidden on this device", { n: hiddenCount });
+  const [hiddenMenu, setHiddenMenu] = useState<HTMLButtonElement | null>(null);
+  const closeHiddenMenu = useCallback(() => setHiddenMenu(null), []);
+  const pcsToggle = useRef<HTMLButtonElement>(null);
+  // showing the last one takes the count out of the head, with the focus the menu gave back to it: the focus
+  // stays in the head, on the PCs fold, rather than falling to the page
+  const focusPcsHead = useRef(false);
+  useEffect(() => {
+    const refocus = focusPcsHead.current;
+    focusPcsHead.current = false;
+    if (hiddenCount > 0) return;
+    setHiddenMenu(null);
+    if (refocus) pcsToggle.current?.focus({ preventScroll: true });
+  }, [hiddenCount]);
+  const showMachine = (id: string) => {
+    focusPcsHead.current = hiddenList.length === 1 && hiddenList[0]!.id === id;
+    setHiddenMachines(withMachineHidden(roster, hiddenIds, id, false));
+  };
+  const openRemoteSettings = () => { requestSettingsPage({ page: "remote", section: "sidebar-pcs" }); props.actions.openSettings(); };
   // the PCs section folds to its head as Agents does (AgentSidebar.tsx), kept on this device; while the
   // filter keeps rows in it, it stands open and its caret folds it for the filter's time only
   const listId = useId();
@@ -233,19 +260,27 @@ export function MachineSidebar(props: Props) {
     <section className={`pcs-sidebar${pcsFolded ? " is-collapsed" : ""}`} aria-label={t("PCs")}>
       {/* a fold target for the resize line, including when the only PC is the Host */}
       <div className="sidebar-section-head">
-        <button type="button" className="sidebar-section-toggle sidebar-section-label" aria-expanded={!pcsFolded} aria-controls={listId} onClick={togglePcs}>
+        <button ref={pcsToggle} type="button" className="sidebar-section-toggle sidebar-section-label" aria-expanded={!pcsFolded} aria-controls={listId} onClick={togglePcs}>
           {pcsFolded ? <ChevronRight className="sidebar-section-caret" aria-hidden="true" /> : <ChevronDown className="sidebar-section-caret" aria-hidden="true" />}
           <span>{t("PCs")}</span>
         </button>
+        {hiddenCount > 0 && <button type="button" className="sidebar-hidden-pcs" aria-label={hiddenWords} title={hiddenWords} aria-haspopup="menu" aria-expanded={hiddenMenu !== null} onClick={(event) => setHiddenMenu(hiddenMenu === null ? event.currentTarget : null)}>
+          <EyeOff aria-hidden="true" /><span aria-hidden="true">{hiddenCount}</span>
+        </button>}
       </div>
       {/* folded, the list stays mounted, hidden, so the branches its rosters read stay findable to the filter */}
       <div className="machine-list" id={listId} hidden={pcsFolded} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
         {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} />)}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
-        {/* a PC kept out on this device is said, with the way to show it again */}
-        {hiddenCount > 0 && <button type="button" className="machine-hidden-note" title={t("Choose the PCs this device shows")} onClick={() => { requestSettingsPage({ page: "remote", section: "sidebar-pcs" }); props.actions.openSettings(); }}>{hiddenCount === 1 ? t("1 PC hidden on this device") : t("{n} PCs hidden on this device", { n: hiddenCount })}</button>}
       </div>
+      {hiddenMenu !== null && hiddenCount > 0 && <RowMenu anchor={hiddenMenu} title={t("Hidden on this device")} onClose={closeHiddenMenu} header={<span className="machine-menu-head">
+        <span className="machine-menu-name">{t("Hidden on this device")}</span>
+        <span className="machine-menu-note">{t("A hidden PC stays connected. A link or an alert still opens its panes.")}</span>
+      </span>} items={[
+        ...hiddenList.map((machine) => ({ id: `show:${machine.id}`, label: t("Show {name}", { name: machine.name }), title: t("Show {name} in the sidebar", { name: machine.name }), icon: Monitor, run: () => showMachine(machine.id) })),
+        { id: "settings", label: t("Choose PCs in Settings…"), icon: SlidersHorizontal, divider: hiddenList.length > 0, run: openRemoteSettings },
+      ]} />}
     </section>
     {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
