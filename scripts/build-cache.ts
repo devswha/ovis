@@ -22,6 +22,8 @@ import { join } from "node:path";
 const FORMAT = "1";
 const SIZE_FILE = ".size";
 
+type Manifest = { files: number; bytes: number };
+
 export type Key = { key: string } | { bypass: string };
 
 const git = (root: string, args: string[]): string | null => {
@@ -41,6 +43,10 @@ export function cacheKey(root: string, env: Record<string, string | undefined>, 
   const status = git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]);
   if (status === null) return { bypass: "git status failed" };
   if (status !== "") return { bypass: "the checkout has uncommitted changes" };
+  // files git ignores where Vite reads (public/ is copied whole): not the commit's either
+  const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "index.html", "public", "src", "shared"]);
+  if (ignored === null) return { bypass: "git ls-files failed" };
+  if (ignored !== "") return { bypass: "ignored files where the build reads" };
   const hash = createHash("sha256");
   const part = (label: string, value: string | Buffer): void => { hash.update(`${label}\0${value.length}\0`).update(value); };
   part("format", FORMAT);
@@ -64,7 +70,11 @@ export function restore(cacheDir: string, key: string, dist: string): boolean {
   const staging = mkdtempSync(`${dist}.cache-`);
   try {
     cpSync(entry, staging, { recursive: true });
+    const expected = JSON.parse(readFileSync(join(staging, SIZE_FILE), "utf8")) as Manifest;
     rmSync(join(staging, SIZE_FILE), { force: true });
+    // another job's eviction can remove files while this copies: a copy short of any is no hit
+    const copied = measure(staging);
+    if (copied.files !== expected.files || copied.bytes !== expected.bytes) throw new Error("the entry changed while it was copied");
     rmSync(dist, { recursive: true, force: true });
     renameSync(staging, dist);
   } catch (error) {
@@ -77,11 +87,14 @@ export function restore(cacheDir: string, key: string, dist: string): boolean {
   return true;
 }
 
-const treeSize = (path: string): number => {
+function measure(path: string): Manifest {
   const stat = statSync(path);
-  if (!stat.isDirectory()) return stat.size;
-  return readdirSync(path).reduce((total, name) => total + treeSize(join(path, name)), 0);
-};
+  if (!stat.isDirectory()) return { files: 1, bytes: stat.size };
+  return readdirSync(path).reduce((total, name) => {
+    const inner = measure(join(path, name));
+    return { files: total.files + inner.files, bytes: total.bytes + inner.bytes };
+  }, { files: 0, bytes: 0 });
+}
 
 /** Copies `dist` in as the entry for `key` (unless another job has written it first), then evicts. */
 export function store(cacheDir: string, key: string, dist: string, maxBytes: number): void {
@@ -91,7 +104,7 @@ export function store(cacheDir: string, key: string, dist: string, maxBytes: num
     const staging = mkdtempSync(join(cacheDir, `.new-${process.pid}-`));
     try {
       cpSync(dist, staging, { recursive: true });
-      writeFileSync(join(staging, SIZE_FILE), `${treeSize(staging)}\n`);
+      writeFileSync(join(staging, SIZE_FILE), `${JSON.stringify(measure(staging))}\n`);
       renameSync(staging, entry);
     } catch {
       // another job renamed the same entry into place first, or the cache is full: theirs stands
@@ -108,11 +121,11 @@ export function evict(cacheDir: string, maxBytes: number): void {
     const path = join(cacheDir, name);
     try {
       const stat = statSync(path);
-      if (name.startsWith(".new-")) {
+      if (name.startsWith(".new-") || name.startsWith(".lock-")) {
         if (Date.now() - stat.mtimeMs > 3_600_000) rmSync(path, { recursive: true, force: true });
         continue;
       }
-      entries.push({ path, used: stat.mtimeMs, size: Number(readFileSync(join(path, SIZE_FILE), "utf8")) || 0 });
+      entries.push({ path, used: stat.mtimeMs, size: Number((JSON.parse(readFileSync(join(path, SIZE_FILE), "utf8")) as Manifest).bytes) || 0 });
     } catch { /* removed by another job meanwhile, or not an entry */ }
   }
   entries.sort((a, b) => b.used - a.used);
@@ -121,6 +134,35 @@ export function evict(cacheDir: string, maxBytes: number): void {
     total += entry.size;
     if (total > maxBytes) rmSync(entry.path, { recursive: true, force: true });
   }
+}
+
+/**
+ * Takes the build of `key` for this job (a directory made atomically), so the jobs of one commit that
+ * start together do not all build it. A lock older than `staleMs` was left by a job that died: taken over.
+ */
+export function takeLock(cacheDir: string, key: string, staleMs = 900_000): boolean {
+  const lock = join(cacheDir, `.lock-${key}`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lock);
+      return true;
+    } catch {
+      try {
+        if (Date.now() - statSync(lock).mtimeMs <= staleMs) return false;
+        rmSync(lock, { recursive: true, force: true });
+      } catch { /* released meanwhile: try again */ }
+    }
+  }
+  return false;
+}
+
+export const releaseLock = (cacheDir: string, key: string): void => rmSync(join(cacheDir, `.lock-${key}`), { recursive: true, force: true });
+
+/** Waits until another job's build of `key` is stored or given up (its lock gone), or until `ms` pass. */
+export async function awaitBuild(cacheDir: string, key: string, ms: number): Promise<void> {
+  const settled = (): boolean => existsSync(join(cacheDir, key, SIZE_FILE)) || !existsSync(join(cacheDir, `.lock-${key}`));
+  const deadline = Date.now() + ms;
+  while (!settled() && Date.now() < deadline) await Bun.sleep(200);
 }
 
 function viteBuild(args: readonly string[]): number {
@@ -135,23 +177,49 @@ if (import.meta.main) {
   const root = process.cwd();
   const dist = join(root, "dist");
   const maxBytes = Number(process.env["OVIS_BUILD_CACHE_MAX_MB"] ?? "2048") * 1024 * 1024;
+  const keyNow = (): Key => {
+    try { return cacheKey(root, process.env, args); } catch (error) { return { bypass: `no key (${(error as Error).message})` }; }
+  };
   // only the build into dist/: another outDir or mode is built as asked
-  const key: Key = args.length === 0 ? cacheKey(root, process.env, args) : { bypass: "build arguments given" };
+  const key: Key = args.length === 0 ? keyNow() : { bypass: "build arguments given" };
   if ("bypass" in key) {
     console.log(`build cache: not used (${key.bypass})`);
     process.exit(viteBuild(args));
   }
+  const name = key.key.slice(0, 12);
+  const restored = (): boolean => {
+    try {
+      if (!restore(cacheDir, key.key, dist)) return false;
+      console.log(`build cache: hit ${name}, dist/ restored without building`);
+      return true;
+    } catch (error) {
+      console.log(`build cache: could not restore ${name} (${(error as Error).message})`);
+      return false;
+    }
+  };
+  if (restored()) process.exit(0);
+  let owner = false;
   try {
-    if (restore(cacheDir, key.key, dist)) {
-      console.log(`build cache: hit ${key.key.slice(0, 12)}, dist/ restored without building`);
-      process.exit(0);
+    mkdirSync(cacheDir, { recursive: true });
+    owner = takeLock(cacheDir, key.key);
+    if (!owner) {
+      // another job of this commit is building it: a wait costs no CPU, a second build does
+      console.log(`build cache: another job is building ${name}; waiting for it`);
+      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000);
+      if (restored()) process.exit(0);
+      owner = takeLock(cacheDir, key.key);
     }
   } catch (error) {
-    console.log(`build cache: could not restore ${key.key.slice(0, 12)} (${(error as Error).message}); building`);
+    console.log(`build cache: could not lock ${name} (${(error as Error).message})`);
   }
-  console.log(`build cache: miss ${key.key.slice(0, 12)}; building`);
+  console.log(`build cache: miss ${name}; building`);
   const code = viteBuild(args);
-  if (code !== 0) process.exit(code);
-  try { store(cacheDir, key.key, dist, maxBytes); } catch (error) { console.log(`build cache: could not store (${(error as Error).message})`); }
-  process.exit(0);
+  // the checkout changed while Vite read it: this dist/ may not be the key's
+  const after = code === 0 ? keyNow() : key;
+  if (code === 0 && (!("key" in after) || after.key !== key.key)) console.log("build cache: the checkout changed during the build; not stored");
+  else if (code === 0) {
+    try { store(cacheDir, key.key, dist, maxBytes); } catch (error) { console.log(`build cache: could not store (${(error as Error).message})`); }
+  }
+  if (owner) releaseLock(cacheDir, key.key);
+  process.exit(code);
 }

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cacheKey, evict, restore, store } from "./build-cache.ts";
+import { awaitBuild, cacheKey, evict, releaseLock, restore, store, takeLock } from "./build-cache.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -19,7 +19,7 @@ const git = (root: string, ...args: string[]): void => {
 function checkout(): string {
   const root = temp("ovis-build-cache-repo-");
   git(root, "init", "-q");
-  writeFileSync(join(root, ".gitignore"), "dist/\nnode_modules/\n.env\n");
+  writeFileSync(join(root, ".gitignore"), "dist/\nnode_modules/\n.env\n*.log\n");
   writeFileSync(join(root, "main.ts"), "export const a = 1;\n");
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "one");
@@ -86,6 +86,16 @@ describe("cacheKey", () => {
     }
   });
 
+  it("never uses the cache while ignored files sit where the build reads them", () => {
+    const root = checkout();
+    mkdirSync(join(root, "public"));
+    writeFileSync(join(root, "public/extra.log"), "copied into dist/ by Vite");
+    expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
+    rmSync(join(root, "public/extra.log"));
+    writeFileSync(join(root, "top.log"), "not read by the build");
+    expect("key" in cacheKey(root, {}, [])).toBe(true);
+  });
+
   it("does not use the cache outside a git checkout", () => {
     expect(cacheKey(temp("ovis-build-cache-nogit-"), {}, [])).toEqual({ bypass: "no git commit" });
   });
@@ -127,6 +137,17 @@ describe("store and restore", () => {
     expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
   });
 
+  it("refuses a copy that came out short of the entry, as when another job evicts it meanwhile", () => {
+    const root = temp("ovis-build-cache-short-");
+    const cache = join(root, "cache");
+    store(cache, "k", dist(root, { "index.html": "<p>", "assets/a.js": "a" }), 1 << 30);
+    rmSync(join(cache, "k", "assets"), { recursive: true });
+    dist(root, { "index.html": "mine" });
+    expect(() => restore(cache, "k", join(root, "dist"))).toThrow("the entry changed while it was copied");
+    expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
+    expect(readdirSync(root).filter((name) => name.startsWith("dist.cache-"))).toEqual([]);
+  });
+
   it("keeps the first entry written for a key", () => {
     const root = temp("ovis-build-cache-first-");
     const cache = join(root, "cache");
@@ -150,6 +171,44 @@ describe("store and restore", () => {
   });
 });
 
+describe("one build per key", () => {
+  it("lets one job take a key's build, and another once it is released or left stale", () => {
+    const cache = temp("ovis-build-cache-lock-");
+    expect(takeLock(cache, "k")).toBe(true);
+    expect(takeLock(cache, "k")).toBe(false);
+    expect(takeLock(cache, "other")).toBe(true);
+    releaseLock(cache, "k");
+    expect(takeLock(cache, "k")).toBe(true);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(join(cache, ".lock-k"), old, old);
+    expect(takeLock(cache, "k", 30_000)).toBe(true);
+  });
+
+  it("waits for the job building a key until its entry is stored", async () => {
+    const root = temp("ovis-build-cache-wait-");
+    const cache = join(root, "cache");
+    mkdirSync(join(root, "dist"));
+    writeFileSync(join(root, "dist/index.html"), "built");
+    mkdirSync(cache);
+    takeLock(cache, "k");
+    const waited = awaitBuild(cache, "k", 30_000).then(() => existsSync(join(cache, "k")));
+    store(cache, "k", join(root, "dist"), 1 << 30);
+    expect(await waited).toBe(true);
+  });
+
+  it("stops waiting once the building job gives up, or at its deadline", async () => {
+    const cache = temp("ovis-build-cache-giveup-");
+    takeLock(cache, "k");
+    const waited = awaitBuild(cache, "k", 30_000);
+    releaseLock(cache, "k");
+    await waited;
+    takeLock(cache, "k");
+    const started = Date.now();
+    await awaitBuild(cache, "k", 300);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+});
+
 describe("bun scripts/build-cache.ts", () => {
   const script = join(import.meta.dir, "build-cache.ts");
 
@@ -164,13 +223,15 @@ fs.appendFileSync("node_modules/runs", "x");
 fs.rmSync("dist", { recursive: true, force: true });
 fs.mkdirSync("dist");
 fs.writeFileSync("dist/index.html", fs.readFileSync("main.ts", "utf8") + (process.env.VITE_FLAG ?? ""));
+if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_DURING_BUILD);
 `);
     chmodSync(join(bin, "vite"), 0o755);
     return { root, runs: () => existsSync(join(root, "node_modules/runs")) ? readFileSync(join(root, "node_modules/runs"), "utf8").length : 0 };
   }
   const build = (root: string, cache: string | null, extra: Record<string, string> = {}): string => {
     const env: Record<string, string | undefined> = { ...process.env, ...extra };
-    delete env["OVIS_BUILD_CACHE_DIR"];
+    // the run's own GitHub Actions variables would turn the cache off outside a pull request run
+    for (const name of ["OVIS_BUILD_CACHE_DIR", "GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
     if (cache) env["OVIS_BUILD_CACHE_DIR"] = cache;
     const result = spawnSync(process.execPath, [script], { cwd: root, env, encoding: "utf8" });
     expect(result.status).toBe(0);
@@ -195,6 +256,35 @@ fs.writeFileSync("dist/index.html", fs.readFileSync("main.ts", "utf8") + (proces
     expect(runs()).toBe(4);
     expect(build(root, cache)).toBe("export const a = 2;\n");
     expect(runs()).toBe(4);
+  }, 60_000);
+
+  it("stores nothing when the checkout changed while it built", () => {
+    const { root, runs } = project();
+    const cache = join(temp("ovis-build-cache-dir-"), "cache");
+    expect(build(root, cache, { EDIT_DURING_BUILD: "export const a = 9;\n" })).toBe("export const a = 1;\n");
+    git(root, "checkout", "-q", "--", "main.ts");
+    expect(existsSync(cache) ? readdirSync(cache) : []).toEqual([]);
+    build(root, cache);
+    expect(runs()).toBe(2);
+  }, 60_000);
+
+  it("builds a commit once when its jobs start together", async () => {
+    const { root, runs } = project();
+    const cache = join(temp("ovis-build-cache-dir-"), "cache");
+    const env: Record<string, string | undefined> = { ...process.env, OVIS_BUILD_CACHE_DIR: cache };
+    for (const name of ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    const jobs = [0, 1, 2, 3].map(() => {
+      const copy = temp("ovis-build-cache-job-");
+      git(copy, "clone", "-q", root, ".");
+      spawnSync("cp", ["-a", join(root, "node_modules"), copy]);
+      return { copy, proc: Bun.spawn([process.execPath, script], { cwd: copy, env, stdout: "pipe", stderr: "pipe" }) };
+    });
+    for (const { proc } of jobs) expect(await proc.exited).toBe(0);
+    const built = jobs.map(({ copy }) => existsSync(join(copy, "node_modules/runs")) ? readFileSync(join(copy, "node_modules/runs"), "utf8").length : 0);
+    expect(built.reduce((a, b) => a + b, 0)).toBe(1);
+    for (const { copy } of jobs) expect(readFileSync(join(copy, "dist/index.html"), "utf8")).toBe("export const a = 1;\n");
+    expect(readdirSync(cache).filter((name) => name.startsWith(".lock-"))).toEqual([]);
+    expect(runs()).toBe(0);
   }, 60_000);
 
   it("always builds without OVIS_BUILD_CACHE_DIR", () => {
