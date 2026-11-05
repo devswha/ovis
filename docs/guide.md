@@ -242,6 +242,13 @@ a pi-ask form can open there at any moment. The terminal answers those; without 
 pi's own dialogs keep their cards as before. Notes and
 **Elaborate** stay in Terminal. Checked with pi 1.4.0 and pi-ask 1.2.0.
 
+The same extension lets Chat suggest the slash commands that pi's extensions and installed packages
+register (such as `/team` or `/ponytail`), which no file can tell: it passes on the running pi's own
+list (`pi.getCommands()`, pi 1.3.0 or later), and a command named after a pi builtin is left out as
+pi's own menu does. An extension installed before this, pi without it, two pi processes in one pane,
+and Windows suggest only the builtins, prompts and skills; typing such a command in full still sends
+it. Run the installer again and restart pi to update an installed extension.
+
 Command Code chat needs the session herdr reports for the pane. Command Code sends that report
 and herdr keeps only the sessions of the agents it knows natively, so no released herdr accepts
 it yet: the pane's status, title and model arrive, its conversation does not. Without it the
@@ -619,7 +626,7 @@ With several PCs, you don't need Ovis on each of them. Install it on one PC that
    From a checkout, stop `bun run start` instead, and whatever starts it again.
 
    An Ovis left running there still works with the always-on app, but it stays a second app: it sends its own alerts and updates only through its own updater, which the always-on app can at most ask to run. Once it is stopped, the always-on app runs its own bridge there and keeps that bridge on its own version.
-3. **Add each PC in the always-on app:** Settings → Remote PCs → **Add PC**, then approve the install once. A PC already saved in herdr (`herdr machine`) is listed there already: choose **Connect**. The always-on PC must reach it over SSH as the account Ovis runs under, so try `ssh <pc>` there first. A PC the app already had, connected while that PC's own Ovis ran, keeps waiting for that Ovis to come back: open its **Manage PC** control in the sidebar, choose **Reconnect / setup** and approve the install.
+3. **Add each PC in the always-on app:** Settings → Remote PCs → **Add PC**, then approve the install once. A PC already saved in herdr (`herdr machine`) is listed there already: choose **Connect**. The always-on PC must reach it over SSH as the account Ovis runs under, so try `ssh <pc>` there first. A PC the app already had, connected while that PC's own Ovis ran, keeps waiting for that Ovis to come back: open its **Manage PC** menu in the sidebar, choose **Reconnect / setup** and approve the install.
 4. **Open the always-on PC's address everywhere**, in the other PCs' browsers and on your phone, install the app from there, and turn on **Alerts** in it on each device. Pairings and alerts set up with a PC's own Ovis stay with that Ovis, so pair a device again if the new address asks.
 
 Then there is one app to update: each release is downloaded and built once, the bridges on the other PCs follow it in the background (when SSH gets in with the saved key, without a password; otherwise the PC's card offers the update), push alerts come from one place, and no versions have to be kept in step.

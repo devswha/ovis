@@ -1,5 +1,6 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
+import { SETTINGS_COMPOSER_ZH } from "./i18n/settings-composer.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
 import { COMPOSER_ZH } from "./i18n/composer.zh.ts";
 import { CHAT_ZH } from "./i18n/chat.zh.ts";
@@ -40,6 +41,12 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "已使用 {provider} 登录",
   "Signing in…": "正在登录…",
   "The sign-in did not finish. Try again.": "登录未完成。请重试。",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "打开 GitHub 并输入此代码。仅当这是你在此页面上自己发起的登录时才输入。",
+  "Waiting for GitHub…": "正在等待 GitHub 批准…",
+  "Open GitHub": "打开 GitHub",
+  "GitHub refused the sign-in.": "GitHub 拒绝了此次登录。",
+  "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",
+  "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
   "Add {device}?": "添加 {device}？",
@@ -415,12 +422,17 @@ const BASE: Record<string, string> = {
   "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "该响应并非来自本应用可配对的电脑。请在电脑上显示新代码，或扫描其二维码。",
   "The relay could not be reached. Check this device's connection, then try again.": "无法连接中继。请检查此设备的网络连接，然后重试。",
   "Reset": "重置",
+  "Group name": "分组名称",
+  "Remove group {group}": "删除分组 {group}",
+  "New group": "新分组",
+  "Add group": "添加分组",
+  "No group": "无分组",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH },
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,
