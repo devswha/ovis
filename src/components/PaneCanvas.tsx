@@ -406,13 +406,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         {!(single && !offTab && loneRowHidden) && <div className="pane-frame-head" draggable={onOpenInHalf !== undefined && !coarse}
           onClick={(event) => {
             if (!onOpenInHalf || coarse || paneContextPress(event, apple) || (event.target instanceof Element && event.target.closest("button"))) return;
-            const frame = event.currentTarget.parentElement;
-            const input = frame?.querySelector<HTMLElement>(".secret-input input")
-              ?? frame?.querySelector<HTMLElement>(".find-bar input")
-              ?? (frame?.querySelector(".terminal-stack.is-chat:not(.is-peek)")
-                ? frame.querySelector<HTMLElement>(".composer-text")
-                : frame?.querySelector<HTMLElement>(".terminal-input textarea") ?? frame?.querySelector<HTMLElement>(".xterm-helper-textarea"));
-            input?.focus({ preventScroll: true });
+            paneInput(event.currentTarget.parentElement)?.focus({ preventScroll: true });
           }}
           onDragStart={(event: DragEvent<HTMLDivElement>) => {
             // dropped on a half of the pane area, the title opens its pane there (App's drop)
@@ -423,8 +417,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           <button type="button" className="icon-button pane-frame-menu" aria-label={t("Pane actions for {name}", { name: displayPaneTitle(item) })}
             onClick={(event) => showMenu(item, event.currentTarget)}><Ellipsis aria-hidden="true" /></button>
           {zoomable && !offTab && <button type="button" className="icon-button pane-frame-zoom" aria-label={t(zoomedHere ? "Unzoom pane" : "Zoom pane")} title={t(zoomedHere ? "Unzoom pane" : "Zoom pane")}
-            // a press keeps the focus where it was (the pane's input); Tab still reaches the button
-            onMouseDown={(event) => event.preventDefault()} onClick={() => zoom(item)}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
+            // a click selects this pane, so its typing goes there too, as a click on the title does;
+            // a key that pressed the button (detail 0) leaves the focus on it
+            onClick={(event) => { zoom(item); if (event.detail > 0) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true }); }}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;
@@ -478,6 +473,16 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
       confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await api.closePane(closing.pane_id); setClosing(null); onChanged(); }} />}
   </div></PaneSubmitContext.Provider>;
+}
+
+/** Where a pane's typing goes: an open secret or find field, the chat's message box, else the terminal. */
+function paneInput(frame: Pick<Element, "querySelector"> | null): HTMLElement | null {
+  if (!frame) return null;
+  return frame.querySelector<HTMLElement>(".secret-input input")
+    ?? frame.querySelector<HTMLElement>(".find-bar input")
+    ?? (frame.querySelector(".terminal-stack.is-chat:not(.is-peek)")
+      ? frame.querySelector<HTMLElement>(".composer-text")
+      : frame.querySelector<HTMLElement>(".terminal-input textarea") ?? frame.querySelector<HTMLElement>(".xterm-helper-textarea"));
 }
 
 /** A pane's or a lone tab's name; `required` is the error an empty name gets, where one is not allowed (a tab's). */

@@ -150,11 +150,26 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       return Response.json({ zoomed: true });
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
-      await act(async () => { zoomButtons()[1]!.props.onClick(); });
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 0, currentTarget: { closest: () => null } }); });
     } finally {
       fetch.mockRestore();
     }
     expect(bodies).toEqual([{ pane_id: "p2", mode: "on" }]);
+  });
+
+  it("moves the typing into the pane whose zoom a mouse clicked, never leaving it in another pane (#2037)", async () => {
+    await draw(TUI);
+    const focused: string[] = [];
+    const frame = { querySelector: (selector: string) => selector === ".xterm-helper-textarea" ? { focus: () => focused.push("p2 terminal") } : null };
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ zoomed: true }), { preconnect: globalThis.fetch.preconnect }));
+    try {
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 1, currentTarget: { closest: () => frame } }); });
+      // a key that pressed the button leaves the focus on it
+      await act(async () => { zoomButtons()[1]!.props.onClick({ detail: 0, currentTarget: { closest: () => frame } }); });
+    } finally {
+      fetch.mockRestore();
+    }
+    expect(focused).toEqual(["p2 terminal"]);
   });
 
   it("keeps a zoomed pane's title row, with Unzoom pane, so the hidden panes are one click away (#2037)", async () => {
