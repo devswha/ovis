@@ -1332,6 +1332,16 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
   return { prompt: read.prompt, ...(read.screen === undefined ? {} : { screen: read.screen }) };
 }
 
+/**
+ * What the prompt on the pane's screen says, for a prompt watch (server/prompt-monitor.ts): the id its text alone
+ * makes, or null when none shows; undefined when the read raced a change. Unlike GET /api/pane/prompt it starts and
+ * ends no asking, so these reads never move the ids the route hands out.
+ */
+export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState }): Promise<string | null | undefined> {
+  const known = await readKnownPrompt(pane.pane_id, pane, pane.agent ?? "", options.codexHome, panes, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState);
+  return known.stale ? undefined : contentId(known.prompt) ?? null;
+}
+
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {
   if (url.pathname !== "/api/pane/prompt" && url.pathname !== "/api/pane/prompt/answer") return null;
   setRequestRoute(url.pathname);

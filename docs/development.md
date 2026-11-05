@@ -551,6 +551,23 @@ resolves through existing provider/process evidence, checks file identity, size 
 without parsing turns, and rechecks session resolution every 5 s (2 s while a transcript is
 missing). The last interested client, failed/ended attachment and server stop release it.
 
+A client that shows a pane's chat and no terminal follows it without attaching it: bridges that
+advertise `"conversation-watch-detached"` take `conversation-watch {pane_id, enabled, detached:true}`.
+That interest survives the same connection attaching and detaching the pane, and ends with a
+`detached:true` disable or the connection; at most 32 per connection
+(`too_many_conversation_watches`). The browser does not send it.
+
+Prompts an idle agent opens (Codex's or Claude's folder-trust menu) change no agent status.
+Bridges that advertise `"prompt-watch"` take `prompt-watch {pane_id, enabled}` and send
+`prompt-changed {pane_id, signature}` with the watch's first read and whenever the prompt on the
+pane's screen opens, closes or becomes another one; GET `/api/pane/prompt` stays authoritative.
+One 500 ms loop for the whole server reads each watched pane once however many clients watch it,
+and reads none herdr reports working or blocked (pane-status says so; the first read after it is
+sent again). The prompt is compared by its text alone, so a watch's reads start or end no asking
+and never move the ids `/api/pane/prompt` hands out. A closed pane, or 10 failed reads in a row,
+ends the watch with an error `prompt_watch_ended`; at most 32 per connection
+(`too_many_prompt_watches`). The browser does not send it.
+
 Newest-page refreshes are single-flight. Push-triggered reads start at least 1 s apart using
 monotonic elapsed time, with one trailing refresh at a fixed deadline: continuous writes cannot
 keep postponing it. A push after idle reads immediately. Initial display, explicit sends,
