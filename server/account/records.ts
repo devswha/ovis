@@ -58,13 +58,23 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   return { id: record.id, outcome: "applied" };
 }
 
+/**
+ * A remove refused only because its signer is not a member here yet, handed to `wait` before the next
+ * record applies, so an add for the same key later in the batch already meets it (AddGates.held).
+ * One `wait` could not keep is undecided (`account_unavailable`): its sender tries again.
+ */
+function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, wait: ((record: unknown) => boolean) | undefined): RecordOutcome {
+  if (wait === undefined || record.kind !== "remove" || outcome.outcome !== "refused" || outcome.code !== "signer_not_member") return outcome;
+  return wait(value) ? outcome : { id: outcome.id, outcome: "refused", code: "account_unavailable" };
+}
+
 /** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */
-export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates): Promise<RecordOutcome[]> {
+export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
   for (const value of values) {
     const record = await read(value);
-    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : apply(store, record, serverId, now, gates));
+    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, gates), record, value, wait));
   }
   return outcomes;
 }
@@ -96,9 +106,7 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   };
   const signed = (index: number) => record(index).issued_at;
   for (const index of removes.sort((a, b) => signed(a) < signed(b) ? -1 : signed(a) > signed(b) ? 1 : 0)) {
-    const outcome = apply(store, record(index), serverId, now, options.gates);
-    const waiting = outcome.outcome === "refused" && outcome.code === "signer_not_member";
-    outcomes[index] = waiting && !options.wait(values[index]) ? { id: outcome.id, outcome: "refused", code: "account_unavailable" } : outcome;
+    outcomes[index] = waited(apply(store, record(index), serverId, now, options.gates), record(index), values[index], options.wait);
   }
   for (let progress = true; progress && adds.length;) {
     progress = false;

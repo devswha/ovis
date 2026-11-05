@@ -58,6 +58,9 @@ export class AccountHolds {
 
   enrolling(): boolean { return this.enrollingBy !== null; }
 
+  /** The member whose enrollment ends the wait: the one whose link brought the PC into the account. */
+  enrollingMember(): string | null { return this.enrollingBy; }
+
   /** Keys an enrolling member found removed (or suspected) elsewhere: an add for one never applies here. */
   hold(keys: readonly string[]): void {
     const next = new Set(this.keys);

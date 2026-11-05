@@ -52,6 +52,8 @@ export interface PcAccountStatus {
   readonly adds: readonly unknown[];
   /** every key it keeps out, signed removal or not, as it says */
   readonly blocked: readonly string[];
+  /** with `fresh`: it read its whole mailbox just now, so no removal waits unread there */
+  readonly fresh?: boolean;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -64,6 +66,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     account: typeof body.account === "string" ? body.account : null, unlinked,
     removals: Array.isArray(body.removals) ? body.removals : [], adds: Array.isArray(body.adds) ? body.adds : [],
     blocked: Array.isArray(body.blocked) ? body.blocked.filter(isAccountKey) : [],
+    ...(options.fresh ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
   };
 }
 
@@ -211,6 +214,10 @@ export async function admitToAccount(options: {
     v: 1, kind: "add", account: options.account, key: options.joining.key, label: options.joining.label, role: "drive",
     issued_at: new Date(now()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
   }, options.key.private_key);
+  // X keeps it on the row it made, so a client enrolling a later PC finds it there (docs/account.md, "PC API")
+  try { await post(options.fetch, "/api/account/records", { records: [add] }); } catch (error) {
+    console.warn("Ovis: the PC that let the device in did not keep its add", error instanceof Error ? error.name : error);
+  }
   const others = options.directory.filter((serverId) => serverId !== options.through);
   if (!options.store) {
     for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
@@ -341,7 +348,8 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
-      if (status.account !== options.account) return;
+      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet
+      if (status.account !== options.account || status.fresh !== true) return;
       answered.push(peer);
       seen.push(status);
     } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
@@ -373,9 +381,11 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   const admitted: string[] = [];
   let sent = true;
   // through the enrollment, which also ends the PC's wait for this client: sent even with nothing in it
+  // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
-    const answer = await (await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, ...(start === 0 ? { held: [...held].slice(0, HELD_MAX) } : {}) })).json() as { results?: unknown };
+    const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX ? { held_full: true } : {}) } : {};
+    const answer = await (await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, last: start + ACCOUNT_ENROLL_MAX >= records.length, ...first })).json() as { results?: unknown };
     const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
     for (const record of batch) {
       const result = results.find((entry) => entry.id === record.id);
