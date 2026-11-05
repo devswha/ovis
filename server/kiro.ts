@@ -1,11 +1,11 @@
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
+import { open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { answerVersion, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { ompProcessMemory } from "./omp-process.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
 
 type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
@@ -14,6 +14,7 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** More live sessions than this in one store is no answer, rather than an unbounded scan. */
 const MAX_LOCKS = 256;
+const LOCK_BYTES = 4096;
 
 export type KiroTranscript = { path: string; root: string; identity: string; session: string };
 
@@ -59,6 +60,26 @@ async function commandLine(pid: number): Promise<string[]> {
   return words;
 }
 
+async function parentOf(pid: number): Promise<number> {
+  return Number((await readFile(`/proc/${pid}/stat`, "utf8")).split(") ").pop()!.split(" ")[1]);
+}
+
+/** A lock as Kiro wrote it, read from the opened entry itself: a link, a FIFO or a grown file is no lock. */
+async function readLock(sessions: string, id: string): Promise<{ pid: number; opened: number } | null> {
+  const file = await open(join(sessions, `${id}.lock`), constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)).catch(() => null);
+  if (file === null) return null;
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || (process.getuid !== undefined && stat.uid !== process.getuid())) return null;
+    const bytes = Buffer.alloc(LOCK_BYTES + 1);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    if (bytesRead > LOCK_BYTES) return null;
+    const lock = JSON.parse(bytes.subarray(0, bytesRead).toString("utf8"));
+    const opened = typeof lock?.started_at === "string" ? Date.parse(lock.started_at) : NaN;
+    return Number.isSafeInteger(lock?.pid) && Number.isFinite(opened) ? { pid: lock.pid, opened } : null;
+  } catch { return null; } finally { await file.close(); }
+}
+
 /** Authorize the session log inside the canonical store before opening its bytes. */
 export async function authorizeKiroTranscript(path: string, sessions: string): Promise<KiroTranscript | null> {
   try {
@@ -89,40 +110,45 @@ export async function resolveKiroTranscript(info: Processes | null | undefined):
   const tui = (info?.foreground_processes ?? []).filter((proc) => Array.isArray(proc.argv) && isKiroChatProcess(proc.argv));
   if (tui.length === 0 || tui.some((proc) => typeof proc.pid !== "number")) return unavailable();
   try {
-    const acp: { pid: number; start: number }[] = [];
+    // each process is pinned by its start (stable on every read) and checked again after the lock is read
+    const fronts: { pid: number; start: number }[] = [];
     for (const proc of tui) {
-      for (const child of await children(proc.pid!)) {
+      const start = processStartedAt(proc.pid!);
+      if (start === null || !isKiroChatProcess(await commandLine(proc.pid!))) return unavailable();
+      fronts.push({ pid: proc.pid!, start });
+    }
+    const acp: { pid: number; parent: number; start: number; startedBy: number }[] = [];
+    for (const front of fronts) {
+      for (const child of await children(front.pid)) {
         const argv = await commandLine(child).catch(() => []);
         if (!isKiroAcpProcess(argv)) continue;
         const start = processStartedAt(child);
-        if (start === null) return unavailable();
-        acp.push({ pid: child, start });
+        const startedBy = processStartUpperBound(child);
+        if (start === null || startedBy === null) return unavailable();
+        acp.push({ pid: child, parent: front.pid, start, startedBy });
       }
     }
     if (acp.length !== 1) return unavailable();
-    const [server] = acp as [{ pid: number; start: number }];
+    const [server] = acp as [typeof acp[number]];
     const memory = await ompProcessMemory(server.pid, false);
     const sessions = memory === null ? null : kiroSessionsDirectory(memory.environ);
     if (sessions === null) return unavailable();
     const locks = (await readdir(sessions)).filter((name) => name.endsWith(".lock") && SESSION_ID.test(name.slice(0, -5)));
     if (locks.length > MAX_LOCKS) return unavailable();
+    // a lock left by an earlier process that had this pid was written before this one surely started
+    const ours = (lock: { pid: number; opened: number } | null) => lock !== null && lock.pid === server.pid && lock.opened >= server.startedBy;
     const held: string[] = [];
-    for (const name of locks) {
-      const path = join(sessions, name);
-      const entry = await lstat(path).catch(() => null);
-      if (entry === null || !entry.isFile() || entry.size > 4096) continue;
-      let lock: { pid?: unknown; started_at?: unknown };
-      try { lock = JSON.parse(await readFile(path, "utf8")); } catch { continue; }
-      if (lock?.pid !== server.pid) continue;
-      // a lock left by an earlier process that had this pid predates this one
-      const opened = typeof lock.started_at === "string" ? Date.parse(lock.started_at) : NaN;
-      if (!Number.isFinite(opened) || opened < server.start) continue;
-      held.push(name.slice(0, -5));
-    }
-    // the acp process is still the one read: a replacement may hold another session
-    if (held.length !== 1 || processStartedAt(server.pid) !== server.start) return unavailable();
-    const transcript = await authorizeKiroTranscript(join(sessions, `${held[0]}.jsonl`), sessions);
-    return transcript ?? unavailable();
+    for (const name of locks) if (ours(await readLock(sessions, name.slice(0, -5)))) held.push(name.slice(0, -5));
+    if (held.length !== 1) return unavailable();
+    const [id] = held as [string];
+    const transcript = await authorizeKiroTranscript(join(sessions, `${id}.jsonl`), sessions);
+    // the log is that session's own, not a link to another session of the store
+    if (transcript === null || transcript.session !== id) return unavailable();
+    // nothing changed while it was read: the same processes, and the lock not moved to another session
+    const same = ours(await readLock(sessions, id))
+      && processStartedAt(server.pid) === server.start && isKiroAcpProcess(await commandLine(server.pid)) && await parentOf(server.pid) === server.parent
+      && fronts.every((front) => processStartedAt(front.pid) === front.start);
+    return same ? transcript : unavailable();
   } catch (error) {
     if (error instanceof ConversationUnavailable) throw error;
     return unavailable();
@@ -152,18 +178,24 @@ async function readKiro(binding: KiroTranscript): Promise<string> {
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 type Block = { kind?: unknown; data?: any };
 
-/** A tool result's content: text as written; a command's `{stdout, stderr}` as its output; other JSON as JSON. */
-function resultText(content: unknown): string {
+/**
+ * A tool result's content: text as written; a command's `{stdout, stderr}` as its output; other JSON as JSON.
+ * Kiro records a command that exited non-zero as a `success`: only its `exit_status` says it failed.
+ */
+function toolResult(content: unknown): { output: string; failed: boolean } {
   if (!Array.isArray(content)) return unavailable();
-  return content.map((block: Block) => {
+  let failed = false;
+  const output = content.map((block: Block) => {
     if (block?.kind === "text" && typeof block.data === "string") return block.data;
     if (block?.kind === "json") {
       const data = block.data;
+      if (typeof data?.exit_status === "string" && data.exit_status !== "exit status: 0") failed = true;
       if (typeof data?.stdout === "string" && typeof data?.stderr === "string") return [data.stdout, data.stderr].filter(Boolean).join("\n");
       return JSON.stringify(data, null, 2);
     }
     return unavailable();
   }).join("\n");
+  return { output, failed };
 }
 
 export function projectKiro(text: string, identity: string, session: string) {
@@ -173,7 +205,9 @@ export function projectKiro(text: string, identity: string, session: string) {
   const outputs = new Map<string, string>();
   let assistant: ConversationTurn | undefined;
   let working = false;
-  const ensureAssistant = () => assistant ??= (turns.push({ role: "assistant", ts: null, parts: [] }), turns.at(-1)!);
+  // Kiro dates only prompts: a reply carries its prompt's time
+  let asked: string | null = null;
+  const ensureAssistant = () => assistant ??= (turns.push({ role: "assistant", ts: asked, parts: [] }), turns.at(-1)!);
   const finish = () => {
     if (assistant && !working) {
       const part = [...assistant.parts].reverse().find((p) => p.kind === "text" && p.text.trim() !== "");
@@ -203,12 +237,12 @@ export function projectKiro(text: string, identity: string, session: string) {
       if (!Array.isArray(data.content)) return unavailable();
       const parts = data.content.map((block: Block): ConversationPart => {
         if (block?.kind === "text" && typeof block.data === "string") return { kind: "text", text: block.data };
-        if (block?.kind === "image") return { kind: "notice", text: "image attachment (view in terminal)" };
         return unavailable();
       });
       const seconds = data.meta?.timestamp;
       const ts = typeof seconds === "number" && Number.isFinite(seconds) && Math.abs(seconds) <= 8.64e12 ? new Date(seconds * 1000).toISOString() : null;
       finish();
+      asked = ts;
       turns.push({ role: "user", ts, parts });
       assistant = undefined; working = false;
     } else if (row.kind === "AssistantMessage") {
@@ -236,10 +270,10 @@ export function projectKiro(text: string, identity: string, session: string) {
         const result = block?.data;
         const tool = block?.kind === "toolResult" ? tools.get(result?.toolUseId) : undefined;
         if (!tool) return unavailable();
-        const output = resultText(result.content);
+        const { output, failed } = toolResult(result.content);
         const ref = digest(`${history}\0${result.toolUseId}`);
         outputs.set(ref, output); trimOutput(tool, output, ref);
-        tool.error = result.status === "error"; tool.state = tool.error ? "error" : "ok";
+        tool.error = result.status === "error" || failed; tool.state = tool.error ? "error" : "ok";
       }
     } else return unavailable();
   }
@@ -259,7 +293,14 @@ export async function kiroConversation(binding: KiroTranscript, page: Conversati
   };
   const end = parse(page.before, turns.length);
   const since = parse(page.since, 0);
-  const from = parse(page.from, Math.max(since, end - 50));
+  // a reader that asks for a page size gets that many prompts back, up to the 50 turns a page holds otherwise
+  const asked = typeof page.prompts === "number" && Number.isFinite(page.prompts) ? Math.min(50, Math.max(1, Math.floor(page.prompts))) : null;
+  let back = Math.max(since, end - 50);
+  if (asked !== null) {
+    back = since;
+    for (let index = end - 1, users = 0; index >= since; index--) if (turns[index]!.role === "user" && ++users === asked) { back = index; break; }
+  }
+  const from = parse(page.from, back);
   const start = Math.max(since, Math.min(from, end));
   return { source: "kiro-transcript", turns: turns.slice(start, end), metadata: { model: null, reasoning_effort: null }, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
 }

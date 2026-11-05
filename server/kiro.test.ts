@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorizeKiroTranscript, isKiroChatProcess, kiroConversation, kiroSessionsDirectory, kiroToolOutput, projectKiro, resolveKiroTranscript } from "./kiro.ts";
@@ -7,6 +8,7 @@ import { ConversationUnavailable, HistoryChanged } from "./conversation-shared.t
 import { forgetPaneTranscriptState, forgetTranscriptState } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
 import * as processProbe from "./omp-process.ts";
+import { processStartedAt } from "./process-start.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
@@ -20,7 +22,7 @@ const TUI_ARGV = ["/home/user/.local/share/kiro-cli/bun", "--no-env-file", "--co
 let home: string;
 let sessions: string;
 let memory: ReturnType<typeof spyOn<typeof processProbe, "ompProcessMemory">>;
-const children: Bun.Subprocess[] = [];
+const standIns: number[] = [];
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "ovis-kiro-home-"));
   sessions = join(home, ".kiro", "sessions", "cli");
@@ -29,16 +31,20 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   memory.mockRestore();
-  for (const child of children.splice(0)) child.kill("SIGKILL");
+  for (const pid of standIns.splice(0)) try { process.kill(pid, "SIGKILL"); } catch {}
   await rm(home, { recursive: true, force: true });
 });
 
-/** A TUI stand-in whose child runs as `kiro-cli-chat acp`, as Kiro's session process does; resolves once that child runs. */
+/**
+ * A TUI stand-in running as `kiro-cli-chat chat`, whose child runs as `kiro-cli-chat acp`, as Kiro's session
+ * process does; resolves once that child runs.
+ */
 async function kiroPane(): Promise<{ tui: number; acp: number }> {
   const dir = await mkdtemp(join(home, "pane-"));
   await writeFile(join(dir, "acp"), "ready\n");
-  const tui = Bun.spawn(["bash", "-c", 'cd "$1"; (exec -a kiro-cli-chat tail acp -f) & wait', "_", dir], { stdout: "pipe", stderr: "ignore" });
-  children.push(tui);
+  await writeFile(join(dir, "chat"), "(exec -a kiro-cli-chat tail acp -f) & wait\n");
+  const tui = Bun.spawn(["bash", "chat"], { argv0: "kiro-cli-chat", cwd: dir, stdout: "pipe", stderr: "ignore" });
+  standIns.push(tui.pid);
   const reader = tui.stdout.getReader();
   let seen = "";
   while (!seen.includes("ready")) {
@@ -48,10 +54,12 @@ async function kiroPane(): Promise<{ tui: number; acp: number }> {
   }
   reader.releaseLock();
   const [acp] = (await readFile(`/proc/${tui.pid}/task/${tui.pid}/children`, "utf8")).trim().split(" ").map(Number);
+  standIns.push(acp!);
   return { tui: tui.pid, acp: acp! };
 }
 const foreground = (pid: number, argv = TUI_ARGV) => ({ foreground_processes: [{ pid, argv }] });
-const lock = (id: string, pid: number, startedAt = new Date()) => writeFile(join(sessions, `${id}.lock`), JSON.stringify({ pid, started_at: startedAt.toISOString() }));
+/** Kiro opens its session seconds after its process starts (initializing): a lock dated a second on is like that. */
+const lock = (id: string, pid: number, startedAt = new Date(Date.now() + 1000)) => writeFile(join(sessions, `${id}.lock`), JSON.stringify({ pid, started_at: startedAt.toISOString() }));
 
 describe("Kiro session binding", () => {
   linuxTest("binds the session the pane's own Kiro process holds locked", async () => {
@@ -105,6 +113,31 @@ describe("Kiro session binding", () => {
     await rm(join(sessions, `${ID}.jsonl`));
     await writeFile(join(home, "elsewhere.jsonl"), "");
     await symlink(join(home, "elsewhere.jsonl"), join(sessions, `${ID}.jsonl`));
+    await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
+  });
+
+  linuxTest("a lock no later than the process's start is never its own", async () => {
+    const pane = await kiroPane();
+    await writeFile(join(sessions, `${ID}.jsonl`), "");
+    // the start read from boot time can be up to a second early: a lock that old may be an earlier process's
+    await lock(ID, pane.acp, new Date(processStartedAt(pane.acp)!));
+    await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
+  });
+
+  linuxTest("a session log linked to another session, or a lock that is a link, binds nothing", async () => {
+    const pane = await kiroPane();
+    await writeFile(join(sessions, `${OTHER}.jsonl`), await fixture("interactive-2.35.1.jsonl"));
+    await symlink(join(sessions, `${OTHER}.jsonl`), join(sessions, `${ID}.jsonl`));
+    await lock(ID, pane.acp);
+    await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
+    await rm(join(sessions, `${ID}.jsonl`));
+    await writeFile(join(sessions, `${ID}.jsonl`), "");
+    await writeFile(join(home, "elsewhere.lock"), JSON.stringify({ pid: pane.acp, started_at: new Date(Date.now() + 1000).toISOString() }));
+    await rm(join(sessions, `${ID}.lock`));
+    await symlink(join(home, "elsewhere.lock"), join(sessions, `${ID}.lock`));
+    await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
+    await rm(join(sessions, `${ID}.lock`));
+    expect(spawnSync("mkfifo", [join(sessions, `${ID}.lock`)]).status).toBe(0);
     await expect(resolveKiroTranscript(foreground(pane.tui))).rejects.toBeInstanceOf(ConversationUnavailable);
   });
 
@@ -173,6 +206,19 @@ describe("Kiro conversation", () => {
     expect(turns[5]!.parts[0]).toEqual({ kind: "compact", text: "After slow." });
   });
 
+  test("a reply carries its prompt's time, so each finish is told apart", async () => {
+    const { turns } = projectKiro(await fixture("tools-resumed-2.35.1.jsonl"), "inode", ID);
+    expect(turns.map((turn) => turn.ts)).toEqual(["2026-10-29T06:46:03.000Z", "2026-10-29T06:46:03.000Z", "2026-10-29T06:46:40.000Z", "2026-10-29T06:46:40.000Z"]);
+  });
+
+  test("a command that exited non-zero shows as failed, as Kiro 2.35.2 records it", () => {
+    // Kiro writes `status: "success"` for it; only `exit_status` tells
+    const result = { version: "v1", kind: "ToolResults", data: { content: [{ kind: "toolResult", data: { toolUseId: "tooluse_fail", content: [{ kind: "json", data: { exit_status: "exit status: 3", stdout: "out\n", stderr: "err\n" } }], status: "success" } }] } };
+    const rows = [JSON.parse(TOOL_TURN.split("\n")[0]!), { version: "v1", kind: "AssistantMessage", data: { content: [{ kind: "toolUse", data: { toolUseId: "tooluse_fail", name: "shell", input: { command: "exit 3" } } }] } }, result];
+    const { turns } = projectKiro(rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "inode", ID);
+    expect(turns[1]!.parts[0]).toMatchObject({ kind: "tool", state: "error", error: true, output: "out\n\nerr\n" });
+  });
+
   test("a turn still running a tool has no final answer yet", () => {
     const { turns } = projectKiro(`${TOOL_TURN.split("\n").slice(0, 2).join("\n")}\n`, "inode", ID);
     expect(turns[1]!.parts).toMatchObject([{ kind: "text" }, { kind: "tool", state: "pending" }]);
@@ -186,6 +232,7 @@ describe("Kiro conversation", () => {
       { version: "v2", kind: "Prompt", data: { content: [] } },
       { version: "v1", kind: "ToolResults", data: { content: [{ kind: "toolResult", data: { toolUseId: "unknown", content: [] } }] } },
       { version: "v1", kind: "AssistantMessage", data: { content: [{ kind: "video" }] } },
+      { version: "v1", kind: "Prompt", data: { content: [{ kind: "text", data: "describe this" }, { kind: "image", data: {} }] } },
     ]) expect(() => projectKiro(`${JSON.stringify(row)}\n`, "inode", ID)).toThrow(ConversationUnavailable);
     expect(() => projectKiro("{not json\n", "inode", ID)).toThrow(ConversationUnavailable);
   });
@@ -203,6 +250,7 @@ describe("Kiro conversation", () => {
     expect(page.source).toBe("kiro-transcript");
     expect(page.turns).toHaveLength(50);
     expect((await kiroConversation(binding, { before: page.cursor! })).turns).toHaveLength(10);
+    expect((await kiroConversation(binding, { prompts: 10 })).turns).toHaveLength(10);
     prompts[0] = prompts[0]!.replace('"data":"0"', '"data":"changed"');
     await writeFile(binding.path, `${prompts.join("\n")}\n`);
     await expect(kiroConversation(binding, { before: page.cursor! })).rejects.toBeInstanceOf(HistoryChanged);
