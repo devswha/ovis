@@ -496,6 +496,9 @@ function ChatPage() {
         <SettingsRow label={t("Artifacts chip")} description={t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.")}>
           <Toggle label={t("Artifacts chip")} checked={settings.composerArtifacts} onChange={(composerArtifacts) => update({ composerArtifacts })} />
         </SettingsRow>
+        <SettingsRow label={t("Side conversations chip (experimental)")} description={t("A chip in an OMP pane's message box lists the side conversations its session saved with /btw.")}>
+          <Toggle label={t("Side conversations chip (experimental)")} checked={settings.composerBtw} onChange={(composerBtw) => update({ composerBtw })} />
+        </SettingsRow>
         <SettingsRow label={t("Paste and send button")} description={t("A button in the empty message box sends the text copied on this device as a message.")}>
           <Toggle label={t("Paste and send button")} checked={settings.composerPasteSend} onChange={(composerPasteSend) => update({ composerPasteSend })} />
         </SettingsRow>
@@ -1516,8 +1519,9 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
-      // an Escape that cancels an IME composition (the editor's Character field) is the IME's
-      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+      // an Escape that cancels an IME composition (the editor's Character field) is the IME's, and one that
+      // closed Files drawn over Settings (focused by a click) is spent: one Escape closes one dialog
+      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
       event.preventDefault();
       // out of the key bar editor first; from any page, a phone's included, it closes the dialog
       if (keyBarOpen) setKeyBarOpen(false);
