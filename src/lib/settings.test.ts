@@ -285,6 +285,26 @@ describe("saved theme migration", () => {
     expect(terminalTheme(entry.mode, entry.id)).toEqual(entry.terminal);
   });
 
+  it("scales a file's text by the chat's size until it has its own, its source only once chosen", () => {
+    const props = new Map<string, string>();
+    const root = { lang: "", dataset: {}, style: { colorScheme: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { props.delete(name); } } };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
+    const apply = (raw: Record<string, unknown>): void => {
+      const settings = sanitizeSettings(raw);
+      withComputedBg("#000", () => applyToDocument(settings, themeFor(settings, "dark"), "en"));
+    };
+    apply({ chatFontSize: 21 });
+    expect(props.get("--file-scale")).toBe(props.get("--chat-scale"));
+    expect(props.get("--file-scale")).toBe("1.5");
+    expect(props.has("--file-source-scale")).toBe(false);
+    apply({ chatFontSize: 21, fileFontSize: 28 });
+    expect(props.get("--chat-scale")).toBe("1.5");
+    expect(props.get("--file-scale")).toBe(String(24 / 14));
+    expect(props.get("--file-source-scale")).toBe(String(24 / 14));
+    apply({ chatFontSize: 21 });
+    expect(props.has("--file-source-scale")).toBe(false);
+  });
+
   it("keeps the row's surface on the root until a stylesheet owns it, following later themes", () => {
     const style = {
       colorScheme: "", backgroundColor: "#fffaf3", setProperty() {}, removeProperty(name: string) { if (name === "background-color") style.backgroundColor = ""; },

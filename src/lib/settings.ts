@@ -136,6 +136,9 @@ export interface Settings {
   chatFontSize: number | null;
   /** fonts tried before the UI font in the chat's prose (code stays mono), as a CSS font-family list; "" keeps the UI font */
   chatFontFamily: string;
+  /** a file's text size in px in the file viewer and reader (a Markdown preview's body text, the source scaled with it);
+   *  null follows the chat's size, and leaves the source at the interface's */
+  fileFontSize: number | null;
   /** prompts per history page in the chat; older turns load a page at a time as the reader scrolls up */
   historyPrompts: number;
   /** the interface's body size in px (--fs-md; every other --fs-* scales with it as --ui-scale); null follows the density.
@@ -236,13 +239,13 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
  * keyBarExpanded, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, sidebarFilter, voiceEngine, the agent groups, the
- * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
+ * interface font, the file text size, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty">;
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "fileFontSize">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -327,7 +330,7 @@ export const SETTING_SCOPE = {
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
-  chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
+  chatFontSize: "device", chatFontFamily: "device", fileFontSize: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
   // a desk's composer button: a phone never shows it
@@ -383,6 +386,7 @@ export const DEFAULT_SETTINGS: Settings = {
   releasePaneAway: false,
   followHerdrFocus: false,
   chatFontSize: null,
+  fileFontSize: null,
   historyPrompts: 10,
   chatFontFamily: "",
   uiFontSize: null,
@@ -490,6 +494,11 @@ export function chatFontSize(settings: Settings): number {
   return settings.chatFontSize ?? uiFontSize(settings);
 }
 
+/** A file's text size in px in the file viewer: the chosen one, or the chat's. */
+export function fileFontSize(settings: Settings): number {
+  return settings.fileFontSize ?? chatFontSize(settings);
+}
+
 /** The Default chat lane never runs narrower than this, in px: --content-w, the Narrow step. */
 export const CHAT_LANE_MIN = 820;
 /** ...or wider than this, in rem: 960px at a 16px root. In rem because Wide is (72rem, styles.css),
@@ -570,6 +579,9 @@ export function sanitizeSettings(raw: unknown): Settings {
     chatFontSize: typeof chatFont === "number" && Number.isFinite(chatFont)
       ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(chatFont)))
       : DEFAULT_SETTINGS.chatFontSize,
+    fileFontSize: typeof record["fileFontSize"] === "number" && Number.isFinite(record["fileFontSize"])
+      ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(record["fileFontSize"])))
+      : DEFAULT_SETTINGS.fileFontSize,
     historyPrompts: HISTORY_PROMPTS.includes(record["historyPrompts"] as (typeof HISTORY_PROMPTS)[number])
       ? (record["historyPrompts"] as number)
       : DEFAULT_SETTINGS.historyPrompts,
@@ -851,6 +863,11 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   // ChatView.css scales its type tokens by this (the chat's and a Markdown preview's): the chat's size over the
   // interface's, so a chosen chat size is drawn as itself whatever the interface size, and an unchosen one follows it
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));
+  // ChatView.css gives a file viewer's preview this scale in place of the chat's, the same until a file size is chosen;
+  // FileViewer.css scales the source by the second one, which only a chosen size writes (the interface's size till then)
+  root.style.setProperty("--file-scale", String(fontScale(fileFontSize(settings), uiPx)));
+  if (settings.fileFontSize === null) root.style.removeProperty("--file-source-scale");
+  else root.style.setProperty("--file-source-scale", String(fontScale(settings.fileFontSize, uiPx)));
   // Settings → Appearance → Interface font, written as the token itself: the chosen list in front of the built-in stack
   const uiFont = uiFontStack(settings.uiFontFamily, language);
   if (uiFont === null) root.style.removeProperty("--font-ui");
