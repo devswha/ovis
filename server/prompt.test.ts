@@ -6830,6 +6830,8 @@ describe("Claude Code 2.1.29x approvals and questions", () => {
     const prompt = parseInteractivePrompt("claude", screen)!;
     expect(prompt).toMatchObject({ kind: "approval", title: "Command approval", question: "Do you want to proceed?" });
     expect(prompt.options.map((option) => option.label)).toEqual(["Yes", "No"]);
+    // only the command's tail is on the screen: an alert never offers to approve it (server/push.ts, #2916)
+    expect(parsedByPublicPrompt.get(prompt)?.cutOff).toBe(true);
   });
 
   test("a question whose typed-answer row already holds a draft keeps it as the typed answer", () => {

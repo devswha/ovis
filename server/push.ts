@@ -340,9 +340,9 @@ export function promptActions(prompt: InteractivePrompt | null): PushAction[] | 
 export function promptSummary(prompt: InteractivePrompt): string | null {
   const body = (prompt.body ?? "").split("\n");
   if (body.length > PROMPT_SUMMARY_LINES) return null;
-  const lines = [prompt.title, prompt.question, ...body]
-    .map((line) => line.trim()).filter((line, index, all) => line !== "" && all.indexOf(line) === index);
-  const text = lines.join("\n");
+  // every line of what is approved stays, a repeated one too: only a title that repeats the question goes
+  const head = prompt.title.trim() === prompt.question.trim() ? [prompt.question] : [prompt.title, prompt.question];
+  const text = [...head, ...body].map((line) => line.trim()).filter((line) => line !== "").join("\n");
   return text.length > PROMPT_SUMMARY_MAX ? null : text;
 }
 

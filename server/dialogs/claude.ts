@@ -501,6 +501,7 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
   if (/esc to\s+cancel/i.test(lines.slice(rows.at(-1)!.lineIndex + 1, hintIndex).map(cleanLine).join(" "))) return null;
   let title: CardWords;
   let body: string;
+  let cutOff = false;
   if (approvalIndex >= 0 && approvalIndex < questionIndex) {
     title = nearestQuestion(lines, approvalIndex) ?? own("Command approval");
     const bodyEnd = dangerousRmIndex > requiredIndex ? questionIndex : approvalIndex;
@@ -533,6 +534,7 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
       .filter((line) => line && !isDivider(line));
     if (panel.length === 0) return null;
     title = scrolled ? own("Command approval") : panel[0]!;
+    cutOff = scrolled;
     body = (scrolled ? panel : panel.slice(1)).join("\n");
   }
   return finishPrompt("claude", {
@@ -544,7 +546,7 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
     multi_select: false, custom_option_index: null,
   }, {
     responder: "claude-approval", menuLabels: rows.map((row) => row.label), selectedIndex: rows.findIndex((row) => row.selected),
-    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
+    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null, ...(cutOff ? { cutOff: true as const } : {}),
   });
 }
 

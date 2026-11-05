@@ -1328,7 +1328,10 @@ async function withPlanFile(prompt: InteractivePrompt | null, transcript: string
  */
 export async function currentPrompt(paneId: string, options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState; signal?: AbortSignal }): Promise<InteractivePrompt | null> {
   const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState, options.signal);
-  return read.stale || read.inputUnverified ? null : read.prompt;
+  if (read.stale || read.inputUnverified || !read.prompt) return null;
+  // a card that shows only part of what it is about is never answered from an alert, which shows even less
+  const parsed = parsedByPublicPrompt.get(read.prompt);
+  return parsed?.cutOff || parsed?.ompQuestionCut ? null : read.prompt;
 }
 
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {

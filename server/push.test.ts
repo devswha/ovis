@@ -1532,6 +1532,14 @@ describe("answer buttons on a question's alert (#2916)", () => {
     expect(fake.received[0]!.payload.body).toBe("Bash command\nDo you want to proceed?\nrm -rf build\nDelete the build directory");
   });
 
+  it("keeps every line of what is approved, a repeated one too", async () => {
+    fake.received.length = 0;
+    const push = subscribed({ lookupPrompt: async () => prompt({ title: "Bash command", question: "Do you want to proceed?", body: "cd ..\ncd ..\nrm -rf project" }) });
+    push.seed([pane("w1:p1", "working", "claude")]);
+    await push.onStatus("w1:p1", "blocked");
+    expect(fake.received[0]!.payload.body).toBe("Bash command\nDo you want to proceed?\ncd ..\ncd ..\nrm -rf project");
+  });
+
   it("drops an alert whose pane moved on while its prompt was read, so it never replaces the newer one", async () => {
     fake.received.length = 0;
     const slow = deferred();

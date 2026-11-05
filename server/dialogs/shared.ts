@@ -151,6 +151,8 @@ export type ParsedPrompt = InteractivePrompt & {
   /** Installed questionnaire editor contents; absent outside its guarded input mode. */
   piQuestionnaireInput?: string;
   piQuestionnaireInputRows?: string[];
+  /** what the card is about began above the screen (Claude's approval of a command scrolled past its panel): the card shows only its tail */
+  cutOff?: true;
   /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */

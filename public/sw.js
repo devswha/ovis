@@ -428,6 +428,9 @@ async function answerFromAlert(data, index) {
   } catch {
     /* no listing: the follow-up shows */
   }
+  // and one whose push came in while that was listed: checked with no wait before the notice goes up
+  const latest = latestAlerts.get(data.tag);
+  if (latest !== undefined && latest !== data.alert_id) return;
   await self.registration.showNotification(data.title, {
     body,
     tag: data.tag,
@@ -437,6 +440,9 @@ async function answerFromAlert(data, index) {
   });
 }
 
+/** the newest alert each tag was given in this worker's life, noted as its push arrives (answerFromAlert) */
+const latestAlerts = new Map();
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -444,12 +450,14 @@ self.addEventListener("push", (event) => {
   } catch (err) {
     payload = { body: event.data ? event.data.text() : "" };
   }
+  // noted before anything is awaited: an answer's notice that comes back meanwhile sees it is no longer the newest
+  const tag = payload.tag || "herdr";
+  const alertId = crypto.randomUUID();
+  latestAlerts.set(tag, alertId);
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const watching = windows.some((client) => client.visibilityState === "visible" && ofThisPc(client.url));
-      const tag = payload.tag || "herdr";
-      const alertId = crypto.randomUUID();
       const earlier = await earlierAlerts(tag);
       const answers = answerButtons(payload);
       await self.registration.showNotification(payload.title || "Ovis", {
