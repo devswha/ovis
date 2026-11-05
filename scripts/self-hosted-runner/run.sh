@@ -70,8 +70,8 @@ case "$BUILD_CACHE_WRITER" in *[!A-Za-z0-9-]*|-*|???????????????????????????????
 # a job writes takes memory.
 WORK_TMPFS_ARGS=()
 if [ -n "$WORK_TMPFS" ]; then
-  case "$WORK_TMPFS" in [1-9]*[mg]) ;; *) echo "--work-tmpfs must be a size like 16g or 512m" >&2; exit 2 ;; esac
-  case "${WORK_TMPFS%?}" in *[!0-9]*|??????*) echo "--work-tmpfs must be a size like 16g or 512m" >&2; exit 2 ;; esac
+  case "$WORK_TMPFS" in [1-9]*[mg]) ;; *) echo "--work-tmpfs must be a size like 4g or 4096m" >&2; exit 2 ;; esac
+  case "${WORK_TMPFS%?}" in *[!0-9]*|??????*) echo "--work-tmpfs must be a size like 4g or 4096m" >&2; exit 2 ;; esac
   WORK_TMPFS_ARGS=(--tmpfs "/w:rw,exec,nosuid,size=$WORK_TMPFS,uid=1001,gid=1001,mode=0755"
     --tmpfs "/tmp:rw,exec,nosuid,size=$WORK_TMPFS,mode=1777")
 fi
