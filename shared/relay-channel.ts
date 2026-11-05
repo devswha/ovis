@@ -47,6 +47,18 @@ export class RelayAdmissionTimeoutError extends Error {
   }
 }
 
+/**
+ * The relay assigned the connection and held it PC_ANSWER_MS, and no PC came for it: the PC is not
+ * on the relay (stopped, restarting, or offline). The relay would have handed the connection to a
+ * PC that came back meanwhile, so the attempt itself was the wait.
+ */
+export class RelayPcOfflineError extends MuxProtocolError {
+  constructor() {
+    super("timeout", "The PC did not answer through the relay");
+    this.name = "RelayPcOfflineError";
+  }
+}
+
 /** WebSocket.OPEN, so an injected socket need not be a WebSocket */
 const OPEN = 1;
 
@@ -73,6 +85,8 @@ export interface RelayChannelOptions {
   readonly label?: string;
   readonly signal?: AbortSignal;
   readonly onClose?: (error: Error) => void;
+  /** how long the relay may hold the connection for the PC before it is called offline; PC_ANSWER_MS by default */
+  readonly pcAnswerMs?: number;
 }
 export interface RelayChannel {
   readonly mux: MuxEngine;
@@ -250,7 +264,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         }
         connectionId = assigned.connection_id;
         phase = "welcome";
-        if (!heardPc) expect(PC_ANSWER_MS, () => new MuxProtocolError("timeout", "The PC did not answer through the relay"));
+        if (!heardPc) expect(options.pcAnswerMs ?? PC_ANSWER_MS, () => new RelayPcOfflineError());
         const opened = Promise.withResolvers<void>();
         secure = await openClientSecureChannel(transport, {
           daemonPublicKeyB64: offer.server_public_key,
