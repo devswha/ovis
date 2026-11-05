@@ -35,7 +35,8 @@ launcher starts first and stops last. The runners therefore share a loopback, an
 `CHECK_MAX_RUNS` and wait for a slot, instead of each runner believing it has the PC to itself.
 The namespace is not the host's: a job still cannot reach a service on the host's loopback. The
 `--shm-size 2g` Docker setting sizes `/dev/shm` for browser scratch space; it is not a total RAM
-limit. The container still has a pids limit of 8192.
+limit. The container still has a pids limit of 8192, and `--ulimit core=0`: a crash never leaves a
+core file in the checkout, where `scripts/check.ts` would count it as a source change.
 
 ## Prepared tools and caches
 
@@ -45,6 +46,16 @@ Chromium under `/opt/playwright-browsers`; a missing browser fails with rebuild 
 download fallback. Rebuild with `--build` after changing the tool pins or Playwright in `bun.lock`.
 The image's `BUN_VERSION` must match the default in `.github/actions/setup-ci/action.yml`, and
 `PLAYWRIGHT_VERSION` must match the lockfile.
+
+### Runner version
+
+Runners register with `--disableupdate`, so `RUNNER_VERSION` in the Dockerfile decides the
+actions/runner version. Without it, a runner older than GitHub's latest release starts the update
+only after it is handed a job, and GitHub cancels that job about 3.5 minutes later with no runner
+name and no step (seen with 2.338.0 once 2.338.2 was out: every container downloaded the update).
+GitHub stops sending jobs to a runner more than 30 days behind a release, so raise
+`RUNNER_VERSION` and `RUNNER_SHA256` (the `linux-x64` SHA in the release notes) when actions/runner
+releases, then rebuild with `--build`.
 
 Bun dependencies are installed from `bun.lock`, with the local install-cache directory at
 `.ci-cache/bun` retained inside the checkout. Only hosted jobs restore and save that directory as
