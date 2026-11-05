@@ -10,7 +10,9 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { SidebarActivityProvider } from "../lib/sidebarActivity.tsx";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
+import { setSidebarPins } from "../lib/sidebarPins.ts";
 import { AgentSidebar } from "./AgentSidebar.tsx";
+import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const paneId = "w1C:p1";
@@ -105,6 +107,48 @@ describe("AgentSidebar phone sheet live row", () => {
       update: async (machines: Machine[]) => { await act(async () => { mounted.update(view(machines)); }); },
     };
   }
+
+  // Settings -> Lock pinned agents (experimental), as this device's stored settings carry it
+  const lockSetting = (agentLocks: boolean, lockedAgents: string[] = []) => {
+    (globalThis.window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
+      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentLocks, lockedAgents }) : null, setItem() {}, removeItem() {},
+    };
+  };
+
+  it("offers no lock, and holds none, until Lock pinned agents is turned on (#2432)", async () => {
+    lockSetting(false, [`local:${paneId}`]);
+    setSidebarPins([`local:${paneId}`]);
+    try {
+      const { mounted } = await open();
+      expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["unpin"]);
+      expect(mounted.root.findAllByProps({ "data-testid": "agent-locked" })).toHaveLength(0);
+    } finally {
+      setSidebarPins([]);
+    }
+  });
+
+  it("locks only a pinned row, which keeps its pin and shows a lock until it is unlocked (#2432)", async () => {
+    lockSetting(true);
+    setSidebarPins([]);
+    try {
+      const { mounted } = await open();
+      const items = () => mounted.root.findByType(RowMenu).props.items as RowMenuItem[];
+      const ids = () => items().map((item) => item.id);
+      const run = async (id: string) => { await act(async () => { items().find((item) => item.id === id)!.run(); }); };
+      const lockIcons = () => mounted.root.findAllByProps({ "data-testid": "agent-locked" });
+      expect(ids()).toEqual(["pin"]);
+      await act(async () => { setSidebarPins([`local:${paneId}`]); });
+      expect(ids()).toEqual(["unpin", "lock"]);
+      await run("lock");
+      expect(ids()).toEqual(["unlock"]);
+      expect(lockIcons()).toHaveLength(1);
+      await run("unlock");
+      expect(ids()).toEqual(["unpin", "lock"]);
+      expect(lockIcons()).toHaveLength(0);
+    } finally {
+      setSidebarPins([]);
+    }
+  });
 
   it("updates the open sheet when a plugin value changes", async () => {
     // Given an open sheet with the original quota.
@@ -344,6 +388,32 @@ describe("AgentSidebar fold memory", () => {
     await act(async () => { mounted.update(grouped(blockedRoster(true))); });
     expect(groupOf(paneId)).toBe("blocked");
     expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
+  });
+
+  it("keeps a background row's element when it becomes blocked and moves up, so its focus and open menu stay", async () => {
+    // Given an opened background part holding the agent, which works, and another background agent.
+    stored.set("ovis:agents-background-collapsed", "0");
+    const tagged = (blocked: boolean) => roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) =>
+        pane.pane_id === paneId ? { ...pane, tokens: { role: "background" }, agent_status: blocked ? "blocked" as const : "working" as const }
+        : pane.pane_id === "w1E:p1" ? { ...pane, tokens: { role: "background" } } : pane) },
+    }));
+    const view = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(view(tagged(false))); });
+    const mounted = renderer!;
+    const row = () => mounted.root.find((node) => node.type === "li" && node.props["data-pane"] === paneId);
+    const order = () => mounted.root.findAll((node) => node.type === "li" && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label")).map((node) => node.props["data-pane"] ?? "BG");
+    expect(order().indexOf(paneId)).toBeGreaterThan(order().indexOf("BG"));
+    const before = row();
+    // When it becomes blocked, it stands above the background heading as the same element.
+    await act(async () => { mounted.update(view(tagged(true))); });
+    expect(order().indexOf(paneId)).toBeLessThan(order().indexOf("BG"));
+    expect(row()).toBe(before);
   });
 
   it("orders the groups the same whichever Agents order is chosen: ties keep herdr's order, not Activity's", async () => {

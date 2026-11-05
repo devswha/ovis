@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type DragEvent, type MouseEvent, type MutableRefObject, type PointerEvent, type ReactNode } from "react";
-import { ArchiveRestore, Bot, Columns2, Ellipsis, Eraser, Folder, FolderInput, Maximize2, MoveHorizontal, Pencil, Plus, Rows2, ArrowLeftRight, Terminal, TextWrap, X } from "lucide-react";
+import { ArchiveRestore, Bot, Columns2, Ellipsis, Eraser, Folder, FolderInput, Maximize2, Minimize2, MoveHorizontal, Pencil, Plus, Rows2, ArrowLeftRight, Terminal, TextWrap, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import type { HerdrPane, HerdrTab, PaneLayoutSnapshot, SessionSnapshot } from "../../shared/protocol.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
@@ -24,6 +24,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
+import { usePaneLocked } from "../lib/paneLocks.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
@@ -109,6 +110,12 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const [closingTab, setClosingTab] = useState<HerdrTab | null>(null);
   const [closing, setClosing] = useState<HerdrPane | null>(null);
   const [error, setError] = useState<UserError | null>(null);
+  // a locked pinned agent (lib/paneLocks.ts) is closed from no menu here, nor is the tab it is in
+  const paneLocked = usePaneLocked(machineId);
+  const tabLocked = (tabId: string): boolean => snapshot?.panes.some((item) => item.tab_id === tabId && paneLocked(item.pane_id)) === true;
+  // a lock that lands while a confirmation is open (from another browser) takes the confirmation with it
+  if (closing && paneLocked(closing.pane_id)) setClosing(null);
+  if (closingTab && tabLocked(closingTab.tab_id)) setClosingTab(null);
   // A new pane can be selected before its snapshot arrives, and a selected pane can close
   // before App confirms its replacement. Keep the prior tab's surviving mounts (and their
   // connection-owned pending sends) through either gap, with selection/input still pending.
@@ -194,6 +201,13 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     if (inWorkspace === 1 || target.agent_status === "working" || target.agent_status === "blocked") setClosing(target);
     else run(() => api.closePane(target.pane_id));
   };
+  // the pane's zoom item and its title's zoom button: the mode the item names, never a toggle (lib/layoutMap.ts)
+  const zoom = (target: HerdrPane): void => run(async () => {
+    const tabId = latest.current.tabId;
+    const selection = latest.current.selection;
+    await api.zoomPane(target.pane_id, layout ? zoomMode(layout, target.pane_id) : "on");
+    if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(target.pane_id);
+  });
   const target = menu ? snapshot?.panes.find((item) => item.pane_id === menu.paneId) : null;
   const layoutItems = (target: HerdrPane): RowMenuItem[] => [
     // herdr-core names no pane, and swaps, zooms and resizes none (lib/machineContext.tsx `arrange`)
@@ -206,12 +220,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       { id: "split-down", label: t("Split down"), icon: Rows2, run: () => run(() => split(target, "down")) },
     ]),
     ...(!appLayout.arrange ? [] : [{ id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
-      run: () => run(async () => {
-        const tabId = latest.current.tabId;
-        const selection = latest.current.selection;
-        await api.zoomPane(target.pane_id, layout ? zoomMode(layout, target.pane_id) : "on");
-        if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(target.pane_id);
-      }) }]),
+      run: () => zoom(target) }]),
   ];
   // A lone tab on a cramped phone has no row (TabStrip), so the pane's menu carries what the row's
   // menu would: the tab's other panes, shown one at a time there, and the way to a new tab. There
@@ -248,7 +257,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         // the row's inline name field is gone with it: the tab is named in a dialog, as a pane is
         ...(!appLayout.rename || !tab ? [] : [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, run: () => setRenamingTab(tab) }]),
         // the tab's last pane closes it too, but a split tab has no other way to close as one (the row's confirmation: it is the workspace's last tab)
-        ...(tab ? [{ id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => setClosingTab(tab) }] : []),
+        ...(tab && !tabLocked(tab.tab_id) ? [{ id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => setClosingTab(tab) }] : []),
       ],
     };
   };
@@ -269,7 +278,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       icon: mirrorWraps ? MoveHorizontal : TextWrap,
       run: () => updateSettings({ terminalMirrorWrap: !mirrorWraps }) }] : []),
     ...(onRecoverUnsent && paneLifetimes.unsent().length > 0 ? [{ id: "recover-unsent", label: t("Recover unsent text"), icon: ArchiveRestore, run: () => onRecoverUnsent(target) }] : []),
-    { id: "close", label: t("Close pane"), icon: X, danger: true, run: () => requestClose(target) },
+    ...(paneLocked(target.pane_id) ? [] : [{ id: "close", label: t("Close pane"), icon: X, danger: true, run: () => requestClose(target) }]),
   ];
   const items = target ? itemsFor(target) : [];
   const published = useRef<{ ref: MutableRefObject<((target: HerdrPane) => RowMenuItem[]) | null>; items: typeof itemsFor } | null>(null);
@@ -323,6 +332,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const cells = layout ? layoutCells(layout) : pane ? [{ paneId: pane.pane_id, left: 0, top: 0, width: 100, height: 100, focused: true }] : [];
   const alone = soloPane(layout, cells.map((cell) => cell.paneId), selectedPaneId, narrow);
   const stacked = alone !== null && !layout?.zoomed;
+  // a split tab where every pane can be drawn (not a phone's one at a time): each title offers its
+  // zoom, and herdr's zoomed pane keeps its title row, with Unzoom, so the hidden panes are in sight (#2037)
+  const zoomable = appLayout.arrange && !narrow && cells.length > 1;
   for (const cell of cells) lastCells.current.set(cell.paneId, alone === cell.paneId || stacked
     ? { ...cell, left: 0, top: 0, width: 100, height: 100 } : cell);
   const shownIds = new Set(cells.map((cell) => cell.paneId));
@@ -355,7 +367,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       const offTab = cell.retained || cell.cached;
       const active = !offTab && item.pane_id === selectedPaneId;
       const hidden = offTab || (alone !== null && alone !== item.pane_id);
-      const single = offTab ? cell.width === 100 && cell.height === 100 : cells.length === 1 || alone === item.pane_id;
+      const single = offTab ? cell.width === 100 && cell.height === 100 : cells.length === 1 || (alone === item.pane_id && !zoomable);
+      const zoomedHere = alone === item.pane_id && layout?.zoomed === true;
       // Capture contextmenu before xterm focuses its helper textarea; the menu keeps focus on the original pane.
       return <section key={item.pane_id} data-layout-pane={item.pane_id}
         className={`pane-frame${active ? " is-current" : ""}${single ? " is-single" : ""}${hidden ? " is-hidden" : ""}`}
@@ -400,13 +413,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         {!(single && !offTab && loneRowHidden) && <div className="pane-frame-head" draggable={onOpenInHalf !== undefined && !coarse}
           onClick={(event) => {
             if (!onOpenInHalf || coarse || paneContextPress(event, apple) || (event.target instanceof Element && event.target.closest("button"))) return;
-            const frame = event.currentTarget.parentElement;
-            const input = frame?.querySelector<HTMLElement>(".secret-input input")
-              ?? frame?.querySelector<HTMLElement>(".find-bar input")
-              ?? (frame?.querySelector(".terminal-stack.is-chat:not(.is-peek)")
-                ? frame.querySelector<HTMLElement>(".composer-text")
-                : frame?.querySelector<HTMLElement>(".terminal-input textarea") ?? frame?.querySelector<HTMLElement>(".xterm-helper-textarea"));
-            input?.focus({ preventScroll: true });
+            paneInput(event.currentTarget.parentElement)?.focus({ preventScroll: true });
           }}
           onDragStart={(event: DragEvent<HTMLDivElement>) => {
             // dropped on a half of the pane area, the title opens its pane there (App's drop)
@@ -416,6 +423,10 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           <span className="pane-frame-title">{displayPaneTitle(item)}</span>
           <button type="button" className="icon-button pane-frame-menu" aria-label={t("Pane actions for {name}", { name: displayPaneTitle(item) })}
             onClick={(event) => showMenu(item, event.currentTarget)}><Ellipsis aria-hidden="true" /></button>
+          {zoomable && !offTab && <button type="button" className="icon-button pane-frame-zoom" aria-label={t(zoomedHere ? "Unzoom pane" : "Zoom pane")} title={t(zoomedHere ? "Unzoom pane" : "Zoom pane")}
+            // a click selects this pane, so its typing goes there too, as a click on the title does;
+            // a key that pressed the button (detail 0) leaves the focus on it
+            onClick={(event) => { zoom(item); if (event.detail > 0) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true }); }}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;
@@ -469,6 +480,16 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
       confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await api.closePane(closing.pane_id); setClosing(null); onChanged(); }} />}
   </div></PaneSubmitContext.Provider>;
+}
+
+/** Where a pane's typing goes: an open secret or find field, the chat's message box, else the terminal. */
+function paneInput(frame: Pick<Element, "querySelector"> | null): HTMLElement | null {
+  if (!frame) return null;
+  return frame.querySelector<HTMLElement>(".secret-input input")
+    ?? frame.querySelector<HTMLElement>(".find-bar input")
+    ?? (frame.querySelector(".terminal-stack.is-chat:not(.is-peek)")
+      ? frame.querySelector<HTMLElement>(".composer-text")
+      : frame.querySelector<HTMLElement>(".terminal-input textarea") ?? frame.querySelector<HTMLElement>(".xterm-helper-textarea"));
 }
 
 /** A pane's or a lone tab's name; `required` is the error an empty name gets, where one is not allowed (a tab's). */
