@@ -36,7 +36,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
     return reply({
       account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
-      enrolling: context.services.accountHolds.enrolling(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
+      enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
     });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
@@ -61,9 +61,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // a link that may bring this PC into an account: account adds wait until its member enrolls it. On disk
       // first, so a stop keeps them waiting; never lifted by a refused link, as another may be on its way
       // (with no account here no add applies anyway, and the next first member takes the barrier over)
-      if (devices.account() === null) context.services.accountHolds.startEnrolling(peer.device.id);
+      if (context.services.accountHolds.error !== null) return fail("account_unavailable", context.services.accountHolds.error, 503);
+      const first = devices.account() === null;
+      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
       const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId });
       if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
+      // the wait is this device's to end: a link refused meanwhile may have named another
+      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
       return reply({ device: linked.device });
     }
     case "/api/account/records": {
@@ -87,6 +91,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       const holds = context.services.accountHolds;
       const mailbox = context.services.accountMailbox;
+      if (holds.error !== null) return fail("account_unavailable", holds.error, 503);
       // before any add, and before the barrier lifts: the keys the member found removed elsewhere stay out of every path
       holds.hold(held ?? []);
       // more keys than one enrollment carries: every add is held back from now on, rather than one let in by the cut

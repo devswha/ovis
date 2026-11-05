@@ -111,6 +111,9 @@ export class AccountMailbox {
     };
   }
 
+  /** Every add is held back here, whatever its key: the waiting records cannot be read, or removes were lost to a full queue. */
+  holdsEveryAdd(): boolean { return this.pendingError !== null || (this.options.holds?.full() ?? false); }
+
   /** The keys of the removes waiting here: /api/account/status lists them as `blocked`. */
   waitingRemoveKeys(): string[] {
     return [...new Set(this.waiting().flatMap((record) => removedKey(record) ?? []))];
@@ -120,8 +123,17 @@ export class AccountMailbox {
 
   /** Pulls now unless a pull is under way; how many records changed something. Never throws. */
   pull(): Promise<number> {
-    this.pulling ??= this.drain().finally(() => { this.pulling = undefined; });
+    this.pulling ??= this.exclusively(() => this.drain()).finally(() => { this.pulling = undefined; });
     return this.pulling;
+  }
+
+  /** The waiting records are retried by one run at a time (a pull, or settle), so none of them is ever out of the gate's sight. */
+  private turn: Promise<unknown> = Promise.resolve();
+
+  private exclusively<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.turn.then(run, run);
+    this.turn = next.catch(() => undefined);
+    return next;
   }
 
   start(): void {
@@ -165,8 +177,11 @@ export class AccountMailbox {
   }
 
   /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
-  async settle(): Promise<number> {
-    if (this.pulling) await this.pulling;
+  settle(): Promise<number> {
+    return this.exclusively(() => this.settleNow());
+  }
+
+  private async settleNow(): Promise<number> {
     const identity = this.options.identity();
     if (!identity || this.pendingError !== null || this.pending.length === 0) return 0;
     const early = this.pending.splice(0);
@@ -255,6 +270,8 @@ export class AccountMailbox {
       if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending]);
     };
     let complete = false;
+    // a pull that stops short or fails leaves no earlier whole read standing
+    this.drainedAt = null;
     try {
       const admissions = new Map<string, number>();
       await retry();

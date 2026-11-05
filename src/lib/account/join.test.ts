@@ -253,6 +253,38 @@ describe("enrolling a PC this device brings into the account", () => {
     expect([enrolled.finished, enrolled.checked]).toEqual([false, 0]);
   });
 
+  it("relays its removes but sends no add when only PCs from before enrollments answered, and ends the new PC's wait", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const older = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const { fresh: _fresh, ...rest } = await answer.json() as Record<string, unknown>;
+      return Response.json(rest);
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: older }] });
+    expect([enrolled.finished, enrolled.admitted]).toEqual([true, []]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+    expect(y.f.app.context.services.accountHolds.enrolling()).toBe(false);
+  });
+
+  it("sends no add, and holds every one, when a PC it read lost removal evidence", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const blind = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      return path.startsWith("/api/account/status") ? Response.json({ ...await answer.json() as object, blocked_all: true }) : answer;
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: blind }] });
+    expect(enrolled.admitted).toEqual([]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+    expect(y.f.app.context.services.accountHolds.full()).toBe(true);
+  });
+
   it("brings the devices another PC lists into the new PC, and introduces the new PC to them there", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");

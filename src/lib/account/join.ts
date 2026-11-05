@@ -54,6 +54,8 @@ export interface PcAccountStatus {
   readonly blocked: readonly string[];
   /** with `fresh`: it read its whole mailbox just now, so no removal waits unread there */
   readonly fresh?: boolean;
+  /** it holds every add back: it lost removal evidence, so `blocked` may not name every key it keeps out */
+  readonly blockedAll?: boolean;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -66,7 +68,9 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     account: typeof body.account === "string" ? body.account : null, unlinked,
     removals: Array.isArray(body.removals) ? body.removals : [], adds: Array.isArray(body.adds) ? body.adds : [],
     blocked: Array.isArray(body.blocked) ? body.blocked.filter(isAccountKey) : [],
-    ...(options.fresh ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
+    // an Ovis from before enrollments sends no `fresh` at all
+    ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
+    ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
   };
 }
 
@@ -345,16 +349,20 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
+  /** PCs from before enrollments: their removals are relayed, but they cannot say they read their mailbox */
+  let legacy = 0;
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
+      if (status.account !== options.account) return;
+      if (status.fresh === undefined) { legacy++; seen.push(status); return; }
       // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet
-      if (status.account !== options.account || status.fresh !== true) return;
+      if (!status.fresh) return;
       answered.push(peer);
       seen.push(status);
     } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
   }));
-  if (others.length > 0 && answered.length === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
+  if (others.length > 0 && answered.length === 0 && legacy === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
   await keepRemovals({ store: options.store, account: options.account, removals: seen.flatMap((status) => status.removals) });
   const collected = await verified(seen.flatMap((status) => [...status.removals, ...status.adds]), options.account);
   /** the removals to send: this client's own and the ones it kept, not answered yet */
@@ -373,7 +381,10 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
     ...Object.values(known ?? {}).filter((record) => record.kind === "remove" && record.account === options.account).map((record) => record.key),
     ...Object.values(kept ?? {}).map((record) => record.key),
   ]);
-  const adds = [...Object.values(known ?? {}), ...collected]
+  // a PC that lost removal evidence may keep out a key it cannot name: then no add goes, and the new PC holds every one
+  // only older PCs answered: no add goes, as before enrollments, and the account's devices ask this PC once each
+  const blind = seen.some((status) => status.blockedAll === true) || (others.length > 0 && answered.length === 0);
+  const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))
     .filter((record, index, all) => all.findIndex((other) => other.id === record.id) === index);
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
@@ -384,8 +395,15 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
-    const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX ? { held_full: true } : {}) } : {};
-    const answer = await (await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, last: start + ACCOUNT_ENROLL_MAX >= records.length, ...first })).json() as { results?: unknown };
+    const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX || seen.some((status) => status.blockedAll === true) ? { held_full: true } : {}) } : {};
+    // a part with a remove the PC could not decide keeps its wait: this enrollment is sent again on the next connection
+    let response: Response;
+    try { response = await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, last: sent && start + ACCOUNT_ENROLL_MAX >= records.length, ...first }); } catch (error) {
+      // an Ovis from before enrollments takes adds only there: the removes go through records, as they did, and no add
+      if (!(error instanceof AccountPcError) || error.code !== "record_invalid") throw error;
+      return enrollLegacy({ ...options, removes });
+    }
+    const answer = await response.json() as { results?: unknown };
     const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
     for (const record of batch) {
       const result = results.find((entry) => entry.id === record.id);
@@ -408,6 +426,31 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   });
   if (options.pc !== undefined) await introduce(answered, admitted, options.pc);
   return { finished, checked: answered.length, of: others.length, admitted };
+}
+
+/** A new PC from before enrollments: the removes as they were sent then, through records, and no add. */
+async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; removes: readonly RemoveRecord[] }): Promise<Enrollment> {
+  const done: string[] = [];
+  let sent = true;
+  for (let start = 0; start < options.removes.length; start += 32) {
+    const batch = options.removes.slice(start, start + 32);
+    const answer = await (await post(options.fetch, "/api/account/records", { records: batch })).json() as { results?: unknown };
+    const results = Array.isArray(answer.results) ? answer.results as { id?: unknown; outcome?: unknown; code?: unknown }[] : [];
+    for (const record of batch) {
+      const result = results.find((entry) => entry.id === record.id);
+      if (result?.outcome === "applied" || result?.outcome === "unchanged" || (result?.outcome === "refused" && !UNDECIDED.has(String(result.code)))) done.push(record.id);
+      else sent = false;
+    }
+  }
+  await options.store.update("enrolls", (current) => {
+    const entry = current?.[options.serverId];
+    if (current === undefined || entry === undefined) return current;
+    const rest = { ...current };
+    if (sent) delete rest[options.serverId];
+    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+  return { finished: sent, checked: 0, of: options.others?.length ?? 0, admitted: [] };
 }
 
 /** Each PC that answered tells the devices just let in about the new PC (docs/account.md, "Introductions"); one that does not know a device skips it. */

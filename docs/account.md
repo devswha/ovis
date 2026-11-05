@@ -205,7 +205,10 @@ Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as r
 that made a row, or the approver's own for a row its remote approval made. `blocked` lists every key
 an add cannot bring in here: every tombstone (signed or not), every key a waiting remove names, and
 every key an enrollment held ([Enrolling a PC](#enrolling-a-pc)). `enrolling` is true while the PC
-waits for its first member's enrollment. A client trusts none of them before it checks it (below).
+waits for its first member's enrollment. `blocked_all` is true when the PC holds every add back
+(removal evidence was lost to a full queue, or its waiting records cannot be read): then `blocked`
+may not name every key it keeps out, and a client enrolling another PC sends that PC no add and
+`held_full`. A client trusts none of them before it checks it (below).
 With `?fresh=1` the PC first pulls its mailbox (at most once every 10 seconds, as a join that
 missed does), so a remove waiting there is counted, and adds `fresh`: true only when a pull in the
 last 10 seconds read the whole mailbox without an error.
@@ -237,7 +240,9 @@ while its key is held ([Enrolling a PC](#enrolling-a-pc)).
 what a member sends a PC it brought into the account, over the relay session of a device that is
 already a member of `account` (it links itself first). At most 512 records and 4096 held keys;
 `held_full` says there were more (every add is then refused from then on); `last: false` says more
-parts follow. Same answer as `records`, in the order sent; the PC applies them in its own order
+parts follow, or an earlier part had a remove the PC could not decide (the client then sends the
+whole enrollment again on its next connection). Within one request, an add for the key of a remove
+the PC could not keep is held back too. Same answer as `records`, in the order sent; the PC applies them in its own order
 (below).
 
 ### Enrolling a PC
@@ -274,7 +279,11 @@ signed by a key the PC made up, and it signs nothing for any of them.
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it first reads every other PC of the account it
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
-none of them answers it sends nothing and tries again on its next connection. Then, over a
+none of them answers it sends nothing and tries again on its next connection. A PC whose answer
+is not `fresh` does not count. When only PCs from before enrollments answer (no `fresh` at all),
+it sends their removals and its own, but no add, and ends the new PC's wait: the account's devices
+then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
+`enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
 
 - the `remove`s it signed itself and the ones it kept;
@@ -357,6 +366,8 @@ is what authenticates the PC.
 - **Reset relay identity** removes every relay device, members included, so the PC leaves the
   account; a client adds it again by pairing with its new identity, after the client's usual "this
   PC's identity changed" notice.
+- `account-enrolling.json` and `account-held.json` that will not parse are not empty: every add is
+  refused, and a link or enrollment answers `account_unavailable`, until they are restored or removed.
 - A record refused only because its signer is not a member yet (a `remove` that arrived before its
   signer's own `add`), or an `add` held back ([Enrolling a PC](#enrolling-a-pc)), is kept in
   `account-pending.json` and tried again on every pull, a restart included, until it applies. At

@@ -63,18 +63,28 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
  * record applies, so an add for the same key later in the batch already meets it (AddGates.held).
  * One `wait` could not keep is undecided (`account_unavailable`): its sender tries again.
  */
-function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, wait: ((record: unknown) => boolean) | undefined): RecordOutcome {
+function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, wait: ((record: unknown) => boolean) | undefined, undecided: Set<string>): RecordOutcome {
   if (wait === undefined || record.kind !== "remove" || outcome.outcome !== "refused" || outcome.code !== "signer_not_member") return outcome;
-  return wait(value) ? outcome : { id: outcome.id, outcome: "refused", code: "account_unavailable" };
+  if (wait(value)) return outcome;
+  // not kept anywhere: the rest of the batch still treats its key as removed
+  undecided.add(record.key);
+  return { id: outcome.id, outcome: "refused", code: "account_unavailable" };
+}
+
+/** `gates` with the keys of this batch's removes that could not be kept: an add for one is held back too. */
+function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<string>): AddGates {
+  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false) };
 }
 
 /** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */
 export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
+  const undecided = new Set<string>();
+  const batchGates = withUndecided(gates, undecided);
   for (const value of values) {
     const record = await read(value);
-    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, gates), record, value, wait));
+    outcomes.push("refused" in record ? { id: record.id, outcome: "refused", code: record.refused } : waited(apply(store, record, serverId, now, batchGates), record, value, wait, undecided));
   }
   return outcomes;
 }
@@ -90,6 +100,8 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   gates: AddGates; wait: (record: unknown) => boolean; settle: () => Promise<unknown>; now?: number;
 }): Promise<RecordOutcome[]> {
   const now = options.now ?? Date.now();
+  const undecided = new Set<string>();
+  const gates = withUndecided(options.gates, undecided);
   const outcomes: (RecordOutcome | undefined)[] = values.map(() => undefined);
   const records = await Promise.all(values.map(read));
   const removes: number[] = [];
@@ -106,13 +118,13 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   };
   const signed = (index: number) => record(index).issued_at;
   for (const index of removes.sort((a, b) => signed(a) < signed(b) ? -1 : signed(a) > signed(b) ? 1 : 0)) {
-    outcomes[index] = waited(apply(store, record(index), serverId, now, options.gates), record(index), values[index], options.wait);
+    outcomes[index] = waited(apply(store, record(index), serverId, now, gates), record(index), values[index], options.wait, undecided);
   }
   for (let progress = true; progress && adds.length;) {
     progress = false;
     const next: number[] = [];
     for (const index of adds) {
-      const outcome = apply(store, record(index), serverId, now, options.gates);
+      const outcome = apply(store, record(index), serverId, now, gates);
       outcomes[index] = outcome;
       if (outcome.outcome === "refused" && outcome.code === "signer_not_member") next.push(index);
       else if (outcome.outcome === "applied") progress = true;

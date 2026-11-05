@@ -23,35 +23,42 @@ export class AccountHolds {
   readonly error: string | null = null;
   private enrollingBy: string | null = null;
   private keys = new Set<string>();
-  private full = false;
+  private overflowed = false;
 
   constructor(private readonly options: { enrollingPath?: string; heldPath?: string } = {}) {
     const enrolling = readJson(options.enrollingPath);
     const held = readJson(options.heldPath);
-    if (enrolling === null || held === null) {
-      this.error = "The account's held keys cannot be read: account adds wait until the file is restored or removed.";
-      return;
-    }
-    if (enrolling !== "missing") {
-      const by = (enrolling.value as { by?: unknown } | null)?.by;
-      if (typeof by !== "string") { this.error = `${options.enrollingPath} is not an enrollment barrier.`; return; }
-      this.enrollingBy = by;
-    }
-    if (held !== "missing") {
+    // each file is read whatever the other holds, so fixing one never writes over the other
+    const problems: string[] = [];
+    if (held === null) problems.push(`${options.heldPath} cannot be read`);
+    else if (held !== "missing") {
       const value = held.value as { keys?: unknown; full?: unknown } | null;
-      if (!Array.isArray(value?.keys) || !value.keys.every(isAccountKey) || typeof value.full !== "boolean") { this.error = `${options.heldPath} is not a list of held keys.`; return; }
-      this.keys = new Set(value.keys);
-      this.full = value.full;
+      if (!Array.isArray(value?.keys) || !value.keys.every(isAccountKey) || typeof value.full !== "boolean") problems.push(`${options.heldPath} is not a list of held keys`);
+      else { this.keys = new Set(value.keys); this.overflowed = value.full; }
     }
+    if (enrolling === null) problems.push(`${options.enrollingPath} cannot be read`);
+    else if (enrolling !== "missing") {
+      const by = (enrolling.value as { by?: unknown } | null)?.by;
+      if (typeof by !== "string") problems.push(`${options.enrollingPath} is not an enrollment barrier`);
+      else this.enrollingBy = by;
+    }
+    if (problems.length > 0) this.error = `${problems.join("; ")}: account adds wait until it is restored or removed.`;
   }
 
   /** The PC waits for the member `by` that linked it first to enroll it: account adds wait meanwhile. */
   startEnrolling(by: string): void {
+    this.assertReadable();
     if (this.options.enrollingPath) writePrivateState(this.options.enrollingPath, { by });
     this.enrollingBy = by;
   }
 
+  /** A file that cannot be read is never written over: what it held would be lost. */
+  private assertReadable(): void {
+    if (this.error !== null) throw new Error(this.error);
+  }
+
   endEnrolling(): void {
+    this.assertReadable();
     if (this.options.enrollingPath) rmSync(this.options.enrollingPath, { force: true });
     this.enrollingBy = null;
   }
@@ -63,23 +70,28 @@ export class AccountHolds {
 
   /** Keys an enrolling member found removed (or suspected) elsewhere: an add for one never applies here. */
   hold(keys: readonly string[]): void {
+    this.assertReadable();
     const next = new Set(this.keys);
     for (const key of keys) next.add(key);
-    const full = this.full || next.size > ACCOUNT_HELD_MAX;
+    const full = this.overflowed || next.size > ACCOUNT_HELD_MAX;
     const kept = full ? [...next].slice(0, ACCOUNT_HELD_MAX) : [...next];
     if (this.options.heldPath) writePrivateState(this.options.heldPath, { keys: kept, full });
     this.keys = new Set(kept);
-    this.full = full;
+    this.overflowed = full;
   }
 
   /** Waiting removes had to be dropped: every add is held back from now on, until the file is removed. */
   overflow(): void {
+    this.assertReadable();
     if (this.options.heldPath) writePrivateState(this.options.heldPath, { keys: [...this.keys], full: true });
-    this.full = true;
+    this.overflowed = true;
   }
 
   /** Whether an add for `key` is held back: a held key, a list that overflowed, or holds that cannot be read. */
-  holds(key: string): boolean { return this.error !== null || this.full || this.keys.has(key); }
+  holds(key: string): boolean { return this.error !== null || this.overflowed || this.keys.has(key); }
 
   list(): string[] { return [...this.keys]; }
+
+  /** Every add is held back: the list overflowed, or the holds cannot be read. */
+  full(): boolean { return this.error !== null || this.overflowed; }
 }
