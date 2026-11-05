@@ -27,8 +27,10 @@ import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScr
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { CRAMPED_QUERY, loneTabHidden, SOLO_PANE_QUERY } from "../lib/paneCanvas.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
+import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
+import { usePaneLocked } from "../lib/paneLocks.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
 import { indicatorGlyph, paneStatus, rollupStatus } from "../lib/status.ts";
@@ -70,6 +72,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
+  // a tab holding a locked pinned agent (lib/paneLocks.ts) is closed from no button, key or click here
+  const paneLocked = usePaneLocked(machineId);
   const pressPane = useContext(PanePressContext);
   const { closeTab, renameTab, moveTab } = useMachineApi();
   // the Herdr app's window owns this PC's tabs (lib/machineContext.tsx): no rename, no move, no other workspace
@@ -319,7 +323,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (latest.current.tabId === tab.tab_id && pane) onSelectPane(pane.pane_id);
     if (strip.current?.contains(document.activeElement) || document.activeElement === document.body) focusTab(beside.tab_id);
   };
+  // every pane of the tab by id, the ones the strip leaves out of its list (a DAG viewer's) included
+  const tabLocked = (tab: HerdrTab): boolean => snapshot.panes.some((pane) => pane.tab_id === tab.tab_id && paneLocked(pane.pane_id));
+  // a lock that lands while the confirmation is open (from another browser) takes the confirmation with it
+  if (confirm && tabLocked(confirm.tab)) setConfirm(null);
   const requestClose = (tab: HerdrTab): void => {
+    if (tabLocked(tab)) return;
     setError(null);
     // a turn that waits on its background work would lose that work too
     const busy = panesOf(tab).some((pane) => { const status = paneStatus(pane as HerdrPane); return status === "working" || status === "blocked" || status === "waiting"; });
@@ -401,14 +410,14 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     return groups.flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
   // herdr moves a tab to another workspace only as its one pane: a split tab is not offered it
-  const otherWorkspaces = snapshot.workspaces.filter((entry) => entry.workspace_id !== workspace.workspace_id);
-  const canMoveOut = (tab: HerdrTab): boolean => onMoveToWorkspace !== undefined && moveOffered && otherWorkspaces.length > 0 && panesOf(tab).length === 1;
+  const destinations = (tab: HerdrTab) => moveDestinations(snapshot.workspaces, snapshot.panes.find((pane) => pane.tab_id === tab.tab_id), workspace.workspace_id);
+  const canMoveOut = (tab: HerdrTab): boolean => onMoveToWorkspace !== undefined && moveOffered && panesOf(tab).length === 1 && destinations(tab).length > 0;
   const moveToWorkspace = (tab: HerdrTab, workspaceId: string): void => {
     setError(null);
     void onMoveToWorkspace?.(tab.tab_id, workspaceId).catch((reason: unknown) => setError(routeMissing(reason) ? t("This PC's bridge does not offer this yet") : t("Move failed: {reason}", { reason: said(reason) })));
   };
   // the same menu, in place, lists where the tab can go
-  const workspaceItems = (tab: HerdrTab): RowMenuItem[] => otherWorkspaces.map((entry) => ({
+  const workspaceItems = (tab: HerdrTab): RowMenuItem[] => destinations(tab).map((entry) => ({
     id: `workspace:${entry.workspace_id}`, label: entry.label, icon: Folder, run: () => moveToWorkspace(tab, entry.workspace_id),
   }));
   // the strip's + opens a shell tab; the menu keeps the dialog, where an agent is picked
@@ -422,7 +431,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       run: () => { if (picker) setPicker({ ...picker, workspaces: true }); } }] : []),
     { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, run: onNewTab },
     ...(!renameOffered ? [] : [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, run: () => beginRename(tab) }]),
-    { id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => requestClose(tab) },
+    ...(tabLocked(tab) ? [] : [{ id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => requestClose(tab) }]),
   ];
 
   // the pane region every tab governs, as App names it. App gives that region the tabpanel role

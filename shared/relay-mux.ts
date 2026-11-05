@@ -3,6 +3,11 @@ import { createScanner, ScanError, SyntaxKind } from "jsonc-parser";
 /** The relay wire generation: the envelope's first byte and WELCOME's `relay_protocol`. A PC on another one is refused outright. */
 export const RELAY_PROTOCOL = 1;
 /**
+ * The optional mux feature by which a PC names the relays a phone should reach it through, in
+ * AUTH_OK: the preferred one first. A phone offers it in HELLO, the PC selects it in WELCOME.
+ */
+export const RELAY_HINTS = "relay-hints";
+/**
  * The oldest Ovis server the hosted shell connects to: 0.4.21 (package.json read 0.4.20 when the
  * relay landed; v0.4.21 itself holds no server/relay/, so the first release that does is newer).
  * Raise it only in a PR that makes the shell need a newer server API, with a changelog line. A
@@ -34,6 +39,29 @@ export type FrameType = typeof FrameType[keyof typeof FrameType];
  * digits (shared/relay-pair-sas.ts): PAIR_REQUEST, PAIR_CHALLENGE, PAIR_REVEAL and PAIR_CONFIRM.
  */
 export const PAIR_SAS_FEATURE = "pair-sas";
+/** The PC has `/api/account/*` and applies account records (docs/account.md, "Negotiation"). */
+export const ACCOUNT_FEATURE = "account";
+/** What a comparison asks for, offered with `pair-sas` (at most one) and shown in the approval prompt. */
+export const PAIR_INTENT_PC = "pair-intent-pc";
+export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
+/**
+ * The optional mux feature by which a phone says it takes WebSocket messages up to
+ * MAX_LARGE_WS_MESSAGE_BYTES (a large session's snapshot, #2773), not only the v1 limit. A phone
+ * offers it in HELLO; a PC that reads it sends such messages to that phone, and to no other. It is
+ * never selected in WELCOME, which may go out before HELLO is read, and v1 limits stay as they are.
+ */
+export const LARGE_WS_MESSAGES = "large-ws-messages";
+/**
+ * The optional mux feature by which a phone says it takes the `x-server-time` response header (the PC's
+ * clock as it answered a conversation read, src/lib/sentWaiting.ts). A phone without it refuses a
+ * header it does not list, so a PC sends it only to a phone that offered this in HELLO.
+ */
+export const SERVER_TIME_HEADER = "server-time-header";
+/**
+ * A 4 MiB outgoing queue (relay-mux-engine.ts) holds one such message and, behind it, the 1 MiB a PC's
+ * core still sends to a client while it drains (server/output-window.ts OUTPUT_HARD_BYTES).
+ */
+export const MAX_LARGE_WS_MESSAGE_BYTES = 3 * 1024 * 1024;
 export const HTTP_END_FLAGS = { STOPPED: 0x0001 } as const;
 export const WS_DATA_FLAGS = { START: 0x0001, END: 0x0002, TEXT: 0x0004 } as const;
 
@@ -75,6 +103,8 @@ export const RESPONSE_HEADERS = [
   "content-type", "content-length", "content-range", "accept-ranges", "etag",
   "last-modified", "cache-control", "content-disposition", "retry-after", "x-request-id",
   "content-security-policy", "x-content-type-options", "cross-origin-resource-policy", "referrer-policy",
+  // only to a peer that offered SERVER_TIME_HEADER
+  "x-server-time",
 ] as const;
 /** The only read-only routes a browser resource may load through a shell worker. */
 export const RELAY_RESOURCE_ROUTES = ["fs/file", "fs/favicon", "pane/conversation/image"] as const;
@@ -101,9 +131,9 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
-  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch" };
+  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[] };
   readonly 0x05: { readonly code: SessionError; readonly message: string };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
@@ -251,6 +281,14 @@ function feature(value: unknown): string {
   requireProtocol(/^[a-z0-9-]{1,32}$/.test(result), "Invalid feature");
   return result;
 }
+function relayOrigin(value: unknown): string {
+  const result = text(value, 256);
+  let origin: string | null = null;
+  // relay-offer.ts isWssOrigin, not imported: relay-offer reaches this module through relay-e2ee
+  try { const url = new URL(result); origin = url.protocol === "wss:" ? url.origin : null; } catch { /* not a URL */ }
+  requireProtocol(origin === result, "Invalid relay origin");
+  return result;
+}
 function protocol(value: unknown): string {
   const result = text(value, 128);
   requireProtocol(HTTP_TOKEN.test(result), "Invalid WS subprotocol");
@@ -311,7 +349,9 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       requireProtocol(v.protocol === "ovis-mux" && v.version === 1, "Invalid welcome protocol");
       // another relay_protocol is read, not refused here: the shell names it an update (src/lib/relay/channel.ts)
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
-        nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64) } };
+        nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64),
+        // sent before HELLO: a phone pairing by comparing digits waits for the WELCOME that answers its HELLO
+        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };
@@ -328,7 +368,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       requireProtocol(v.confirmed === true && Object.keys(v).length === 1, "Invalid pairing confirmation");
       return { ...common, type, payload: { confirmed: true } };
     case FrameType.AUTH_OK:
-      return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]) } };
+      return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
+        ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
     case FrameType.GOAWAY:
@@ -368,7 +409,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
 
 function wsFragment(flags: number, data: Uint8Array, total: unknown): Payloads[0x22] {
   if (flags & WS_DATA_FLAGS.START) {
-    const length = integer(total, 0, LIMITS_V1.max_ws_message_bytes);
+    // the engine holds each message to what its peer takes (LARGE_WS_MESSAGES) before this
+    const length = integer(total, 0, MAX_LARGE_WS_MESSAGE_BYTES);
     requireProtocol(data.byteLength <= length && (!!(flags & WS_DATA_FLAGS.END) ? data.byteLength === length : data.byteLength < length), "Invalid first fragment length");
     requireProtocol(data.byteLength > 0 || ((flags & 3) === 3 && length === 0), "Empty nonfinal fragment");
     return { total_message_bytes: length, data };

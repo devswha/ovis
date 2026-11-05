@@ -1,7 +1,9 @@
 import type { AgentInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
+import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
+import { worktreeOfLabels } from "./worktrees.ts";
 
 /**
  * How herdr-core's terminals look to the rest of the server: herdr's session snapshot, built from
@@ -20,7 +22,7 @@ import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayou
 
 /** The protocol these answers keep to: herdr's, as `shared/herdr-api.generated.ts` was made from. */
 export const HERDR_PROTOCOL = 22;
-export const OTHER_WORKSPACE_ID = "hc-other";
+export const OTHER_WORKSPACE_ID = HC_OTHER_WORKSPACE_ID;
 export const LAYOUT_DOC = "herdr-app";
 /** The labels the Herdr app groups its terminals by (herdr-app src/window.rs): a terminal it has not placed is adopted there. */
 export const SPACE_LABEL = "herdr.space";
@@ -52,8 +54,8 @@ export type HcTerminal = Pick<Terminal, "address" | "cols" | "rows" | "cwd" | "s
 
 /**
  * A terminal on another machine the core reaches (`hc machine add vps`): hc lists and reports it
- * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Until those machines
- * show as PCs of their own, none of their terminals is this PC's: no workspace, tab, pane or event.
+ * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Each such machine is
+ * a PC of its own (machine-scope.ts), so none of their terminals is this PC's: no workspace, tab, pane or event.
  */
 export function onOtherMachine(address: string): boolean {
   return address.includes("/");
@@ -82,7 +84,7 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
 }
 
 /** herdr-core's names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
-const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy" };
+const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi" };
 
 /** The agent a status names, by herdr's name; a program that never reported one runs none herdr would see. */
 /** The turn a terminal's `herdr.seen` names; null when it has none, or none a client wrote as a turn. */
@@ -345,6 +347,8 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown:
   const cwd = terminal.foreground?.cwd ?? terminal.cwd;
   return {
     ...(terminal.parent && terminal.parent !== terminal.address && shown.has(terminal.parent) ? { parent_pane_id: terminal.parent } : {}),
+    // only a tab its labels make takes a split (adapter.ts `pane.split`)
+    ...(terminal.labels?.[SPACE_LABEL] === workspaceId && terminal.labels?.[TAB_LABEL] === tabId ? {} : { own_tab: true as const }),
     ...reportedFacts(terminal.status),
     pane_id: terminal.address,
     terminal_id: terminal.address,
@@ -464,7 +468,11 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
       });
     }
     panes.push(...groupPanes);
+    // a checkout Ovis opened as a worktree, or the repository's own it was opened from (worktrees.ts);
+    // only where Ovis places workspaces: the app may put a labeled terminal beside others
+    const worktree = !own || group.id === OTHER_WORKSPACE_ID ? null : group.tabs.flatMap((tab) => tab.terminals).map((terminal) => worktreeOfLabels(terminal.labels)).find((facts) => facts !== null) ?? null;
     workspaces.push({
+      ...(worktree ? { worktree } : {}),
       workspace_id: group.id,
       label: group.label,
       number: index + 1,

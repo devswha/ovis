@@ -111,7 +111,16 @@ a half's bar onto the left or right half of the pane area. A pick in the sidebar
 list then opens in the active half only, and the focus stays there. Both halves can show the same
 tab, and you type in whichever half is active; the other half shows that tab at the active half's size.
 To rearrange a split tab instead, drop a pane's title on another pane's title in the same tab: the
-two panes trade places.
+two panes trade places. Drop it on another pane's body to move it beside that pane, on the side
+nearest the pointer; the highlighted half shows where it goes. Within its own tab a title only
+arranges the tab: to open it in a half, drop it on the other half while that half shows another tab.
+
+A tool that starts background workers or subagents can keep them out of the way: tag each such
+pane with `herdr pane report-metadata <pane_id> --source <id> --token role=background`. The
+**Agents** list then shows those panes, and the helpers they start, after the others under
+**Background agents**, folded at first with their count. A background agent that asks a question
+moves up with the others until it is answered, and a pinned one stays in the pinned card. Panes
+without the tag stay where they are.
 
 
 **3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. No Tailscale? Turn on the [Ovis relay](#through-the-ovis-relay) and scan its QR code instead. See [On your phone](#on-your-phone).
@@ -172,6 +181,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Letta Code** | **Experimental; Linux and macOS.** Read-only native transcript, once herdr's Letta integration is installed (`herdr integration install letta`, experimental). A turn shows when it ends; meanwhile Chat says **Working…**. Windows uses Terminal. See [Letta Code](#letta-code) below. | — use Terminal |
 | **DeepSeek Harness** (`dsh-tui`) | **Linux.** Native session log of the pane's dsh process, bound by the session lock it holds; dsh-tui panes, and dsh-tui-pi's (`dsh --profile tui`) found by their process. Install it from **Settings → Agents** or the setup guide (`npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui`; its first start needs pnpm), and start it from **New workspace**, **New tab with agent…** or **New worktree**, which run `dsh-tui` in the pane's shell. macOS uses Terminal; Windows is not offered. See [DeepSeek Harness](dsh.md). | — use Terminal |
 | **GitHub Copilot CLI** | Linux native transcript when the foreground session is verified. See [Copilot setup and limits](copilot-chat.md). | — recorded choices are read-only; answer questions and approvals in Terminal |
+| **Kimi Code** | **Experimental; tested on Linux, expected on macOS.** Native wire log of the pane's own Kimi process, bound by the session lock the CLI writes for that process (`~/.kimi-code/locks/sessions/`) or, on Linux, by the main log it holds open; two panes in one folder each show their own session, and an idle Kimi keeps showing its last session while the same process runs in the pane. A Kimi that has not written its session yet uses Terminal, never another session of the folder. Records before a context compaction stay in the log and are shown. Windows uses Terminal. | — use Terminal |
 | **Anything else** | The terminal's text | — use Terminal |
 
 GJC chat and GJC done alerts use a native extension rather than SDK session queries. From
@@ -221,7 +231,8 @@ runtime bundle, run it with the bundle's Bun as for GJC above. The extension lis
 only your user can open, `herdr-web-ui-ask/<pid>.sock` in the same directory, and relays the
 card's answer to pi-ask as its submit event: the form then shows as a card with one question per
 step, its options and **Type your own answer**. The card shows only when the pane's pi process
-answers on that socket, writes the session herdr reports for the pane, has one form open and
+answers on that socket, writes the session herdr reports for the pane (on herdr-core, the one
+it names there itself), has one form open and
 that form's `ask_user` call is still unanswered on pi's current branch (after a `/tree` move
 too); anything else, a form opened by `/answer` or `/ask:replay`, Windows, and pi without the
 extension use Terminal. pi-ask is never answered with typed keys: a pi pane never gets the
@@ -480,6 +491,16 @@ gets `429` and `Retry-After: 60`, without closing sockets already open.
 
 To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis.
 
+### Through an account
+
+Signing in links your devices once instead of pairing each phone with each PC. It's optional: a QR code and a pairing code work as before, with or without an account.
+
+1. At `app.ovis.sh`, choose **Continue with GitHub** or **Continue with Apple**. **Your PCs** lists the PCs of your account and the ones this phone is already paired with.
+2. A phone already paired by QR code needs nothing more: the next time it opens each PC, it moves that pairing into the account by itself. Until then the PC's row says **Ready · not in the account yet**, since removing the phone through the account would not reach it.
+3. A PC marked **Needs approval** has not let this device in yet. Tap it: this device and the PC show the same six digits, as with a link without a code. The first device of an account is approved on the PC itself. After that, any device already in the account can approve: it asks whether to add the new device and shows three numbers, and you pick the one the new device shows. One approval adds the device to every PC of the account: the approving device signs a record that adds it to each PC, and a PC that was off picks that record up when it comes back.
+
+Who gets into a PC is still decided by that PC alone, in **Settings → Phone & devices**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). [The privacy policy](https://ovis.sh/privacy/) says what it stores.
+
 ### Through Tailscale
 
 Serve the app over **HTTPS** to install it and receive push alerts. The simplest way is Tailscale: keep the server on `127.0.0.1` and let Tailscale add the HTTPS address.
@@ -506,6 +527,26 @@ whether the test was sent or failed; a missing subscription offers **Turn alerts
 While the app is in front on any device, its window visible and focused, no alert goes to any
 device: you are already looking at the change. Alerts resume once no window of the app is in use.
 The test push is always sent.
+
+Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
+30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
+
+An alert for an approval or a question with two short options (**Allow** / **Deny**, **Yes** /
+**No**) carries them as buttons on desktop browsers and Android, under the question and what it is
+about (the command or the file): a tap answers it without opening the app, and the card closes
+everywhere. If the question changed or was answered on another device meanwhile, nothing is sent
+and a new alert says so; tap it to open the pane. Questions with more or longer options, a command
+too long to show whole, typed answers and forms of several questions open the pane, as do alerts
+on iOS, in the relay app, and on a device paired to watch only.
+
+To get the same alerts in a chat app, choose a destination under **Settings → Alerts → Also send
+to**: an ntfy topic, a Slack or Discord webhook, a Telegram bot (its token and a chat id), or
+plain JSON to any URL. It has its own choice of alerts, waits and holds back like a device does,
+and is saved on this PC, owner-only, and shown masked afterwards. A message names the PC, the pane
+and what happened, with a link to the pane, never what the agent asked or said; the pane goes by its
+terminal title, which an agent may take from your task. **Send a test**
+checks it; a destination that fails shows its last error and is retried a few times, with at most
+one alert waiting.
 
 ### Using the app
 
@@ -869,8 +910,26 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   app's window's: Ovis shows it and hides those actions. A Herdr app started later on a core
   Ovis arranged takes in its terminals, grouped and named as they were, but not their split
   ratios or order; from then on the app arranges them.
+- **Agents' sessions:** herdr-core keeps no session reports, which herdr's own agent integrations
+  send to herdr's TUI server only, so a chat that needs one has none there. pi's chat comes from
+  the session the pane's pi names itself through the web UI's pi extension (see
+  [Supported agents](#supported-agents): `bun scripts/install-pi-integration.ts`, then restart
+  pi); without the extension a pi pane uses Terminal. Other agents whose chat reads only that
+  report, OpenCode for example, use Terminal on herdr-core.
 - **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
+  scroll buttons beside it, plugins and worktrees.
+- **Other machines:** each machine the core reaches (`hc machine add vps`, or added in the Herdr
+  app) is a PC of its own in the sidebar, beside this one: its workspaces and tabs as its own
+  `herdr-app` document lays them out, its live terminals, input, status and alerts, and new
+  workspaces and tabs started there. Ovis reaches it through this PC's core: nothing of Ovis is
+  installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
+  Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
+  own), so its agents' chat history is not read here: their transcripts are on that machine.
+  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
+  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
+  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  there. Temporary machines (`hc machine add --temp`) are not shown, and
+  PCs added over SSH or through the relay keep working beside them.
 
 ## Configuration
 
@@ -949,7 +1008,7 @@ This is for Linux and macOS. On Windows, and for a remote PC, update herdr on th
 
 ## Anonymous usage counts
 
-The app tells its maintainer how many installs there are, which versions they run, which countries the messages come from and which app settings people choose. It sends one message when it is first installed and one each time it runs a new version, plus a daily active message described below. The first time you open the app, a line under the header says so, with **What is sent**, which opens **Settings → About** and its switch. Nothing is sent before that line has been shown, and the first message waits ten minutes after it, so turning the switch off there stops it. An install that saw an older notice sees the expanded notice (version 5, which adds the day's usage to the daily active message) once more, and sends nothing until then. An existing choice to turn counts off stays off.
+The app tells its maintainer how many installs there are, which versions they run, which countries the messages come from and which app settings people choose. It sends one message when it is first installed and one each time it runs a new version, plus a daily active message described below. The first time you open the app, a line under the header says so. Tapping its text opens **Settings → About → Anonymous usage counts** with its switch, and **Turn off** on the line turns the counts off in one tap. Nothing is sent before that line has been shown, and the first message waits ten minutes after it, so turning the switch off there stops it. An install that saw an older notice sees the expanded notice (version 5, which adds the day's usage to the daily active message) once more, and sends nothing until then. An existing choice to turn counts off stays off.
 
 A message holds the event (`install` or `update`), a random ID made on this PC, the app's version and the version an update replaced, the OS and CPU architecture, how the app was installed (herdr plugin, `bun run start`, or `bun run server`), the terminal runtime its server serves (`herdr` or `herdr-core`), and an allowlisted `settings` snapshot. The snapshot contains actual choices for appearance, terminal and chat behavior, notifications, language, voice controls, usage-meter display and the file viewer, including defaults. Custom fonts, shortcuts, key-bar layouts, quick replies and the usage meters' account order are represented by customization flags, not their text, key combinations or account names; quick replies and hidden usage accounts also have counts. Account identifiers and the order itself, paths, addresses, credentials, commands, terminal content, conversations and files are not collected.
 
@@ -957,7 +1016,7 @@ The daily active message goes out at most once per UTC day on which the app is o
 
 The snapshot is the last one a browser reported to this server, not a list of devices or a complete picture of a person. Changing a setting updates that local snapshot but does not send another telemetry event. Before a browser reports, `settings` is `null`. The receiver ([`telemetry/`](../telemetry/README.md)) keeps the event fields, the day and the country the message came from (two letters, such as `KR`, worked out by its host from the connection), and never stores your IP address or anything finer than the country. The random install ID and settings can link events from an installation; they do not guarantee anonymity.
 
-**Settings → About → Anonymous usage counts** shows the next message exactly as it would be sent, and its switch turns the counts off for this PC. `OVIS_TELEMETRY=0` or `DO_NOT_TRACK=1` in the server's environment turns them off whatever the switch says, and they are always off in CI. A remote PC's bridge sends nothing.
+**Settings → About → Anonymous usage counts** shows the next message exactly as it would be sent under **What is sent**, which links back to this section, and its switch turns the counts off for this PC. `OVIS_TELEMETRY=0` or `DO_NOT_TRACK=1` in the server's environment turns them off whatever the switch says, and they are always off in CI. A remote PC's bridge sends nothing.
 
 ## Keyboard shortcuts
 
@@ -1032,7 +1091,7 @@ U and D to **Scroll pane up** and **Scroll pane down** in Settings → Shortcuts
 or record a chord such as `⌘+U`). This lets you read history without leaving the message box or reaching for
 the screen. Shift+PageUp/PageDown alone retains the focused control's own behavior.
 
-On a desktop, Enter sends and Shift+Enter adds a line. On a touch screen, Return adds a line and the Send button sends the message, unless you turn off Settings → Chat → Composer → Return inserts a new line, which makes Return send. On a desktop, turning off Enter sends switches sending to Mod+Enter. On a touch screen with a hardware keyboard, Mod+Enter sends while Return inserts a new line is on. This choice is saved per device.
+On a desktop, Enter sends and Shift+Enter adds a line. On a touch screen, Return adds a line and the Send button sends the message, unless you turn off Settings → Chat → Composer → Return inserts a new line, which makes Return send. While the agent works, Ctrl+Enter sends the message now, as the queued row's ↑ Send now would, the same key Claude Code uses for this in its own input. On a desktop, turning off Enter sends switches sending to Mod+Enter. On a touch screen with a hardware keyboard, Mod+Enter sends while Return inserts a new line is on. This choice is saved per device.
 
 ## How it works
 
@@ -1094,13 +1153,14 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 <details>
 <summary><b>Does my code or conversation leave my machine?</b></summary>
 
-Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Ovis has no account service, and its relay is off unless you turn it on. The agents' own connections to model providers depend on their configuration.
+Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Signing in to the account service is optional (see [Through an account](#through-an-account)), and the relay is off unless you turn it on. The agents' own connections to model providers depend on their configuration.
 
 Optional features can send data off the PC:
 - [Voice input](#voice-input) sends recordings to the configured transcription provider; polishing also sends the transcribed text. Without a configured API key, browser speech recognition may use the browser vendor's service.
 - [Subscription usage](#subscription-usage), when enabled, sends each provider's credentials to that provider's usage endpoint.
 - Updates and remote-PC setup fetch releases or configured runtime bundles over the network; remote panes are reached over SSH.
 - Enabled push alerts go through the browser vendor's push service as encrypted notifications.
+- A destination under **Settings → Alerts → Also send to** gets each alert it chose in plain text: the PC's and the pane's names (a pane's is its terminal title, which an agent may take from your task), what happened and a link to the pane.
 - [Portal](#behind-a-reverse-proxy), while it runs, carries every connection to the app through the relay you chose: the relay sees connection addresses, timing and volume, and holds the certificate for the address.
 - The [Ovis relay](#through-the-ovis-relay), while it's on, carries everything between a paired phone and this PC through `relay.ovis.sh`, end-to-end encrypted: the relay sees connection addresses, timing and sizes, down to the timing of keystrokes, but none of the content. The app on the phone comes from `app.ovis.sh`, which itself sees only requests for the app's files, whose path names the PC. You have to trust whoever serves that app, since it's the code that holds the phone's key and shows you the PC ([trust model](relay.md#trust-model)).
 
@@ -1124,7 +1184,7 @@ Samsung Internet has a forced dark mode that repaints every page, including one 
 
 All three are in the herdr plugin marketplace too, and each does something this app does not. [collie](https://github.com/AltanS/collie) is a mobile terminal for herdr, tmux and zellij, with a status dashboard, a key pad, quick replies and voice input, served over Tailscale by its own bridge. [roamgate](https://github.com/powerfooI/roamgate) is a browser client for herdr with a file explorer and diff annotations, installed by its own script. [herdr-remote](https://github.com/dcolinmorgan/herdr-remote) is a macOS menu-bar app with a phone dashboard and a Telegram bot behind a relay and a free tunnel.
 
-Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no account of its own. You reach it over Tailscale, SSH, your own HTTPS proxy, or the Ovis relay, which is end-to-end encrypted and off until you turn it on. If you want tmux or zellij, diffs or Telegram, one of the others is the better fit.
+Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no account of its own. You reach it over Tailscale, SSH, your own HTTPS proxy, or the Ovis relay, which is end-to-end encrypted and off until you turn it on. If you want tmux or zellij, diffs or to answer agents from Telegram, one of the others is the better fit.
 </details>
 
 <details>

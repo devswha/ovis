@@ -14,7 +14,7 @@ import { base64url, ServerIdentityChangedError } from "../shared/relay-device.ts
 import type { RelayDevice, RelayDeviceStore } from "../shared/relay-device.ts";
 import { MuxStreamError } from "../shared/relay-mux-engine.ts";
 import type { HttpRequest, WsStream } from "../shared/relay-mux-engine.ts";
-import { MuxProtocolError, REQUEST_HEADERS } from "../shared/relay-mux.ts";
+import { MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, REQUEST_HEADERS } from "../shared/relay-mux.ts";
 import type { RelayOffer } from "../shared/relay-offer.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../shared/terminal-flow.ts";
@@ -92,8 +92,11 @@ export class RelayPcKey implements RelayDeviceStore {
     const next = change(this.device.device_id === null ? undefined : this.device);
     if (next.device_id === null) throw new Error("Relay PC was not admitted");
     if (!this.wanted()) throw new Error("Relay PC was removed");
+    const { server_id, server_public_key, relay, name } = next;
+    // the offer from `next`: a relay the PC named in AUTH_OK (relay-hints) is kept across a restart too
+    const offer: RelayOffer = { v: 1, server_id, server_public_key, relay, ...(name === undefined ? {} : { name }) };
     writePrivateState(this.path, {
-      v: 1, offer: this.offer, device_id: next.device_id, label: next.label, public_spki: next.public_spki, private_pkcs8: this.pkcs8,
+      v: 1, offer, device_id: next.device_id, label: next.label, public_spki: next.public_spki, private_pkcs8: this.pkcs8,
     } satisfies SavedKey);
     this.device = next;
     return next;
@@ -219,9 +222,10 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       local.data.waiting = [];
       local.data.waitingBytes = 0;
     };
-    // as this PC's own sockets: output that cannot be delivered, or backs up past the budget, ends the socket (4008)
+    // as this PC's own sockets: output that cannot be delivered, or backs up past the budget, ends the socket (4008);
+    // the budget leaves room for one message as large as the PC may send (LARGE_WS_MESSAGES), a large session's snapshot
     remote.onMessage = (message) => {
-      if (local.send(message) === 0 || local.getBufferedAmount() > OUTPUT_HARD_BYTES) local.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
+      if (local.send(message) === 0 || local.getBufferedAmount() > OUTPUT_HARD_BYTES + MAX_LARGE_WS_MESSAGE_BYTES) local.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
     };
     remote.onClose = (event) => { local.close(sendableClose(event.code), event.reason.slice(0, 100)); };
   };
