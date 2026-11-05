@@ -917,6 +917,32 @@ it("waits out another reader's lease of the transcript, however long, and counts
   expect(await reading).toMatchObject({ complete: true, through: s.limit() });
 }, 5000);
 
+it("gives up the wait for the lease of a read let go of meanwhile, and never opens the transcript for it", async () => {
+  const s = fixture();
+  writeFileSync(s.path, notice("evicted"));
+  const held = gate(), entered = gate();
+  release.push(held.open);
+  const other = transcriptReader.read(s.path, async () => { entered.open(); await held.opened; });
+  await entered.opened;
+  let leased = 0;
+  wrapReads((path, work) => async (file) => { if (path === s.path) leased++; return work(file); });
+  commandHistory(s.path, s.limit());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 1 });
+  // as many other sessions as are kept: the least recently used one, the read waiting, goes
+  for (let index = 0; index < 16; index++) {
+    const other = fixture(`other${index}`);
+    writeFileSync(other.path, notice(`o${index}`));
+    commandHistory(other.path, 0, false);
+  }
+  expect(transcriptReader.size()).toMatchObject({ active: 1, waiting: 0 });
+  await commandHistorySettled();
+  held.open();
+  await other;
+  await transcriptReader.settled();
+  expect(leased).toBe(0);
+}, 5000);
+
 it("drops a window read across a start over that a request made while the window waited for the disk", async () => {
   const s = fixture();
   // one timestamp for both writes, a minute ahead: each request reads the lines of its ends again

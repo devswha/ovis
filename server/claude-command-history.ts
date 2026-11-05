@@ -55,6 +55,8 @@ interface Entry {
   turns: number;
   /** times it started over (restart): a request can start it over while a slice waits for the disk */
   restarts: number;
+  /** a slice's wait for its lease, given up when it is let go of (discard): it would read nothing */
+  leasing: AbortController | null;
 }
 
 const MAX_SESSIONS = 16;
@@ -137,7 +139,7 @@ export function commandHistory(path: string, limit: number, schedule = true, nee
     }
     entry = {
       path, session: basename(path, ".jsonl"), version, limit, offset: 0, skipping: false, cutAt: null, spans: [], checked: null, checkedThrough: 0, checkedFrom: -Infinity, checkedTick: -Infinity, check: null,
-      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null, turns: 0, restarts: 0,
+      checkedAt: -Infinity, checks: 0, wanted: 0, waiters: 0, ends: [], queued: false, listeners: new Set(), failures: 0, retryAt: 0, timer: null, turns: 0, restarts: 0, leasing: null,
     };
   }
   entries.set(path, entry);
@@ -297,6 +299,8 @@ function discard(entry: Entry): void {
   if (entries.get(entry.path) === entry) entries.delete(entry.path);
   if (entry.queued) { queue.splice(queue.indexOf(entry), 1); entry.queued = false; }
   if (entry.timer !== null) { clearTimeout(entry.timer); entry.timer = null; }
+  entry.leasing?.abort();
+  entry.leasing = null;
   notify(entry);
 }
 
@@ -408,11 +412,15 @@ async function step(entry: Entry): Promise<void> {
   let restarted = false;
   // the transcript as known when the stat now on its way was asked for
   let known = entry.version;
-  const signal = cancel.signal;
+  // its wait for the lease has no deadline: one let go of meanwhile gives it up, as every one does at a reset
+  const leasing = new AbortController();
+  entry.leasing = leasing;
+  const signal = AbortSignal.any([cancel.signal, leasing.signal]);
   // a slice on the event loop counts from here, as main's does: its open and checks hold the loop too
   const began = performance.now();
   try {
     await transcriptReader.read(entry.path, async (file) => {
+      if (entry.leasing === leasing) entry.leasing = null;
       // the transcript is let go of well inside the read's deadline, which counts from its lease (its open included)
       const held = file.deadline - READ_MS / 2;
       let stop = (file.waited() ? performance.now() : began) + SLICE_MS;
@@ -499,6 +507,8 @@ async function step(entry: Entry): Promise<void> {
     // the reader busy or a read too slow: no failure of this transcript, so it is never given up for it
     if (!(error instanceof TranscriptBusyError)) entry.failures++;
     entry.retryAt = Date.now() + Math.min(RETRY_MAX_MS, 1000 * 2 ** (Math.max(1, entry.failures) - 1));
+  } finally {
+    if (entry.leasing === leasing) entry.leasing = null;
   }
   if (entries.get(entry.path) !== entry) return;
   const work = due(entry, Date.now());
