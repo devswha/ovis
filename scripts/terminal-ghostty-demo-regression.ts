@@ -1,9 +1,9 @@
 /**
- * Settings -> Terminal -> Draw with libghostty: on a herdr-core server (`terminal-history`) libghostty
- * draws the pane over its xterm from every byte xterm was given, the ones before its module loaded
- * included; a Kitty graphics picture is drawn where it was placed and goes when the program deletes
- * it; typing still goes through xterm. herdr's own server is drawn by libghostty too; the setting off
- * keeps xterm alone and never fetches the module. Demo fixtures only: no herdr, hc or user state.
+ * libghostty draws every pane over its xterm: on a herdr-core server (`terminal-history`) from every byte
+ * xterm was given, the ones before its module loaded included; a Kitty graphics picture is drawn where it
+ * was placed and goes when the program deletes it; typing still goes through xterm. herdr's own server is
+ * drawn by libghostty too, and so is a device that turned the old Draw with libghostty switch off; xterm
+ * draws an iTerm2 picture by itself. Demo fixtures only: no herdr, hc or user state.
  */
 import { deflateSync } from "node:zlib";
 import assert from "node:assert/strict";
@@ -327,18 +327,16 @@ try {
         assert.deepEqual(errors, [], "herdr: no page errors");
         await page.context().close();
       }
-      for (const [kind, ghostty] of [["herdr", false], ["core", false]] as const) {
-        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, ghostty);
-        await page.evaluate((data) => window.ghosttyFixture.print(data), `${kittySquare(8, [0, 0, 255])}AFTER\r\n`);
-        await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "AFTER" }).waitFor({ state: "attached" });
-        await settled(page);
-        assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), 0, `${kind}${ghostty ? "" : ", off"}: xterm draws`);
-        assert.equal(await page.locator(".pane-frame.is-current .ghostty-layer").count(), 0, `${kind}${ghostty ? "" : ", off"}: no libghostty layer`);
-        assert.deepEqual(wasm, [], `${kind}${ghostty ? "" : ", off"}: the module is never fetched`);
-        assert.deepEqual(errors, [], `${kind}${ghostty ? "" : ", off"}: no page errors`);
+      for (const kind of ["herdr", "core"] as const) {
+        // a device that turned the old Draw with libghostty switch off: there is no switch now, libghostty draws
+        const { page, wasm, errors } = await open(browser, server.port, prefix, kind, false);
+        await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
+        await print(page, "STORED-OFF\r\n", "STORED-OFF-DONE");
+        assert.equal(wasm.length, 1, `${kind}, switch once turned off: the module is fetched`);
+        assert.deepEqual(errors, [], `${kind}, switch once turned off: no page errors`);
         await page.context().close();
       }
-      console.log("PASS libghostty: draws a herdr-core pane from its first byte with Kitty pictures, and herdr's own panes; off stays xterm");
+      console.log("PASS libghostty: draws every pane, a herdr-core one from its first byte with Kitty pictures, herdr's own too, also where the old switch was turned off");
     } finally {
       await browser.close();
     }

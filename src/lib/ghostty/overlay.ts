@@ -1,6 +1,7 @@
 /**
- * Settings > Terminal > Draw with libghostty: libghostty-vt draws an xterm terminal's screen, Kitty
- * graphics pictures included, while xterm stays the engine under it.
+ * libghostty-vt draws every xterm terminal's screen, Kitty graphics pictures included, while xterm stays
+ * the engine under it. xterm draws by itself only where this layer cannot: a module that does not load or
+ * fails, and an iTerm2 or sixel picture (Pictures in the terminal), which libghostty does not take.
  *
  * xterm still takes every key, IME syllable, paste, click, selection, link, search and scroll, and
  * still answers the program's queries: everything Ovis built on it keeps working. Its text layer
