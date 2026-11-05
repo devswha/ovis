@@ -131,6 +131,7 @@ describe("alert webhook presets", () => {
     expect(hook.save({ preset: "json" }, "http://127.0.0.1:7317").reachable_link).toBe(false);
     expect(hook.save({ preset: "json" }, "https://pc.tailnet.example").reachable_link).toBe(true);
     expect(hook.save({ preset: "json", alerts: { input: true, done: "always" } }, "http://127.0.0.1:7317").reachable_link).toBe(true);
+    expect(hook.save({ preset: "json" }, "http://[::ffff:127.0.0.1]:7317").reachable_link).toBe(true);
     hook.send(alert);
     await hook.settled();
     expect(JSON.parse(destination.received[0]!.body).url).toBe("https://pc.tailnet.example/?pane=w1%3Ap1&view=chat");

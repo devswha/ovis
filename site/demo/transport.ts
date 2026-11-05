@@ -2199,7 +2199,7 @@ function alertWebhookRoute(path: string, method: string, init: RequestInit | und
   demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
     chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts,
     // as the server does: this PC's own localhost is not an address a phone opens
-    reachable_link: demoWebhook.reachable_link || !/^(?:localhost|127\.|\[::1\]$)/.test(location.hostname) };
+    reachable_link: demoWebhook.reachable_link || !/^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|\[::1\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])$/i.test(location.hostname) };
   return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
 

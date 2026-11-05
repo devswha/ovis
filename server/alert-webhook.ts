@@ -129,7 +129,8 @@ export function maskSecret(preset: AlertWebhookPreset, secret: string): string {
 /** Whether a link on `base` opens on another device: not this PC's own loopback address. */
 function reachable(base: string | undefined): boolean {
   if (base === undefined) return false;
-  try { return !isLoopbackHost(new URL(base).host); } catch { return false; }
+  // URL writes an IPv4-mapped loopback in hex ([::ffff:7f00:1]), which isLoopbackHost does not read
+  try { const host = new URL(base).host; return !isLoopbackHost(host) && !/^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]/i.test(host); } catch { return false; }
 }
 
 /** The link that opens the pane in the app (src/lib/deepLink.ts), where the app's address is known. */
