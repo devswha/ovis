@@ -39,3 +39,11 @@ export function shellServiceWorker(pathname: string): { script: string; scope: s
   const scope = serverScopePath(serverId);
   return { script: `${scope}sw.js`, scope };
 }
+
+/**
+ * The hosted shell's worker opens a page from the shell it kept (public/sw.js), so a reload meant
+ * to bring in a newer shell drops that copy first: the reload then asks the host.
+ */
+export async function forgetKeptShell(storage: Pick<CacheStorage, "keys" | "open">): Promise<void> {
+  for (const name of await storage.keys()) await (await storage.open(name)).delete("/");
+}
