@@ -107,7 +107,8 @@ async function open(browser: Browser, server: number, prefix: string, kind: "cor
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "warning" && message.text().includes("libghostty")) errors.push(message.text()); });
   await page.goto(`http://127.0.0.1:${server}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=${kind}`);
-  await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
+  // attached, not visible: once libghostty draws, xterm's own rows are hidden under it
+  await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor({ state: "attached" });
   return { page, wasm, errors };
 }
 
@@ -144,6 +145,11 @@ try {
         const cell = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".pane-frame.is-current .ghostty-layer")!).getPropertyValue("--ghostty-ch")));
         assert.equal(red?.top, `${4 * cell}px`, "core: at the row it was placed on");
 
+        // a dark palette names no ANSI colours: they are xterm's own, not black
+        await print(page, "\x1b[31mRED-TEXT\x1b[0m\r\n", "COLOURED");
+        const ansiRed = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .ghostty-row span")].find((span) => span.textContent?.includes("RED-TEXT"))?.style.color);
+        assert.equal(ansiRed, "rgb(204, 0, 0)", "core: ANSI red is xterm's red under a palette that names none");
+
         // a wide character after a combining accent keeps its two cells: the accent is part of the cell before it
         await print(page, "e\u0301\u754cX\r\n", "COMBINED");
         assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-wide")].map((cell) => cell.textContent)), ["\u754c"], "core: the wide cell is the CJK character, not the accent");
@@ -161,7 +167,7 @@ try {
       for (const [kind, ghostty] of [["herdr", true], ["core", false]] as const) {
         const { page, wasm, errors } = await open(browser, server.port, prefix, kind, ghostty);
         await page.evaluate((data) => window.ghosttyFixture.print(data), `${kittySquare(8, [0, 0, 255])}AFTER\r\n`);
-        await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "AFTER" }).waitFor();
+        await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "AFTER" }).waitFor({ state: "attached" });
         await settled(page);
         assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), 0, `${kind}${ghostty ? "" : ", off"}: xterm draws`);
         assert.equal(await page.locator(".pane-frame.is-current .ghostty-layer").count(), 0, `${kind}${ghostty ? "" : ", off"}: no libghostty layer`);

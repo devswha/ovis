@@ -15,11 +15,15 @@ const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&"
 
 export interface GhosttyOverlay { dispose(): void }
 
+/** xterm.js 6's own ANSI colours, which it draws with wherever the theme names none (the dark palettes name none) */
+const XTERM_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
+  "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"];
+
 function themeColors(term: Terminal): GhosttyColors {
   const theme = term.options.theme ?? {};
   const ansi = [theme.black, theme.red, theme.green, theme.yellow, theme.blue, theme.magenta, theme.cyan, theme.white,
     theme.brightBlack, theme.brightRed, theme.brightGreen, theme.brightYellow, theme.brightBlue, theme.brightMagenta, theme.brightCyan, theme.brightWhite]
-    .map((color) => color ?? "");
+    .map((color, index) => color || XTERM_ANSI[index]!);
   return { foreground: theme.foreground ?? "#d4d4d4", background: theme.background ?? "#1e1e1e", cursor: theme.cursor ?? theme.foreground ?? "#d4d4d4", ansi };
 }
 
@@ -185,6 +189,16 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
 
   const draw = (): void => {
     if (disposed) return;
+    try {
+      drawFrame();
+    } catch (error) {
+      // the module failed (a trap, out of memory): xterm draws from here on
+      console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+      overlay.dispose();
+    }
+  };
+
+  const drawFrame = (): void => {
     if (optionsChanged()) {
       colors();
       vt.setScrollback(term.options.scrollback ?? 0);
