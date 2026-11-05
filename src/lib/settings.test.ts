@@ -160,6 +160,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps the file text size in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().fileFontSize).toBeNull();
+    saveSettings(sanitizeSettings({ fileFontSize: 20 }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("fileFontSize");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().fileFontSize).toBe(20);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), fileFontSize: null });
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "\"20\"");
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "not json");
+    expect(loadSettings().fileFontSize).toBeNull();
+  });
+
   it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().terminalImages).toBe(false);
     saveSettings(sanitizeSettings({ terminalImages: true }));
@@ -174,16 +189,40 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Draw with libghostty in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().terminalGhostty).toBe(false);
-    saveSettings(sanitizeSettings({ terminalGhostty: true }));
+    expect(loadSettings().terminalGhostty).toBe(true);
+    saveSettings(sanitizeSettings({ terminalGhostty: false }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalGhostty");
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
-    expect(loadSettings().terminalGhostty).toBe(true);
+    expect(loadSettings().terminalGhostty).toBe(false);
     expect(loadSettings().terminalFontSize).toBe(18);
-    saveSettings({ ...loadSettings(), terminalGhostty: false });
-    expect(loadSettings().terminalGhostty).toBe(false);
-    records.set("ovis:terminal-ghostty", "\"true\"");
-    expect(loadSettings().terminalGhostty).toBe(false);
+    saveSettings({ ...loadSettings(), terminalGhostty: true });
+    expect(loadSettings().terminalGhostty).toBe(true);
+    records.set("ovis:terminal-ghostty", "\"false\"");
+    expect(loadSettings().terminalGhostty).toBe(true);
+  });
+
+  it("keeps the terminal's Attach files button in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalAttachButton).toBe(false);
+    saveSettings(sanitizeSettings({ terminalAttachButton: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalAttachButton");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalAttachButton).toBe(true);
+    saveSettings({ ...loadSettings(), terminalAttachButton: false });
+    expect(loadSettings().terminalAttachButton).toBe(false);
+    records.set("ovis:terminal-attach-button", "\"true\"");
+    expect(loadSettings().terminalAttachButton).toBe(false);
+  });
+
+  it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
+    saveSettings(sanitizeSettings({ terminalKeyboardOnRequest: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalKeyboardOnRequest");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(true);
+    saveSettings({ ...loadSettings(), terminalKeyboardOnRequest: false });
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
+    records.set("ovis:terminal-keyboard-on-request", "\"true\"");
+    expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
   });
 
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
@@ -283,6 +322,34 @@ describe("saved theme migration", () => {
     expect(root.style.colorScheme).toBe("dark");
     expect(meta).toBe(entry.bgPanel);
     expect(terminalTheme(entry.mode, entry.id)).toEqual(entry.terminal);
+  });
+
+  it("scales a file's text by the chat's size until it has its own, its source only once chosen", () => {
+    const props = new Map<string, string>();
+    const root = { lang: "", dataset: {}, style: { colorScheme: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { props.delete(name); } } };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
+    const apply = (raw: Record<string, unknown>): void => {
+      const settings = sanitizeSettings(raw);
+      withComputedBg("#000", () => applyToDocument(settings, themeFor(settings, "dark"), "en"));
+    };
+    apply({ chatFontSize: 21 });
+    expect(props.get("--file-scale")).toBe(props.get("--chat-scale"));
+    expect(props.get("--file-scale")).toBe("1.5");
+    expect(props.has("--file-source-scale")).toBe(false);
+    apply({ chatFontSize: 21, fileFontSize: 28 });
+    expect(props.get("--chat-scale")).toBe("1.5");
+    expect(props.get("--file-scale")).toBe(String(24 / 14));
+    // the source moves by the file size over the chat's, the size the stepper starts from: choosing that size changes
+    // nothing, and a step moves the source the way it moves the preview
+    expect(props.get("--file-source-scale")).toBe(String(24 / 21));
+    apply({ chatFontSize: 21, fileFontSize: 21 });
+    expect(props.get("--file-source-scale")).toBe("1");
+    apply({ chatFontSize: 21, fileFontSize: 20 });
+    expect(Number(props.get("--file-source-scale"))).toBeLessThan(1);
+    apply({ chatFontSize: 11, fileFontSize: 12 });
+    expect(Number(props.get("--file-source-scale"))).toBeGreaterThan(1);
+    apply({ chatFontSize: 21 });
+    expect(props.has("--file-source-scale")).toBe(false);
   });
 
   it("keeps the row's surface on the root until a stylesheet owns it, following later themes", () => {
@@ -594,11 +661,25 @@ it("draws no terminal pictures until this device turns them on", () => {
   expect(SETTING_SCOPE.terminalImages).toBe("device");
 });
 
-it("draws with xterm until this device turns libghostty on", () => {
-  expect(sanitizeSettings({}).terminalGhostty).toBe(false);
-  expect(sanitizeSettings({ terminalGhostty: "true" }).terminalGhostty).toBe(false);
-  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: true })))).terminalGhostty).toBe(true);
+it("draws with libghostty until this device turns it off", () => {
+  expect(sanitizeSettings({}).terminalGhostty).toBe(true);
+  expect(sanitizeSettings({ terminalGhostty: "false" }).terminalGhostty).toBe(true);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: false })))).terminalGhostty).toBe(false);
   expect(SETTING_SCOPE.terminalGhostty).toBe("device");
+});
+
+it("raises the terminal's keyboard on every tap until this device asks for it only from the key bar", () => {
+  expect(sanitizeSettings({}).terminalKeyboardOnRequest).toBe(false);
+  expect(sanitizeSettings({ terminalKeyboardOnRequest: "true" }).terminalKeyboardOnRequest).toBe(false);
+  expect(sanitizeSettings({ terminalKeyboardOnRequest: true }).terminalKeyboardOnRequest).toBe(true);
+  expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
+});
+
+it("draws no Attach files control in the terminal until this device turns it on", () => {
+  expect(sanitizeSettings({}).terminalAttachButton).toBe(false);
+  expect(sanitizeSettings({ terminalAttachButton: "true" }).terminalAttachButton).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalAttachButton: true })))).terminalAttachButton).toBe(true);
+  expect(SETTING_SCOPE.terminalAttachButton).toBe("device");
 });
 
 it("drops the folder grouping an older version stored", () => {
@@ -1238,6 +1319,15 @@ describe("shared settings", () => {
     const shared = Object.entries(SETTING_SCOPE).filter(([, scope]) => scope === "shared").map(([key]) => key).sort();
     expect([...SHARED_SETTING_KEYS].sort() as string[]).toEqual(shared);
     expect(Object.keys(SETTING_SCOPE).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+  });
+
+  it("locks no agent until one is locked, and keeps only distinct pin keys (#2432)", () => {
+    expect(DEFAULT_SETTINGS.agentLocks).toBe(false);
+    expect(SETTING_SCOPE.agentLocks).toBe("shared");
+    expect(DEFAULT_SETTINGS.lockedAgents).toEqual([]);
+    expect(SETTING_SCOPE.lockedAgents).toBe("shared");
+    expect(sanitizeSettings({ lockedAgents: ["local:p1", 3, "", "local:p1", "pc:w1:p2"] }).lockedAgents).toEqual(["local:p1", "pc:w1:p2"]);
+    expect(sanitizeSettings({ lockedAgents: "local:p1" }).lockedAgents).toEqual([]);
   });
 });
 

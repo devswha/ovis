@@ -9,11 +9,47 @@
  * answers nothing: a reply it made to a replayed stream would reach the program as typing.
  */
 import type { IDisposable, Terminal } from "@xterm/xterm";
+import { terminalDrawsPictures } from "../terminalImages.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
 
 export interface GhosttyOverlay { dispose(): void }
+
+/**
+ * The lines a frame added: when the screen scrolled up by some rows, the rows that moved are not new, only
+ * the ones that came in at the bottom and any row that changed in place.
+ */
+export function newLines(before: readonly string[], after: readonly string[]): string[] {
+  const rows = after.length;
+  let best = 0;
+  let bestMatches = -1;
+  for (let shift = 0; shift < rows; shift++) {
+    let matches = 0;
+    for (let y = 0; y + shift < rows; y++) if (after[y] && before[y + shift] === after[y]) matches++;
+    if (matches > bestMatches) { best = shift; bestMatches = matches; }
+  }
+  return after.filter((line, y) => line && (y >= rows - best || before[y + best] !== line));
+}
+
+const latin1 = new TextDecoder("latin1");
+/** an iTerm2 inline picture (OSC 1337 File=) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
+export function hasXtermPicture(data: string | Uint8Array): boolean {
+  const text = typeof data === "string" ? data : latin1.decode(data);
+  return text.includes("\x1b]1337;File=") || /\x1bP[0-9;]*q/.test(text);
+}
+
+/** lines of one frame read out, so a flood does not drown the reader */
+const ANNOUNCED_LINES = 20;
+
+interface XtermRowRenderer { renderRows(start: number, end: number): void }
+
+/** xterm's DOM renderer, which writes its rows; xterm.js has no public way to stop it drawing */
+function xtermRowRenderer(term: Terminal): XtermRowRenderer | null {
+  const core = (term as unknown as { _core?: { _renderService?: { _renderer?: { value?: XtermRowRenderer } } } })._core;
+  const renderer = core?._renderService?._renderer?.value;
+  return renderer && typeof renderer.renderRows === "function" ? renderer : null;
+}
 
 /** xterm.js 6's own ANSI colours, which it draws with wherever the theme names none (the dark palettes name none) */
 const XTERM_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
@@ -37,14 +73,14 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   if (!screen) throw new Error("ghostty overlay: the terminal is not open");
   const vt = await GhosttyVt.create(term.cols, term.rows);
   const backlog = takeBacklog();
-  if (!backlog) {
+  // a picture only xterm draws already moved xterm's rows: xterm keeps drawing this pane (#2980)
+  if (!backlog || (terminalDrawsPictures(term) && backlog.some(hasXtermPicture))) {
     vt.dispose();
     return null;
   }
   let disposed = false;
   const layer = document.createElement("div");
   layer.className = "ghostty-layer";
-  layer.setAttribute("aria-hidden", "true");
   const below = document.createElement("div");
   below.className = "ghostty-images";
   const text = document.createElement("div");
@@ -53,10 +89,19 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   above.className = "ghostty-images is-above";
   const cursor = document.createElement("div");
   cursor.className = "ghostty-cursor";
-  layer.append(below, text, above, cursor);
+  // xterm's rows are hidden, and with them what a screen reader read: these rows are read instead, and
+  // lines the program writes are announced (as xterm's screen reader mode does), never the pictures
+  for (const decoration of [below, above, cursor]) decoration.setAttribute("aria-hidden", "true");
+  const announcer = document.createElement("div");
+  announcer.className = "visually-hidden";
+  announcer.setAttribute("aria-live", "polite");
+  layer.append(below, text, above, cursor, announcer);
   screen.append(layer);
 
   let rowEls: HTMLDivElement[] = [];
+  let rowText: string[] = [];
+  // the screen a pane opens on, or is rebuilt to, is what is there already: read, not announced
+  let primed = false;
   // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
   let rowHtml: string[] = [];
   let cellW = 0;
@@ -83,8 +128,17 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     layer.style.letterSpacing = `${cellW - advance}px`;
   };
 
+  /** what a screen reader hears: the frame's new lines, the newest kept when a program floods. Only the latest
+   *  message stays in the region: NVDA read a growing log whole, every earlier message again */
+  const announce = (lines: string[]): void => {
+    if (lines.length === 0) return;
+    announcer.textContent = lines.slice(-ANNOUNCED_LINES).join("\n");
+  };
+
   const rebuildRows = (): void => {
     text.textContent = "";
+    rowText = [];
+    primed = false;
     rowEls = [];
     for (let y = 0; y < term.rows; y++) {
       const row = document.createElement("div");
@@ -207,14 +261,20 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
     const buffer = term.buffer.active;
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
+    const before = [...rowText];
     const changed = vt.frame((y, runs) => {
       const row = rowEls[y];
       if (!row) return;
       let html = "";
       for (const run of runs) html += runHtml(run);
+      // a row libghostty marks dirty can come out the same (a cursor that moved past it): no DOM write
+      if (rowHtml[y] === html) return;
       row.innerHTML = html;
       rowHtml[y] = html;
+      rowText[y] = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
     });
+    if (primed) announce(newLines(before, rowText));
+    primed = true;
     if (changed) {
       const c = vt.cursor();
       Object.assign(cursor.style, c.visible
@@ -223,6 +283,11 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     const images = vt.placedImages();
     if (images) drawImages(images);
+    // xterm may make a new renderer (a font or theme change): that one draws nothing either. A folded mirror
+    // (lib/terminalFold.ts) hides this layer and reads xterm's rows and cursor, so xterm draws while folded
+    if (host.hasAttribute("data-folded")) {
+      if (muted) { unmuteXtermRows(); term.refresh(0, term.rows - 1); }
+    } else muteXtermRows();
   };
 
   const schedule = (): void => {
@@ -237,6 +302,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   // every byte xterm is given, libghostty is given first, in the same order
   const write = term.write.bind(term);
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
+    // libghostty takes Kitty pictures but not iTerm2 or sixel ones: when xterm draws one (Pictures in the terminal),
+    // its cursor moves past the picture and libghostty's would not, so the text after it would sit on other rows.
+    // xterm draws the pane from that picture on (#2980)
+    if (!disposed && terminalDrawsPictures(term) && hasXtermPicture(data)) overlay.dispose();
     if (!disposed) {
       try {
         vt.write(data);
@@ -265,6 +334,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   try {
     for (const chunk of backlog) vt.write(chunk);
   } catch (error) {
+    // the caller falls back to xterm: it gets its own write and reset back, so nothing reaches the freed module
+    disposed = true;
+    term.write = write;
+    term.reset = reset;
     layer.remove();
     vt.dispose();
     throw error;
@@ -277,12 +350,31 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   const screenResize = new ResizeObserver(() => fit());
   screenResize.observe(screen);
 
+  // xterm still parses every byte (its buffer serves input, selection, search and the input row), but its
+  // own rows are hidden under this layer: redrawing them was a third of the cost of a busy pane
+  let muted: { renderer: XtermRowRenderer; renderRows: XtermRowRenderer["renderRows"] } | null = null;
+  const muteXtermRows = (): void => {
+    const renderer = xtermRowRenderer(term);
+    if (!renderer || muted?.renderer === renderer) return;
+    unmuteXtermRows();
+    muted = { renderer, renderRows: renderer.renderRows };
+    renderer.renderRows = () => {};
+  };
+  const unmuteXtermRows = (): void => {
+    if (!muted) return;
+    muted.renderer.renderRows = muted.renderRows;
+    muted = null;
+  };
+  muteXtermRows();
+
   host.dataset["renderer"] = "ghostty";
   const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
       disposed = true;
       delete host.dataset["renderer"];
+      unmuteXtermRows();
+      term.refresh(0, term.rows - 1);
       term.write = write;
       term.reset = reset;
       for (const subscription of subscriptions) subscription.dispose();

@@ -2639,7 +2639,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const waitKey = waitingKey(machineId, paneId);
   const sentWaiting = useWaitingSends(machineId, paneId, connected);
   // before paint: a frame never shows a send's turn and its waiting bubble together. Only a
-  // conversation read that answered says what the chat holds: a failed read leaves it unknown
+  // conversation read that answered says what the chat holds: a failed read leaves it unknown. Each
+  // read's PC clock is taken as its answer arrives (lib/api.ts), a cached one's too
   const turnsRead = loaded && error === null && !stale && state.source === "conversation";
   useLayoutEffect(() => {
     settleWaitingSends(waitKey, state.turns, Date.now(), turnsRead);
