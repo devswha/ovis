@@ -76,13 +76,16 @@ export async function linkThisDevice(options: { fetch: PcFetch; device: RelayDev
     v: 1, kind: "link", account: options.account, key: key.public_spki, server_id: device.server_id, device_id: device.device_id,
     old_key: device.public_spki, issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: key.public_spki,
   }, key.private_key);
+  // kept before sending: if the answer is lost after the PC swapped the key, the next sign-in tries this one
+  await options.store.update(device.server_id, (current) => current === undefined ? device : { ...current, pending_key: { private_key: key.private_key, public_spki: key.public_spki } });
   await post(options.fetch, "/api/account/link", { record });
   return options.store.update(device.server_id, (current) => {
     // only the pairing the link was signed for takes the key: one changed meanwhile is left as it is
     if (current === undefined || current.device_id !== device.device_id || current.public_spki !== device.public_spki || current.server_public_key !== device.server_public_key) {
       throw new TypeError("This PC's pairing changed while it was being linked");
     }
-    return { ...current, private_key: key.private_key, public_spki: key.public_spki };
+    const { pending_key: _sent, ...rest } = current;
+    return { ...rest, private_key: key.private_key, public_spki: key.public_spki };
   });
 }
 
@@ -119,6 +122,7 @@ export async function takeIntroduction(options: { fetch: PcFetch; key: AccountKe
     saved.push(await options.store.update(pc.server_id, (current) => current ?? {
       server_id: pc.server_id, server_public_key: pc.server_public_key, relay: pc.relay, name: pc.name,
       device_id: accountDeviceId(pc.server_id, options.key.public_spki), private_key: options.key.private_key, public_spki: options.key.public_spki, label: options.label,
+      introduced_at: Date.now(),
     }));
   }
   return saved;
@@ -178,7 +182,7 @@ export async function admitToAccount(options: {
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const pcs = options.paired
-    .filter((device) => device.device_id !== null && device.server_id !== options.through && keyIdOf(device.server_public_key) === device.server_id)
+    .filter((device) => device.device_id !== null && device.server_id !== options.through && device.public_spki === options.key.public_spki && keyIdOf(device.server_public_key) === device.server_id)
     .slice(0, INTRODUCTION_MAX)
     .map((device) => ({ server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? device.server_id.slice(0, 8)).slice(0, 48) }));
   const deadline = now() + ADMITTED_MS;

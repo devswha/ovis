@@ -833,3 +833,39 @@ test("refused requests do not spend the PC's account joins", async () => {
   const admitted = (key: string) => admit(key).then(() => f.app.context.services.accountMailbox.pull());
   expect((await askToJoin(f, admitted)).refused).toBeUndefined();
 });
+
+// Machine events over the WebSocket, the default client's path (#2862)
+
+async function memberSocket(f: Fixture, device: Awaited<ReturnType<typeof relayDevice>>) {
+  const link = await relayConnection(f, { websocket: f.app.context.services.core.socketHandlers });
+  await link.auth(device);
+  const socket = link.openSocket();
+  await socket.opened;
+  socket.send({ type: "machine-events", enabled: true });
+  return socket;
+}
+
+const remotePairings = (count: number) => (message: { type: string; event?: { type: string; pairings?: unknown[] } }) =>
+  message.type === "machine-event" && message.event?.type === "remote-pairings" && message.event.pairings?.length === count;
+
+test("a drive account member's machine-event socket is told of account joins waiting for it, with their key", async () => {
+  const { f, member } = await accountFixture();
+  const socket = await memberSocket(f, member);
+  await socket.until(remotePairings(0) as never);
+  f.app.context.services.relay.approvals.ask("Mac app", "123456", Date.now() + 90_000, { intent: "account", key: member.publicKey, deviceId: "00112233445566aa" });
+  const shown = await socket.until(remotePairings(1) as never) as unknown as { event: { pairings: { key: string; choices: string[] }[] } };
+  expect(shown.event.pairings[0]?.key).toBe(member.publicKey);
+  expect(shown.event.pairings[0]?.choices).toContain("123456");
+});
+
+test("a watching account member's machine-event socket hears of no account join", async () => {
+  const { f, member } = await accountFixture("watch");
+  const socket = await memberSocket(f, member);
+  // the subscription is live once a window that may not approve is told no relay pairing waits
+  await socket.until(((message: { type: string; event?: { type: string } }) => message.type === "machine-event" && message.event?.type === "relay-pairings") as never);
+  f.app.context.services.relay.approvals.ask("Mac app", "123456", Date.now() + 90_000, { intent: "account", key: member.publicKey, deviceId: "00112233445566aa" });
+  // a pairing after it reaches every socket in order: by then a prompt would have arrived
+  await relayDevice(f);
+  await socket.until(((message: { type: string; event?: { type: string } }) => message.type === "machine-event" && message.event?.type === "device-paired") as never);
+  expect(socket.messages.some((message) => remotePairings(1)(message as never))).toBe(false);
+});

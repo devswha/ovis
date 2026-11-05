@@ -5,6 +5,8 @@
  * never forge one: each is checked and applied like a record a client hands over directly.
  */
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { readFileSync } from "node:fs";
+import { writePrivateState } from "../private-state.ts";
 import { ACCOUNT_RECORDS_MAX, isAccountKey } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
@@ -31,7 +33,20 @@ export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"
   return url.origin;
 }
 
+/** Records refused only because their signer was not a member yet, kept across pulls (and restarts) until they apply. */
+const PENDING_MAX = 1000;
+
+function readPending(path: string | undefined): unknown[] {
+  if (!path) return [];
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return Array.isArray(value) ? value.slice(-PENDING_MAX) : [];
+  } catch { return []; } // absent or unreadable: nothing waits; a record that never applies is the service's to resend
+}
+
 export interface AccountMailboxOptions {
+  /** Where records waiting on their signer are kept between pulls; tests leave it out and keep them in memory. */
+  readonly pendingPath?: string;
   readonly devices: DeviceStore;
   /** This PC's relay identity, when it has one; its `server_id` names the mailbox. */
   readonly identity: () => RelayIdentity | undefined;
@@ -49,7 +64,11 @@ export class AccountMailbox {
   private timer: ReturnType<typeof setInterval> | undefined;
   private pulling: Promise<number> | undefined;
 
-  constructor(private readonly options: AccountMailboxOptions) {}
+  private pending: unknown[];
+
+  constructor(private readonly options: AccountMailboxOptions) {
+    this.pending = readPending(options.pendingPath);
+  }
 
   /** Pulls now unless a pull is under way; how many records changed something. Never throws. */
   pull(): Promise<number> {
@@ -94,17 +113,40 @@ export class AccountMailbox {
 
   private async drain(): Promise<number> {
     const account = this.options.devices.account();
-    const identity = this.options.identity();
+    let identity: RelayIdentity | undefined;
+    try { identity = this.options.identity(); } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error);
+      return 0;
+    }
     if (account === null || !identity) return 0;
     if (this.options.service instanceof Error) { this.error = this.options.service.message; return 0; }
     // a removal refused for a local reason would be acknowledged and lost: collect nothing until it is fixed
     if (this.options.devices.accountError !== null) { this.error = this.options.devices.accountError; return 0; }
     let applied = 0;
     let ack: number | null = null;
+    // refused because their signer was not a member yet: a later add, in this pull or a later one, may make it one
+    const early: unknown[] = this.pending.splice(0);
+    /** Until a pass applies nothing more, so a chain of adds read in any order still reaches the remove at its end. */
+    const retry = async () => {
+      for (let progress = true; progress && early.length;) {
+        progress = false;
+        for (let start = 0; start < early.length;) {
+          const batch = early.slice(start, start + ACCOUNT_RECORDS_MAX);
+          // a record leaves the list only once its outcome is known: a failure here keeps every one of them
+          const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id);
+          const keep = batch.filter((_record, index) => outcomes[index]?.outcome === "refused" && (outcomes[index] as { code?: string }).code === "signer_not_member");
+          applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
+          if (keep.length !== batch.length) progress = true;
+          early.splice(start, batch.length, ...keep);
+          start += keep.length;
+        }
+      }
+    };
+    /** On disk before any page that put a record here is acknowledged, so a stop never loses one. */
+    const save = () => { if (this.options.pendingPath) writePrivateState(this.options.pendingPath, early.slice(-PENDING_MAX)); };
     try {
       const admissions = new Map<string, number>();
-      // refused because their signer was not a member yet: a later add in the same pull may make it one
-      const early: unknown[] = [];
+      await retry();
       for (let page = 0; ; page++) {
         // past the last page read, one more call only acknowledges it; what it returns waits for the next pull
         const { entries, waiting } = await this.page(identity, account, ack);
@@ -116,28 +158,22 @@ export class AccountMailbox {
           applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
           outcomes.forEach((outcome, index) => { if (outcome.outcome === "refused" && outcome.code === "signer_not_member") early.push(batch[index]); });
         }
-        // before this page is acknowledged (with the next request), retry what waited on a signer, until nothing more applies:
-        // a chain of adds read in any order still reaches the remove at its end
-        for (let progress = true; progress && early.length;) {
-          progress = false;
-          const retried = early.splice(0);
-          for (let start = 0; start < retried.length; start += ACCOUNT_RECORDS_MAX) {
-            const batch = retried.slice(start, start + ACCOUNT_RECORDS_MAX);
-            const outcomes = await applyAccountRecords(this.options.devices, batch, identity.server_id);
-            outcomes.forEach((outcome, index) => {
-              if (outcome.outcome === "refused" && outcome.code === "signer_not_member") early.push(batch[index]);
-              else { progress = true; if (outcome.outcome === "applied") applied += 1; }
-            });
-          }
-        }
+        // before this page is acknowledged (with the next request), retry what waited on a signer, and keep the rest on disk
+        await retry();
+        save();
         // every record read is acknowledged, refused ones too, so a refused one cannot hold the rest back
         ack = Math.max(...entries.map(({ seq }) => seq));
       }
+      // still waiting on a signer: kept for later pulls, the oldest dropped past PENDING_MAX
+      this.pending = early.slice(-PENDING_MAX);
+      save();
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      this.pending = early.slice(-PENDING_MAX);
+      try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
     }
     return applied;
   }

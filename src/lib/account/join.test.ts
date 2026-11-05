@@ -228,7 +228,7 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-  await removeFromAccount({ service: account, accountStore, key: lost.public_spki, account: ACCOUNT, here: pcFetch(await connect(x, onX)) });
+  await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
   expect(y.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(true);
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
@@ -253,4 +253,58 @@ it("keeps a pairing the account does not list when this device leaves, and says 
   const { unconfirmed } = await leaveAccount({ service: account, accountStore, relayStore: phone });
   expect(unconfirmed).toEqual([hidden.identity.server_id]);
   expect((await phone.list()).map((device) => device.server_id)).toEqual([hidden.identity.server_id]);
+});
+
+it("names the PCs a disconnect cannot reach, where this device is not a member, instead of claiming every PC", async () => {
+  const [x, y] = [pc(), pc()];
+  const phone2 = new MemoryDeviceStore();
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone2, "p620"))), device: (await phone2.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone2 });
+  const lost = await accountKey();
+  x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, lost.public_spki), key: lost.public_spki, label: "Lost phone", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
+  const service = new FakeAccountService();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  const account = new AccountService({ store: accountStore, fetch: service.fetch });
+  for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+  const { unconfirmed } = await removeFromAccount({ service: account, accountStore, relayStore: phone2, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  expect(unconfirmed).toEqual([y.identity.server_id]);
+  expect(service.mailbox(y.identity.server_id, ACCOUNT)).toEqual([]);
+  expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
+});
+
+it("keeps the account key it linked to when the PC's answer is lost, so the next sign-in can try it", async () => {
+  const x = pc();
+  const store = new MemoryDeviceStore();
+  const key = await accountKey();
+  const saved = await qrPairing(x, store, "p620");
+  const link = await connect(x, saved);
+  const lost = async (path: string, init?: RequestInit) => { await pcFetch(link)(path, init); throw new TypeError("connection lost"); };
+  await expect(linkThisDevice({ fetch: lost, device: saved, key, account: ACCOUNT, store })).rejects.toBeInstanceOf(TypeError);
+  const after = await store.get(x.identity.server_id);
+  expect(after?.public_spki).toBe(saved.public_spki);
+  expect(after?.pending_key?.public_spki).toBe(key.public_spki);
+  // the PC holds the account key now: the kept one signs in
+  await connect(x, { ...after!, private_key: after!.pending_key!.private_key, public_spki: after!.pending_key!.public_spki });
+});
+
+it("introduces only the PCs the approver is in the account on, not a pairing it has not linked yet", async () => {
+  const [x, y, z] = [pc(), pc(), pc()];
+  const phone = new MemoryDeviceStore();
+  const key = await accountKey();
+  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  await linkThisDevice({ fetch: pcFetch(await connect(y, await qrPairing(y, phone, "nuc"))), device: (await phone.get(y.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  await qrPairing(z, phone, "old-desktop");
+  const mac = await accountKey();
+  x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, mac.public_spki), key: mac.public_spki, label: "Mac app", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
+  const service = new FakeAccountService();
+  const accountStore = memoryAccountStore();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  await admitToAccount({ fetch: pcFetch(await connect(x, onX)), service: new AccountService({ store: accountStore, fetch: service.fetch }), key, account: ACCOUNT,
+    joining: { key: mac.public_spki, label: "Mac app" }, through: x.identity.server_id, paired: await phone.list(), directory: [] });
+  const macStore = new MemoryDeviceStore();
+  const macOnX = await macStore.update(x.identity.server_id, () => ({ server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: accountDeviceId(x.identity.server_id, mac.public_spki), private_key: mac.private_key, public_spki: mac.public_spki, label: "Mac app" }));
+  const introduced = await takeIntroduction({ fetch: pcFetch(await connect(x, macOnX)), key: mac, label: "Mac app", store: macStore, relay: "wss://relay.example" });
+  expect(introduced.map((device) => device.server_id)).toEqual([y.identity.server_id]);
+  expect(introduced[0]?.introduced_at).toBeGreaterThan(0);
 });

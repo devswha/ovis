@@ -22,6 +22,10 @@ export interface RelayDevice {
   readonly server_public_key: string;
   readonly relay: string;
   readonly name?: string;
+  /** the account key a link was sent for, before the PC's answer came: tried once if the PC refuses this key (src/lib/account/join.ts) */
+  readonly pending_key?: { readonly private_key: CryptoKey; readonly public_spki: string };
+  /** when an introduction saved this PC: until its mailbox brings the add, the PC may not know this device yet */
+  readonly introduced_at?: number;
 }
 
 /** Updates are atomic, including between two tabs the same PC admits at once. */

@@ -38,16 +38,21 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   }
   // the removes are queued: the sign-in ends here whatever the service answers to the sign-out
   try { await options.service.signOut(); }
-  finally { if (unconfirmed.length === 0) await options.accountStore.clear(); }
+  catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
+  if (unconfirmed.length === 0) await options.accountStore.clear();
   return { remove, unconfirmed };
 }
 
 /**
  * Disconnects another device of the account from every PC of it (a lost phone): a `remove` for
- * its account key, signed by this device's, applied at once on the PC this window is in (`here`)
- * and left in the mailbox of every PC of the account for the others to apply when they collect it.
+ * its account key, signed by this device's. A PC applies it only when this device is one of its
+ * members, so it goes to the PCs this device is linked on, first through the account service and
+ * then at once on the PC this window is in (`here`); the account's other PCs are named back as not
+ * reached, for another member to disconnect it there.
  */
-export async function removeFromAccount(options: { service: AccountService; accountStore: AccountStore; key: string; account: string; here?: PcFetch; now?: () => number }): Promise<RemoveRecord> {
+export async function removeFromAccount(options: {
+  service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; key: string; account: string; here?: PcFetch; hereId?: string; now?: () => number;
+}): Promise<LeaveResult> {
   const session = await options.service.session();
   if (session === undefined) throw new Error("Sign in first, so every PC of the account hears of it");
   // the row shown belongs to the account signed in here, or nothing is signed for it
@@ -58,13 +63,15 @@ export async function removeFromAccount(options: { service: AccountService; acco
     v: 1, kind: "remove", account: session.account, key: options.key,
     issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: own.public_spki,
   }, own.private_key);
+  const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki).map((device) => device.server_id));
+  const listed = (await options.service.listPcs()).map((pc) => pc.server_id);
+  const reached = listed.filter((id) => linked.has(id));
+  for (let start = 0; start < reached.length; start += 32) await options.service.postRecord(reached.slice(start, start + 32), remove);
   if (options.here) {
     // the PC answers every record's outcome with 200: a refusal there is a failure here
     const answer = await (await post(options.here, "/api/account/records", { records: [remove] })).json() as { results?: { outcome?: string; code?: string }[] };
     const outcome = answer.results?.[0];
     if (outcome?.outcome === "refused") throw new Error(`This PC refused the removal (${outcome.code ?? "refused"})`);
   }
-  const pcs = (await options.service.listPcs()).map((pc) => pc.server_id);
-  for (let start = 0; start < pcs.length; start += 32) await options.service.postRecord(pcs.slice(start, start + 32), remove);
-  return remove;
+  return { remove, unconfirmed: listed.filter((id) => !linked.has(id) && id !== options.hereId) };
 }

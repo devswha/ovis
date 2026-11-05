@@ -394,6 +394,7 @@ export function createServer(
 
   const requestLog = new RequestLog(stateDir);
   const accountMailbox = new AccountMailbox({
+    pendingPath: join(stateDir, "account-pending.json"),
     devices, identity: () => ovisRelay.currentIdentity(),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });

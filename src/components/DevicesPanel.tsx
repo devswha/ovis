@@ -14,6 +14,8 @@ import { lastSeen } from "../lib/lastSeen.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
+import { indexedDeviceStore } from "../lib/relay/device.ts";
+import { serverIdOfPath } from "../lib/shellMode.ts";
 import { useAccountSignedIn } from "../lib/account/useAccountSignedIn.ts";
 import { getTransport } from "../lib/transport.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
@@ -150,8 +152,15 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
     setDisconnecting(null);
     const transport = getTransport();
     try {
-      await removeFromAccount({ service: new AccountService({ store: indexedAccountStore }), accountStore: indexedAccountStore, key, account, here: (path, init) => transport.fetch(path, init) });
+      const service = new AccountService({ store: indexedAccountStore });
+      const { unconfirmed } = await removeFromAccount({ service, accountStore: indexedAccountStore, relayStore: indexedDeviceStore, key, account,
+        here: (path, init) => transport.fetch(path, init), ...(serverIdOfPath(window.location.pathname) ? { hereId: serverIdOfPath(window.location.pathname)! } : {}) });
       await load();
+      if (unconfirmed.length > 0) {
+        // this device is not a member there, so its removal would be refused: name them, rather than claim every PC
+        const names = new Map((await service.listPcs()).map((pc) => [pc.server_id, pc.label]));
+        setError(t("Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") }));
+      }
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const revoke = async (id: string) => {

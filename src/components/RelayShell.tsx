@@ -180,6 +180,13 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}
+        {state.kind === "failed" && state.failure === "not-added-yet" && (
+          <>
+            <h1 className="relay-shell-title">{t("{name} has not added this device yet", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("It adds the devices of your account a few minutes after they join. Try again in a moment.")}</p>
+            <div className="relay-shell-actions">{retry}{back}</div>
+          </>
+        )}
         {state.kind === "failed" && state.failure === "pc-offline" && (
           <>
             <h1 className="relay-shell-title">{t("{name} is offline", { name: pc })}</h1>

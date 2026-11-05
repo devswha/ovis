@@ -146,6 +146,15 @@ export function shellContentSecurityPolicy(): string {
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;
 
 /** The policy for a request from `origin` (requestOrigin): its host's other ports may be framed. */
+/** The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is https, else none. */
+export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"]): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /^[a-z0-9.-]+(?::[0-9]+)?$/i.test(url.host) ? url.origin : null;
+  } catch { return null; }
+}
+
 export function contentSecurityPolicy(origin?: string): string {
   let host: string | null = null;
   try {
@@ -153,8 +162,13 @@ export function contentSecurityPolicy(origin?: string): string {
   } catch {
     host = null;
   }
-  if (host === null || !FRAMEABLE_HOST.test(host)) return CONTENT_SECURITY_POLICY;
-  return CSP_DIRECTIVES.map((directive) => directive === "frame-src 'self'" ? `frame-src 'self' http://${host}:* https://${host}:*` : directive).join("; ");
+  const frameable = host !== null && FRAMEABLE_HOST.test(host);
+  const account = accountServiceOrigin();
+  return CSP_DIRECTIVES.map((directive) => {
+    if (directive === "frame-src 'self'" && frameable) return `frame-src 'self' http://${host}:* https://${host}:*`;
+    if (directive === "connect-src 'self'" && account !== null) return `connect-src 'self' ${account}`;
+    return directive;
+  }).join("; ");
 }
 
 /**

@@ -67,6 +67,9 @@ export interface RelayShellMount {
 
 declare const __APP_VERSION__: string;
 
+/** How long a PC an introduction named may refuse this device before it is taken as removed: past a few of its mailbox pulls. */
+const INTRODUCED_GRACE_MS = 15 * 60_000;
+
 /** How long a device that just paired looks for its introduction, and how often. */
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
@@ -104,6 +107,8 @@ interface Attempt {
   refreshed?: boolean;
   /** this attempt paired just now: the PC has not seen the key prove itself on this session yet */
   fresh?: boolean;
+  /** this attempt already tried the key of a link whose answer was lost */
+  retriedPending?: boolean;
 }
 
 /** Settings' Forget this PC: the phone's key for the PC is gone; the PC lists the device until it is revoked there. */
@@ -199,18 +204,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const joinPc = (pc: MyPc): void => {
     const join = pc.join;
     if (join === undefined) return;
-    void (async () => {
-      // the PC takes a comparison that asks to join the account only after this device rang through the account service
-      try { await account.postAdmission(pc.server_id, label.slice(0, 48), (await accountStore.key()).public_spki); }
-      catch (error) {
-        console.warn("Ovis: the account service did not take the join", error instanceof Error ? error.name : error);
-        accountView = accountView?.kind === "signed-in" ? { ...accountView, error: t("The account service could not be reached. The PCs this device is paired with still work.") } : accountView;
-        await showFront();
-        return;
-      }
-      const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
-      navigate(link.pathname + link.hash);
-    })();
+    const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
+    navigate(link.pathname + link.hash);
   };
 
   const signOut = (): void => {
@@ -221,8 +216,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const leave = (): void => {
     void leaveAccount({ service: account, accountStore, relayStore: store }).then(async ({ unconfirmed }) => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
+      const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
       accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
-        : t("This device left the account. {n} PCs the account does not list still have it: revoke it on them.", { n: unconfirmed.length }) };
+        : t("This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") }) };
       await showFront();
     }, async (error: unknown) => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
@@ -230,6 +226,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       await showFront();
     });
   };
+
 
   const signIn = (provider: AccountProvider): void => {
     if (accountService === null) return;
@@ -256,7 +253,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       await connect({ ...attempt, refreshed: true });
       return;
     }
-    const failure = failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
+    let failure = failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
+    if (failure === "revoked") {
+      const saved = await store.get(attempt.offer.server_id);
+      // a link whose answer was lost: the PC may hold the account key now, so that key is tried once before anything is forgotten
+      if (saved?.pending_key && !attempt.retriedPending) {
+        const { pending_key: pending, ...rest } = saved;
+        await store.update(saved.server_id, () => ({ ...rest, private_key: pending.private_key, public_spki: pending.public_spki }));
+        await connect({ ...attempt, retriedPending: true });
+        return;
+      }
+      if (saved?.introduced_at !== undefined && Date.now() - saved.introduced_at < INTRODUCED_GRACE_MS) failure = "not-added-yet";
+    }
     if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
     // the relay's close code is the one fact the sentence does not carry; a plain refusal adds nothing
     const detail = error instanceof RelayUnreachableError && error.closeCode !== null ? error.message : null;
@@ -276,11 +284,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // signed in, a new pairing takes the account key and asks to join the account, so the PC's prompt says so
     const signedIn = accountService !== null && await account.session() !== undefined;
     const accountKey = signedIn ? await accountStore.key() : undefined;
+    // a comparison that asks to join the account is taken only after this device rang through the account
+    // service (approvers check that ring); without one, it asks to pair this PC only
+    let intent: "pc" | "account" = "pc";
+    if (accountKey && attempt.offer.code === undefined && (await store.get(attempt.offer.server_id))?.device_id == null) {
+      try { await account.postAdmission(attempt.offer.server_id, label.slice(0, 48), accountKey.public_spki); intent = "account"; }
+      catch (error) { console.warn("Ovis: the account service did not take the join; pairing this PC only", error instanceof Error ? error.name : error); }
+    }
     let opened: RelayTransport;
     try {
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
-        ...(accountKey ? { accountKey, intent: "account" as const } : {}),
+        ...(accountKey ? { accountKey, intent } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;
