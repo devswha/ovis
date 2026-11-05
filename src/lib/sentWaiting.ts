@@ -157,12 +157,13 @@ export function waitingBaseline(key: string, now = performance.now()): WaitingBa
 /**
  * A read of the pane was answered (a 304 too): `serverTime` is the PC's clock as it answered
  * (ConversationResponse.server_time, or the `x-server-time` header), `received` this browser's
- * monotonic clock as the answer arrived. Each read's replaces the one before: a PC whose clock was set
- * back is bounded by its clock now. Without a time (an older bridge) the last one stays.
+ * monotonic clock as the answer arrived. Each answer replaces those that arrived before it: a PC whose
+ * clock was set back is bounded by its clock now, and an older read whose body was parsed late does
+ * not bring its time back. Without a time (an older bridge) the last one stays.
  */
 export function observeWaitingClock(key: string, serverTime: string | null | undefined, received = performance.now()): void {
   const pcTime = serverTime == null ? Number.NaN : Date.parse(serverTime);
-  if (Number.isFinite(pcTime)) clocks.set(key, { pcTime, received });
+  if (Number.isFinite(pcTime) && !((clocks.get(key)?.received ?? Number.NEGATIVE_INFINITY) > received)) clocks.set(key, { pcTime, received });
 }
 
 export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null): void {

@@ -210,6 +210,20 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("keeps the clock of the answer that arrived last, though an older read's body was parsed after it", () => {
+    const key = waitingKey("local", "late-body");
+    const pc = Date.parse("2026-11-05T10:00:00Z");
+    try {
+      settleWaitingSends(key, [], pc, true);
+      // the PC's clock was set back 10 s between the two reads; the newer answer is observed first
+      observeWaitingClock(key, new Date(pc).toISOString(), 300);
+      observeWaitingClock(key, new Date(pc + 10_000).toISOString(), 200);
+      rememberWaitingSend(key, "after the correction", pc + 500, waitingBaseline(key, 500));
+      settleWaitingSends(key, [user("after the correction", pc + 301)], pc + 700, true);
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("allows for the two clocks drifting apart since the chat's last read", () => {
     const key = waitingKey("local", "clock-drift");
     const pc = Date.parse("2026-11-05T10:00:00Z");
