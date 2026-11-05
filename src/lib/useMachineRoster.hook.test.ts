@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, useRef } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Machine } from "../../shared/machines.ts";
+import type { Machine, MachineEvent } from "../../shared/machines.ts";
+import type { MachineSessionRegistry } from "./machineSession.ts";
+import type { ServerMessage } from "../../shared/protocol.ts";
 import { getTransport, setTransport, type EventSourceLike } from "./transport.ts";
 import { useRosterEvents, useRosterLoader } from "./useMachineRoster.ts";
 
@@ -20,6 +22,16 @@ describe("roster and health polling beside the event stream", () => {
   let next: number;
   let timers: Map<number, { at: number; every: number; run(): void }>;
   let reads: string[];
+  // The local terminal socket: it offers no machine events unless a test says so, so SSE carries them.
+  let socketEvents: boolean | undefined;
+  let socketListeners: Set<(message: ServerMessage) => void>;
+  let disconnectListeners: Set<() => void>;
+  const socket = {
+    get machineEventsAvailable() { return socketEvents; }, outputStopped: false, connect: noop, setMachineEvents: noop,
+    on(listener: (message: ServerMessage) => void) { socketListeners.add(listener); return () => { socketListeners.delete(listener); }; },
+    onDisconnect(listener: () => void) { disconnectListeners.add(listener); return () => { disconnectListeners.delete(listener); }; },
+  };
+  const machineSessions = { get: () => ({ socket }), closeAll: noop } as unknown as MachineSessionRegistry;
   const loadHealth = async () => {
     await getTransport().fetch("/api/health?scope=bridge");
     await getTransport().fetch("/api/health");
@@ -29,7 +41,7 @@ describe("roster and health polling beside the event stream", () => {
     const refetchTimer = useRef<number | null>(null);
     const loader = useRosterLoader({ locked, lockedRef, refetchTimer, loadHealth, rosterIn: noop, setMachines: noop, setMachineRosterLoaded: noop, setError: noop, setLocked: noop });
     useRosterEvents({
-      ...loader, locked, receivePreferencesRef: { current: noop }, onRoster: noop,
+      ...loader, locked, machineSessions, onPaneMoved: noop, receivePreferencesRef: { current: noop }, onRoster: noop,
       setMachines: noop, rosterIn: noop, setMachineRosterLoaded: noop, machinesRef: { current: [] },
       onPaneStatus: noop, onPaneExited: noop, followFocusRef: { current: false },
       selectionRef: { current: { machineId: "local", paneId: null, generation: 0 } },
@@ -44,6 +56,7 @@ describe("roster and health polling beside the event stream", () => {
   beforeEach(async () => {
     for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     locked = false; visibility = "visible"; now = 0; next = 1; timers = new Map(); reads = []; events = new EventTarget();
+    socketEvents = false; socketListeners = new Set(); disconnectListeners = new Set();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       location: { hash: "" },
@@ -88,6 +101,12 @@ describe("roster and health polling beside the event stream", () => {
       if (Array.isArray(update)) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: update }) }));
       else if (update === "opened") { source.readyState = 1; source.onopen?.(new Event("open")); }
       else { source.readyState = update === "lost" ? 0 : 2; source.onerror?.(new Event("error")); }
+    });
+  }
+  async function onSocket(message: ServerMessage | "disconnect") {
+    await act(async () => {
+      if (message === "disconnect") for (const listener of [...disconnectListeners]) listener();
+      else for (const listener of [...socketListeners]) listener(message);
     });
   }
   async function healthyStream() { await stream("opened"); await stream([local()]); }
@@ -140,6 +159,20 @@ describe("roster and health polling beside the event stream", () => {
       expect(counts()).toEqual([1, 1, 1]);
     });
   }
+
+  it("slows down the same way when the local terminal socket carries the events, and reads at once when it drops", async () => {
+    socketEvents = true;
+    await onSocket({ type: "features", features: ["machine-events"] } as ServerMessage);
+    await onSocket({ type: "machine-event", event: { type: "machines", machines: [local()] } satisfies MachineEvent } as ServerMessage);
+    await advance(60_000);
+    expect(counts()).toEqual([2, 2, 2]);
+    reads.length = 0;
+    socketEvents = undefined;
+    await onSocket("disconnect");
+    expect(counts()).toEqual([1, 1, 1]);
+    await advance(5_000);
+    expect(counts()).toEqual([2, 2, 2]);
+  });
 
   it("watches health immediately and every five seconds while locked, without reading the roster", async () => {
     await healthyStream();

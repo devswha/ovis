@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject
 import type { DevicePairedEvent, Machine, MachineEvent } from "../../shared/machines.ts";
 import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionEvents, paneSessionsMoving, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
-import { keepEventStream } from "./eventStream.ts";
+import { keepMachineEvents } from "./machineEventStream.ts";
+import { MachineSessionRegistry } from "./machineSession.ts";
 import { receiveSeen } from "./seenFinishes.ts";
 import { withPairedNotice } from "./pairedNotices.ts";
 import { takeAuthTokenFromUrl } from "./authLink.ts";
@@ -36,9 +37,19 @@ export function sameData(a: unknown, b: unknown): boolean {
 const REFETCH_DEBOUNCE_MS = 500;
 
 export function useRosterState() {
+  const [machineSessions] = useState(() => new MachineSessionRegistry());
+  useEffect(() => () => machineSessions.closeAll(), [machineSessions]);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [machineRosterLoaded, setMachineRosterLoaded] = useState(false);
-  return { machines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
+  return { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
+}
+
+/**
+ * Signing out closes every socket, as unmounting the sessions provider did: one kept open would
+ * carry its old authority behind the sign-in gate and be reused by the next sign-in.
+ */
+export function useCloseSessionsWhenLocked(machineSessions: Pick<MachineSessionRegistry, "closeAll">, locked: boolean | null): void {
+  useEffect(() => { if (locked) machineSessions.closeAll(); }, [machineSessions, locked]);
 }
 
 export function useRecentFolderMemory({ machines }: { machines: Machine[] }) {
@@ -92,8 +103,9 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
     else if (update === "opened") stream.current.open = true;
     else { stream.current.open = false; stream.current.localConnected = false; }
     const slow = stream.current.open && stream.current.localConnected;
-    // Repeated pushed rosters must not postpone the backstop. A lost local PC or stream
-    // reads at once, then watches health as quickly as a tab without push.
+    // Repeated pushed rosters must not postpone the backstop. Leaving the slow backstop (a lost
+    // local PC or stream) reads at once, then watches health as quickly as a tab without push; a
+    // stream that never saw a connected local PC was polling every five seconds already.
     if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
   }, []);
   useEffect(() => {
@@ -183,7 +195,8 @@ export function useRosterLoader({ locked, rosterIn, setMachines, setMachineRoste
   return { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream };
 }
 
-export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, getTakeNotificationTargetRef }: {
+export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, getTakeNotificationTargetRef }: {
+  machineSessions: MachineSessionRegistry;
   locked: boolean | null;
   onRosterStream: (update: RosterStreamUpdate) => void;
   receivePreferencesRef: RefObject<ReturnType<typeof usePreferencesSync>["receive"]>;
@@ -196,6 +209,8 @@ export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef,
   machinesRef: RefObject<Machine[]>;
   onPaneStatus: ReturnType<typeof useAlertSignals>["onPaneStatus"];
   onPaneExited: ReturnType<typeof useAlertSignals>["onPaneExited"];
+  /** herdr moved a pane of a PC under a new ID (the server's pane-moved, #1503) */
+  onPaneMoved: (machineId: string, from: string, to: string) => void;
   followFocusRef: RefObject<boolean>;
   selectionRef: RefObject<SelectionMark>;
   splitShownRef: RefObject<boolean>;
@@ -215,13 +230,12 @@ export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef,
   setPairedNotices: Dispatch<SetStateAction<readonly DevicePairedEvent[]>>;
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
-  // One SSE subscription watches every PC, even when no terminal is selected.
+  useCloseSessionsWhenLocked(machineSessions, locked);
+  // The local socket watches every PC, even when no terminal is selected; older servers use SSE.
   useEffect(() => {
     if (locked !== false) return;
-    const onMessage = (event: MessageEvent<string>) => {
+    const onMessage = (payload: MachineEvent) => {
       const takeNotificationTargetRef = getTakeNotificationTargetRef();
-      let payload: MachineEvent;
-      try { payload = JSON.parse(event.data); } catch { return; }
       if (payload.type === "preferences") { receivePreferencesRef.current(payload.preferences); return; }
       if (payload.type === "herdr-sidebar") { setAgentRowTokens(payload.agents); return; }
       if (payload.type === "seen") { receiveSeen(payload.finishes); return; }
@@ -274,13 +288,15 @@ export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef,
         setNotificationViewTarget(null); setTerminalPeek(null);
         setAutoSelected(true);
       }
+      // told before the structure change of the move: the pane's state and view go to the new ID first
+      if (message.type === "pane-moved") onPaneMoved(machine.id, message.from, message.to);
       if (message.type === "session-changed" || message.type === "pane-exited") {
         // until the roster after it comes, the panes' sessions are not known: no press read of the old one is taken
         paneSessionsMoving(machine.id);
         scheduleRefetch();
       }
     };
-    const stop = keepEventStream("/api/machines/events", {
+    const stop = keepMachineEvents(machineSessions.get("local").socket, {
       // opened or reopened: a shared-settings save paused by failures gets a new round
       opened: () => { onRosterStream("opened"); preferencesResubscribedRef.current(); },
       // lost (the browser reconnects by itself): a shared-settings save waits for that instead of retrying
@@ -292,5 +308,5 @@ export function useRosterEvents({ locked, onRosterStream, receivePreferencesRef,
       message: onMessage,
     });
     return () => { stop(); onRosterStream("closed"); };
-  }, [locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
+  }, [machineSessions, locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
 }
