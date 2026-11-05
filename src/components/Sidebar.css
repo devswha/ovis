@@ -409,9 +409,19 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
+/* the title keeps a few characters in the narrowest sidebar; the tab's name and the counts give way first */
 .workspace-agent-title {
   flex: 0 1 auto;
+  min-width: calc(4 * var(--space-4));
   font-size: var(--fs-md);
+}
+
+.workspace-agent-badges {
+  display: inline-flex;
+  flex: 0 1000 auto;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .workspace-agent-place {

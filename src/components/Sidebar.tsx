@@ -761,9 +761,12 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         <span className="workspace-agent-title">{title}</span>
         {place && <span className="workspace-agent-place">{place}</span>}
         {context && selected && <span className="sidebar-filter-note">{t("Selected")}</span>}
-        <BackgroundBadge count={online ? pane.background_tasks : 0} />
-        <PlanBadge plan={online ? pane.plan : undefined} />
-        <ContextBadge context={online && settings.sidebarContext ? pane.context : undefined} />
+        {/* the counts give way before the title in a narrow sidebar: cut at the row's trailing cell, never over it */}
+        <span className="workspace-agent-badges">
+          <BackgroundBadge count={online ? pane.background_tasks : 0} />
+          <PlanBadge plan={online ? pane.plan : undefined} />
+          <ContextBadge context={online && settings.sidebarContext ? pane.context : undefined} />
+        </span>
         <span className="sidebar-pane-meta">{online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={online ? activity.status(machineId, pane) : undefined} />}</span>
       </button>
     </li>;

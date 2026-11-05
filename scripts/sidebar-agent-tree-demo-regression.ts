@@ -27,6 +27,9 @@ const patch = `(() => {
     if (shell && !snapshot.panes.some((pane) => pane.pane_id === ${JSON.stringify(REVIEW)})) {
       snapshot.panes.push({ ...structuredClone(shell), pane_id: ${JSON.stringify(REVIEW)}, terminal_id: "term_review", focused: false, label: "Review the refund path", agent: "codex", agent_status: "done" });
     }
+    // the worktree agent carries every count a row can draw: its background tasks, a plan and its context
+    const flaky = snapshot.panes.find((pane) => pane.pane_id === ${JSON.stringify(panes.flaky)});
+    if (flaky) Object.assign(flaky, { background_tasks: 2, plan: { done: 1, total: 3, current: null }, context: { used: 120000, window: 200000 } });
     const remote = structuredClone(local);
     Object.assign(remote, { id: "build-box", name: "build-box", kind: "ssh", target: "build-box" });
     const keep = (snap, inRemote) => {
@@ -137,6 +140,29 @@ try {
           if (evidence) {
             mkdirSync(evidence, { recursive: true });
             await page.locator(".sidebar-shell").screenshot({ path: join(evidence, `agent-tree-${phone ? "390" : "1280"}-${theme}.png`) });
+          }
+          // the narrowest sidebar (SIDEBAR_MIN_WIDTH): every title keeps some width, and the counts never reach the state cell
+          if (!phone) {
+            await page.evaluate(() => { localStorage.setItem("ovis:sidebar-width", "240"); localStorage.setItem("ovis:sidebar-context", "true"); });
+            await open();
+            await agent(page, "workstation", panes.flaky).locator(".context-count").waitFor();
+            // 240 px less the hairline at its edge
+            assert.ok(Math.abs((await page.locator(".sidebar-shell").boundingBox())!.width - 240) <= 1, "the sidebar at its narrowest");
+            const narrow = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".workspace-agent-select")].map((row) => {
+              const title = row.querySelector(".workspace-agent-title")!.getBoundingClientRect();
+              const state = row.querySelector(".sidebar-pane-meta")!.getBoundingClientRect();
+              // a count cut by the row is clipped at its group's edge: what shows of it ends there
+              const group = row.querySelector(".workspace-agent-badges")?.getBoundingClientRect();
+              const counts = [...row.querySelectorAll(".background-count, .plan-count, .context-count")].map((count) => Math.min(count.getBoundingClientRect().right, group?.right ?? Infinity));
+              return { pane: row.parentElement!.dataset.agentPane!, title: title.width, counts: counts.length, clear: counts.every((right) => right <= state.left + 0.5) && title.right <= state.left + 0.5 };
+            }));
+            assert.ok(narrow.some((row) => row.counts > 0), "the demo draws counts on some agent rows");
+            for (const row of narrow) {
+              assert.ok(row.title >= 40, `${row.pane}: the title keeps some width at 240 px (${row.title})`);
+              assert.ok(row.clear, `${row.pane}: nothing reaches the state cell at 240 px`);
+            }
+            if (evidence) await page.locator(".machine-list").screenshot({ path: join(evidence, `agent-tree-240-${theme}.png`) });
+            await page.evaluate(() => { localStorage.removeItem("ovis:sidebar-width"); localStorage.removeItem("ovis:sidebar-context"); });
           }
           assert.deepEqual(errors, []);
           console.log(`PASS ${label}: off by default; on, each PC lists its workspaces and their agents, opens one in place and keeps the Agents list`);
