@@ -10,7 +10,7 @@ import { chromePath } from "./chrome-path.ts";
 // Settings → Appearance → File text size on the unmodified app over the demo's fixture transport,
 // at a phone's and a desktop's width, light and dark (#2005): with nothing chosen a Markdown preview
 // keeps the chat's size and a plain-text source the interface's; a chosen size draws both at it while
-// the chat and the viewer's header stay put; Follow chat gives the old sizes back. All files and HTTP
+// the chat and the viewer's header stay put; Reset gives the old sizes back. All files and HTTP
 // traffic stay in this disposable, loopback-only app; no herdr session is opened. Screenshots go to
 // UI_EVIDENCE_DIR when it is set.
 const app = mkdtempSync(join(tmpdir(), "ovis-file-text-size-demo-"));
@@ -166,7 +166,7 @@ try {
             await page.waitForFunction(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))));
             const before = await topLine();
             assert.ok(before > 1400 && before < 1600, `${width}px: scrolled to the middle (${before})`);
-            await page.locator(".settings-dialog").getByRole("button", { name: "Follow chat", exact: true }).click();
+            await page.locator(".settings-dialog").getByRole("button", { name: "Reset", exact: true }).click();
             await page.waitForFunction((was) => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight) < was, big.host);
             const small = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight));
             await page.waitForFunction((height) => {
@@ -207,24 +207,24 @@ try {
           } finally { await close(); }
         }
 
-        // the control: a step sets a size of its own, kept for the device; Follow chat drops it
+        // the control: a step sets a size of its own, kept for the device; Reset drops it
         const { page, errors, close } = await open(browser, width, { chatFontSize: 16 }, "&settings=appearance&section=typography");
         try {
           const dialog = page.locator(".settings-dialog");
           const stepper = dialog.getByRole("group", { name: "File text size", exact: true });
           await stepper.waitFor();
           assert.equal(await stepper.locator("output").textContent(), "16px", "it shows the chat's size while it follows it");
-          assert.equal(await dialog.getByRole("button", { name: "Follow chat", exact: true }).count(), 0, "nothing to reset while it follows");
+          assert.equal(await dialog.getByRole("button", { name: "Reset", exact: true }).count(), 0, "nothing to reset while it follows");
           await stepper.getByRole("button", { name: "Increase file text size", exact: true }).click();
           assert.equal(await stepper.locator("output").textContent(), "17px");
           assert.ok(Math.abs(Number(await page.evaluate(() => document.documentElement.style.getPropertyValue("--file-source-scale"))) - 17 / 16) < 1e-9, "a step up from the chat's size moves the source up with the preview");
           assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:file-font-size") ?? "null")), 17, "kept on this device");
           if (evidence) await page.screenshot({ path: join(evidence, `settings-file-text-size-${width}.png`) });
-          await dialog.getByRole("button", { name: "Follow chat", exact: true }).click();
-          assert.equal(await stepper.locator("output").textContent(), "16px", "Follow chat gives the chat's size back");
+          await dialog.getByRole("button", { name: "Reset", exact: true }).click();
+          assert.equal(await stepper.locator("output").textContent(), "16px", "Reset gives the chat's size back");
           assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:file-font-size") ?? "null")), null);
           assert.deepEqual(errors, []);
-          console.log(`PASS ${width}px: File text size steps from the chat's size, is kept, and Follow chat drops it`);
+          console.log(`PASS ${width}px: File text size steps from the chat's size, is kept, and Reset drops it`);
         } finally { await close(); }
       }
     } finally { await browser.close(); }

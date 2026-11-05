@@ -88,7 +88,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Increase chat font size": "增大聊天字号",
   "File text size": "文件字号",
   "An open file's text, in its preview and its source. Follows the chat font size until you choose one.": "打开的文件的文字(预览和源码)。在你选择之前跟随聊天字号。",
-  "Follow chat": "跟随聊天",
   "Decrease file text size": "减小文件字号",
   "Increase file text size": "增大文件字号",
   "Chat font": "聊天字体",

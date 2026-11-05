@@ -88,7 +88,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Increase chat font size": "채팅 글자 크게",
   "File text size": "파일 글자 크기",
   "An open file's text, in its preview and its source. Follows the chat font size until you choose one.": "열어 본 파일의 글자(미리보기와 소스). 직접 고르기 전까지 채팅 글자 크기를 따릅니다.",
-  "Follow chat": "채팅 따라가기",
   "Decrease file text size": "파일 글자 작게",
   "Increase file text size": "파일 글자 크게",
   "Chat font": "채팅 글꼴",

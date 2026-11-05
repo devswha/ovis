@@ -425,7 +425,7 @@ function AppearancePage() {
       <InterfaceFontRows />
       <SettingsRow label={t("File text size")} description={t("An open file's text, in its preview and its source. Follows the chat font size until you choose one.")} wide>
         <span className="settings-file-size">
-          {settings.fileFontSize !== null && <button type="button" className="btn btn-ghost" onClick={() => update({ fileFontSize: null })}>{t("Follow chat")}</button>}
+          {settings.fileFontSize !== null && <button type="button" className="btn btn-ghost" onClick={() => update({ fileFontSize: null })}>{t("Reset")}</button>}
           <Stepper label={t("File text size")} value={fileFontSize(settings)} text={`${fileFontSize(settings)}px`} min={CHAT_FONT_MIN} max={CHAT_FONT_MAX} decreaseLabel={t("Decrease file text size")} increaseLabel={t("Increase file text size")} onChange={(size) => update({ fileFontSize: size })} />
         </span>
       </SettingsRow>

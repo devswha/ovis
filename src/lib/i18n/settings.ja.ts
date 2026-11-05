@@ -88,7 +88,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Increase chat font size": "チャットの文字を大きく",
   "File text size": "ファイルの文字サイズ",
   "An open file's text, in its preview and its source. Follows the chat font size until you choose one.": "開いたファイルの文字(プレビューとソース)。選ぶまではチャットのフォントサイズに従います。",
-  "Follow chat": "チャットに合わせる",
   "Decrease file text size": "ファイルの文字を小さく",
   "Increase file text size": "ファイルの文字を大きく",
   "Chat font": "チャットのフォント",
