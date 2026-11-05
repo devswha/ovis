@@ -871,3 +871,16 @@ test("a watching account member's machine-event socket hears of no account join"
   await socket.until(((message: { type: string; event?: { type: string } }) => message.type === "machine-event" && message.event?.type === "device-paired") as never);
   expect(socket.messages.some((message) => remotePairings(1)(message as never))).toBe(false);
 });
+
+test("what a PC's own add-me screen lets in is decided on that PC only, never by an account member", async () => {
+  const { f, member } = await accountFixture();
+  const approvals = f.app.context.services.relay.approvals;
+  approvals.openWindow(Date.now(), { localOnly: true });
+  const asked = approvals.ask("New phone", "123456", Date.now() + 90_000, { intent: "pc", key: member.publicKey, deviceId: "00112233445566aa" });
+  if (!asked) throw new Error("no room to ask");
+  const id = approvals.list()[0]!.id;
+  expect(approvals.remoteList()).toEqual([]);
+  expect(approvals.decideRemote(id, true, "123456", { id: member.id, label: "Account phone", role: "drive" })).toEqual({ outcome: "gone" });
+  expect(approvals.decide(id, true)).toBe(true);
+  expect(await asked.decision).toEqual({ approved: true });
+});

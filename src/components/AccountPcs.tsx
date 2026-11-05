@@ -3,7 +3,7 @@ import "./AccountPcs.css";
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 
-import type { MyPc } from "../lib/account/myPcs.ts";
+import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
@@ -99,6 +99,13 @@ export function AccountPcs({ view, onJoin, onSignOut, onLeave }: {
     <>
       <h1 className="relay-shell-title">{t("Your PCs")}</h1>
       <p className="relay-shell-copy account-subtitle">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p>
+      {view.pcs !== null && onJoin && newPcs(view.pcs, Date.now()).map((pc) => (
+        <section key={pc.server_id} className="account-new-pc" aria-label={t("New PC")}>
+          <p className="account-new-pc-title">{t("Add {name} to your account?", { name: pc.name })}</p>
+          <p className="account-fineprint">{t("You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.", { name: pc.name })}</p>
+          <button type="button" className="btn btn-primary" onClick={() => onJoin(pc)}>{t("Add this PC")}</button>
+        </section>
+      ))}
       {view.pcs === null
         ? <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Loading your PCs…")}</span></div>
         : <AccountPcList pcs={view.pcs} {...(onJoin ? { onJoin } : {})} />}

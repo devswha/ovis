@@ -73,7 +73,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/link":
         setRequestRoute("/api/relay/link");
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
-        return reply(service.pairingLink());
+        // the PC's own screen waiting to be added to an account: what that link brings is approved here only
+        return reply(service.pairingLink({ localOnly: new URL(request.url).searchParams.get("local_only") === "1" }));
       case "/api/relay/pairing": {
         setRequestRoute("/api/relay/pairing");
         const body = await readJsonObject(request);
