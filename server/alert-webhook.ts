@@ -219,6 +219,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
           if (!result.ok) console.error(`alert webhook (${target.preset}) failed: ${result.error}`);
           break;
         }
+        // fixed wait: the backoff before the destination is tried again
         await wait(retryDelays[attempt]!);
         // a newer alert came while this one waited: it is the news now, and goes instead
         if (next !== null) break;
