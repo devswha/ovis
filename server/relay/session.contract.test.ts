@@ -37,6 +37,23 @@ it("serves health through real protected channels and records the route template
   expect(log).not.toContain("not-logged");
 });
 
+it("names its relays in AUTH_OK to a phone that offered relay hints", async () => {
+  const f = fixture();
+  const device = await relayDevice(f);
+  const relays = ["wss://relay-ap.ovis.sh", "wss://relay.ovis.sh"];
+  const link = await relayConnection(f, { relayHints: () => relays });
+  expect((await link.auth(device, ["relay-hints"])).relays).toEqual(relays);
+  expect((await link.welcome).payload.features).toEqual(["relay-hints"]);
+});
+
+it("names no relays to a phone that did not offer relay hints", async () => {
+  const f = fixture();
+  const device = await relayDevice(f);
+  const link = await relayConnection(f, { relayHints: () => ["wss://relay-ap.ovis.sh", "wss://relay.ovis.sh"] });
+  const auth = await link.auth(device);
+  expect(auth).not.toHaveProperty("relays");
+});
+
 it("keeps a renamed relay device admitted and still revokes its session", async () => {
   const f = fixture();
   const device = await relayDevice(f);

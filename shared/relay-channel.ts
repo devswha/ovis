@@ -5,7 +5,8 @@
  */
 import { openClientSecureChannel } from "./relay-e2ee.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
-import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_PROTOCOL } from "./relay-mux.ts";
+import { decodeFrame, FrameType, LIMITS_V1, MuxProtocolError, RELAY_HINTS, RELAY_PROTOCOL } from "./relay-mux.ts";
+import { hintedRelay } from "./relay-regions.ts";
 import { MuxEngine } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
@@ -192,7 +193,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         // before any credential: a PC of another relay generation is an update, not a pairing
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
         server = { version: frame.payload.server_version, relayProtocol: frame.payload.relay_protocol };
-        if (frame.payload.features.length) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
+        if (frame.payload.features.some((feature) => feature !== RELAY_HINTS)) throw new MuxProtocolError("unsupported_extension", "Server selected unoffered features");
         phase = "auth";
         Object.assign(limits, frame.payload.limits);
         welcome = bytes;
@@ -220,7 +221,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         if (!kept || kept.server_public_key !== device.server_public_key || kept.public_spki !== device.public_spki) {
           throw new MuxProtocolError("auth_changed", "Stored relay identity changed during authentication");
         }
-        return { ...kept, device_id: frame.payload.device_id };
+        // inside the Noise channel the PC authenticated: the relay cannot have written these
+        return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
       // Defer setup accounting until admission: receive() automatically emits RECEIVED.
@@ -300,7 +302,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           onClose: (error) => stop(error),
         });
         await send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
-          payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
+          payload: { protocol: "ovis-mux", versions: [1], features: [RELAY_HINTS], required_features: [] } });
       }).catch(failed);
     };
   });

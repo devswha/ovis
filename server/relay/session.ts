@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { FrameType, LIMITS_V1, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { FrameType, LIMITS_V1, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
 import { handleRequest } from "../dispatch.ts";
@@ -51,6 +51,8 @@ export interface RelaySessionOptions {
   readonly onClose?: (code: SessionError) => void;
   /** The client signed in or paired: from here on the carrier counts as a device's session. */
   readonly onAuthenticated?: (deviceId: string) => void;
+  /** The relays a phone that offered RELAY_HINTS is told in AUTH_OK, the preferred one first. */
+  readonly relayHints?: () => readonly string[];
 }
 
 export interface RelayWebSocketRequest {
@@ -69,6 +71,7 @@ export class RelaySession {
   private state: "hello" | "auth" | "verifying" | "ready" | "closed" = "hello";
   private readonly nonce = randomBytes(32);
   private device: DeviceMatch | undefined;
+  private hinting = false;
   private unwatch: (() => void) | undefined;
   private sourceBytes = 0;
   private readonly clock: MuxClock;
@@ -183,10 +186,11 @@ export class RelaySession {
         if (!frame.payload.versions.includes(1)) { this.close("unsupported_version"); return; }
         if (frame.payload.required_features.length) { this.close("unsupported_extension"); return; }
         this.state = "auth";
+        this.hinting = this.options.relayHints !== undefined && frame.payload.features.includes(RELAY_HINTS);
         this.mux.sendSession({
           type: FrameType.WELCOME, flags: 0, stream_id: 0,
           payload: {
-            protocol: "ovis-mux", version: 1, features: [], limits: LIMITS_V1,
+            protocol: "ovis-mux", version: 1, features: this.hinting ? [RELAY_HINTS] : [], limits: LIMITS_V1,
             nonce: this.nonce.toString("base64url"), server_version: this.options.serverVersion,
             relay_protocol: RELAY_PROTOCOL, min_supported_client: this.options.minSupportedClient,
           },
@@ -213,7 +217,7 @@ export class RelaySession {
         // Until then OPEN is still unauthenticated, even while AUTH_OK waits behind receipt credit.
         this.mux.enqueueControl({
           type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
-          payload: { session_id: this.sessionId, device_id: device.id, role: device.role },
+          payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints() },
         }, undefined, () => {
           if (!devices.has(device.id)) { this.close("auth_revoked"); return; }
           this.mux.authenticate(device.id);
@@ -225,6 +229,11 @@ export class RelaySession {
       case FrameType.WELCOME: case FrameType.AUTH_OK:
         this.close("protocol_error");
     }
+  }
+
+  private hints(): { relays?: readonly string[] } {
+    const relays = this.hinting ? this.options.relayHints?.() ?? [] : [];
+    return relays.length ? { relays } : {};
   }
 
   private principal(): DeviceMatch | undefined {
