@@ -11,6 +11,7 @@ import { pendingMessages } from "./pendingMessages.ts";
 import { FrameGate } from "./inputRow.ts";
 import { AttachmentTooLargeError, assertAttachable, fetchPaneConversation, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
 import { parseOsc52 } from "./osc52.ts";
+import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -818,6 +819,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // released on the pane it was pressed on: a pane switched meanwhile gets no click of this press
         if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !term.hasSelection()
           && released.row === d.anchor.row && released.col === d.anchor.col) {
+          if (osc52AllowedRef.current && !observeRef.current && !heldRef.current) reserveCopy(d.pane);
           forwardClick(event, d.click);
           return;
         }
@@ -912,6 +914,27 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // frame xterm is parsing then is the old output's (`parsingOwner`), which copies nothing.
       let outputOwner = 0;
       let parsingOwner = 0;
+      // A click handed to the program starts a clipboard write that its OSC 52 answer fills in
+      // (osc52Clipboard.ts): Safari writes only within the click. One at a time, for that pane's output.
+      let copyReservation: { pane: string; owner: number; copy: Osc52Reservation } | null = null;
+      const cancelCopy = (): void => {
+        copyReservation?.copy.cancel();
+        copyReservation = null;
+      };
+      const reserveCopy = (pane: string): void => {
+        cancelCopy();
+        const copy = reserveOsc52Copy();
+        if (copy) copyReservation = { pane, owner: outputOwner, copy };
+      };
+      /** the reservation this live copy may fill: still waiting, same pane and output, nothing selected since */
+      const takeCopy = (): Osc52Reservation | null => {
+        const held = copyReservation;
+        copyReservation = null;
+        if (held && held.copy.pending && held.pane === paneRef.current && held.owner === outputOwner
+          && !observeRef.current && !term.hasSelection()) return held.copy;
+        held?.copy.cancel();
+        return null;
+      };
       // a replayed frame, or retired output, ended inside an OSC that may still dispatch as OSC 52 in a
       // later live write
       let replayOscOpen = false;
@@ -960,6 +983,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const retireOutput = (): void => {
         outputOwner++;
         outputFrames.length = 0;
+        cancelCopy();
         // A renderer that left its pane (herdr could not restore it) ends that pane's recovery wait: a
         // rejoin is told again while the attachment still recovers. A replaced terminal of the same
         // pane keeps it until its new attach says (rejoin), so a late frame of the old replay is not
@@ -1002,10 +1026,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!replayed && parsingOwner === outputOwner && osc52AllowedRef.current && presentedRef.current && shownRef.current) {
           const text = parseOsc52(payload);
           if (text !== null) {
-            void navigator.clipboard?.writeText(text).then(
-              () => noteClipboard("copied to clipboard"),
-              () => noteClipboard("clipboard write blocked by the browser"),
-            );
+            const clipboard = navigator.clipboard;
+            const reserved = takeCopy();
+            const writeText = (): Promise<boolean> => clipboard.writeText(text).then(() => true, () => false);
+            if (reserved || clipboard) {
+              void (reserved ? reserved.fulfil(text).then((copied) => copied || writeText()) : writeText())
+                .then((copied) => noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser"));
+            }
           }
         }
         return true;
@@ -2448,6 +2475,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         replayOscOpen = false;
         retireOutputRef.current = () => {};
         osc52.dispose();
+        cancelCopy();
         for (const handler of queryReplies) handler.dispose();
         osc8.dispose();
         modifyOtherKeysSet.dispose();
