@@ -66,7 +66,7 @@ function CodeEntry({ failure, onSubmit, back }: { failure: TypedCodeFailure | nu
       <p className="relay-shell-copy">{t("On the PC, open Settings → Phone & devices and choose Show a code to type. Type that code here.")}</p>
       <form className="relay-shell-code-form" onSubmit={submit}>
         <input name="code" className="relay-shell-code-input" aria-label={t("Code from the PC")} placeholder="XXXXX-XXXXX"
-          autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={16} required autoFocus />
+          autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
         {failure !== null && <p className="relay-shell-detail" role="alert">{codeFailureText(t, failure)}</p>}
         <div className="relay-shell-actions">
           <button type="submit" className="btn btn-primary">{t("Pair")}</button>

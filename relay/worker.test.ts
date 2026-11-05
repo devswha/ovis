@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test }
 import { answerServerChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
 import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, WARM_QUIET_MS, parseSocketRequest, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
+import { PAIR_GUEST_MS } from "./pair-room.ts";
 import { RelayRoom, handle, usageKey, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
 
 /** the server end of a Cloudflare WebSocketPair: records what the room sends and how it closes */
@@ -731,6 +732,20 @@ describe("relay Worker pairing rendezvous", () => {
     room.webSocketMessage(host, up.buffer.slice(0) as ArrayBuffer);
     expect(Array.from(guest.sent[0] as Uint8Array)).toEqual([7]);
     closeFromFar(room, host);
+    expect(guest.closedWith?.code).toBe(1001);
+  });
+
+  test("a guest past its deadline passes nothing on, before any sweep", async () => {
+    const fake = fakeState();
+    setSystemTime(new Date(1_000_000));
+    const room = new RelayRoom(fake.state);
+    const host = await openPair(room, fake, "host");
+    const guest = await openPair(room, fake, "guest");
+    const before = host.sent.length;
+    setSystemTime(new Date(1_000_000 + PAIR_GUEST_MS));
+    room.webSocketMessage(guest, new Uint8Array([1]).buffer);
+    expect(host.sent.length).toBe(before + 1);
+    expect(host.json(before)).toMatchObject({ type: "gone" });
     expect(guest.closedWith?.code).toBe(1001);
   });
 

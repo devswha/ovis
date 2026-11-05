@@ -24,6 +24,8 @@ async function host(code: string, reply: string | null | ((exchange: PairCodeHos
   socket.binaryType = "arraybuffer";
   let exchange: PairCodeHost | null = null;
   let attempt = "";
+  let answered = (): void => {};
+  const heard = new Promise<void>((resolve) => { answered = resolve; });
   const prefixed = (bytes: Uint8Array) => { const out = new Uint8Array(ATTEMPT_BYTES + bytes.length); out.set(Uint8Array.from(attempt.match(/../g)!, (pair) => Number.parseInt(pair, 16))); out.set(bytes, ATTEMPT_BYTES); return out; };
   await new Promise<void>((resolve) => {
     socket.onmessage = (event) => {
@@ -38,13 +40,14 @@ async function host(code: string, reply: string | null | ((exchange: PairCodeHos
         return;
       }
       const frame = new Uint8Array(event.data as ArrayBuffer);
+      answered();
       if (hexOf(frame.subarray(0, ATTEMPT_BYTES)) !== attempt || typeof reply === "function") return;
       const answer = exchange!.answer(frame.subarray(ATTEMPT_BYTES), reply);
       if (answer === null) socket.send(JSON.stringify({ type: "drop", attempt }));
       else socket.send(prefixed(answer));
     };
   });
-  return { close: () => socket.close() };
+  return { close: () => socket.close(), heard };
 }
 
 const failure = (promise: Promise<unknown>) => promise.then(() => "no failure", (error: unknown) => error instanceof TypedCodeError ? error.failure : String(error));
@@ -72,6 +75,15 @@ describe("pairing with a typed code on the device", () => {
     const pc = await host("AB4DE-FGHJK", JSON.stringify(offer));
     expect(await failure(offerFromCode("AB4DE-FGHJM", { connect }))).toBe("wrong");
     pc.close();
+  });
+
+  it("says the relay could not be reached, not that the code was wrong, when the PC goes after the device answered", async () => {
+    const pc = await host("AB8DE-FGHJK", (exchange) => exchange.hello());
+    const typed = failure(offerFromCode("AB8DE-FGHJK", { connect }));
+    // the PC has the device's answer, then leaves: the relay closes the device as the host is gone
+    await pc.heard;
+    pc.close();
+    expect(await typed).toBe("unreachable");
   });
 
   it("says the code ran out when the PC's six-digit code is gone", async () => {

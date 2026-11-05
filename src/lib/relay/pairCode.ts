@@ -18,7 +18,7 @@ export class TypedCodeError extends Error {
   constructor(readonly failure: TypedCodeFailure) { super(failure); }
 }
 
-const { NO_HOST, BUSY } = PAIR_CLOSE;
+const { NO_HOST, BUSY, DROPPED } = PAIR_CLOSE;
 /** an exchange that does not finish in this long is given up */
 const EXCHANGE_MS = 30_000;
 
@@ -70,8 +70,8 @@ export function offerFromCode(input: string, options: TypedCodeOptions = {}): Pr
       settle(checkedOffer(text));
     };
     socket.onclose = (event) => {
-      // once the PC had its answer, a close is the PC turning the guess away
-      settle(new TypedCodeError(answered ? "wrong" : event.code === NO_HOST ? "no-pc" : event.code === BUSY ? "busy" : "unreachable"));
+      // once the PC had its answer, only its drop (a plain close) means it turned the guess away
+      settle(new TypedCodeError(answered ? (event.code === DROPPED ? "wrong" : "unreachable") : event.code === NO_HOST ? "no-pc" : event.code === BUSY ? "busy" : "unreachable"));
     };
   });
 }

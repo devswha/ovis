@@ -165,6 +165,8 @@ export class PairRoom<S extends object> {
     if (!info || info.ended) return;
     if (sizeOf(frame) > PAIR_MAX_FRAME) return this.end(socket, PAIR_CLOSE.TOO_BIG, "frame too big");
     const now = this.host.now();
+    // past its deadline a socket passes nothing on, whenever the next sweep comes
+    if (now >= info.deadline) return this.end(socket, PAIR_CLOSE.EXPIRED, "time ran out");
     this.host.setInfo(socket, { ...info, seen: now });
     if (frame === KEEPALIVE_PING) return this.host.send(socket, KEEPALIVE_PONG);
     const bytes = bytesOf(frame);

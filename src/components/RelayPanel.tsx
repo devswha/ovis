@@ -77,6 +77,7 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
   const again = () => setGeneration((value) => value + 1);
   // a six-digit code started anywhere else ends the typed code on the PC (server/relay/pair-code.ts): its words go too
   const [typedReset, setTypedReset] = useState(0);
+  const [typedId, setTypedId] = useState<string | null>(null);
   const dropTyped = () => setTypedReset((value) => value + 1);
 
   useEffect(() => {
@@ -163,7 +164,9 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
     </>
   );
   // the id a phone shows when a link carries another key: compared here, on the PC itself
-  const serverId = offer !== null ? decodeOffer(offer.url)?.server_id ?? null : null;
+  // the typed code names the PC too, so its ID stays to compare with while the QR offer is being fetched again
+  const offerId = offer === null ? undefined : decodeOffer(offer.url)?.server_id;
+  const serverId = offerId ?? typedId;
   const pcId = serverId !== null && (
     <div className="relay-pairing-id">
       <p className="settings-description">{t("This PC's ID")}</p>
@@ -180,7 +183,7 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
       {offer !== null && <ShareLink url={offer.url} copyLabel={t("Copy link")}>{newCode}</ShareLink>}
       {offer === null && <div className="phone-actions">{newCode}</div>}
       {offer !== null && <QrReveal value={offer.url} label={t("QR code that pairs a phone through the relay")} hint={t("Scan it with the other device's camera.")} />}
-      <TypedCode reset={typedReset} onMinted={() => { quiet.current = true; again(); }} />
+      <TypedCode reset={typedReset} onMinted={(minted) => { setTypedId(minted.server_id); quiet.current = true; again(); }} />
       {pcId}
     </div>
   );
@@ -200,7 +203,7 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
           <button type="button" className="btn" disabled={state === "minting"} onClick={() => void renew()}><RefreshCw aria-hidden="true" />{t("New code")}</button>
         </div>
         <CodelessLink />
-        <TypedCode reset={typedReset} onMinted={() => { quiet.current = true; again(); }} />
+        <TypedCode reset={typedReset} onMinted={(minted) => { setTypedId(minted.server_id); quiet.current = true; again(); }} />
         {pcId}
       </div>
     </div>
@@ -213,10 +216,12 @@ export function RelayPairing({ phone = false }: { phone?: boolean }) {
  * so the QR code above is asked for again (`onMinted`). The other device then shows this PC's ID
  * to compare with the one below.
  */
-function TypedCode({ reset, onMinted }: { reset: number; onMinted: () => void }) {
+function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayCode) => void }) {
   const t = useT();
   const [code, setCode] = useState<RelayCode | null>(null);
-  useEffect(() => { setCode(null); }, [reset]);
+  // the latest Show or Hide: an answer to an older one is not shown
+  const request = useRef(0);
+  useEffect(() => { request.current++; setCode(null); }, [reset]);
   const [failure, setFailure] = useState<string | null>(null);
   const [left, setLeft] = useState("");
   useEffect(() => {
@@ -231,15 +236,35 @@ function TypedCode({ reset, onMinted }: { reset: number; onMinted: () => void })
     return () => window.clearInterval(timer);
   }, [code]);
   const show = async () => {
+    const mine = ++request.current;
     setFailure(null);
-    try { setCode(await requestRelayCode()); onMinted(); } catch (reason) { setCode(null); setFailure(failureText(reason)); }
+    try {
+      const minted = await requestRelayCode();
+      if (mine !== request.current) return;
+      setCode(minted);
+      onMinted(minted);
+    } catch (reason) {
+      if (mine !== request.current) return;
+      setCode(null);
+      setFailure(failureText(reason));
+    }
   };
-  const hide = () => { setCode(null); void cancelRelayCode().catch(() => undefined); };
+  const hide = async () => {
+    const mine = ++request.current;
+    setFailure(null);
+    try {
+      await cancelRelayCode();
+      if (mine === request.current) setCode(null);
+    } catch (reason) {
+      // the code may still work on the relay: it stays on screen, with why it did not go
+      if (mine === request.current) setFailure(failureText(reason));
+    }
+  };
   return (
     <>
       <div className="phone-actions">
         <button type="button" className="btn" onClick={() => void show()}><Keyboard aria-hidden="true" />{code === null ? t("Show a code to type") : t("New code to type")}</button>
-        {code !== null && <button type="button" className="btn" onClick={hide}>{t("Hide the code")}</button>}
+        {code !== null && <button type="button" className="btn" onClick={() => void hide()}>{t("Hide the code")}</button>}
       </div>
       {code !== null && (
         <div className="relay-typed-code" role="status">

@@ -189,13 +189,14 @@ export class RelayPairCodes {
     if (current.attempt !== null || current.tries <= 0 || Date.now() >= current.expires) return this.drop(current, id);
     current.tries -= 1;
     const exchange = current.next;
-    current.next = new PairCodeHost(current.code);
     current.attempt = { id, exchange, timer: setTimeout(() => { this.drop(current, id); this.endAttempt(current); }, this.options.attemptMs ?? PAIR_CODE_ATTEMPT_MS) };
     const hello = exchange.hello();
     const frame = new Uint8Array(ATTEMPT_BYTES + hello.length);
     frame.set(bytesOf(id));
     frame.set(hello, ATTEMPT_BYTES);
     this.send(current, frame);
+    // the next device's M1 is worked out once this one is sent, so the relay cannot time it against an arrival
+    current.next = new PairCodeHost(current.code);
   }
 
   private answer(current: Current, frame: Uint8Array): void {

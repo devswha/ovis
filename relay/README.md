@@ -26,7 +26,7 @@ upgrade, and a request that is not an upgrade is `426`.
 | warm | `role=server&warm=<generation>` | the PC, at most one: a data socket opened before its client arrives |
 
 `GET /v1/pair?nameplate=<3 Crockford base32>&role=host|guest&v=1`, a WebSocket upgrade: the
-rendezvous for pairing with a typed code (`pair-room.ts`, [docs/relay.md](../docs/relay.md#pairing-with-a-typed-code)).
+rendezvous for pairing with a typed code (`pair-room.ts`, [docs/relay.md](../docs/relay.md#who-gets-in), "Pairing with a typed code").
 The PC holds a nameplate (`host`, one per nameplate, else `4409`; at most 11 minutes); a device
 joins it (`guest`: `4404` with no host, `1013` while another guest is there, past 12 guests in the
 room's life or within 2 seconds of the last). Each guest gets a random attempt id the host hears in
