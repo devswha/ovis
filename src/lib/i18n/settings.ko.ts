@@ -119,6 +119,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "One line": "한 줄",
   "Two lines": "두 줄",
   "Sidebar filter": "사이드바 필터",
+  "Show the sidebar on hover": "마우스를 올리면 사이드바 보기",
+  "On this device, while the sidebar is hidden, resting the mouse on its button shows it over the pane until the mouse leaves. Click the button to keep it open.": "이 기기에서 사이드바를 숨겼을 때 사이드바 버튼에 마우스를 올려 두면, 마우스가 벗어날 때까지 사이드바가 창 위에 나타납니다. 계속 열어 두려면 버튼을 누르세요.",
   "Name tabs from the first message": "첫 메시지로 탭 이름 짓기",
   "A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.": "번호로만 불리는 탭에 그 탭으로 보낸 첫 메시지의 몇 단어를 보여 줍니다. 모든 브라우저에 적용됩니다. 직접 지은 탭 이름은 그대로 두고, herdr의 탭 이름은 바꾸지 않습니다. 그 몇 단어만 탭이 닫힐 때까지 이 서버에 보관하며, 끄면 삭제됩니다.",
   "Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.": "이 기기에서 사이드바 목록 위에 필터 입력란을 보여 줍니다. 끄면 명령 팔레트의 워크스페이스와 에이전트 필터로 엽니다.",
@@ -391,4 +393,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Test sent. Check the destination.": "테스트를 보냈습니다. 받는 곳을 확인하세요.",
   "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "이 PC가 알림을 채팅 앱이나 원하는 URL에도 보냅니다. 메시지에는 PC, 창, 무슨 일이 있었는지와 창을 여는 링크가 담깁니다. 창 이름은 터미널 제목이며, 에이전트가 작업 내용으로 정할 수도 있습니다.",
   "Webhook URL": "웹훅 URL",
+  "Edit text files": "텍스트 파일 수정",
+  "Adds Edit to the file viewer for a text file in the pane's folder. Saving asks first, and stops if the file changed since you opened it.": "창의 폴더에 있는 텍스트 파일을 파일 보기에서 수정할 수 있게 합니다. 저장하기 전에 한 번 더 묻고, 연 뒤에 파일이 바뀌었으면 저장하지 않습니다.",
 };

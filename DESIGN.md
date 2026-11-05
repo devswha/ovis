@@ -428,6 +428,16 @@ blocks of `src/styles.css`.
 
 ### File viewer
 
+- Edit text files (off by default, Settings → File viewer): a pencil **Edit file** button in the header
+  turns the body into a text box (`.file-editor-text`, the source's mono size, never under
+  `--fs-input` on a touch screen so iOS does not zoom) under one bar: what is going on on the left
+  in `--text-dim` (`--notice` for a conflict or a refusal, with `role="alert"`), the buttons on the right.
+  Save asks again in the same bar ("Save changes to NAME?", Keep editing / Save) instead of a
+  dialog over the dialog. A file changed since it was opened follows Zed's "changed on disk" handling:
+  the typed text stays in the box to copy, and Reload file shows the file as it is now; unlike
+  Zed there is no Overwrite, so a save never replaces a change the editor has not seen. While the
+  text differs from the file, Escape, a press on the scrim and the sheet swipe do not close the
+  viewer; Cancel and Close do.
 - `--notice` colors a note that the view is partial (a file cut short, code too long to color): the
   size in the header's meta line becomes `256 KB of 1.3 MB`, always beside a warning icon so the
   color is not the only sign. It is a warning yellow, at least 4.5:1 on
@@ -867,7 +877,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--sidebar-user-w` on `.app`; the sidebar and its top row in the header both read
   `--sidebar-shown-w`. A phone's drawer keeps `--sidebar-w`.
 - The sidebar keeps its width on desktop until its edge is dragged, and is a `<=768px` drawer. The desktop collapse removes its
-  column; the drawer uses a scrim and keeps safe-area insets. On touch, a mostly horizontal swipe in
+  column; the drawer uses a scrim and keeps safe-area insets. Settings → Appearance → **Show the sidebar on hover** (#2588;
+  off by default, this device's choice) follows the Claude desktop app's collapsed sidebar, on the existing toggle rather
+  than an edge strip: a mouse resting `150ms` on the toggle of a collapsed sidebar shows it as `.sidebar.is-peek`, fixed
+  under the header at its open width with `--shadow-drawer` at `--z-drawer` and no scrim, so the pane keeps its width and
+  no pty resizes. Nothing takes the focus. The trip into it keeps it; `300ms` after the pointer left both it goes, later
+  while a row menu it opened is up or a field in it (the filter, a rename) has the focus. Escape puts it away and still
+  reaches the pane, unless that field or menu, or a modal dialog, takes it first; a click on the toggle
+  keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
   from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
