@@ -15,7 +15,9 @@
  * Signing takes electron-builder's own: CSC_LINK (a .p12, as a path or base64) with
  * CSC_KEY_PASSWORD, or CSC_NAME for a Developer ID Application identity already in a keychain.
  * Without an identity the build is unsigned and this hook does nothing; a notary key without a
- * signed dmg stops the build.
+ * signed dmg stops the build, and so does a signed dmg without one when OVIS_REQUIRE_NOTARIZATION=1
+ * (a release). Only the API key notarizes the dmg: electron-builder's Apple ID or keychain profile
+ * credentials alone stop the build rather than ship an app that is notarized in a dmg that is not.
  */
 import { execFile } from "node:child_process";
 
@@ -24,7 +26,7 @@ export const NOTARY_ENV = ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUE
 /** @typedef {(file: string, args: string[]) => Promise<string>} Run */
 
 /** @type {Run} */
-function run(file, args) {
+export function run(file, args) {
   return new Promise((resolve, reject) => {
     execFile(file, args, { maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) reject(new Error(`${file} ${args.join(" ")} failed: ${stderr.trim() || error.message}`));
@@ -44,6 +46,9 @@ export async function notarizeDmg(dmg, options = {}) {
   const log = options.log ?? ((line) => console.log(`  • ${line}`));
   const set = NOTARY_ENV.filter((name) => env[name]?.trim());
   if (set.length === 0) {
+    const other = ["APPLE_ID", "APPLE_KEYCHAIN_PROFILE"].filter((name) => env[name]?.trim());
+    if (other.length > 0) throw new Error(`${other.join(" and ")} notarize only the app; set ${NOTARY_ENV.join(", ")} to notarize ${dmg} too`);
+    if (env["OVIS_REQUIRE_NOTARIZATION"] === "1") throw new Error(`OVIS_REQUIRE_NOTARIZATION=1, but ${NOTARY_ENV.join(", ")} are not set: ${dmg} would ship unnotarized`);
     log(`no notary key (${NOTARY_ENV.join(", ")}): ${dmg} is not notarized`);
     return "skipped";
   }

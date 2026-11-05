@@ -36,6 +36,17 @@ describe("notarizeDmg", () => {
     expect(calls).toEqual([]);
   });
 
+  it("stops a release build that has no notary key", async () => {
+    const { calls, run } = recorder();
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: { OVIS_REQUIRE_NOTARIZATION: "1" }, run, log: quiet })).rejects.toThrow(/would ship unnotarized/);
+    expect(calls).toEqual([]);
+  });
+
+  it("stops on credentials that notarize only the app", async () => {
+    const { run } = recorder();
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: { APPLE_KEYCHAIN_PROFILE: "ovis" }, run, log: quiet })).rejects.toThrow(/APPLE_KEYCHAIN_PROFILE notarize only the app/);
+  });
+
   it("stops on a partial notary key", async () => {
     const { run } = recorder();
     await expect(notarizeDmg("dist/Ovis.dmg", { env: { APPLE_API_KEY: "/keys/AuthKey.p8" }, run, log: quiet })).rejects.toThrow(/missing APPLE_API_KEY_ID, APPLE_API_ISSUER/);
