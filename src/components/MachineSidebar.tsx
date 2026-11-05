@@ -468,8 +468,9 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, listShown,
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
   return <section className={`machine-group${props.selectedMachineId === machine.id ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className="machine-header">
-      {/* a pointer folds the PC from anywhere on its name, as the caret does; the keyboard has the caret */}
-      <div className="machine-title" onClick={toggle}>
+      {/* a pointer folds the PC from anywhere on its name, as the caret does; the keyboard has the caret. While the
+          name is a field (Rename…), a press in it places the caret instead */}
+      <div className="machine-title" onClick={renaming ? undefined : toggle}>
         <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
         {renaming ? <input
           className="input machine-rename-input"
