@@ -4,17 +4,14 @@
  *
  * xterm still takes every key, IME syllable, paste, click, selection, link, search and scroll, and
  * still answers the program's queries: everything Ovis built on it keeps working. Its text layer
- * is hidden (PaneTerminal.css `.is-ghostty`), and a layer of plain DOM text, one div per row, is
- * drawn over its screen at its cell size from the same bytes, in the same order. libghostty answers
- * only what xterm cannot: Kitty graphics replies and size reports in pixels.
+ * is hidden (PaneTerminal.css `[data-renderer="ghostty"]`), and a layer of plain DOM text, one div per
+ * row, is drawn over its screen at its cell size from the same bytes, in the same order. libghostty
+ * answers nothing: a reply it made to a replayed stream would reach the program as typing.
  */
 import type { IDisposable, Terminal } from "@xterm/xterm";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
-
-/** the replies libghostty sends that xterm never does: Kitty graphics (APC G) and window size in pixels (CSI 4/6 ; h ; w t) */
-const GHOSTTY_ONLY_REPLY = /^(\x1b_G[^\x1b]*\x1b\\|\x1b\[[46];\d+;\d+t)+$/;
 
 export interface GhosttyOverlay { dispose(): void }
 
@@ -29,16 +26,12 @@ function themeColors(term: Terminal): GhosttyColors {
 /**
  * Draws `term` with libghostty from now on, until disposed; resolves once the module is loaded, or
  * null when `takeBacklog` (the bytes xterm was given so far, called once the module is ready) has none
- * to give. `reply` sends an answer to the program the way xterm's own answers go.
+ * to give.
  */
-export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (string | Uint8Array)[] | null, reply: (data: string) => void): Promise<GhosttyOverlay | null> {
+export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, takeBacklog: () => (string | Uint8Array)[] | null): Promise<GhosttyOverlay | null> {
   const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
   if (!screen) throw new Error("ghostty overlay: the terminal is not open");
-  // the replies to the backlog were xterm's to give, when it was new
-  let replying = false;
-  const vt = await GhosttyVt.create(term.cols, term.rows, {
-    onReply: (data) => { if (replying && GHOSTTY_ONLY_REPLY.test(data)) queueMicrotask(() => reply(data)); },
-  });
+  const vt = await GhosttyVt.create(term.cols, term.rows);
   const backlog = takeBacklog();
   if (!backlog) {
     vt.dispose();
@@ -60,6 +53,8 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
   screen.append(layer);
 
   let rowEls: HTMLDivElement[] = [];
+  // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
+  let rowHtml: string[] = [];
   let cellW = 0;
   let cellH = 0;
   let frameQueued = false;
@@ -90,6 +85,7 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
     for (let y = 0; y < term.rows; y++) {
       const row = document.createElement("div");
       row.className = "ghostty-row";
+      row.innerHTML = rowHtml[y] ?? "";
       text.append(row);
       rowEls.push(row);
     }
@@ -98,7 +94,7 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
   let grid = "";
   const fit = (): void => {
     metrics();
-    // a resize redraws every row; the same grid has nothing new to draw, and fresh rows would stay empty
+    // a new grid redraws every row; a cell-size change alone redraws none, so the rebuilt rows refill from rowHtml
     const now = `${term.cols}x${term.rows}@${cellW}x${cellH}`;
     if (now === grid) return;
     grid = now;
@@ -128,12 +124,11 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
     if (lines.length) css.push(`text-decoration:${lines.join(" ")}`);
     let body = "";
     let plain = "";
-    const chars = Array.from(run.text);
-    for (let i = 0; i < chars.length; i++) {
-      if (run.wide[i]) {
+    for (const cell of run.cells) {
+      if (cell.wide) {
         if (plain) { body += escapeHtml(plain); plain = ""; }
-        body += `<span class="ghostty-wide">${escapeHtml(chars[i]!)}</span>`;
-      } else plain += chars[i];
+        body += `<span class="ghostty-wide">${escapeHtml(cell.text)}</span>`;
+      } else plain += cell.text;
     }
     if (plain) body += escapeHtml(plain);
     return `<span style="left:calc(var(--ghostty-cw)*${run.x})${css.length ? `;${css.join(";")}` : ""}">${body}</span>`;
@@ -204,6 +199,7 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
       let html = "";
       for (const run of runs) html += runHtml(run);
       row.innerHTML = html;
+      rowHtml[y] = html;
     });
     if (changed) {
       const c = vt.cursor();
@@ -227,7 +223,15 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
   // every byte xterm is given, libghostty is given first, in the same order
   const write = term.write.bind(term);
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
-    if (!disposed) vt.write(data);
+    if (!disposed) {
+      try {
+        vt.write(data);
+      } catch (error) {
+        // the module failed (a trap, out of memory): xterm draws from here on, and its write still runs
+        console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+        overlay.dispose();
+      }
+    }
     write(data, callback);
   }) as Terminal["write"];
   const reset = term.reset.bind(term);
@@ -244,8 +248,13 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
   vt.setScrollback(term.options.scrollback ?? 0);
   fit();
   // at xterm's grid and cell size, so a picture in the backlog is placed as xterm's cells are
-  for (const chunk of backlog) vt.write(chunk);
-  replying = true;
+  try {
+    for (const chunk of backlog) vt.write(chunk);
+  } catch (error) {
+    layer.remove();
+    vt.dispose();
+    throw error;
+  }
   const subscriptions: IDisposable[] = [
     term.onResize(() => fit()),
     term.onRender(() => schedule()),
@@ -254,10 +263,12 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
   const screenResize = new ResizeObserver(() => fit());
   screenResize.observe(screen);
 
-  return {
+  host.dataset["renderer"] = "ghostty";
+  const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      delete host.dataset["renderer"];
       term.write = write;
       term.reset = reset;
       for (const subscription of subscriptions) subscription.dispose();
@@ -267,4 +278,5 @@ export async function attachGhosttyOverlay(term: Terminal, takeBacklog: () => (s
       vt.dispose();
     },
   };
+  return overlay;
 }

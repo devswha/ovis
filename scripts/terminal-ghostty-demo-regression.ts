@@ -134,6 +134,10 @@ try {
         const cell = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector(".pane-frame.is-current .ghostty-layer")!).getPropertyValue("--ghostty-ch")));
         assert.equal(red?.top, `${4 * cell}px`, "core: at the row it was placed on");
 
+        // a wide character after a combining accent keeps its two cells: the accent is part of the cell before it
+        await print(page, "e\u0301\u754cX\r\n", "COMBINED");
+        assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-wide")].map((cell) => cell.textContent)), ["\u754c"], "core: the wide cell is the CJK character, not the accent");
+
         await print(page, "\x1b_Ga=d,d=I,i=7,q=2\x1b\\", "RED-DELETED");
         assert.equal(await picture(page), null, "core: a picture the program deletes goes");
 

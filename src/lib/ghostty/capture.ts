@@ -56,12 +56,11 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
       return backlog;
     };
     void import("./overlay.ts")
-      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, takeBacklog, (data) => term.input(data, false)))
+      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog))
       .then((attached) => {
         if (!attached) return;
         if (stopped) { attached.dispose(); return; }
         overlay = attached;
-        host.dataset["renderer"] = "ghostty";
       }, (error: unknown) => {
         giveUp();
         console.warn("libghostty could not draw this terminal; xterm draws it", error);
@@ -76,6 +75,5 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     off();
     giveUp();
     overlay?.dispose();
-    delete host.dataset["renderer"];
   };
 }

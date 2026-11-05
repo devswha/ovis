@@ -13,7 +13,6 @@ interface TypeLayout { types: Record<string, { fields?: Record<string, { offset:
 
 interface Exports {
   memory: WebAssembly.Memory;
-  __indirect_function_table: WebAssembly.Table;
   ghostty_type_json(): number;
   ghostty_wasm_alloc(len: number): number;
   ghostty_wasm_free(ptr: number, len: number): void;
@@ -34,23 +33,25 @@ interface Exports {
   ghostty_render_state_clean(state: number): number;
   ghostty_render_state_row_iterator_new(allocator: number, slot: number): number;
   ghostty_render_state_row_iterator_next_dirty(iterator: number, outY: number): number;
+  ghostty_render_state_row_iterator_free(iterator: number): void;
   ghostty_render_state_row_get(iterator: number, key: number, out: number): number;
   ghostty_render_state_row_cells_new(allocator: number, slot: number): number;
   ghostty_render_state_row_cells_select(cells: number, x: number): number;
   ghostty_render_state_row_cells_get(cells: number, key: number, out: number): number;
+  ghostty_render_state_row_cells_free(cells: number): void;
   ghostty_render_state_image_iterator_new(allocator: number, slot: number): number;
   ghostty_render_state_image_iterator_next(iterator: number): number;
   ghostty_render_state_image_get(iterator: number, key: number, out: number): number;
+  ghostty_render_state_image_iterator_free(iterator: number): void;
   ghostty_kitty_graphics_image(graphics: number, id: number): number;
   ghostty_kitty_graphics_image_get(image: number, key: number, out: number): number;
 }
 
 /** One run of cells in a row that share a style. */
 export interface GhosttyRun {
-  text: string;
   x: number;
-  /** per char: true when it fills two columns (Hangul, CJK, most emoji) */
-  wide: boolean[];
+  /** each cell's grapheme, and whether it fills two columns (Hangul, CJK, most emoji) */
+  cells: { text: string; wide: boolean }[];
   fg: string | null;
   bg: string | null;
   flags: number;
@@ -91,7 +92,7 @@ const RS_DATA_CURSOR_VIEWPORT_HAS_VALUE = 14, RS_DATA_CURSOR_VIEWPORT_X = 15, RS
 const RS_DATA_IMAGE_ITERATOR = 22, RS_DATA_IMAGE_PLACEMENTS_GENERATION = 23;
 const ROW_DATA_CELLS = 3, ROW_DATA_CELLS_RAW = 5;
 const CELLS_STYLE = 2, CELLS_BG = 5, CELLS_FG = 6, CELLS_GRAPHEMES_UTF8 = 9;
-const OPT_WRITE_PTY = 1, OPT_SIZE = 6, OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 13, OPT_COLOR_PALETTE = 14;
+const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 13, OPT_COLOR_PALETTE = 14;
 const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28;
 const DATA_KITTY_GRAPHICS = 30;
 const SCROLL_BOTTOM = 1, SCROLL_DELTA = 2;
@@ -101,8 +102,8 @@ const KITTY_WIDTH = 3, KITTY_HEIGHT = 4, KITTY_FORMAT = 5, KITTY_DATA_PTR = 7, K
 const FORMAT_RGB = 0, FORMAT_RGBA = 1, FORMAT_GRAY_ALPHA = 3, FORMAT_GRAY = 4;
 const WIDE_WIDE = 1, WIDE_SPACER_TAIL = 2, WIDE_SPACER_HEAD = 3;
 const CONTENT_CODEPOINT_GRAPHEME = 1, CONTENT_BG_PALETTE = 2, CONTENT_BG_RGB = 3;
-/** decoded pictures a terminal keeps, as kitty's own default */
-const IMAGE_STORAGE_BYTES = 320n * 1024n * 1024n;
+/** decoded pictures one terminal keeps; every terminal on the page shares the module's one memory */
+const IMAGE_STORAGE_BYTES = 64n * 1024n * 1024n;
 
 let modulePromise: Promise<{ exports: Exports; layout: TypeLayout }> | null = null;
 
@@ -131,26 +132,6 @@ function loadModule(): Promise<{ exports: Exports; layout: TypeLayout }> {
   return modulePromise;
 }
 
-/**
- * A JS function as an entry of the module's function table, which is how a C callback is set.
- * A table holds only wasm functions, so a one-import module re-exports it as one (`params` i32
- * arguments, and an i32 result when `result`).
- */
-function tableFunction(table: WebAssembly.Table, params: number, result: boolean, fn: (...args: number[]) => number | void): number {
-  const type = [0x60, params, ...Array<number>(params).fill(0x7f), ...(result ? [1, 0x7f] : [0])];
-  const section = (id: number, body: number[]): number[] => [id, body.length, ...body];
-  const bytes = new Uint8Array([
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-    ...section(1, [1, ...type]),
-    ...section(2, [1, 1, 0x65, 1, 0x66, 0, 0]),
-    ...section(7, [1, 1, 0x66, 0, 0]),
-  ]);
-  const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), { e: { f: fn } });
-  const index = table.grow(1);
-  table.set(index, instance.exports["f"] as (...args: unknown[]) => unknown);
-  return index;
-}
-
 const hex = (r: number, g: number, b: number): string => `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
 
 function rgb(color: string): [number, number, number] | null {
@@ -158,11 +139,6 @@ function rgb(color: string): [number, number, number] | null {
   if (!match) return null;
   const value = Number.parseInt(match[1]!, 16);
   return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
-}
-
-export interface GhosttyVtOptions {
-  /** the terminal's answers to the program (Kitty graphics and size reports): the caller sends the ones it wants */
-  onReply?: (data: string) => void;
 }
 
 export class GhosttyVt {
@@ -178,14 +154,12 @@ export class GhosttyVt {
   private readonly scratch: number;
   private input = 0;
   private inputCap = 0;
-  private cellW = 8;
-  private cellH = 16;
   private placementsGeneration = -1;
   private readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id", Bits>;
   private readonly flagsOffset: number;
   private readonly encoder = new TextEncoder();
 
-  private constructor(exports: Exports, layout: TypeLayout, cols: number, rows: number, options: GhosttyVtOptions) {
+  private constructor(exports: Exports, layout: TypeLayout, cols: number, rows: number) {
     this.x = exports;
     this.cols = cols;
     this.rows = rows;
@@ -218,29 +192,11 @@ export class GhosttyVt {
     this.view().setBigUint64(this.scratch, IMAGE_STORAGE_BYTES, true);
     this.check(exports.ghostty_terminal_set(this.terminal, OPT_KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
     this.setScrollback(0);
-    if (options.onReply) {
-      const onReply = options.onReply;
-      const table = exports.__indirect_function_table;
-      const writePty = tableFunction(table, 4, false, (_terminal, _userdata, ptr, len) => {
-        onReply(new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, ptr!, len!)));
-      });
-      // a size query (CSI 14 t, 16 t) is answered in the CSS pixels this terminal is drawn at
-      const size = tableFunction(table, 3, true, (_terminal, _userdata, out) => {
-        const dv = this.view();
-        dv.setUint16(out!, this.rows, true);
-        dv.setUint16(out! + 2, this.cols, true);
-        dv.setUint32(out! + 4, Math.round(this.cellW), true);
-        dv.setUint32(out! + 8, Math.round(this.cellH), true);
-        return 1;
-      });
-      this.check(exports.ghostty_terminal_set(this.terminal, OPT_WRITE_PTY, writePty), "write_pty");
-      this.check(exports.ghostty_terminal_set(this.terminal, OPT_SIZE, size), "size");
-    }
   }
 
-  static async create(cols: number, rows: number, options: GhosttyVtOptions = {}): Promise<GhosttyVt> {
+  static async create(cols: number, rows: number): Promise<GhosttyVt> {
     const { exports, layout } = await loadModule();
-    return new GhosttyVt(exports, layout, cols, rows, options);
+    return new GhosttyVt(exports, layout, cols, rows);
   }
 
   private check(result: number, what: string): void {
@@ -269,8 +225,6 @@ export class GhosttyVt {
   }
 
   resize(cols: number, rows: number, cellW: number, cellH: number): void {
-    this.cellW = cellW;
-    this.cellH = cellH;
     this.check(this.x.ghostty_terminal_resize(this.terminal, cols, rows, Math.max(1, Math.round(cellW)), Math.max(1, Math.round(cellH))), "resize");
     this.cols = cols;
     this.rows = rows;
@@ -378,7 +332,7 @@ export class GhosttyVt {
         // the style id changes whenever the style does; bg-only cells carry their colour in the cell itself
         const key = bgOnly ? -2 - lo : styleId;
         if (!run || key !== runKey) {
-          run = { text: "", x: col, wide: [], fg: null, bg: null, flags: 0 };
+          run = { x: col, cells: [], fg: null, bg: null, flags: 0 };
           runKey = key;
           runs.push(run);
           if (styleId !== 0 || bgOnly) {
@@ -406,8 +360,7 @@ export class GhosttyVt {
           const cp = bgOnly ? 0 : field(lo, hi, cpB);
           text = cp === 0 ? " " : String.fromCodePoint(cp);
         }
-        run.text += text;
-        run.wide.push(wide === WIDE_WIDE);
+        run.cells.push({ text, wide: wide === WIDE_WIDE });
       }
       draw(y, runs);
     }
@@ -514,8 +467,13 @@ export class GhosttyVt {
   }
 
   dispose(): void {
-    this.x.ghostty_terminal_free(this.terminal);
-    this.x.ghostty_render_state_free(this.state);
-    if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
+    const x = this.x;
+    x.ghostty_render_state_image_iterator_free(this.images);
+    x.ghostty_render_state_row_cells_free(this.cells);
+    x.ghostty_render_state_row_iterator_free(this.iterator);
+    x.ghostty_render_state_free(this.state);
+    x.ghostty_terminal_free(this.terminal);
+    x.ghostty_wasm_free(this.scratch, 1024);
+    if (this.input) x.ghostty_wasm_free(this.input, this.inputCap);
   }
 }
