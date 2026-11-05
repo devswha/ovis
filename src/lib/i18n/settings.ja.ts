@@ -396,6 +396,4 @@ export const SETTINGS_JA: Record<string, string> = {
   "Test sent. Check the destination.": "テストを送りました。送り先を確認してください。",
   "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "この PC は通知をチャットアプリや任意の URL にも送ります。メッセージには PC、ペイン、起きたこととペインへのリンクが入ります。ペイン名はターミナルのタイトルで、エージェントが作業内容から付けることもあります。",
   "Webhook URL": "Webhook の URL",
-  "Named agent groups": "名前付きエージェントグループ",
-  "Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.": "エージェント一覧を Agents、Replies、Tasks など自分で名前を付けたグループに分けます。新しいワークスペースと新しいタブでグループを選べ、エージェントのメニューから移動できます。すべてのブラウザで共有されます。",
 };

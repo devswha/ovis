@@ -396,6 +396,4 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Test sent. Check the destination.": "已发送测试，请查看发送目标。",
   "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "这台电脑也会把提醒发送到聊天应用或任意 URL。消息包含电脑、窗格、发生了什么以及打开窗格的链接。窗格名称是终端标题，代理可能会根据你的任务来设置它。",
   "Webhook URL": "Webhook 地址",
-  "Named agent groups": "自命名代理分组",
-  "Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.": "将代理列表分成你命名的分组，例如 Agents、Replies 或 Tasks。新建工作区和新建标签页时可选择分组，代理的菜单可移动它。所有浏览器共享。",
 };
