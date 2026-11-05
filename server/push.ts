@@ -90,6 +90,9 @@ const PUSH_TIMEOUT_MS = 10_000;
 const PROMPT_LOOKUP_MS = 3_000;
 /** The longest option label an alert's button carries: a longer one is cut by the platform, so its alert opens the pane. */
 const ACTION_LABEL_MAX = 24;
+/** How much of the prompt an alert with buttons shows: the lines of its body, and its length in all. */
+const PROMPT_SUMMARY_LINES = 4;
+const PROMPT_SUMMARY_MAX = 300;
 const DEFAULT_SUBJECT = "https://github.com/devswha/ovis";
 /** How many retired endpoints are remembered; the oldest is forgotten first. */
 const RETIRED_LIMIT = 1000;
@@ -325,8 +328,17 @@ export function promptActions(prompt: InteractivePrompt | null): PushAction[] | 
   if (prompt.multi_select || prompt.custom_option_index !== null || prompt.queued !== undefined || prompt.checks_with_text) return null;
   if (prompt.steps !== undefined || prompt.answers !== undefined || prompt.can_step_back || prompt.can_step_next) return null;
   if (prompt.options.length === 0 || prompt.options.length > 2) return null;
-  if (prompt.options.some((option) => option.label.trim() === "" || option.label.length > ACTION_LABEL_MAX)) return null;
+  // an option whose meaning is in its description is not answered by its label alone
+  if (prompt.options.some((option) => option.label.trim() === "" || option.label.length > ACTION_LABEL_MAX || option.description)) return null;
   return prompt.options.map((option, index) => ({ option_index: index, label: option.label.trim() }));
+}
+
+/** What an alert with buttons says: the prompt's title, its question and the first lines of what it shows (the command, the file). */
+export function promptSummary(prompt: InteractivePrompt): string {
+  const lines = [prompt.title, prompt.question, ...(prompt.body ?? "").split("\n").slice(0, PROMPT_SUMMARY_LINES)]
+    .map((line) => line.trim()).filter((line, index, all) => line !== "" && all.indexOf(line) === index);
+  const text = lines.join("\n");
+  return text.length > PROMPT_SUMMARY_MAX ? `${text.slice(0, PROMPT_SUMMARY_MAX - 1)}…` : text;
 }
 
 export function endedMessage(paneId: string, title: string): PushPayload {
@@ -713,7 +725,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   }
 
   /** The prompt's identity and buttons for its alert; null when it has none, or the read failed or took too long. */
-  async function readActions(paneId: string): Promise<{ promptId: string; actions: PushAction[] } | null> {
+  async function readActions(paneId: string): Promise<{ promptId: string; body: string; actions: PushAction[] } | null> {
     if (!options.lookupPrompt) return null;
     const signal = AbortSignal.timeout(PROMPT_LOOKUP_MS);
     try {
@@ -722,7 +734,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null), { once: true })),
       ]);
       const actions = promptActions(prompt);
-      return prompt && actions ? { promptId: prompt.id, actions } : null;
+      return prompt && actions ? { promptId: prompt.id, body: promptSummary(prompt), actions } : null;
     } catch {
       // herdr busy or the pane gone: the alert opens the pane, as it always did
       return null;
@@ -743,7 +755,11 @@ export function createPushService(options: PushServiceOptions): PushService {
   /** every alert not yet sent or called off, for `settled()` */
   const inFlight = new Set<Promise<void>>();
 
+  /** how many times each pane's waiting alert was called off: an alert that fired before a change sees it after its lookups */
+  const changes = new Map<string, number>();
+
   function callOff(key: string): void {
+    changes.set(key, (changes.get(key) ?? 0) + 1);
     waiting.get(key)?.cancel();
     waiting.delete(key);
   }
@@ -950,9 +966,13 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (options.inUse?.() || muted(machineId, paneId)) return;
         // only this PC's prompts are read here, and only a question's alert carries buttons
         const reading = status === "blocked" && machineId === "local" ? readActions(paneId) : Promise.resolve(null);
+        const asked = changes.get(key);
         const [{ title, agentKind }, answer] = await Promise.all([lookUp(key, machineId, paneId), reading]);
         // the title can wait for herdr: a window that came into use, or a mute made (even one undone since), meanwhile still holds the alert
         if (options.inUse?.() || silenced() || muted(machineId, paneId)) return;
+        // a question whose pane changed while its prompt was read: the next asking's alert, under the same tag, holds what
+        // the pane asks now, and this one's buttons must not replace it. A finish already under way still goes out
+        if (status === "blocked" && changes.get(key) !== asked) return;
         const kind: AlertKind = status === "blocked" ? blockedAlertKind(agentKind) : "done";
         // a device that dropped out meanwhile is not written to, nor one that does not want this kind
         const live = to.flatMap((subscription) => {
@@ -964,7 +984,8 @@ export function createPushService(options: PushServiceOptions): PushService {
         const urgency = status === "blocked" ? "high" : "normal";
         const answering = answer === null ? [] : live.filter((subscription) => options.canAnswer?.(subscription.device_id) ?? true);
         await Promise.all([
-          broadcast({ ...message, ...(answer === null ? {} : { prompt_id: answer.promptId, actions: answer.actions }) }, urgency, answering, true),
+          // the buttons go with what they answer: a bare "Yes" under "waiting for your input" says nothing of what it allows
+          broadcast({ ...message, ...(answer === null ? {} : { body: answer.body, prompt_id: answer.promptId, actions: answer.actions }) }, urgency, answering, true),
           broadcast(message, urgency, live.filter((subscription) => !answering.includes(subscription)), true),
         ]);
       });

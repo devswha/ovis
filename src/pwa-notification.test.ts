@@ -629,6 +629,33 @@ describe("answer buttons (#2916)", () => {
     }
   });
 
+  it("leaves the pane's newer alert alone when an earlier answer comes back refused", async () => {
+    const answered = deferred();
+    const posted = deferred();
+    const listeners = new Map<string, (event: unknown) => void>();
+    const centre = notificationCentre("tagged");
+    loadWorker({
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+      clients: { matchAll: async () => [], openWindow: async () => null },
+      registration: centre,
+      fetch: async () => { posted.resolve(); await answered.promise; return Response.json({ error: { code: "prompt_changed" } }, { status: 409 }); },
+    });
+    const run = (type: string, event: Record<string, unknown>) => {
+      let completion!: Promise<unknown>;
+      listeners.get(type)!({ ...event, waitUntil: (promise: Promise<unknown>) => { completion = promise; } });
+      return completion;
+    };
+    const push = (payload: unknown) => run("push", { data: { json: () => payload, text: () => JSON.stringify(payload) } });
+    await push(alert);
+    const first = centre.shown()[0]!;
+    const tapped = run("notificationclick", { action: "answer-0", notification: { data: first, close: () => centre.getNotifications().then((all) => all[0]?.close()) } });
+    await posted.promise;
+    await push({ ...alert, title: "newer", prompt_id: "prompt-2" });
+    answered.resolve();
+    await tapped;
+    expect(centre.shown().map((shown) => shown.title)).toEqual(["newer"]);
+  });
+
   it("opens the pane on a tap of the alert itself, as before", async () => {
     const w = worker();
     await w.push(alert);

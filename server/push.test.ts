@@ -47,6 +47,12 @@ afterEach(() => {
   rmSync(stateDir, { recursive: true, force: true });
 });
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((yes) => { resolve = yes; });
+  return { promise, resolve };
+}
+
 /** Alerts go out at once, and each status change is awaited until its alert went out. */
 function subscribed(options: Partial<Parameters<typeof createPushService>[0]> = {}): PushService {
   const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 }, ...options });
@@ -1518,6 +1524,55 @@ describe("answer buttons on a question's alert (#2916)", () => {
       .toEqual({ prompt_id: "prompt-1", actions: [{ option_index: 0, label: "Yes" }, { option_index: 1, label: "No" }] });
   });
 
+  it("says what the buttons answer: the prompt's title, question and the first lines it shows", async () => {
+    fake.received.length = 0;
+    const push = subscribed({ lookupPrompt: async () => prompt({ title: "Bash command", question: "Do you want to proceed?", body: "rm -rf build\nDelete the build directory" }) });
+    push.seed([pane("w1:p1", "working", "claude")]);
+    await push.onStatus("w1:p1", "blocked");
+    expect(fake.received[0]!.payload.body).toBe("Bash command\nDo you want to proceed?\nrm -rf build\nDelete the build directory");
+  });
+
+  it("drops an alert whose pane moved on while its prompt was read, so it never replaces the newer one", async () => {
+    fake.received.length = 0;
+    const slow = deferred();
+    const started = deferred();
+    let read = 0;
+    const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+      lookupPrompt: async () => {
+        const id = `prompt-${++read}`;
+        // the first read is slow: it ends only after the second asking was told
+        if (read === 1) { started.resolve(); await slow.promise; }
+        return prompt({ id });
+      } });
+    push.subscribe(fake.subscription);
+    push.seed([pane("w1:p1", "working", "omp")]);
+    await push.onStatus("w1:p1", "blocked");
+    await started.promise;
+    await push.onStatus("w1:p1", "working");
+    await push.onStatus("w1:p1", "blocked");
+    await fake.waitFor((r) => r.payload.prompt_id === "prompt-2", "the second asking's alert", 5_000);
+    slow.resolve();
+    await push.settled();
+    expect(fake.received.map((r) => r.payload.prompt_id)).toEqual(["prompt-2"]);
+  });
+
+  it("never lets a question's slow read send it after the finish that followed", async () => {
+    fake.received.length = 0;
+    const slow = deferred();
+    const started = deferred();
+    const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+      lookupPrompt: async () => { started.resolve(); await slow.promise; return prompt(); } });
+    push.subscribe(fake.subscription, { input: true, done: "always" });
+    push.seed([pane("w1:p1", "working", "omp")]);
+    await push.onStatus("w1:p1", "blocked");
+    await started.promise;
+    await push.onStatus("w1:p1", "done");
+    await fake.waitFor((r) => r.payload.body === "work finished", "the finish", 5_000);
+    slow.resolve();
+    await push.settled();
+    expect(fake.received.map((r) => r.payload.body)).toEqual(["work finished"]);
+  });
+
   it("keeps today's alert for a prompt the buttons cannot answer whole", async () => {
     const none = { prompt_id: undefined, actions: undefined };
     const three = [{ label: "Yes", description: null }, { label: "Yes, don't ask again", description: null }, { label: "No", description: null }];
@@ -1528,6 +1583,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
       prompt({ multi_select: true }),
       prompt({ custom_option_index: 1 }),
       prompt({ kind: "plan" }),
+      prompt({ options: [{ label: "Yes", description: "and remember it for this folder" }, { label: "No", description: null }] }),
       prompt({ kind: "menu" }),
       prompt({ steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: false, current: false }] }),
       prompt({ queued: "collapsed" }),

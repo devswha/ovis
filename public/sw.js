@@ -418,9 +418,15 @@ async function answerFromAlert(data, index) {
       body: JSON.stringify({ pane_id: data.pane_id, prompt_id: data.prompt_id, option_index: answer.option_index }),
     });
     if (response.ok) return;
-    body = response.status === 409 ? "This question changed or was already answered. Tap to open it." : "Could not send the answer. Tap to open the question.";
+    body = response.status === 409 ? "This question changed or was already answered. Tap to open it." : "The answer may not have gone through. Tap to open the question.";
   } catch {
-    body = "Could not send the answer. Tap to open the question.";
+    body = "The answer may not have gone through. Tap to open the question.";
+  }
+  // the tapped alert is closed: one showing under its tag now is the pane's newer alert, which says what holds now
+  try {
+    if ((await self.registration.getNotifications({ tag: data.tag })).length > 0) return;
+  } catch {
+    /* no listing: the follow-up shows */
   }
   await self.registration.showNotification(data.title, {
     body,

@@ -239,6 +239,9 @@ describe("answer buttons on a question's alert (#2916)", () => {
       expect(payload.prompt_id).toBe(shown.id);
       expect(shown.kind).toBe("approval");
       expect(payload.actions).toEqual([{ option_index: 0, label: "Yes" }, { option_index: 1, label: "No" }]);
+      // what a tap allows is on the alert: the question and the command
+      expect(payload.body).toContain("Do you want to proceed?");
+      expect(payload.body).toContain("pwd");
       // what the worker sends for the second button (public/sw.js answerFromAlert)
       const response = await fetch(`http://127.0.0.1:${alerting.port}/api/pane/prompt/answer`, {
         method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
