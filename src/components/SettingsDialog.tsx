@@ -1148,7 +1148,7 @@ export function AddRelayPc() {
   if (found !== null) {
     const pc = found.name ?? t("this PC");
     return (
-      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} wide>
+      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} keywords={t("Add a PC through the relay")} wide>
         <div className="relay-pc-found">
           <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
           <div className="relay-pc-actions">
@@ -1456,6 +1456,12 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const openFromSearch = (id: SettingsPage): void => { setQuery(""); openPage(id); };
   const openKeyBar = (): void => {
     settingsScrollRef.current = settingsBodyRef.current?.scrollTop ?? 0;
+    // from a search, the editor opens over its own page, so Back steps out to that page as from there
+    if (query !== "") {
+      setQuery("");
+      setChosen("terminal");
+      settingsScrollRef.current = 0;
+    }
     setKeyBarOpen(true);
   };
   const goBack = (): void => {
@@ -1551,13 +1557,15 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       // A preview under Settings (a file opened from that Files) waits for Settings to close, focused or not
       if (!overPreview && focusInOtherModal(surface.current)) return;
       event.preventDefault();
-      // out of the key bar editor first; from any page, a phone's included, it closes the dialog
+      // out of the key bar editor first, then out of a search, wherever the focus is in it; from
+      // any page, a phone's included, it closes the dialog
       if (keyBarOpen) setKeyBarOpen(false);
+      else if (query !== "") setQuery("");
       else onClose();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose, keyBarOpen, overPreview]);
+  }, [onClose, keyBarOpen, overPreview, query]);
 
   /** the list is one Tab stop: the arrows walk it, and beside an open page they turn the page too */
   const onTabKey = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number): void => {
@@ -1612,12 +1620,6 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  // the first Escape empties the search, the next one closes Settings (its listener skips a handled key)
-                  if (event.key !== "Escape" || query === "" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-                  event.preventDefault();
-                  setQuery("");
-                }}
               />
             </div>
             <div ref={tabsRef} className="settings-tabs" role="tablist" aria-orientation="vertical" hidden={searching && narrow}>

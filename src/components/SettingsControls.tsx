@@ -39,7 +39,7 @@ export function SettingsGroup({ title, note, className, section, children }: { t
   const words = useContext(SettingsQuery);
   const titled = words.length > 0 && title !== undefined && matchesSettingsQuery(words, title);
   return (
-    <section className={className ? `settings-section ${className}` : "settings-section"} data-section={section} tabIndex={section ? -1 : undefined}>
+    <section className={className ? `settings-section ${className}` : "settings-section"} data-section={section} data-found={titled ? "" : undefined} tabIndex={section ? -1 : undefined}>
       {title !== undefined && <h3>{title}</h3>}
       {note !== undefined && <p className="settings-description settings-note">{note}</p>}
       <div className="settings-card">{titled ? <SettingsQuery.Provider value={[]}>{children}</SettingsQuery.Provider> : children}</div>
@@ -49,11 +49,12 @@ export function SettingsGroup({ title, note, className, section, children }: { t
 
 /**
  * One setting. `wide` marks a control that needs the whole line on a phone (three or more
- * segments, a text field): the row stacks there, and stays one line everywhere else.
+ * segments, a text field): the row stacks there, and stays one line everywhere else. `keywords`:
+ * more words a search finds it by, for a row that stands in for another while a step is answered.
  */
-export function SettingsRow({ label, description, htmlFor, wide = false, children }: { label: string; description?: ReactNode; htmlFor?: string; wide?: boolean; children: ReactNode }) {
+export function SettingsRow({ label, description, keywords, htmlFor, wide = false, children }: { label: string; description?: ReactNode; keywords?: string; htmlFor?: string; wide?: boolean; children: ReactNode }) {
   const words = useContext(SettingsQuery);
-  if (words.length > 0 && !matchesSettingsQuery(words, label, description)) return null;
+  if (words.length > 0 && !matchesSettingsQuery(words, label, description, keywords)) return null;
   return (
     <div className={wide ? "settings-row is-wide" : "settings-row"} data-setting="">
       <div className="settings-row-text">

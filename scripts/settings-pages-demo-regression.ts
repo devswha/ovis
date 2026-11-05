@@ -492,9 +492,31 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
       assert.equal(await results.getByRole("group", { name: "Terminal font size", exact: true }).locator("output").textContent(), "14px");
 
-      // a group named by the words shows each of its settings
+      // a group named by the words shows each of its settings, and one with a form but no setting row shows the form
       await search.fill("quick replies");
       assert.deepEqual(await shown(), [["Chat", ["Show above the message box"]]], `${width}px: the Quick replies group's setting is found by the group's name`);
+      await search.fill("openai api key");
+      await results.locator('input[aria-label="OpenAI API key"]').waitFor();
+
+      // Escape empties a search from a result too, not only from the field
+      await search.fill("sound");
+      await results.getByRole("switch", { name: "Sound", exact: true }).focus();
+      await page.keyboard.press("Escape");
+      assert.equal(await search.inputValue(), "", `${width}px: Escape on a result empties the search`);
+      assert.equal(await page.locator(".settings-dialog").count(), 1, `${width}px: and keeps Settings open`);
+
+      // the key bar editor opened from a search sits over the Terminal page: Back steps out to it, not out of Settings
+      if (width === 390) {
+        await search.fill("key bar");
+        await results.getByRole("button", { name: "Edit key bar", exact: true }).click();
+        await page.getByRole("dialog", { name: "Key bar", exact: true }).waitFor();
+        await historyHolds(page, "the key bar opened from a search", () => (history.state as { "ovis:settings"?: { page: string | null; keyBar: boolean } } | null)?.["ovis:settings"]?.keyBar === true);
+        await page.goBack();
+        await dialog.getByRole("tabpanel", { name: "Terminal", exact: true }).waitFor();
+        await page.goBack();
+        await dialog.getByRole("tablist").waitFor();
+        assert.equal(await page.locator(".settings-dialog").count(), 1, "390px: Back from the key bar opened by a search leaves Settings open");
+      }
 
       await search.fill("zzqxv nothing");
       await dialog.getByRole("status").filter({ hasText: "No settings match." }).waitFor();

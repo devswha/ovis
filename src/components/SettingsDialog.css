@@ -113,17 +113,17 @@
   font-size: var(--fs-sm);
 }
 
-.settings-search-results:not(:has(> .settings-search-page > .settings-section > .settings-card > [data-setting])) > .settings-search-empty {
+.settings-search-results:not(:has(> .settings-search-page > [data-found], > .settings-search-page > .settings-section > .settings-card > [data-setting])) > .settings-search-empty {
   display: block;
 }
 
-/* only settings (SettingsControls.tsx SettingsRow) are found: a page's lists, buttons, facts, notes
-   and hints stay on the page itself, and a group or a page left with no setting in sight is not drawn */
+/* a group is found by a setting it holds (SettingsControls.tsx SettingsRow) or by its title: it is
+   drawn with what goes with those settings (a form, a status line), never its note; a group or a page
+   with nothing found, and what a page holds outside its groups, stay on the page itself */
 .settings-search-page > :not(.settings-section, .settings-search-page-title),
-.settings-search-results .settings-card > :not([data-setting]),
 .settings-search-results .settings-note,
-.settings-search-results .settings-section:not(:has(> .settings-card > [data-setting])),
-.settings-search-page:not(:has(> .settings-section > .settings-card > [data-setting])) {
+.settings-search-results .settings-section:not([data-found]):not(:has(> .settings-card > [data-setting])),
+.settings-search-page:not(:has(> [data-found], > .settings-section > .settings-card > [data-setting])) {
   display: none;
 }
 
