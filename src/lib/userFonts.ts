@@ -8,6 +8,7 @@
 
 import { USER_FONTS_PATH, type UserFont, type UserFontList } from "../../shared/user-fonts.ts";
 import { apiFetch } from "./api-request-id.ts";
+import { faceArrived } from "./fontFaces.ts";
 import { sanitizeFontFamily } from "./fontFamily.ts";
 import { serverIdOfPath, serverScopePath } from "./shellMode.ts";
 
@@ -65,9 +66,10 @@ function addFace(font: UserFont, fonts: Pick<FontFaceSet, "add">): Promise<void>
   if (added) return added;
   added = bytesOf(font).then(async (bytes) => {
     const face = new FontFace(font.family, bytes, { weight: String(font.weight), style: font.style });
-    // in the set while it loads, so what follows the set's faces (lib/fontFaces.ts) sees it arrive
     fonts.add(face);
     await face.loaded;
+    // a face made from bytes is loaded as it is made, and adding it fires no event the font set's watchers hear
+    faceArrived();
   }).catch((error: unknown) => {
     // asked again on the next change of a font field
     faces.delete(key);

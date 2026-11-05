@@ -27,6 +27,7 @@ const evidence = process.env["CHECK_BROWSER_EVIDENCE_DIR"] || state;
 mkdirSync(evidence, { recursive: true });
 const workspaces: string[] = [];
 let server: ReturnType<typeof createServer> | undefined;
+let locked: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -179,6 +180,30 @@ setInterval(() => {}, 1 << 30);
     await context.close();
   }
 
+  // When: the device must sign in first, with the chat font naming FAMILY: the list asked while signed out is
+  // refused, and the face joins the page once the token is in, with no reload.
+  {
+    const lockedDir = join(state, "locked");
+    mkdirSync(join(lockedDir, "fonts"), { recursive: true });
+    copyFileSync(new URL("../src/fonts/JetBrainsMono-Regular.woff2", import.meta.url), join(lockedDir, "fonts", `${FAMILY}.woff2`));
+    locked = createServer({ port: 0, hostname: "127.0.0.1", token: "served-font-token", stateDir: lockedDir, tailscaleOwner: null, usage: new UsageService(undefined, []) });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
+    await context.addInitScript((family) => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false, chatFontFamily: family }));
+    }, FAMILY);
+    const page = await context.newPage();
+    page.setDefaultTimeout(WAIT_MS);
+    const asked = fontRequests(page);
+    await page.goto(`http://127.0.0.1:${locked.port}/`);
+    await page.getByText("Have an access token instead?").click();
+    await page.locator("#access-gate-token").fill("served-font-token");
+    await page.getByRole("button", { name: "Unlock" }).click();
+    await page.waitForFunction((family) => [...document.fonts].some((face) => face.family.replaceAll('"', "") === family && face.status === "loaded"), FAMILY);
+    console.log(JSON.stringify({ signIn: true, asked }));
+    assert.ok(asked.includes(`/api/fonts/${FAMILY}.woff2`), "the chat font's served file is fetched once signed in");
+    await context.close();
+  }
+
   // When: no font is named, the default: the page asks the PC for no font.
   {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
@@ -197,6 +222,7 @@ setInterval(() => {}, 1 << 30);
 } finally {
   await browser?.close();
   server?.stop();
+  locked?.stop();
   for (const workspace of workspaces) await workspaceClose(workspace);
   rmSync(state, { recursive: true, force: true });
 }
