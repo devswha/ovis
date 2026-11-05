@@ -2,12 +2,15 @@ import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState } from "../shared/pi-ask-bridge.ts";
+import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState, type PiBridgeCommands } from "../shared/pi-ask-bridge.ts";
+import type { SlashCommand } from "../shared/protocol.ts";
+import { registerCatalogSource } from "./catalog-sources.ts";
 import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
 import { processEnviron } from "./omo.ts";
 import { piAgentDir } from "./pi-models.ts";
 import { transcriptInStore as piTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
+import { source as piCatalog } from "./skills/pi.ts";
 import { userHome } from "./user-home.ts";
 export { transcriptInStore as piTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
 
@@ -124,14 +127,67 @@ export async function bridgeState(socket: string, signal?: AbortSignal): Promise
  * socket, in its own agent directory, answering for its pid, counts; the store checks still follow.
  */
 async function extensionSessionFile(pi: VerifiedPiProcess, environ: readonly string[] | null, home: string): Promise<string | null> {
+  const socket = extensionSocket(pi, environ, home);
+  if (socket === null) return null;
+  const state = await bridgeState(socket);
+  return state?.pid === pi.pid && typeof state.sessionFile === "string" && state.sessionFile.length > 0 ? state.sessionFile : null;
+}
+
+/** The web UI extension's socket of this pi process, in that process's own agent directory, when it is the user's own. */
+function extensionSocket(pi: { pid: number; cwd?: string | null }, environ: readonly string[] | null, home: string): string | null {
   if (process.platform === "win32") return null;
   const agentDir = environ === null ? piAgentDir() : piProcessPaths(environ, home, pi.cwd ?? "").agentDir;
   if (agentDir === null) return null;
   const socket = join(agentDir, PI_ASK_BRIDGE_DIRECTORY, `${pi.pid}.sock`);
-  if (!ownSocket(socket)) return null;
-  const state = await bridgeState(socket);
-  return state?.pid === pi.pid && typeof state.sessionFile === "string" && state.sessionFile.length > 0 ? state.sessionFile : null;
+  return ownSocket(socket) ? socket : null;
 }
+
+const COMMANDS_MAX = 1_000;
+const PI_BUILTIN_NAMES: ReadonlySet<string> = new Set(piCatalog.builtins);
+
+/**
+ * The commands pi's extensions and packages registered, which no file scan can know (#1448), as the
+ * pane's one foreground pi lists them through the web UI's extension (`pi.getCommands()`), or null:
+ * no such pi, no extension (or one from before this route), or pi could not say. As pi's own menu
+ * does, a command named after a builtin is left out: typed, pi runs its own.
+ */
+export async function piExtensionCommands(
+  paneId: string,
+  signal?: AbortSignal,
+  options: Omit<PiTranscriptOptions, "agent" | "processesAfter"> = {},
+): Promise<SlashCommand[] | null> {
+  const info = options.processes === undefined
+    ? await paneProcessInfo(paneId).catch(() => null)
+    : { foreground_processes: [...options.processes] };
+  const argvOf = options.argvOf ?? processArgv;
+  const pis = (info?.foreground_processes ?? []).filter((entry): entry is PiProcess & { pid: number } => {
+    if (typeof entry.pid !== "number") return false;
+    const argv = entry.argv?.length ? entry.argv : argvOf(entry.pid);
+    return !!argv?.length && isPiProcess(argv);
+  });
+  if (pis.length !== 1 || signal?.aborted) return null;
+  const pi = pis[0]!;
+  const socket = extensionSocket(pi, (options.environOf ?? processEnviron)(pi.pid), options.home ?? userHome());
+  if (socket === null) return null;
+  try {
+    const timeout = AbortSignal.timeout(STATE_READ_MS);
+    const response = await fetch("http://localhost/v1/commands", { unix: socket, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    if (!response.ok) return null;
+    const reply = await response.json() as Partial<PiBridgeCommands> | null;
+    if (reply?.version !== 1 || reply.pid !== pi.pid || !Array.isArray(reply.commands)) return null;
+    return reply.commands.slice(0, COMMANDS_MAX).flatMap((command): SlashCommand[] => {
+      const name: unknown = command?.name;
+      if (typeof name !== "string" || !/^\S{1,200}$/u.test(name) || PI_BUILTIN_NAMES.has(name.replace(/:\d+$/u, ""))) return [];
+      const source = command.scope === "project" ? "project" : command.origin === "package" ? "plugin" : "user";
+      return [{ name, description: typeof command.description === "string" ? command.description : "", source }];
+    });
+  } catch {
+    return null; // too slow, or not the extension answering
+  }
+}
+
+// the scanned prompt templates and skills stay: this source adds only what the running pi registered
+registerCatalogSource({ agent: "pi", owns: [], rows: (pane, _cwd, signal) => piExtensionCommands(pane.pane_id, signal) });
 
 /**
  * Resolve only stores the pane's Pi process identifies; an unseen CLI override is unsafe. The
