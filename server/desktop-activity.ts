@@ -35,8 +35,12 @@ export function trackDesktopActivity({ path, working }: { path: string; working:
   let stopped = false;
   let reading: Promise<void> | null = null;
   let again = false;
+  const remove = (): void => {
+    try { rmSync(path, { force: true }); }
+    catch (error) { console.warn(`desktop activity: ${path} could not be removed (${error instanceof Error ? error.message : String(error)})`); }
+  };
   // a file a server before this one left behind (killed before it could remove it) says nothing of now
-  rmSync(path, { force: true });
+  remove();
   const readOnce = async (): Promise<void> => {
     let count: number;
     try { count = await working(); }
@@ -82,7 +86,7 @@ export function trackDesktopActivity({ path, working }: { path: string; working:
       stopped = true;
       clearInterval(every);
       if (soon !== null) clearTimeout(soon);
-      rmSync(path, { force: true });
+      remove();
     },
   };
 }
