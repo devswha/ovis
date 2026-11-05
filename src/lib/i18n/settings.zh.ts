@@ -264,6 +264,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "只有这台 PC 提供的页面（例如 localhost 上的开发服务器）会在窗格旁打开。按住 Shift 点击则以另一种方式打开。",
   "Pages this PC serves, such as Tailscale reports, can open in the app. Shift-click opens the other way.": "这台 PC 提供的页面（例如 Tailscale 报告）可以在应用内打开。按住 Shift 点击则以另一种方式打开。",
   "Beside the pane": "在窗格旁",
+  "Files beside the pane": "在窗格旁显示文件",
+  "On a wide window, Browse files opens as a panel on the right of the pane instead of a popup. A file opened from it shows in its place, and closing the file brings the list back.": "在宽窗口中，浏览文件会在窗格右侧的面板中打开，而不是弹出窗口。从列表打开的文件会显示在该位置，关闭文件后会回到列表。",
   "In a new tab": "在新标签页中",
   "Reuse tab for external links": "重复使用外部链接标签页",
   "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "外部链接会重复使用一个浏览器标签页，而不是每次都打开新标签页。该标签页中的网站可以看到并跳转这个 Ovis 标签页，因此默认关闭。",

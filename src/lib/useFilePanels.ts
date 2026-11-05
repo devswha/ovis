@@ -23,9 +23,12 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   const { viewing: diffViewing, openDiff, closeDiff, releaseDiff } = useRepoDiffViewer();
   const presentation = viewing?.presentation ?? openPresentation(viewing?.path ?? "", settings.fileOpen);
   const fileDocked = filePanelAvailable && presentation === "panel";
+  // Files beside the pane (opt-in, wide windows) shares the docked file's place: a file docking there
+  // covers it, and closing the file shows Files again
+  const filesDocked = filePanelAvailable && settings.filesPanel;
   useEffect(() => {
-    if (viewing !== null && fileDocked) setFilesOpen(false);
-  }, [viewing, fileDocked]);
+    if (viewing !== null && fileDocked && !filesDocked) setFilesOpen(false);
+  }, [viewing, fileDocked, filesDocked]);
   // a same-host web page shares the docked file's place on wide windows and opens as a popup on narrow ones.
   // Either replacing the other takes over its history entry in place: no push over it, no Back to wait on.
   const { webPage, openWebPage: openWebPanel, closeWebPage, yieldEntry, holdsEntry } = useWebPanel({ settings, filePanelAvailable });
@@ -107,8 +110,8 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     : undefined;
   const viewFile = useCallback((path: string) => {
     // the Files dialog would cover the docked panel the file opens in
-    if (filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
+    if (!filesDocked && filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
     openFile({ path, paneId: selectedPaneId, machineId: selectedMachineId });
-  }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen]);
-  return { filesOpen, setFilesOpen, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
+  }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen, filesDocked]);
+  return { filesOpen, setFilesOpen, filesDocked, viewing, openFile, closeFile, setPresentation, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
 }

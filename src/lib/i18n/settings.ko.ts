@@ -264,6 +264,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Only a page this PC serves, such as a dev server on localhost, opens beside the pane. Shift-click opens it the other way.": "localhost 개발 서버처럼 이 PC가 여는 페이지만 창 옆에 열립니다. Shift-클릭하면 반대쪽으로 엽니다.",
   "Pages this PC serves, such as Tailscale reports, can open in the app. Shift-click opens the other way.": "Tailscale 보고서처럼 이 PC가 제공하는 페이지는 앱 안에서 열 수 있습니다. Shift-클릭하면 반대쪽으로 엽니다.",
   "Beside the pane": "창 옆에",
+  "Files beside the pane": "창 옆에 파일 목록",
+  "On a wide window, Browse files opens as a panel on the right of the pane instead of a popup. A file opened from it shows in its place, and closing the file brings the list back.": "넓은 창에서는 파일 보기가 팝업 대신 창 오른쪽 패널로 열립니다. 목록에서 연 파일은 그 자리에 보이고, 파일을 닫으면 목록이 다시 나옵니다.",
   "In a new tab": "새 탭에서",
   "Reuse tab for external links": "외부 링크에 탭 재사용",
   "External links reuse one browser tab instead of opening a new tab each time. The site in that tab can see and navigate this Ovis tab, so this is off by default.": "외부 링크를 열 때마다 새 탭을 만들지 않고 브라우저 탭 하나를 재사용합니다. 그 탭의 사이트가 이 Ovis 탭을 보고 다른 주소로 옮길 수 있어 기본으로 꺼져 있습니다.",
