@@ -43,7 +43,8 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   // the removes are queued: the sign-in ends here whatever the service answers to the sign-out
   try { await options.service.signOut(); }
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
-  if (unconfirmed.length === 0) await options.accountStore.clear();
+  // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
+  await options.accountStore.clear();
   return { remove, unconfirmed };
 }
 

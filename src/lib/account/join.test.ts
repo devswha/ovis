@@ -255,6 +255,9 @@ it("keeps a pairing the account does not list when this device leaves, and says 
   const { unconfirmed } = await leaveAccount({ service: account, accountStore, relayStore: phone });
   expect(unconfirmed).toEqual([hidden.identity.server_id]);
   expect((await phone.list()).map((device) => device.server_id)).toEqual([hidden.identity.server_id]);
+  // the listed PCs tombstone that key: the next sign-in makes a new one, and the kept pairing still connects with its own
+  expect((await accountStore.key()).public_spki).not.toBe(key.public_spki);
+  expect((await phone.get(hidden.identity.server_id))!.public_spki).toBe(key.public_spki);
 });
 
 it("names the PCs a disconnect cannot reach, where this device is not a member, instead of claiming every PC", async () => {
