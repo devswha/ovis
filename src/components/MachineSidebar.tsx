@@ -16,6 +16,8 @@ import { filterSuggestions, machineFilter, sidebarFilter, type SidebarBranchLabe
 import { SidebarFilterProvider, useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { UsageMeters } from "./UsageMeters.tsx";
 import { rowMenuAnchor } from "./RowMenu.tsx";
+import { sidebarAgents } from "../lib/sidebarAgents.ts";
+import { useEdgeFades } from "../lib/useEdgeFades.ts";
 import "./Machines.css";
 import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
@@ -195,6 +197,9 @@ export function MachineSidebar(props: Props) {
     try { localStorage.setItem(PCS_FOLD_KEY, fold ? "1" : "0"); } catch { /* private mode: this page keeps it */ }
   };
   const togglePcs = () => setPcsFold(!pcsFolded);
+  // the list fades at an edge only while rows lie past it (lib/useEdgeFades.ts)
+  const machineList = useRef<HTMLDivElement>(null);
+  useEdgeFades(machineList);
   // the line between the lists (SidebarSplit.tsx): the PCs' height when dragged, kept on this device, and
   // the folds a drag or a key asks of either section, the same folds as their carets
   // the list on top: Agents while Settings → Group agents by state is on, the PCs otherwise; each order keeps
@@ -231,15 +236,17 @@ export function MachineSidebar(props: Props) {
     {settings.agentGroups && agentList}
     {settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
     <section className={`pcs-sidebar${pcsFolded ? " is-collapsed" : ""}`} aria-label={t("PCs")}>
-      {/* a fold target for the resize line, including when the only PC is the Host */}
+      {/* the section's head, as Agents' is, also for a lone Host (the resize line's fold target): its caret in
+          the leading cell, its words, and in the trailing cell how many PCs this device shows, open or folded */}
       <div className="sidebar-section-head">
         <button type="button" className="sidebar-section-toggle sidebar-section-label" aria-expanded={!pcsFolded} aria-controls={listId} onClick={togglePcs}>
           {pcsFolded ? <ChevronRight className="sidebar-section-caret" aria-hidden="true" /> : <ChevronDown className="sidebar-section-caret" aria-hidden="true" />}
           <span>{t("PCs")}</span>
         </button>
+        {props.machines.length > 0 && <SidebarCount className="sidebar-section-count" n={props.machines.length} words={props.machines.length === 1 ? t("1 PC shown") : t("{n} PCs shown", { n: props.machines.length })} />}
       </div>
       {/* folded, the list stays mounted, hidden, so the branches its rosters read stay findable to the filter */}
-      <div className="machine-list" id={listId} hidden={pcsFolded} aria-label={t("PCs and workspaces")}>
+      <div ref={machineList} className="machine-list" id={listId} hidden={pcsFolded} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
         {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} />)}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
@@ -268,6 +275,12 @@ export function MachineSidebar(props: Props) {
       </div>
     </footer>
   </div></SidebarFilterProvider></SidebarActivityProvider>;
+}
+
+/** A count in a head's trailing cell: the number in view, its words for a screen reader and a pointer's
+ *  tooltip, so a bare number is never all that is said. */
+function SidebarCount({ className, n, words }: { className: string; n: number; words: string }) {
+  return <span className={className} title={words}><span aria-hidden="true">{n}</span><span className="visually-hidden">{words}</span></span>;
 }
 
 /** the reader's fold of the PCs section, kept on this device as Agents' is (`ovis:agents-collapsed`) */
@@ -332,16 +345,21 @@ function MachineGroup({ machine, headerless = false, ...props }: Props & { machi
     setCollapsed(!collapsed);
     try { localStorage.setItem(`ovis:pc-collapsed:${machine.id}`, collapsed ? "0" : "1"); } catch {}
   };
+  // what the header says at rest, in the +'s cell that a hover or the focus gives its actions: how many agents
+  // run on this PC, the rows the Agents list holds for it
+  const agentCount = useMemo(() => sidebarAgents(machine.snapshot).length, [machine.snapshot]);
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
-  return <section className={`machine-group${props.selectedMachineId === machine.id ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
+  return <section className={`machine-group${props.selectedMachineId === machine.id ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className="machine-header">
-      <div className="machine-title">
+      {/* a pointer folds the PC from anywhere on its name, as the caret does; the keyboard has the caret */}
+      <div className="machine-title" onClick={toggle}>
         <span className="sidebar-mark" aria-hidden="true"><Monitor /></span>
         <span className="machine-name">{machine.name}</span>
         {/* the computer this app's server runs on; on a phone "this PC" read as the phone */}
         {machine.kind === "local" && <span className="machine-kind" title={t("The computer this app runs on")}>{t("Host")}</span>}
         <span className={`machine-dot is-${machine.action_required === "setup" ? "setup" : machine.state}`} title={machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state])} aria-hidden="true" />
       </div>
+      {agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent running") : t("{n} agents running", { n: agentCount })} />}
       {machine.kind !== "local" && <button className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-expanded={editing} onClick={() => { setEditing(!editing); setConfirmDelete(false); }}><SlidersHorizontal aria-hidden="true" /></button>}
       {/* the fold over this PC's workspaces sits beside the + */}
       <button className="sidebar-row-action machine-toggle" aria-expanded={!folded} aria-label={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} title={folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name })} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>

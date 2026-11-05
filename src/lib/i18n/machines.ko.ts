@@ -6,6 +6,10 @@
  */
 export const MACHINES_KO: Record<string, string> = {
   "PCs": "PC",
+  "1 PC shown": "표시된 PC 1대",
+  "{n} PCs shown": "표시된 PC {n}대",
+  "1 agent running": "실행 중인 에이전트 1개",
+  "{n} agents running": "실행 중인 에이전트 {n}개",
   "Keep this dialog open until the PC connects.": "PC가 연결될 때까지 이 대화 상자를 열어 두세요.",
   "Waiting for Windows sign-in": "Windows 로그인 대기 중",
   "Windows desktop startup failed": "Windows 데스크톱에서 시작하지 못했습니다",

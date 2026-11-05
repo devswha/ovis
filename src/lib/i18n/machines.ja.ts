@@ -6,6 +6,10 @@
  */
 export const MACHINES_JA: Record<string, string> = {
   "PCs": "PC",
+  "1 PC shown": "表示中の PC: 1 台",
+  "{n} PCs shown": "表示中の PC: {n} 台",
+  "1 agent running": "実行中のエージェント: 1 件",
+  "{n} agents running": "実行中のエージェント: {n} 件",
   "Keep this dialog open until the PC connects.": "PC が接続されるまで、このダイアログを開いたままにしてください。",
   "Waiting for Windows sign-in": "Windows へのサインインを待機中",
   "Windows desktop startup failed": "Windows デスクトップでの起動に失敗しました",
