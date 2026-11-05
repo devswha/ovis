@@ -8,8 +8,9 @@
  * exact fields, its id matching its name); anything else is skipped, and so is a history reached
  * through a linked folder. A read has hard caps, since the chip asks again every few seconds: the
  * folder listing stops after 2,000 entries or 200 ms, at most the hundred most recently written
- * topics are read, a topic file over 2 MiB is skipped and one request reads at most 4 MiB (parsing is
- * what costs, even of the pictures the answer drops), a topic keeps its first 200 follow-ups, and the
+ * topics are read, a topic file over 16 MiB or of more than 20,000 JSON items is skipped (items are
+ * what a parse costs; a screenshot in a question is one long string, and the answer drops it), one
+ * request reads at most 32 MiB, every byte read counted, a topic keeps its first 200 follow-ups, and the
  * answer stays under a megabyte. `more` says a cap left something out. Each file is read through one
  * descriptor, never following a link or opening anything but a regular file, and never past its cap.
  * A record is kept until its file changes. Statuses are shown as saved:
@@ -27,8 +28,9 @@ const MAX_SCAN_ENTRIES = 2000;
 const MAX_SCAN_MS = 200;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 /** a topic whose question carries pictures is larger than its words: one file, and the files read in one request */
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
-const MAX_READ_BYTES = 4 * 1024 * 1024;
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_READ_BYTES = 32 * 1024 * 1024;
+const MAX_JSON_ITEMS = 20_000;
 /** read-only, never through a link, and never waiting on a pipe put where a topic file was */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 /** the words kept and answered for one history, cached records included */
@@ -40,24 +42,43 @@ type Stamp = { size: number; mtimeMs: number; ctimeMs: number; ino: number };
 type Cached = Stamp & { topic: Omit<OmpBtwTopic, "title"> | null; text: number; cut: boolean };
 type Read = { topic: Omit<OmpBtwTopic, "title"> | null; cut: boolean };
 
-/** A regular file's text, through one descriptor and never past `limit` bytes: null when it is no regular file, "big" past the limit. */
-function readBounded(path: string, limit: number): string | null | "big" {
+type Bounded = { text: string | null; big: boolean; bytes: number };
+/**
+ * A regular file's text, through one descriptor and never past `limit` bytes. `text` is null when it is no
+ * regular file or past the limit (`big`); `bytes` is every byte read either way, which the request is charged.
+ */
+function readBounded(path: string, limit: number): Bounded {
   let fd: number;
-  try { fd = openSync(path, OPEN_FLAGS); } catch { return null; }
+  try { fd = openSync(path, OPEN_FLAGS); } catch { return { text: null, big: false, bytes: 0 }; }
+  let read = 0;
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) return null;
-    if (stat.size > limit) return "big";
+    if (!stat.isFile()) return { text: null, big: false, bytes: 0 };
+    if (stat.size > limit) return { text: null, big: true, bytes: 0 };
     // one byte more than it said: a file that grew since is past its cap
     const buffer = Buffer.alloc(stat.size + 1);
-    let read = 0;
     for (let got = 1; got > 0 && read < buffer.length; read += got) got = readSync(fd, buffer, read, buffer.length - read, null);
-    return read > stat.size ? "big" : buffer.toString("utf8", 0, read);
+    return read > stat.size ? { text: null, big: true, bytes: read } : { text: buffer.toString("utf8", 0, read), big: false, bytes: read };
   } catch {
-    return null;
+    return { text: null, big: false, bytes: read };
   } finally {
     closeSync(fd);
   }
+}
+
+/** Whether `text` holds more than MAX_JSON_ITEMS objects, arrays and members, counted outside strings in one pass. */
+function tooManyItems(text: string): boolean {
+  let items = 0;
+  let inString = false;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (inString) {
+      if (code === 0x5c) index++;
+      else if (code === 0x22) inString = false;
+    } else if (code === 0x22) inString = true;
+    else if ((code === 0x7b || code === 0x5b || code === 0x2c) && ++items > MAX_JSON_ITEMS) return true;
+  }
+  return false;
 }
 const same = (a: Stamp, b: Stamp): boolean => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.ino === b.ino;
 const textOf = (topic: Omit<OmpBtwTopic, "title"> | null): number => topic === null ? 0
@@ -82,11 +103,11 @@ function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
 }
 
 /** `bytes`: what was read, which the request's budget is charged, never the size the listing saw */
-function topicOf(path: string, id: string, limit: number): (Read & { bytes: number }) | "big" {
-  const text = readBounded(path, limit);
-  if (text === "big") return "big";
-  const none = { topic: null, cut: false, bytes: text === null ? 0 : Buffer.byteLength(text) };
+function topicOf(path: string, id: string, limit: number): Read & { bytes: number; big: boolean } {
+  const { text, big, bytes } = readBounded(path, limit);
+  const none = { topic: null, cut: false, bytes, big };
   if (text === null) return none;
+  if (tooManyItems(text)) return { ...none, big: true };
   try {
     const record = row(JSON.parse(text));
     if (record === null || record["id"] !== id || !(record["leafId"] === null || typeof record["leafId"] === "string")) return none;
@@ -95,7 +116,7 @@ function topicOf(path: string, id: string, limit: number): (Read & { bytes: numb
     // only the first follow-ups are kept, and only those are checked
     const followUps = all?.slice(0, MAX_FOLLOW_UPS).map((entry) => { const found = row(entry); return found && exchangeOf(found, EXCHANGE_KEYS); }) ?? null;
     if (head === null || all === null || followUps === null || followUps.some((entry) => entry === null)) return none;
-    return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS, bytes: none.bytes };
+    return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS, bytes, big: false };
   } catch {
     // not JSON, or not a record OMP would load
     return none;
@@ -104,10 +125,9 @@ function topicOf(path: string, id: string, limit: number): (Read & { bytes: numb
 
 /** OMP's title for a topic, and `cut` when a cap shortened or dropped it */
 function titleOf(path: string, limit: number): { title: string | null; cut: boolean; bytes: number } {
-  const text = readBounded(path, limit);
-  if (text === "big") return { title: null, cut: true, bytes: 0 };
+  const { text, big, bytes } = readBounded(path, limit);
   const title = text?.trim() ?? "";
-  return { title: title.length > 0 ? title.slice(0, 300) : null, cut: title.length > 300, bytes: text === null ? 0 : Buffer.byteLength(text) };
+  return { title: title.length > 0 ? title.slice(0, 300) : null, cut: big || title.length > 300, bytes };
 }
 
 const folder = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
@@ -167,8 +187,9 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
     else {
       if (file.size > MAX_FILE_BYTES || file.size > budget) { more = true; continue; }
       const read = topicOf(join(directory, file.name), file.id, Math.min(MAX_FILE_BYTES, budget));
-      if (read === "big") { more = true; continue; }
+      // every byte read is charged, a file dropped for growing or for its items included
       budget -= read.bytes;
+      if (read.big) { more = true; continue; }
       const { topic, cut } = read;
       entry = { size: file.size, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, topic, text: textOf(topic), cut };
     }

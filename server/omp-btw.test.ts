@@ -150,7 +150,16 @@ describe("GET /api/pane/btw hard caps", () => {
     expect(body.more).toBe(true);
   });
 
-  it("skips a topic file too large to parse cheaply, such as a million discarded pictures, and says so", async () => {
+  it("shows a topic whose question carries a screenshot of several megabytes, without the picture", async () => {
+    const { transcript, folder } = history("screenshot");
+    writeFileSync(join(folder, "entry-s.json"), JSON.stringify({ ...topic("s", 1), images: [{ type: "image", data: "A".repeat(6 * 1024 * 1024), mimeType: "image/png" }] }));
+    const { bytes, body } = await answer(transcript);
+    expect(body.topics.map((found) => found.id)).toEqual(["s"]);
+    expect(body.more).toBe(false);
+    expect(bytes).toBeLessThan(4096);
+  });
+
+  it("skips a topic file of too many items to parse cheaply, such as a million discarded pictures, and says so", async () => {
     const { transcript, folder } = history("pictures");
     writeFileSync(join(folder, "entry-p.json"), JSON.stringify({ ...topic("p", 2), images: Array.from({ length: 1_000_000 }, () => ({})) }));
     writeFileSync(join(folder, "entry-q.json"), JSON.stringify(topic("q", 1)));
