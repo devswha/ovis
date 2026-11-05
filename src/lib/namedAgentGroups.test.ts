@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
-import { assignAgentGroup, folderAgentGroup, movedAgentGroup, rememberFolderAgentGroup, removeAgentGroup, renameAgentGroup, sanitizeGroupNames, sanitizeGroupOf, splitNamedGroups } from "./namedAgentGroups.ts";
+import { assignAgentGroup, folderAgentGroup, MAX_GROUPED_AGENTS, movedAgentGroup, rememberFolderAgentGroup, removeAgentGroup, renameAgentGroup, sanitizeGroupNames, sanitizeGroupOf, splitNamedGroups } from "./namedAgentGroups.ts";
 
 const row = (paneId: string, parent?: string, machineId = "local") => ({ machine: { id: machineId }, entry: { pane: { pane_id: paneId, ...(parent === undefined ? {} : { parent_pane_id: parent }) } } });
 
@@ -26,6 +26,13 @@ describe("named agent groups (#2431)", () => {
     expect(assignAgentGroup(held, "local:a", null)).toEqual({ "local:gone": "Tasks" });
     expect(movedAgentGroup(held, "local", "a", "w2:a")).toEqual({ "local:gone": "Tasks", "local:w2:a": "Tasks" });
     expect(movedAgentGroup(held, "local", "x", "y")).toBe(held);
+  });
+
+  it("refuses a new row once the map is full, never dropping another row's group", () => {
+    const full = Object.fromEntries(Array.from({ length: MAX_GROUPED_AGENTS }, (_, index) => [`pc:p${index}`, "Tasks"]));
+    expect(assignAgentGroup(full, "local:new", "Tasks")).toBeNull();
+    expect(assignAgentGroup(full, "pc:p0", "Agents")?.["pc:p0"]).toBe("Agents");
+    expect(Object.keys(assignAgentGroup(full, "local:new", "Tasks", (key) => key !== "pc:p0")!)).toHaveLength(MAX_GROUPED_AGENTS);
   });
 
   it("renames a group with its rows, refuses a taken name, and removes a group's rows with it", () => {

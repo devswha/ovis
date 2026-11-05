@@ -61,12 +61,14 @@ export function splitNamedGroups<R extends GroupedRow>(rows: readonly R[], group
 /**
  * The groups after the row's is set (`null`: out of any group). Rows gone from a loaded PC leave
  * with it, as pins leave with a change of the user's (lib/sidebarPins.ts pruneSidebarPins): `kept`
- * says which keys may stay.
+ * says which keys may stay. A row new to the map is refused (null) once MAX_GROUPED_AGENTS rows
+ * have a group: no other row's group is dropped to make room.
  */
-export function assignAgentGroup(groupOf: Readonly<Record<string, string>>, key: string, name: string | null, kept: (key: string) => boolean = () => true): Record<string, string> {
+export function assignAgentGroup(groupOf: Readonly<Record<string, string>>, key: string, name: string | null, kept: (key: string) => boolean = () => true): Record<string, string> | null {
   const next = Object.fromEntries(Object.entries(groupOf).filter(([held]) => held !== key && kept(held)));
+  if (name !== null && !(key in groupOf) && Object.keys(next).length >= MAX_GROUPED_AGENTS) return null;
   if (name !== null) next[key] = name;
-  return sanitizeGroupOf(next);
+  return next;
 }
 
 /** The names and groups after a group is renamed: its rows go with it. A name taken by another group is refused (null). */

@@ -151,9 +151,11 @@ describe("AgentSidebar phone sheet live row", () => {
   });
 
   // Settings -> Named agent groups, as this device's stored settings carry it
-  const groupSetting = (agentNamedGroups: boolean, agentGroupOf: Record<string, string> = {}) => {
+  const groupSetting = (agentNamedGroups: boolean, agentGroupOf: Record<string, string> = {}, folded: string[] = []) => {
     (globalThis.window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
-      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentNamedGroups, agentGroupNames: ["Agents", "Tasks"], agentGroupOf }) : null, setItem() {}, removeItem() {},
+      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentNamedGroups, agentGroupNames: ["Agents", "Tasks"], agentGroupOf })
+        : key === "ovis:agent-group-folds" ? JSON.stringify(folded) : null,
+      setItem() {}, removeItem() {},
     };
   };
   const groupHeadings = (mounted: ReactTestRenderer) => mounted.root.findAllByProps({ className: "agent-named-group-name" }).map((node) => node.children.join(""));
@@ -189,6 +191,22 @@ describe("AgentSidebar phone sheet live row", () => {
     await act(async () => { toggle.props.onClick(); });
     expect(mounted.root.findByProps({ "data-named-group": "Tasks" }).findByType("button").props["aria-expanded"]).toBe(false);
     expect(row().props.hidden).toBe(true);
+  });
+
+  it("offers no group move for a background agent, which stays under Background agents (#2431)", async () => {
+    groupSetting(true);
+    await act(async () => { renderer = create(view(roster({ role: "background" })), { createNodeMock: () => anchor }); });
+    const mounted = renderer!;
+    await act(async () => { mounted.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: anchor }); });
+    expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["pin"]);
+  });
+
+  it("opens a folded group a row is moved into, so the row stays in sight (#2431)", async () => {
+    groupSetting(true, { [`local:${paneId}`]: "Tasks" }, ["Agents"]);
+    const { mounted, row } = await open();
+    await act(async () => { (mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).find((item) => item.id === "group:Agents")!.run(); });
+    expect(mounted.root.findByProps({ "data-named-group": "Agents" }).findByType("button").props["aria-expanded"]).toBe(true);
+    expect(row().props.hidden).toBeUndefined();
   });
 
   it("updates the open sheet when a plugin value changes", async () => {

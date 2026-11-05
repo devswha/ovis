@@ -420,12 +420,19 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const menuMuted = menuRow !== undefined && muted !== null && muted.includes(paneMuteKey(menuRow.machine.id, menuRow.entry.pane.pane_id));
   // the group the open row is drawn in, and the one it was put in itself (a helper may only follow its agent's)
   const menuGroup = menuRow === undefined || groupNames.length === 0 ? null : rowAgentGroup(menuRow, settings.agentGroupOf, groupNames, allRows);
+  // a background agent stays in its own part (whatever its state), so it is offered no group
+  const menuBackground = menuRow !== undefined && groupNames.length > 0 && splitBackgroundRows([menuRow], () => undefined, allRows).background.length > 0;
   const menuOwnGroup = menu === null ? undefined : settings.agentGroupOf[menu.key];
   const setGroup = (key: string, name: string | null): void => {
-    // as the pins: the groups of panes gone from a loaded PC leave with this change, and no other PC's
-    const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
+    // as the pins: the groups of panes gone from a loaded PC leave with this change, and no other PC's. Every pane
+    // counts, not only the agent rows: a grouped pane whose agent has not started yet keeps its group
+    const live = new Set(machines.flatMap((machine) => machine.snapshot?.panes.map((pane) => sidebarPinKey(machine.id, pane.pane_id)) ?? []));
     const kept = new Set(pruneSidebarPins(Object.keys(settings.agentGroupOf), live, machines, hidden));
-    updateSettings({ agentGroupOf: assignAgentGroup(settings.agentGroupOf, key, name, (held) => kept.has(held)) });
+    const next = assignAgentGroup(settings.agentGroupOf, key, name, (held) => kept.has(held));
+    if (next === null) return;
+    updateSettings({ agentGroupOf: next });
+    // a row moved into a folded group opens it, so the row and the focus the menu hands back stay in sight
+    if (name !== null && groupFolds.includes(name)) toggleGroupFold(name);
   };
   const toggleGroupFold = (name: string): void => {
     const next = groupFolds.includes(name) ? groupFolds.filter((held) => held !== name) : [...groupFolds, name];
@@ -522,11 +529,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         run: () => updateSettings({ lockedAgents: toggleAgentLock(settings.lockedAgents, pinned, menu.key) }),
       }]),
       // Settings -> Named agent groups: into each other group, and out of the one it was put in; a watching device sends no settings
-      ...(menuRow === undefined ? [] : groupNames.filter((name) => name !== menuGroup).map((name) => ({
+      ...(menuRow === undefined || menuBackground ? [] : groupNames.filter((name) => name !== menuGroup).map((name) => ({
         id: `group:${name}`, label: t("Move to {group}", { group: name }), icon: FolderInput, disabled: watching,
         run: () => setGroup(menu.key, name),
       }))),
-      ...(menuOwnGroup === undefined || !groupNames.includes(menuOwnGroup) ? [] : [{
+      ...(menuOwnGroup === undefined || menuBackground || !groupNames.includes(menuOwnGroup) ? [] : [{
         id: "ungroup", label: t("Remove from {group}", { group: menuOwnGroup }), icon: FolderOutput, disabled: watching,
         run: () => setGroup(menu.key, null),
       }]),

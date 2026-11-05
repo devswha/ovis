@@ -336,9 +336,13 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     try {
       const result = await started;
       // the pane is made, whatever came of its agent: it goes in the group picked, from the groups as last saved
-      const picked = groupNames.includes(group) ? group : null;
-      rememberFolderAgentGroup(machineId, tab ? tab.cwd : directory, picked);
-      if (picked !== null) updateSettings({ agentGroupOf: assignAgentGroup(loadSettings().agentGroupOf, sidebarPinKey(machineId, result.pane_id), picked) });
+      // (only while the field is offered: with the setting off, the folder's last group is kept for later)
+      if (groupNames.length > 0) {
+        const picked = groupNames.includes(group) ? group : null;
+        rememberFolderAgentGroup(machineId, tab ? tab.cwd : directory, picked);
+        const next = picked === null ? null : assignAgentGroup(loadSettings().agentGroupOf, sidebarPinKey(machineId, result.pane_id), picked);
+        if (next !== null) updateSettings({ agentGroupOf: next });
+      }
       if (agentKind && !result.agent_started && result.error?.message) {
         setPending(false);
         // the workspace exists: say so plainly, keep the PC's own words beneath, and Open it rather than make another
