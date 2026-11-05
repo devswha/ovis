@@ -30,13 +30,13 @@ function ProviderMark({ provider }: { provider: AccountProvider }) {
  * wherever another provider is offered, and Apple's button is black or white, so both take the
  * theme's strongest ink (black in light, white in dark) and neither looks like the one to pick.
  */
-export function AccountSignIn({ onSignIn, error }: { onSignIn: (provider: AccountProvider) => void; error: string | null }) {
+export function AccountSignIn({ onSignIn, error, providers = ["github"] }: { onSignIn: (provider: AccountProvider) => void; error: string | null; providers?: readonly AccountProvider[] }) {
   const t = useT();
   return (
     <div className="account-sign-in">
       <div className="account-providers">
-        <button type="button" className="btn account-provider" onClick={() => onSignIn("github")}><ProviderMark provider="github" />{t("Continue with GitHub")}</button>
-        <button type="button" className="btn account-provider" onClick={() => onSignIn("apple")}><ProviderMark provider="apple" />{t("Continue with Apple")}</button>
+        {providers.includes("github") && <button type="button" className="btn account-provider" onClick={() => onSignIn("github")}><ProviderMark provider="github" />{t("Continue with GitHub")}</button>}
+        {providers.includes("apple") && <button type="button" className="btn account-provider" onClick={() => onSignIn("apple")}><ProviderMark provider="apple" />{t("Continue with Apple")}</button>}
       </div>
       {error !== null && <p className="account-error" role="alert">{error}</p>}
     </div>

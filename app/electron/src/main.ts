@@ -55,6 +55,9 @@ const accountService = (() => {
   } catch { return null; }
 })();
 
+/** The sign-ins that service offers: OVIS_ACCOUNT_PROVIDERS (GitHub alone without it), so Apple shows only once it is set up. */
+const accountProviders = (process.env["OVIS_ACCOUNT_PROVIDERS"] ?? "").split(",").map((name) => name.trim()).filter((name) => name === "github" || name === "apple");
+
 function serverOrigin(): string | null {
   return server ? new URL(server.url).origin : null;
 }
@@ -333,7 +336,7 @@ if (!app.requestSingleInstanceLock()) {
   // signing in to the account (accountSignIn.ts): only the server's own pages may, and only to the account service named
   let signIn: LoopbackSignIn | null = null;
   ipcMain.on("ovis:account-service", (event) => {
-    event.returnValue = ours(event.senderFrame?.url ?? "") ? accountService : null;
+    event.returnValue = ours(event.senderFrame?.url ?? "") && accountService !== null ? { service: accountService, providers: accountProviders } : null;
   });
   ipcMain.handle("ovis:account-start", async (event) => {
     if (!ours(event.senderFrame?.url ?? "") || accountService === null) throw new Error("Signing in is not offered here");

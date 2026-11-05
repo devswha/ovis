@@ -34,6 +34,8 @@ export interface RelayShellProps {
   onJoin?: (pc: MyPc) => void;
   onSignOut?: () => void;
   onLeave?: () => void;
+  /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
+  accountProviders?: readonly AccountProvider[];
 }
 
 /**
@@ -72,10 +74,10 @@ export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin 
  * `data-relay-state` for scripts. One card in the token gate's frame (AccessGate.css), so a phone
  * that pairs through the relay and one that pairs with a code see the same room.
  */
-export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onSignIn, onJoin, onSignOut, onLeave }: RelayShellProps) {
+export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onSignIn, onJoin, onSignOut, onLeave, accountProviders }: RelayShellProps) {
   const t = useT();
   const account: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
-  const signIn = account?.kind === "signed-out" && onSignIn ? <AccountSignIn onSignIn={onSignIn} error={account.error} /> : null;
+  const signIn = account?.kind === "signed-out" && onSignIn ? <AccountSignIn onSignIn={onSignIn} error={account.error} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
   // signed out with no saved PC, the QR route waits behind a link under the sign-in
   const [qr, setQr] = useState(false);
   const signInFirst = account?.kind === "signed-out" && state.kind === "empty" && !qr;

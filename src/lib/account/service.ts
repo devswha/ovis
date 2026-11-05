@@ -25,6 +25,17 @@ export function accountServiceOf(document: { querySelector(selector: string): { 
   return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.origin : null;
 }
 
+/**
+ * The sign-ins this page offers, from `<meta name="ovis-account-providers" content="github,apple">`:
+ * GitHub alone without it, and Apple only once the service is set up for it, so no button leads
+ * to a sign-in the service would refuse.
+ */
+export function accountProvidersOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }): AccountProvider[] {
+  const named = new Set((document.querySelector('meta[name="ovis-account-providers"]')?.getAttribute("content") ?? "").split(",").map((name) => name.trim()));
+  const offered = ACCOUNT_PROVIDERS.filter((provider) => named.has(provider));
+  return offered.length > 0 ? offered : ["github"];
+}
+
 /** A refresh this long before the access token runs out, so a request never leaves with one about to. */
 const REFRESH_EARLY_MS = 60_000;
 

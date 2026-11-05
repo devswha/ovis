@@ -13,7 +13,7 @@ import type { UpdateStatus } from "../../../shared/update.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
+import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
 import { linkThisDevice, needsLink, pcAccountStatus, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -60,6 +60,8 @@ export interface RelayShellMount {
   accountStore?: AccountStore;
   /** the account service's origin; the page's `ovis-account-service` meta by default, and no sign-in without one */
   accountService?: string | null;
+  /** the sign-ins offered; the page's `ovis-account-providers` meta by default */
+  accountProviders?: readonly AccountProvider[];
   accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
   /** takes the page to the provider's sign-in; the return comes back to the front page */
   openSignIn?: (url: string) => void;
@@ -126,6 +128,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
   const accountStore = mount.accountStore ?? indexedAccountStore;
   const accountService = mount.accountService === undefined ? accountServiceOf(document) : mount.accountService;
+  const accountProviders = mount.accountProviders ?? accountProvidersOf(document);
   const account = new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
   const openSignIn = mount.openSignIn ?? ((url: string) => { window.location.assign(url); });
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
@@ -170,7 +173,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const show = (state: RelayShellState): void => {
     shell ??= createRoot(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
-      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, ...(accountService === null ? {} : { onSignIn: signIn, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
+      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
   };
 
   /** The front page: the saved PCs, or the account's once signed in. */

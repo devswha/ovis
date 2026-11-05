@@ -23,8 +23,14 @@ const render = (shown: RelayShellProps): string => {
 describe("the front page's account part", () => {
   const pc = (server_id: string, name: string, state: "paired" | "needs-approval" | "offline" | "needs-update", paired = state === "paired") => ({ server_id, name, state, last_seen_at: null, listed: true, paired, linked: paired });
 
-  it("offers GitHub and Apple alike, under one title, with the QR route behind a link", () => {
+  it("offers GitHub alone until the service is set up for Apple", () => {
     const html = render({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+    expect(html).toContain("Continue with GitHub");
+    expect(html).not.toContain("Continue with Apple");
+  });
+
+  it("offers GitHub and Apple alike, under one title, with the QR route behind a link", () => {
+    const html = render({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, accountProviders: ["github", "apple"] });
     expect(html).toContain('data-account-state="signed-out"');
     const buttons = [...html.matchAll(/<button type="button" class="([^"]+)">(?:<svg[\s\S]*?<\/svg>)?(Continue with [^<]+)</g)].map(([, kind, label]) => [kind, label]);
     expect(buttons).toEqual([["btn account-provider", "Continue with GitHub"], ["btn account-provider", "Continue with Apple"]]);

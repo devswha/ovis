@@ -13,10 +13,11 @@ if (location.protocol === "file:") {
 } else {
   // the server's pages sign in to the account through the system browser (src/accountSignIn.ts);
   // main answers only its own server's pages, and only while an account service is named
-  const service: unknown = ipcRenderer.sendSync("ovis:account-service");
-  if (typeof service === "string") {
+  const named = ipcRenderer.sendSync("ovis:account-service") as { service?: unknown; providers?: unknown } | null;
+  if (typeof named?.service === "string") {
     contextBridge.exposeInMainWorld("ovisAccount", {
-      service,
+      service: named.service,
+      providers: Array.isArray(named.providers) ? named.providers.filter((name): name is string => typeof name === "string") : [],
       start: (): Promise<string> => ipcRenderer.invoke("ovis:account-start"),
       open: (url: string): Promise<string> => ipcRenderer.invoke("ovis:account-open", url),
     });

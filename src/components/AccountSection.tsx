@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
-import { desktopAccount, desktopSignIn } from "../lib/account/desktop.ts";
+import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, SignedOutError } from "../lib/account/service.ts";
 import { indexedAccountStore, type AccountProvider } from "../lib/account/store.ts";
@@ -59,7 +59,7 @@ export function AccountSection() {
 
   return (
     <SettingsGroup title={t("Account")} section="account">
-      {view.kind === "signed-out" && <div className="settings-item"><AccountSignIn onSignIn={signIn} error={view.error} /></div>}
+      {view.kind === "signed-out" && <div className="settings-item"><AccountSignIn onSignIn={signIn} error={view.error} {...(bridge ? { providers: desktopProviders(bridge) } : {})} /></div>}
       {view.kind === "signing-in" && <SettingsRow label={t("Signing in…")} description={t("Finish signing in in your browser.")}>{null}</SettingsRow>}
       {view.kind === "signed-in" && (
         <>
