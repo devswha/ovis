@@ -1669,8 +1669,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   note is dim, red for an expired sign-in or a failed request.
 - Under the limits, only when the provider reports them: **Usage credits** (Claude's extra usage,
   spent against its monthly cap in the provider's currency, over a bar counted like the limits) or
-  **Credits** (Codex's balance, in whole credits), then **Limit resets** (how many are left, and
-  when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
+  **Credits** (Codex's balance, in whole credits), then **Limit resets** (Codex's: how many are
+  left, and when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
@@ -2113,6 +2113,27 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   hand. The coding-agent apps (the Codex and Claude apps, Paseo, T3 Code) make their own
   conversation IDs and never give one to another conversation, so none of them has a draft whose
   owner was replaced, and there is no app precedent to follow. A PC whose server names no herdr (an older bridge) keeps its drafts in the page alone.
+
+### Documents list (`.md-docs`)
+- Settings > Chat > **Documents in Files** (a device setting, off by default) adds a fourth face to
+  Files, **Documents**: the Markdown files (`.md`, `.markdown`) under the pane's folder, newest
+  first (GET /api/pane/docs: git's files that are not ignored, or a Markdown-only walk outside a
+  repository). It is the folder browser's card and
+  rows (`.dir-browser`): the folder in mono cut from its start and a Refresh button on the bar, a
+  **Filter documents** field (Escape clears it before it closes Files), then one row per file: its
+  glyph, its name, the folder it is in (`.md-docs-folder`, dim mono, cut from its start, the first
+  thing to give way) and when it changed (`.md-docs-time`, `lastSeen`'s words, the full time as
+  its tooltip). A row opens the file viewer, which renders it with its outline. Nothing polls:
+  Refresh reads it again. Empty, filtered-out, cut and refused lists say so in the list's own
+  words (`No Markdown files in this folder`, `No matching documents`, `Some Markdown files here
+  are not listed.`, a bridge too old for the route).
+- Four tabs do not fit beside the title and Close on a phone (480px or less) or a panel of 480px
+  or less: there the tabs take the row under them, each a share of it, with tighter padding, and
+  Close keeps the row's end where the narrow panel drops the title. Three tabs keep one row.
+- Reference: Paseo's `paseo-markdown-viewer` plugin (a Markdown list beside the agent that opens
+  each in a reader) and the Codex app's side panel, which opens a `.md` beside Review. Ovis keeps
+  it read only and inside Files, behind its setting, until the safe write route of #771 lands;
+  editing, creating and deleting follow on it (#1196).
 
 ### Changes list and diff viewer (`.repo-changes`, `.repo-diff*`)
 - Files has three faces, **Browse** | **Changes** | **Pull request** (`.segmented` in its header). **Changes** lists
