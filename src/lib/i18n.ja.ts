@@ -1,4 +1,5 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
+import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
 import { CHAT_JA } from "./i18n/chat.ja.ts";
@@ -143,6 +144,22 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "ワークスペースとエージェントを絞り込む",
   "Connecting…": "接続しています…",
   "Connected": "接続済み",
+  "relay": "リレー",
+  "direct": "直接",
+  "local": "ローカル",
+  "Via a loopback address: this PC, or a tunnel to it": "ループバックアドレス経由: このPC、またはそこへのトンネル",
+  "Via the Ovis relay": "Ovis リレー経由",
+  "Via the Portal relay": "Portal リレー経由",
+  "Via Tailscale": "Tailscale 経由",
+  "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
+  "Via the local network": "ローカルネットワーク経由",
+  "Straight to this address": "このアドレスへ直接",
+  "Sessions on this PC": "この PC のセッション",
+  "{count} working": "作業中 {count} 件",
+  "{count} waiting for you": "応答待ち {count} 件",
+  "{count} done": "完了 {count} 件",
+  "Open the next session waiting for you": "応答を待っている次のセッションを開く",
+  "Tab {index} of {count}": "タブ {index}/{count}",
   "Reconnecting…": "再接続しています…",
   "Add PC": "PC を追加",
   "Connect": "接続",
@@ -250,6 +267,9 @@ const BASE: Record<string, string> = {
   // ---- devices ----
   "Loading…": "読み込んでいます…",
   "Done": "完了",
+  "Name": "名前",
+  "Recent": "最近",
+  "Needs you": "応答が必要",
 
   // ---- phone ----
   "Copy": "コピー",
@@ -269,6 +289,7 @@ const BASE: Record<string, string> = {
   "This device would not make a push subscription. Check that push messaging is allowed in its settings, then try again.": "このデバイスでプッシュ通知の登録を作成できませんでした。設定でプッシュメッセージが許可されているか確認してから、もう一度お試しください。",
   "This device can only watch.": "この端末は閲覧のみできます。",
   "Needs input": "入力が必要",
+  "Needs permission": "許可が必要",
   "Finished": "完了",
   "Open pane": "ペインを開く",
   "Quick replies": "クイック返信",
@@ -341,13 +362,17 @@ const BASE: Record<string, string> = {
   "Weekly": "週次",
   "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
+  "Approve": "承認",
+  "Pair a phone through the relay": "リレー経由でスマートフォンをペアリング",
+  "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} がリレー経由でペアリングしようとしています。その画面に次の数字が表示されている場合だけ承認してください:",
+  "Decline": "拒否",
   "differs": "不一致",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: SETTINGS_JA,
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,

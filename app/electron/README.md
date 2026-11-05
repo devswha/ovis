@@ -2,8 +2,9 @@
 
 A desktop app that carries everything Ovis needs: the Ovis server, [herdr-core](https://github.com/herdrdev/herdr-core)
 (`hc`, which runs the terminals) and Bun (which runs the server). Nothing else has to be installed:
-no herdr, no plugin, no Bun on the PATH. Linux and macOS for now; Windows waits for hc's named
-pipe support in the server (`server/herdr-core/runtime.ts`).
+no herdr, no plugin, no Bun on the PATH. Linux, macOS and Windows (x64). On Windows the server's
+herdr-core adapter listens on a named pipe named after its state folder (`server/herdr-core/pipe.ts`),
+and hc runs its terminals on the ConPTY its release carries beside it (`conpty\`).
 
 The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this app is separate.
 
@@ -43,7 +44,27 @@ Until the server answers, or when it stops, the window shows the connection scre
   server first, only when the process still runs this app's Bun on its server and started at the
   recorded time (a record without a start time is left alone), so two never share one state folder.
 
-`<user data>` is Electron's: `~/.config/Ovis` on Linux, `~/Library/Application Support/Ovis` on macOS.
+`<user data>` is Electron's: `~/.config/Ovis` on Linux, `~/Library/Application Support/Ovis` on macOS,
+`%APPDATA%\Ovis` on Windows.
+
+On Windows the installer replaces Ovis for Windows (`app/windows`, the one-file setup app), which has
+no uninstaller of its own (`windows/installer.nsh` runs `windows/replace-old-setup.ps1`):
+- This app's Start menu **Ovis** takes the place of that app's shortcut, and any other shortcut to it
+  in the Start menu or on the desktop goes.
+- Any open window of it, also one opened from a download, is closed. Only a file whose version
+  information says it is Ovis for Windows counts; anything else is left alone. A shortcut the user
+  deleted is not made again.
+- Its sign-in start (the HKCU `Run` value `Ovis` that runs its copy in `%LOCALAPPDATA%\Programs\Ovis`
+  with `--start`) is what starts herdr's server at sign-in for the Ovis plugin. So when herdr says the
+  Ovis plugin is installed (`herdr plugin list`), the sign-in start and the copy stay, and herdr's server
+  still starts at sign-in, with no window. Without the plugin both go. The installer log says which.
+- Its own Remove is never run, because that also takes the Ovis server off the PC.
+- herdr, the Ovis server it installed and their state stay as they are.
+
+On Windows the core and the server start directly (Windows hands a child only the handles marked
+inheritable), without a console window. Windows has no SIGTERM: stopping the server ends its
+process at once, and a server left behind after a crash is found by its command line and start
+time through CIM (`Get-CimInstance Win32_Process`) instead of `ps`.
 
 ## Updates
 
@@ -56,9 +77,11 @@ when it has a feed:
 | `OVIS_UPDATE_URL=https://…` | run | checks that feed instead |
 | `OVIS_UPDATES=0` | run | no checks |
 
-A development run never checks, and on Linux only the AppImage updates itself. The app checks after
-it starts and every 6 hours, downloads in the background, and offers **Restart to Update** in the
-tray. On macOS an update needs a signed app.
+A development run never checks. The app checks after it starts and every 6 hours, downloads in the
+background, and offers **Restart to Update** in the tray. On Linux the AppImage replaces itself; a
+.deb install installs the new .deb with `apt-get install --no-remove` behind the system's password
+prompt (pkexec, or sudo), only from **Restart to Update**, never on a plain quit, and cancelling the
+prompt keeps Ovis running as it was. On macOS an update needs a signed app.
 
 ## Build
 
@@ -68,7 +91,9 @@ On the OS and CPU the app is for (no cross builds), from this folder:
 bun install
 bun test                     # unit tests (no Electron needed)
 bun run typecheck
-bun run dist                 # stage, bundle, then dist/Ovis-<version>-<arch>.AppImage, or .dmg and .zip
+bun run dist                 # stage, bundle, then dist/Ovis-<version>-<arch>.AppImage, or .dmg and .zip,
+                             # or dist/Ovis-win-x64.exe (NSIS, per user, unsigned;
+                             # installs to %LOCALAPPDATA%\Programs\ovis-desktop)
 ```
 
 `bun scripts/build.ts stage` downloads herdr-core 0.1.17 and Bun 1.4.2 for this machine
@@ -93,6 +118,15 @@ HC_SESSION=ovis-try XDG_RUNTIME_DIR=$d/run XDG_STATE_HOME=$d/state XDG_CONFIG_HO
 ```
 
 On macOS, `open -n dist/mac-arm64/Ovis.app --args --user-data-dir="$d/app"` with the same `HC_SESSION`.
+On Windows (PowerShell), after `dist\Ovis-win-x64.exe` installed it to `%LOCALAPPDATA%\Programs\ovis-desktop`:
+
+```powershell
+$d = Join-Path $env:TEMP "ovis-try-$(Get-Random)"
+$env:HC_SESSION = 'ovis-try'
+& "$env:LOCALAPPDATA\Programs\ovis-desktop\Ovis.exe" --user-data-dir="$d\app"
+# afterwards
+& "$d\app\bin\herdr-core.exe" server stop
+```
 
 ## End-to-end checks
 

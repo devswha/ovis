@@ -60,6 +60,12 @@ export type HerdrPane = PaneInfo & {
   agent_kind?: string;
   agent_message?: string;
   agent_progress?: number;
+  /**
+   * herdr-core only: the terminal's own grid. Its layout rects are shares of a fixed area there
+   * (server/herdr-core/layout-doc.ts), not cells, so an attach that must not resize the terminal
+   * (an observer, a chat lens) starts at this size instead.
+   */
+  grid?: { cols: number; rows: number };
   /** This bridge's counter of transitions into displayed DONE, scoped by finish_epoch. */
   finish_id?: number;
 };
@@ -86,7 +92,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, RelayPairingRequest, RelayPairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -153,6 +159,11 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
+ *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
+ *         404 relay_pairing_gone once it left, was decided or ran out of time
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -614,7 +625,7 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -623,6 +634,12 @@ export interface ConversationResponse {
    * and the pane's output can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
+  /**
+   * On a scrollback answer to a refresh that named the history shown (`history_id`): the reader lost
+   * its proof of the conversation without seeing it end. Keep the turns shown, append nothing, and
+   * read again on the pane's next activity rather than on a timer.
+   */
+  recovery?: "waiting";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
