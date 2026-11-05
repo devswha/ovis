@@ -12,6 +12,7 @@ import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type Them
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
 import type { AlertPrefs, DoneAlerts } from "../../shared/notify-policy.ts";
 import { chatFontStack, sanitizeFontFamily } from "./fontFamily.ts";
+import { addServedFonts } from "./userFonts.ts";
 import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
 import { themeFor } from "./themeFor.ts";
@@ -1034,6 +1035,9 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   const chatFont = chatFontStack(settings.chatFontFamily);
   if (chatFont === null) root.style.removeProperty("--font-chat");
   else root.style.setProperty("--font-chat", chatFont);
+  // a family this PC serves from its fonts/ folder joins the page; the text takes it as it arrives (lib/fontFaces.ts)
+  void addServedFonts(settings.uiFontFamily);
+  void addServedFonts(settings.chatFontFamily);
 }
 
 interface SettingsContextValue {
