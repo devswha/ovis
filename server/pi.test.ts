@@ -713,7 +713,8 @@ it.skipIf(process.platform === "win32")("reads the session the pane's pi names t
   let state: { pid: number; sessionFile: string | null } = { pid: 830, sessionFile: written };
   const server = Bun.serve({ unix: join(sockets, "830.sock"), fetch: () => Response.json({ version: 1, flows: [], openCalls: [], ...state }) });
   const agent = { agent: "pi", agent_status: "idle" } as never;
-  const options = { agent, processes: [{ pid: 830, argv: ["/usr/bin/pi"] }], environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
+  const processes = [{ pid: 830, argv: ["/usr/bin/pi"] }];
+  const options = { agent, processes, processesAfter: async () => processes, environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
   try {
     expect(await piTranscriptPath("core-pane", undefined, options)).toEqual({ path: written, agentDir: profile });
     // a session pi has named and not written yet
@@ -729,8 +730,11 @@ it.skipIf(process.platform === "win32")("reads the session the pane's pi names t
     expect(await piTranscriptPath("core-pane", undefined, options)).toBeNull();
     state = { pid: 830, sessionFile: null };
     expect(await piTranscriptPath("core-pane", undefined, options)).toBeNull();
-    // a process in front that is not pi, and a second pi beside it, are not asked
+    // a pi that left the front while its extension answered no longer speaks for the pane
     state = { pid: 830, sessionFile: written };
+    expect(await piTranscriptPath("core-pane", undefined, { ...options, processesAfter: async () => [{ pid: 833, argv: ["bash"] }] })).toBeNull();
+    expect(await piTranscriptPath("core-pane", undefined, { ...options, processesAfter: async () => null })).toBeNull();
+    // a process in front that is not pi, and a second pi beside it, are not asked
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["bash"] }] })).toBeNull();
     expect(await piTranscriptPath("core-pane", undefined, { ...options, processes: [{ pid: 830, argv: ["/usr/bin/pi"] }, { pid: 832, argv: ["/usr/bin/pi"] }] })).toBeNull();
   } finally {

@@ -41,6 +41,8 @@ type PiTranscriptOptions = {
   processes?: readonly PiProcess[];
   environOf?: (pid: number) => readonly string[] | null;
   argvOf?: (pid: number) => readonly string[] | null;
+  /** the pane's foreground once its pi's extension has answered; herdr is asked again by default */
+  processesAfter?: () => Promise<readonly PiProcess[] | null>;
   home?: string;
 };
 
@@ -223,9 +225,18 @@ export async function piTranscriptPath(
       if (isPiProcess(argv)) piProcesses.push({ ...entry, pid: entry.pid, argv });
     }
   }
-  const reported = absent
-    ? piProcesses.length === 1 ? await extensionSessionFile(piProcesses[0]!, environOf(piProcesses[0]!.pid), home) : null
-    : session.value;
+  let reported: string | null = absent ? null : session.value;
+  if (absent && piProcesses.length === 1) {
+    const pi = piProcesses[0]!;
+    reported = await extensionSessionFile(pi, environOf(pi.pid), home);
+    // the answer is that pi's: one that left the front while it was asked is not the pane's any more
+    if (reported !== null) {
+      const after = options.processesAfter
+        ? await options.processesAfter()
+        : (await paneProcessInfo(paneId).catch(() => null))?.foreground_processes ?? null;
+      if (!after?.some((entry) => entry.pid === pi.pid)) reported = null;
+    }
+  }
   if (reported === null) return null;
 
   const processStores = new Set<string>();
