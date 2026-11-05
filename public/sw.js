@@ -393,6 +393,44 @@ async function closeEarlierAlerts(tag, earlier) {
   }
 }
 
+// Answer buttons (#2916): an alert for a question the server found answerable whole (server/push.ts
+// promptActions) carries its options as buttons. A tap answers through POST /api/pane/prompt/answer
+// with the prompt's id, so the server's own check decides: a prompt that changed or was answered on
+// another device takes nothing, and a new alert says so; its tap opens the pane. Only the worker a
+// PC's own server serves shows them: the hosted shell's worker cannot reach its PC (only a window
+// holds the relay channel). Where a platform shows no buttons (iOS), the alert is as it was.
+function answerButtons(payload) {
+  if (shellServerId() !== null || typeof payload.prompt_id !== "string" || !payload.pane_id || (payload.machine_id || "local") !== "local") return null;
+  if (!Array.isArray(payload.actions)) return null;
+  const answers = payload.actions.slice(0, 2).filter((action) => Number.isInteger(action?.option_index) && typeof action.label === "string" && action.label !== "");
+  return answers.length > 0 ? answers : null;
+}
+
+/** The answer a button picked, sent; a new alert in its place when it did not take. */
+async function answerFromAlert(data, index) {
+  const answer = data.actions[index];
+  if (!answer) return;
+  let body;
+  try {
+    const response = await self.fetch("/api/pane/prompt/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+      body: JSON.stringify({ pane_id: data.pane_id, prompt_id: data.prompt_id, option_index: answer.option_index }),
+    });
+    if (response.ok) return;
+    body = response.status === 409 ? "This question changed or was already answered. Tap to open it." : "Could not send the answer. Tap to open the question.";
+  } catch {
+    body = "Could not send the answer. Tap to open the question.";
+  }
+  await self.registration.showNotification(data.title, {
+    body,
+    tag: data.tag,
+    data: { pane_id: data.pane_id, machine_id: data.machine_id, workspace_id: data.workspace_id, alert_id: crypto.randomUUID() },
+    icon: "/icons/icon-192.png?v=sheep1",
+    badge: "/icons/badge-96.png?v=sheep1",
+  });
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -407,12 +445,17 @@ self.addEventListener("push", (event) => {
       const tag = payload.tag || "herdr";
       const alertId = crypto.randomUUID();
       const earlier = await earlierAlerts(tag);
+      const answers = answerButtons(payload);
       await self.registration.showNotification(payload.title || "Ovis", {
         body: payload.body || "",
         tag,
         renotify: !watching,
         silent: watching,
-        data: { pane_id: payload.pane_id || null, machine_id: payload.machine_id || "local", workspace_id: payload.workspace_id || null, alert_id: alertId },
+        ...(answers ? { actions: answers.map((answer, index) => ({ action: `answer-${index}`, title: answer.label })) } : {}),
+        data: {
+          pane_id: payload.pane_id || null, machine_id: payload.machine_id || "local", workspace_id: payload.workspace_id || null, alert_id: alertId,
+          ...(answers ? { prompt_id: payload.prompt_id, actions: answers, title: payload.title || "Ovis", tag } : {}),
+        },
         icon: "/icons/icon-192.png?v=sheep1",
         // Android's status bar and small icon: white on transparent, or Chrome's bell
         badge: "/icons/badge-96.png?v=sheep1",
@@ -447,8 +490,13 @@ function isAppWindow(url) {
 let latestNotificationClick = 0;
 let latestNotificationSelection = null;
 self.addEventListener("notificationclick", (event) => {
-  const click = ++latestNotificationClick;
   event.notification.close();
+  const button = /^answer-(\d)$/.exec(event.action || "");
+  if (button && event.notification.data?.prompt_id) {
+    event.waitUntil(answerFromAlert(event.notification.data, Number(button[1])));
+    return;
+  }
+  const click = ++latestNotificationClick;
   const paneId = event.notification.data ? event.notification.data.pane_id : null;
   const machineId = event.notification.data?.machine_id || "local";
   // the workspace the pane was last seen in: an ended pane's tap opens it (src/lib/deepLink.ts)

@@ -62,7 +62,7 @@ import { dirname, join } from "node:path";
 import webpush from "web-push";
 
 import { paneStorageId } from "../shared/machines.ts";
-import type { AgentStatus, DevicePairedEvent, HerdrPane, PushDeliveryFailure, PushPayload, PushSubscriptionStatus } from "../shared/protocol.ts";
+import type { AgentStatus, DevicePairedEvent, HerdrPane, InteractivePrompt, PushAction, PushDeliveryFailure, PushPayload, PushSubscriptionStatus } from "../shared/protocol.ts";
 import {
   type AlertKind,
   type AlertPrefs,
@@ -86,6 +86,10 @@ import { writePrivateState } from "./private-state.ts";
 /** A blocked agent is still blocked when the phone gets signal back; a newer push for the pane replaces it anyway. */
 const PUSH_TTL_SECONDS = 12 * 60 * 60;
 const PUSH_TIMEOUT_MS = 10_000;
+/** How long a question's alert waits to read the prompt for its buttons; past it, the alert goes without them. */
+const PROMPT_LOOKUP_MS = 3_000;
+/** The longest option label an alert's button carries: a longer one is cut by the platform, so its alert opens the pane. */
+const ACTION_LABEL_MAX = 24;
 const DEFAULT_SUBJECT = "https://github.com/devswha/ovis";
 /** How many retired endpoints are remembered; the oldest is forgotten first. */
 const RETIRED_LIMIT = 1000;
@@ -216,6 +220,10 @@ export interface PushServiceOptions {
    * waits for. Falls back to what was last seeded.
    */
   lookupPane?: (paneId: string) => Promise<{ title: string; agent_kind?: string } | undefined>;
+  /** The prompt this PC's pane shows now, read when a question's alert fires, for its answer buttons (promptActions). */
+  lookupPrompt?: (paneId: string, signal: AbortSignal) => Promise<InteractivePrompt | null>;
+  /** whether a subscription's device may answer a prompt (not one paired to watch only): only it gets the buttons */
+  canAnswer?: (deviceId: string | null | undefined) => boolean;
   /** This PC's name, as the roster gives it to devices (server/machines.ts): what an older `pcs_off` names it by */
   localName?: string;
   /** This PC's relay ID, where it has one (server/relay/service.ts serverId): what `pcs_off` names it by (shared/machines.ts pcAlertKey) */
@@ -305,6 +313,20 @@ export function parseSubscription(value: unknown, options: { loopbackHttp?: bool
 
 export function statusMessage(paneId: string, title: string, status: AgentStatus, kind: AlertKind = status === "blocked" ? "input" : "done"): PushPayload {
   return { pane_id: paneId, title, body: kind === "permission" ? PERMISSION_NOTIFICATION_BODY : statusNotificationBody(status), tag: paneNotificationTag(paneId), kind };
+}
+
+/**
+ * The buttons an alert for `prompt` carries: each option, when the prompt is one choice between at
+ * most two short options (Allow / Deny, Yes / No) that nothing else goes with. A plan, a menu, a
+ * form of several questions, a typed answer or a queued question opens the pane instead.
+ */
+export function promptActions(prompt: InteractivePrompt | null): PushAction[] | null {
+  if (!prompt || (prompt.kind !== "approval" && prompt.kind !== "question")) return null;
+  if (prompt.multi_select || prompt.custom_option_index !== null || prompt.queued !== undefined || prompt.checks_with_text) return null;
+  if (prompt.steps !== undefined || prompt.answers !== undefined || prompt.can_step_back || prompt.can_step_next) return null;
+  if (prompt.options.length === 0 || prompt.options.length > 2) return null;
+  if (prompt.options.some((option) => option.label.trim() === "" || option.label.length > ACTION_LABEL_MAX)) return null;
+  return prompt.options.map((option, index) => ({ option_index: index, label: option.label.trim() }));
 }
 
 export function endedMessage(paneId: string, title: string): PushPayload {
@@ -690,6 +712,23 @@ export function createPushService(options: PushServiceOptions): PushService {
     return { title: titles.get(key) ?? paneId, agentKind: kinds.get(key) };
   }
 
+  /** The prompt's identity and buttons for its alert; null when it has none, or the read failed or took too long. */
+  async function readActions(paneId: string): Promise<{ promptId: string; actions: PushAction[] } | null> {
+    if (!options.lookupPrompt) return null;
+    const signal = AbortSignal.timeout(PROMPT_LOOKUP_MS);
+    try {
+      const prompt = await Promise.race([
+        options.lookupPrompt(paneId, signal),
+        new Promise<null>((resolve) => signal.addEventListener("abort", () => resolve(null), { once: true })),
+      ]);
+      const actions = promptActions(prompt);
+      return prompt && actions ? { promptId: prompt.id, actions } : null;
+    } catch {
+      // herdr busy or the pane gone: the alert opens the pane, as it always did
+      return null;
+    }
+  }
+
   const timing = { ...DEFAULT_ALERT_TIMING, ...options.timing };
   const now = options.now ?? Date.now;
   /** when each pane's current turn began: from `working`/`blocked` entered, until idle or done */
@@ -909,7 +948,9 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (groups.size === 0) return;
       schedule(key, machineId, paneId, groups, async (to, silenced) => {
         if (options.inUse?.() || muted(machineId, paneId)) return;
-        const { title, agentKind } = await lookUp(key, machineId, paneId);
+        // only this PC's prompts are read here, and only a question's alert carries buttons
+        const reading = status === "blocked" && machineId === "local" ? readActions(paneId) : Promise.resolve(null);
+        const [{ title, agentKind }, answer] = await Promise.all([lookUp(key, machineId, paneId), reading]);
         // the title can wait for herdr: a window that came into use, or a mute made (even one undone since), meanwhile still holds the alert
         if (options.inUse?.() || silenced() || muted(machineId, paneId)) return;
         const kind: AlertKind = status === "blocked" ? blockedAlertKind(agentKind) : "done";
@@ -919,7 +960,13 @@ export function createPushService(options: PushServiceOptions): PushService {
           return current && current.device_id === subscription.device_id && wants(current, kind, machineId) ? [current] : [];
         });
         if (live.length === 0) return;
-        await broadcast({ ...statusMessage(paneId, title, status, kind), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) }, status === "blocked" ? "high" : "normal", live, true);
+        const message: PushPayload = { ...statusMessage(paneId, title, status, kind), ...where(key, machineId), tag: paneNotificationTag(paneId, machineId) };
+        const urgency = status === "blocked" ? "high" : "normal";
+        const answering = answer === null ? [] : live.filter((subscription) => options.canAnswer?.(subscription.device_id) ?? true);
+        await Promise.all([
+          broadcast({ ...message, ...(answer === null ? {} : { prompt_id: answer.promptId, actions: answer.actions }) }, urgency, answering, true),
+          broadcast(message, urgency, live.filter((subscription) => !answering.includes(subscription)), true),
+        ]);
       });
     },
 

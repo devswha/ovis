@@ -1321,6 +1321,16 @@ async function withPlanFile(prompt: InteractivePrompt | null, transcript: string
   return { ...prompt, id: `${prompt.id}.${revision}`, body: plan.text.slice(0, 12_000), plan_file: plan.path };
 }
 
+/**
+ * The prompt the pane shows now, as GET /api/pane/prompt reads it (without a plan's file): what a
+ * question's alert offers as buttons (server/push.ts promptActions). Null when none stands, or the read
+ * is not one an answer could be checked against.
+ */
+export async function currentPrompt(paneId: string, options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState; signal?: AbortSignal }): Promise<InteractivePrompt | null> {
+  const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState, options.signal);
+  return read.stale || read.inputUnverified ? null : read.prompt;
+}
+
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {
   if (url.pathname !== "/api/pane/prompt" && url.pathname !== "/api/pane/prompt/answer") return null;
   setRequestRoute(url.pathname);

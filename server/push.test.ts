@@ -7,7 +7,7 @@ import webpush from "web-push";
 
 import { paneAlertsMuted, type AlertPrefs } from "../shared/notify-policy.ts";
 import { paneStorageId } from "../shared/machines.ts";
-import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
+import type { AgentStatus, HerdrPane, InteractivePrompt, SessionSnapshot } from "../shared/protocol.ts";
 import { CompletionTracker } from "./completion.ts";
 import { handlePreferencesRequest, PreferenceStore } from "./preferences.ts";
 import { DeviceStore } from "./devices.ts";
@@ -1493,5 +1493,60 @@ describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {
     await push.onStatus("w1:p1", "blocked");
     await push.settled();
     expect(fake.received.at(-1)?.payload.title).toBe("mine");
+  });
+});
+
+describe("answer buttons on a question's alert (#2916)", () => {
+  const prompt = (overrides: Partial<InteractivePrompt> = {}): InteractivePrompt => ({
+    id: "prompt-1", agent: "omp", kind: "approval", title: "Allow dangerous command?", question: "Allow dangerous command?", body: null,
+    options: [{ label: "Allow once", description: null }, { label: "Deny", description: null }],
+    multi_select: false, custom_option_index: null, ...overrides,
+  });
+  const alertFor = async (shown: InteractivePrompt | null, options: Partial<Parameters<typeof createPushService>[0]> = {}) => {
+    fake.received.length = 0;
+    const push = subscribed({ lookupPrompt: async () => shown, ...options });
+    push.seed([pane("w1:p1", "working", "omp")]);
+    await push.onStatus("w1:p1", "blocked");
+    expect(fake.received).toHaveLength(1);
+    const { prompt_id, actions } = fake.received[0]!.payload;
+    return { prompt_id, actions };
+  };
+
+  it("carries the prompt's identity and its two short options", async () => {
+    expect(await alertFor(prompt())).toEqual({ prompt_id: "prompt-1", actions: [{ option_index: 0, label: "Allow once" }, { option_index: 1, label: "Deny" }] });
+    expect(await alertFor(prompt({ kind: "question", options: [{ label: "Yes", description: null }, { label: "No", description: null }] })))
+      .toEqual({ prompt_id: "prompt-1", actions: [{ option_index: 0, label: "Yes" }, { option_index: 1, label: "No" }] });
+  });
+
+  it("keeps today's alert for a prompt the buttons cannot answer whole", async () => {
+    const none = { prompt_id: undefined, actions: undefined };
+    const three = [{ label: "Yes", description: null }, { label: "Yes, don't ask again", description: null }, { label: "No", description: null }];
+    for (const shown of [
+      null,
+      prompt({ options: three }),
+      prompt({ options: [{ label: "Yes, and allow every edit in this folder for the session", description: null }, { label: "No", description: null }] }),
+      prompt({ multi_select: true }),
+      prompt({ custom_option_index: 1 }),
+      prompt({ kind: "plan" }),
+      prompt({ kind: "menu" }),
+      prompt({ steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: false, current: false }] }),
+      prompt({ queued: "collapsed" }),
+    ]) expect(await alertFor(shown)).toEqual(none);
+  });
+
+  it("gives no buttons to a device that may only watch, nor when the prompt cannot be read", async () => {
+    const none = { prompt_id: undefined, actions: undefined };
+    expect(await alertFor(prompt(), { canAnswer: () => false })).toEqual(none);
+    expect(await alertFor(prompt(), { lookupPrompt: async () => { throw new Error("herdr busy"); } })).toEqual(none);
+  });
+
+  it("asks for the prompt only for this PC's panes", async () => {
+    fake.received.length = 0;
+    let asked = 0;
+    const push = subscribed({ lookupPrompt: async () => { asked += 1; return prompt(); } });
+    push.seed([pane("w1:p1", "working", "omp")], "pc-2", "Laptop");
+    await push.onStatus("w1:p1", "blocked", "pc-2");
+    expect(asked).toBe(0);
+    expect(fake.received[0]!.payload.actions).toBeUndefined();
   });
 });
