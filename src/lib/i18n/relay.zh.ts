@@ -78,4 +78,5 @@ export const RELAY_ZH: Record<string, string> = {
   "Remove this device": "移除此设备",
   "Remove this device from your account": "从账户中移除此设备",
   "This device could not leave the account. Try again.": "未能将此设备移出账户。请重试。",
+  "This device left the account. {n} PCs the account does not list still have it: revoke it on them.": "此设备已离开账户。账户未列出的 {n} 台 PC 上仍保留它，请在那些 PC 上撤销。",
 };

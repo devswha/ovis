@@ -78,4 +78,5 @@ export const RELAY_KO: Record<string, string> = {
   "Remove this device": "이 기기 빼기",
   "Remove this device from your account": "계정에서 이 기기 빼기",
   "This device could not leave the account. Try again.": "이 기기를 계정에서 빼지 못했습니다. 다시 시도하세요.",
+  "This device left the account. {n} PCs the account does not list still have it: revoke it on them.": "이 기기를 계정에서 뺐습니다. 계정 목록에 없는 PC {n}대에는 아직 남아 있으니 그 PC에서 취소하세요.",
 };

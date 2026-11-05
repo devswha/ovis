@@ -3,7 +3,7 @@
  * service and carries the provider's return from the system browser over its loopback server; the
  * page finishes the sign-in itself with the PKCE verifier it kept, as a browser tab does.
  */
-import { beginSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
+import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
 /** What the desktop app's preload offers its server's pages, when it names an account service. */
@@ -24,7 +24,5 @@ export function desktopAccount(): DesktopAccountBridge | null {
 export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore): Promise<AccountSession> {
   const redirectUri = await bridge.start();
   const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri });
-  const returned = signInReturn(await bridge.open(url));
-  if (returned === null) throw new SignInError("denied", "The sign-in came back with nothing");
-  return finishSignIn(returned, { store });
+  return finishOwnSignIn(url, await bridge.open(url), { store });
 }

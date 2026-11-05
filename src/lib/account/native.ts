@@ -8,7 +8,7 @@
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
 import { requestToken } from "./service.ts";
-import { beginSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
+import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
 export const AUTH_PLUGIN = "OvisAuth";
@@ -34,7 +34,5 @@ export async function nativeSignIn(provider: AccountProvider, options: { store: 
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT });
   const { url: callback } = await callNative<{ url: string }>(AUTH_PLUGIN, "authenticate", { url });
   const back = new URL(callback);
-  const returned = signInReturn(back.search || back.hash);
-  if (returned === null) throw new SignInError("denied", "The sign-in came back with nothing");
-  return finishSignIn(returned, { store: options.store });
+  return finishOwnSignIn(url, back.hash.length > 1 ? back.hash : back.search, { store: options.store });
 }

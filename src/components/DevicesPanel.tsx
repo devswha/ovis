@@ -144,13 +144,13 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
   const signedIn = useAccountSignedIn();
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
-  const disconnect = async (id: string, key: string) => {
+  const disconnect = async (id: string, key: string, account: string) => {
     // fixed wait: the second tap must come within 4 seconds, as Revoke's does
     if (disconnecting !== id) { setDisconnecting(id); window.setTimeout(() => setDisconnecting((c) => (c === id ? null : c)), 4000); return; }
     setDisconnecting(null);
     const transport = getTransport();
     try {
-      await removeFromAccount({ service: new AccountService({ store: indexedAccountStore }), accountStore: indexedAccountStore, key, here: (path, init) => transport.fetch(path, init) });
+      await removeFromAccount({ service: new AccountService({ store: indexedAccountStore }), accountStore: indexedAccountStore, key, account, here: (path, init) => transport.fetch(path, init) });
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -230,8 +230,8 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
                   {!guest && (
                     <div className="devices-actions">
                       <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                      {signedIn && d.account_key !== undefined && !d.current && (
-                        <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!)}>
+                      {signedIn !== null && d.account === signedIn && d.account_key !== undefined && !d.current && (
+                        <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!, signedIn)}>
                           {disconnecting === d.id ? t("Disconnect everywhere?") : t("Disconnect from all PCs")}
                         </button>
                       )}

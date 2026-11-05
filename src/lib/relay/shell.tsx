@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { enrollPc, linkThisDevice, needsLink, pcAccountStatus, rememberMembers, takeIntroduction } from "../account/join.ts";
+import { linkThisDevice, needsLink, pcAccountStatus, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -219,8 +219,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
 
   const leave = (): void => {
-    void leaveAccount({ service: account, accountStore, relayStore: store }).then(async () => {
-      accountView = { kind: "signed-out", error: null };
+    void leaveAccount({ service: account, accountStore, relayStore: store }).then(async ({ unconfirmed }) => {
+      // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
+      accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
+        : t("This device left the account. {n} PCs the account does not list still have it: revoke it on them.", { n: unconfirmed.length }) };
       await showFront();
     }, async (error: unknown) => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
@@ -349,9 +351,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (linking || fresh) opened.renew();
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) return;
-      // a PC with no account until this link: the account's other members get in from what this device knows
-      if (linking && status.account === null) await enrollPc({ fetch, key, account: session.account, store: accountStore });
-      await rememberMembers({ fetch, account: session.account, store: accountStore });
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
       // the approver hands the introduction over once this device's row exists, which may be a moment after it

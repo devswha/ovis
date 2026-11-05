@@ -80,3 +80,22 @@ export async function finishSignIn(returned: SignInReturn, options: { store: Acc
   await options.store.set("session", session);
   return session;
 }
+
+/**
+ * Finishes the sign-in `started` began, from what came back: a return naming another sign-in's
+ * state (an older one, or one never started here) is refused before anything is consumed, and the
+ * sign-in this call started is dropped whatever the outcome, so it cannot be finished later.
+ */
+export async function finishOwnSignIn(started: string, back: string, options: { store: AccountStore; fetch?: Fetch; now?: () => number }): Promise<AccountSession> {
+  const state = new URL(started).searchParams.get("state") ?? "";
+  const returned = signInReturn(back);
+  if (returned === null || returned.state !== state) {
+    await options.store.update("pending", (current) => {
+      if (current?.[state] === undefined) return current;
+      const { [state]: _dropped, ...rest } = current;
+      return rest;
+    });
+    throw new SignInError("no_sign_in", "This return is not for the sign-in started here");
+  }
+  return finishSignIn(returned, options);
+}

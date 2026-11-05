@@ -78,4 +78,5 @@ export const RELAY_JA: Record<string, string> = {
   "Remove this device": "このデバイスを外す",
   "Remove this device from your account": "アカウントからこのデバイスを外す",
   "This device could not leave the account. Try again.": "このデバイスをアカウントから外せませんでした。もう一度お試しください。",
+  "This device left the account. {n} PCs the account does not list still have it: revoke it on them.": "このデバイスをアカウントから外しました。アカウントにない PC {n} 台にはまだ残っているので、その PC で取り消してください。",
 };

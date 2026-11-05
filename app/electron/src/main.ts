@@ -344,6 +344,9 @@ if (!app.requestSingleInstanceLock()) {
     if (!ours(event.senderFrame?.url ?? "") || accountService === null || signIn === null) throw new Error("No sign-in is waiting");
     if (typeof url !== "string" || new URL(url).origin !== accountService) throw new Error("That is not the account service");
     const waiting = signIn;
+    const state = new URL(url).searchParams.get("state");
+    if (state === null) throw new Error("That sign-in names no state");
+    waiting.expect(state);
     openOutside(url);
     try { return await waiting.returned; } finally { if (signIn === waiting) signIn = null; }
   });

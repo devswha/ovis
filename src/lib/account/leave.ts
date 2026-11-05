@@ -12,7 +12,13 @@ import type { AccountService } from "./service.ts";
 import type { AccountStore } from "./store.ts";
 import { post, type PcFetch } from "./join.ts";
 
-export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; now?: () => number }): Promise<RemoveRecord> {
+export interface LeaveResult {
+  readonly remove: RemoveRecord;
+  /** PCs this device signs in to with the account key that the account does not list: no remove reached them, so their pairing is kept */
+  readonly unconfirmed: readonly string[];
+}
+
+export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; now?: () => number }): Promise<LeaveResult> {
   const session = await options.service.session();
   if (session === undefined) throw new Error("Sign in first, so every PC of the account hears of it");
   const key = await options.accountStore.key();
@@ -22,12 +28,18 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   }, key.private_key);
   const pcs = (await options.service.listPcs()).map((pc) => pc.server_id);
   for (let start = 0; start < pcs.length; start += 32) await options.service.postRecord(pcs.slice(start, start + 32), remove);
-  await options.service.signOut();
+  // only pairings on PCs the remove went to are forgotten: one on a PC the account does not list (or of another account) still works there
+  const listed = new Set(pcs);
+  const unconfirmed: string[] = [];
   for (const device of await options.relayStore.list()) {
-    if (device.public_spki === key.public_spki) await options.relayStore.remove(device.server_id);
+    if (device.public_spki !== key.public_spki) continue;
+    if (listed.has(device.server_id)) await options.relayStore.remove(device.server_id);
+    else unconfirmed.push(device.server_id);
   }
-  await options.accountStore.clear();
-  return remove;
+  // the removes are queued: the sign-in ends here whatever the service answers to the sign-out
+  try { await options.service.signOut(); }
+  finally { if (unconfirmed.length === 0) await options.accountStore.clear(); }
+  return { remove, unconfirmed };
 }
 
 /**
@@ -35,16 +47,23 @@ export async function leaveAccount(options: { service: AccountService; accountSt
  * its account key, signed by this device's, applied at once on the PC this window is in (`here`)
  * and left in the mailbox of every PC of the account for the others to apply when they collect it.
  */
-export async function removeFromAccount(options: { service: AccountService; accountStore: AccountStore; key: string; here?: PcFetch; now?: () => number }): Promise<RemoveRecord> {
+export async function removeFromAccount(options: { service: AccountService; accountStore: AccountStore; key: string; account: string; here?: PcFetch; now?: () => number }): Promise<RemoveRecord> {
   const session = await options.service.session();
   if (session === undefined) throw new Error("Sign in first, so every PC of the account hears of it");
+  // the row shown belongs to the account signed in here, or nothing is signed for it
+  if (session.account !== options.account) throw new Error("That device belongs to another account");
   const own = await options.accountStore.key();
   if (options.key === own.public_spki) throw new TypeError("This device leaves the account with leaveAccount");
   const remove: RemoveRecord = await signAccountRecord({
     v: 1, kind: "remove", account: session.account, key: options.key,
     issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: own.public_spki,
   }, own.private_key);
-  if (options.here) await post(options.here, "/api/account/records", { records: [remove] });
+  if (options.here) {
+    // the PC answers every record's outcome with 200: a refusal there is a failure here
+    const answer = await (await post(options.here, "/api/account/records", { records: [remove] })).json() as { results?: { outcome?: string; code?: string }[] };
+    const outcome = answer.results?.[0];
+    if (outcome?.outcome === "refused") throw new Error(`This PC refused the removal (${outcome.code ?? "refused"})`);
+  }
   const pcs = (await options.service.listPcs()).map((pc) => pc.server_id);
   for (let start = 0; start < pcs.length; start += 32) await options.service.postRecord(pcs.slice(start, start + 32), remove);
   return remove;

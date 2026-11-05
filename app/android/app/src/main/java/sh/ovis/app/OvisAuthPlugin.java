@@ -19,6 +19,13 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "OvisAuth")
 public class OvisAuthPlugin extends Plugin {
     private PluginCall waiting;
+    /** the state of the sign-in waiting: only a return naming it is taken */
+    private String expectedState;
+
+    private void release(PluginCall call) {
+        call.setKeepAlive(false);
+        getBridge().releaseCall(call);
+    }
 
     @PluginMethod
     public void authenticate(PluginCall call) {
@@ -27,15 +34,26 @@ public class OvisAuthPlugin extends Plugin {
             call.reject("Sign in at an https address", "invalid_url");
             return;
         }
+        String state = Uri.parse(url).getQueryParameter("state");
+        if (state == null || state.isEmpty()) {
+            call.reject("That sign-in names no state", "invalid_url");
+            return;
+        }
         // one sign-in at a time: a new one ends the one before
-        if (waiting != null) waiting.reject("The sign-in was replaced", "cancelled");
+        if (waiting != null) {
+            PluginCall replaced = waiting;
+            release(replaced);
+            replaced.reject("The sign-in was replaced", "cancelled");
+        }
         waiting = call;
+        expectedState = state;
         call.setKeepAlive(true);
         try {
             getActivity().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE));
         } catch (ActivityNotFoundException error) {
             waiting = null;
-            call.setKeepAlive(false);
+            expectedState = null;
+            release(call);
             call.reject("No browser could open the sign-in", "failed");
         }
     }
@@ -51,11 +69,16 @@ public class OvisAuthPlugin extends Plugin {
         Uri data = intent.getData();
         if (data == null || !"ovis".equals(data.getScheme()) || !"account".equals(data.getHost()) || !"/callback".equals(data.getPath())) return;
         PluginCall call = waiting;
-        waiting = null;
         if (call == null) return;
+        // another app can send this address too: only this sign-in's own return, with a code or an error, ends the wait
+        String state = data.getQueryParameter("state");
+        boolean answered = data.getQueryParameter("code") != null || data.getQueryParameter("error") != null;
+        if (expectedState == null || !expectedState.equals(state) || !answered) return;
+        waiting = null;
+        expectedState = null;
         JSObject result = new JSObject();
         result.put("url", data.toString());
-        call.setKeepAlive(false);
+        release(call);
         call.resolve(result);
     }
 }

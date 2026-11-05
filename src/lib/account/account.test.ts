@@ -5,7 +5,7 @@ import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-servic
 import type { RelayDevice } from "../relay/device.ts";
 import { myPcs, OFFLINE_AFTER_MS } from "./myPcs.ts";
 import { AccountService, AccountServiceError, accountServiceOf, SignedOutError } from "./service.ts";
-import { beginSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
+import { beginSignIn, finishOwnSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
 
 const SERVICE = "https://account.example";
@@ -56,6 +56,17 @@ describe("signing in", () => {
     // the real return still finishes after the forged one
     const real = signInReturn(new URL((await service.fetch(start)).headers.get("location") ?? "").hash);
     expect((await finishSignIn(real ?? { error: "x", state: "" }, { store, fetch: service.fetch })).account).toBe("acct_1");
+  });
+
+  it("refuses an older sign-in's return in place of the one just started, and drops the one just started", async () => {
+    const service = serviceWithSignIn();
+    const store = memoryAccountStore();
+    const older = await beginSignIn("github", { store, service: SERVICE, redirectUri: REDIRECT });
+    const olderBack = new URL((await service.fetch(older)).headers.get("location") ?? "").hash;
+    const now = await beginSignIn("github", { store, service: SERVICE, redirectUri: REDIRECT });
+    await expect(finishOwnSignIn(now, olderBack, { store, fetch: service.fetch })).rejects.toBeInstanceOf(SignInError);
+    expect(Object.keys(await store.get("pending") ?? {})).toEqual([new URL(older).searchParams.get("state") ?? ""]);
+    expect(await store.get("session")).toBeUndefined();
   });
 
   it("lets two tabs sign in at once, each finishing its own", async () => {

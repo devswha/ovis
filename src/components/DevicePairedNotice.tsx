@@ -43,7 +43,7 @@ export function DeviceRemovedNotice({ events, onDismiss }: { events: readonly De
     const time = new Date(event.removed_at).toLocaleTimeString(currentLocale(), { hour: "2-digit", minute: "2-digit" });
     const text = event.by === undefined ? t("{name} was removed from this PC at {time}.", { name: event.label, time })
       : event.by === "pc" ? t("{name} was revoked on this PC at {time}.", { name: event.label, time })
-      : t("{name} was removed from every PC of the account at {time}, by {by}.", { name: event.label, time, by: event.by.label });
+      : t("{name} was removed from this PC at {time}, by {by}.", { name: event.label, time, by: event.by.label });
     return (
       <div key={event.event_id} className="update-notice is-paired" role="status" data-testid="device-removed-notice">
         <SmartphoneNfc aria-hidden="true" />

@@ -9,7 +9,7 @@ import { generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
-import { admitToAccount, approveJoin, enrollPc, linkThisDevice, rememberMembers, needsLink, pcAccountStatus, takeIntroduction, UnverifiedJoinError } from "./join.ts";
+import { admitToAccount, approveJoin, linkThisDevice, needsLink, pcAccountStatus, takeIntroduction, UnverifiedJoinError } from "./join.ts";
 import { leaveAccount, removeFromAccount } from "./leave.ts";
 import { myPcs } from "./myPcs.ts";
 import { AccountService } from "./service.ts";
@@ -203,7 +203,7 @@ it("leaves the account from this device: every PC revokes it from its mailbox, a
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [a, b]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-  await leaveAccount({ service: account, accountStore, relayStore: phone });
+  expect((await leaveAccount({ service: account, accountStore, relayStore: phone })).unconfirmed).toEqual([]);
   expect(await phone.list()).toEqual([]);
   expect(await accountStore.get("session")).toBeUndefined();
   for (const at of [a, b]) {
@@ -228,7 +228,7 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-  await removeFromAccount({ service: account, accountStore, key: lost.public_spki, here: pcFetch(await connect(x, onX)) });
+  await removeFromAccount({ service: account, accountStore, key: lost.public_spki, account: ACCOUNT, here: pcFetch(await connect(x, onX)) });
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
   expect(y.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(true);
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
@@ -237,18 +237,20 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   expect(x.f.app.context.services.devices.hasKey(key.public_spki)).toBe(true);
 });
 
-it("enrolls the account's members on a new PC from the ones this device saw on its other PCs", async () => {
-  const [x, z] = [pc(), pc()];
+it("keeps a pairing the account does not list when this device leaves, and says which", async () => {
+  const [a, hidden] = [pc(), pc()];
   const phone = new MemoryDeviceStore();
   const accountStore = memoryAccountStore();
   const key = await accountStore.key();
-  const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
-  const mac = await accountKey();
-  x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, mac.public_spki), key: mac.public_spki, label: "Mac app", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
-  await rememberMembers({ fetch: pcFetch(await connect(x, onX)), account: ACCOUNT, store: accountStore });
-  // a new PC: the phone pairs by QR code and makes it the account's
-  const onZ = await linkThisDevice({ fetch: pcFetch(await connect(z, await qrPairing(z, phone, "nuc"))), device: (await phone.get(z.identity.server_id))!, key, account: ACCOUNT, store: phone });
-  expect(z.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
-  expect(await enrollPc({ fetch: pcFetch(await connect(z, onZ)), key, account: ACCOUNT, store: accountStore })).toBe(1);
-  expect(z.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(true);
+  for (const [at, name] of [[a, "p620"], [hidden, "nuc"]] as const) {
+    await linkThisDevice({ fetch: pcFetch(await connect(at, await qrPairing(at, phone, name))), device: (await phone.get(at.identity.server_id))!, key, account: ACCOUNT, store: phone });
+  }
+  const service = new FakeAccountService();
+  await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
+  const account = new AccountService({ store: accountStore, fetch: service.fetch });
+  // only one PC is in the directory: the other never reached it (or the service hides it)
+  await account.putPc(a.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(a.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
+  const { unconfirmed } = await leaveAccount({ service: account, accountStore, relayStore: phone });
+  expect(unconfirmed).toEqual([hidden.identity.server_id]);
+  expect((await phone.list()).map((device) => device.server_id)).toEqual([hidden.identity.server_id]);
 });
