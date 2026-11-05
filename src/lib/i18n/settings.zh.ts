@@ -174,6 +174,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.": "窗格中执行复制的程序（vim、tmux、Claude Code）会像你自己复制一样把文本写入此设备的剪贴板。如果窗格运行你不信任的输出，请关闭它：它可能替换你下次粘贴的内容。",
   "Pictures in the terminal": "终端中的图片",
   "Shows the pictures a program draws in a pane (imgcat, img2sixel, chafa) as sixel or iTerm2 images, on this device. Only on a PC that runs herdr-core, as the desktop app does: herdr does not pass pictures on. A picture is gone once the pane is drawn again.": "在此设备上以 sixel 或 iTerm2 图像显示窗格中程序绘制的图片(imgcat、img2sixel、chafa)。仅适用于运行 herdr-core 的电脑(如桌面应用):herdr 不会传递图片。窗格重新绘制后图片会消失。",
+  "Keyboard only from the key bar": "仅从按键栏打开键盘",
+  "On a touch screen, a tap on the terminal, the input line or a key no longer brings up the keyboard. The key bar's keyboard key shows and hides it.": "在触摸屏上，点按终端、输入行或按键不再弹出键盘。用按键栏的键盘键显示或隐藏键盘。",
   "Draw with libghostty": "使用 libghostty 绘制",
   "Draws a pane with libghostty, the terminal engine of Ghostty, on this device, with the pictures a program sends with the Kitty graphics protocol (kitty icat, timg, chafa). Only on a PC that runs herdr-core, as the desktop app does, and from the next time a pane is opened. A preview: typing, selection, links and search still go through xterm.js underneath.": "在此设备上用 Ghostty 的终端引擎 libghostty 绘制窗格，并显示程序通过 Kitty 图形协议发送的图片(kitty icat、timg、chafa)。仅适用于运行 herdr-core 的电脑，例如桌面应用，并从下次打开窗格时生效。这是预览功能:输入、选择、链接和搜索仍由底层的 xterm.js 处理。",
   "Use alongside herdr's own window": "与终端里的 herdr 一起使用",

@@ -3213,7 +3213,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerArtifacts`), the Paste and send button (off by default, the device setting
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
-  speed, input mode, Key bar, Clipboard from a pane, Pictures in the terminal (off by default, the
+  speed, input mode, Key bar, Keyboard only from the key bar (off by default, the device setting
+  `terminalKeyboardOnRequest`), Clipboard from a pane, Pictures in the terminal (off by default, the
   device setting `terminalImages`), Draw with libghostty (off by default, the device setting
   `terminalGhostty`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
@@ -3743,6 +3744,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the terminal; only the focus-preserving tap AoE's button relies on is shared, and the key bar
   already had it. Disabled keys (`.key:disabled`, and the refusing control) draw their glyph in
   `--text-dim`, so a bar with nothing to send to reads as such.
+- **Keyboard only from the key bar** (Settings > Terminal, off by default, the device setting
+  `terminalKeyboardOnRequest`, #1635): on a touch screen the control above becomes the only way the
+  terminal raises the soft keyboard. While this pane's control says the keyboard is down (its
+  `direction` is Show), the input line and xterm's field carry `inputmode="none"`, so a tap on the
+  grid, the line, Send or a key still focuses them and raises nothing (a browser shows no keyboard
+  for that mode, and a switch to it hides one). Show removes the attribute from the field it focuses
+  inside the same tap; the attribute comes back once the control reads Show again: after Hide, or
+  when the system put the keyboard away (Android's back gesture) and the measurement says so. The
+  mode switch stays its own key beside the control. The model is Termux's KEYBOARD extra key, the
+  keyboard toggle of a phone terminal app: reading is the rest state, typing is asked for.
 - When the row outgrows the viewport it scrolls sideways, and the edge that hides more keys fades
   out: `KeyBar` sets `data-overflow-start` / `data-overflow-end` on `.key-bar` (measured before
   first paint, on scroll and on resize, once a frame) and `KeyBar.css` masks that edge with a
