@@ -214,7 +214,7 @@ export function App() {
   const { filesOpen, setFilesOpen, viewing, openFile, closeFile, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
-  const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
+  const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory } = useNewSessionState({ initialLink });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy } = useConnectionChip();
   const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState();
@@ -567,7 +567,7 @@ export function App() {
   // The header's More menu: what used to be three buttons of its own. Each item is there under
   // the condition its button had. At phone width the palette's button gives its room to the
   // pane's title, and the menu's first item opens the palette.
-  useMachineGone({ machines, pendingLink, pendingFile, selectedMachineRef, linkSince, selectionSince, rosterSeq, setLinkLanded, setHeaderNote, selectTargetRef, rosterTick, linkTick });
+  useMachineGone({ machines, pendingLink, pendingFile, pendingCreate, selectedMachineRef, linkSince, selectionSince, rosterSeq, setLinkLanded, setHeaderNote, selectTargetRef, rosterTick, linkTick });
   // the PCs this device shows in its sidebar, Agents list and palette (Settings → Remote PCs); every other
   // use of the roster keeps them all, so a link, an alert or a split still reaches a hidden PC's pane
   const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
@@ -805,7 +805,7 @@ export function App() {
         <div className={`pane-column${chatShown ? " is-chat" : ""}`}>
         {/* over the pane only: a bar across the window would cut the sidebar off from its top row in the header */}
         <UpdateNotice updates={updates} onOpen={() => { setSettingsSection("updates"); setSettingsOpen(true); }} />
-        <TelemetryNotice enabled={locked === false} onOpen={() => { setSettingsSection("updates"); setSettingsOpen(true); }} />
+        <TelemetryNotice enabled={locked === false} onOpen={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }} />
         <MachineActionBanner machines={machines} onSetup={(machine, update = false) => { setDrawerOpen(false); setUpdateRemote(update); setMachineDialog(machine); }} />
         {layoutNotice && <p className="pane-notice" role="alert">{layoutNotice}</p>}
         {shownHealth?.lan_exposure && <LanExposureNotice host={shownHealth.lan_exposure.host} onOpen={() => { setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
