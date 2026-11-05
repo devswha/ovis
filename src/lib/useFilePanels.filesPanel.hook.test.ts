@@ -83,6 +83,26 @@ it("closes Files beside the pane when the window narrows under a web page that c
   expect(panels.filesOpen).toBe(false);
 });
 
+it("closes Files beside the pane when the window narrows under a popup file", async () => {
+  let wide = true;
+  const settings = { ...DEFAULT_SETTINGS, filesPanel: true };
+  function Probe() {
+    panels = useFilePanels({ settings, filePanelAvailable: wide, selectedPaneId: "p1", selectedMachineId: "local" });
+    return null;
+  }
+  await act(async () => { renderer = create(createElement(Probe)); });
+  await act(async () => { panels.setFilesOpen(true); });
+  await act(async () => { panels.viewFile("src/app.ts"); });
+  expect(panels.fileDocked).toBe(false);
+
+  // a dialog mounted now would take the focus from the popup above it
+  wide = false;
+  await act(async () => { renderer!.update(createElement(Probe)); });
+
+  expect(panels.viewing).not.toBeNull();
+  expect(panels.filesOpen).toBe(false);
+});
+
 it("keeps Files a dialog on a narrow window even when set beside the pane", async () => {
   await mount({ filesPanel: true }, false);
   expect(panels.filesDocked).toBe(false);
