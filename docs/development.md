@@ -752,7 +752,8 @@ an installed app sees a version once it is GitHub's latest, the same moment `ovi
 installing the new one.
 The Macs' files are unsigned, and a Mac app updates itself only when signed, until the repository
 variable `DESKTOP_MAC_SIGN` is `true`: then the build signs and notarizes with the same
-`MAC_*` secrets as Ovis for Mac and fails if one is missing. The `mac-dmg` and `windows-app` jobs
+`MAC_*` secrets as Ovis for Mac ([app/electron](../app/electron/README.md)'s signing, with
+`OVIS_REQUIRE_NOTARIZATION=1`) and fails if one is missing or the dmg is not notarized. The `mac-dmg` and `windows-app` jobs
 wait for `desktop`, so the release becomes latest only with the desktop files in it; a red `desktop`
 job leaves the release published but holds them back: **Re-run failed jobs** on the Release run
 builds and attaches it again (`--clobber`), then runs them. **Actions → Desktop app** from `main`

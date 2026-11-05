@@ -98,7 +98,8 @@ jobs:
         run: bun run typecheck
       # The hook for a signed and notarized Mac build: off until the repository variable
       # DESKTOP_MAC_SIGN is 'true', then it takes the Developer ID and notary key Ovis for Mac uses
-      # (app/mac/README.md) and electron-builder signs and notarizes with them.
+      # (app/mac/README.md): electron-builder signs with them (scripts/sign-mac.mjs) and
+      # scripts/notarize-dmg.mjs notarizes and staples, failing rather than shipping an unnotarized dmg.
       - name: Mac signing
         id: sign
         if: inputs.tag != '' && startsWith(matrix.target, 'darwin-') && vars.DESKTOP_MAC_SIGN == 'true'
@@ -133,6 +134,7 @@ jobs:
           APPLE_API_KEY: ${{ steps.sign.outputs.key }}
           APPLE_API_KEY_ID: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ steps.sign.outputs.on == 'true' && secrets.MAC_NOTARY_ISSUER || '' }}
+          OVIS_REQUIRE_NOTARIZATION: ${{ steps.sign.outputs.on == 'true' && '1' || '' }}
         run: bun run dist
       - name: Remove the notary key
         if: always() && steps.sign.outputs.key != ''
