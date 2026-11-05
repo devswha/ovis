@@ -690,7 +690,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
       } else if (row.role === "assistant") {
         let turn = turns[turns.length - 1];
         if (!turn || turn.role !== "assistant") {
-          turn = { role: "assistant", ts, parts: [] };
+          turn = { role: "assistant", ts, parts: [], text_rows: [] };
           turns.push(turn);
         }
         if (ts) turn.end_ts = ts;
@@ -748,7 +748,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
         } else {
           let turn = turns[turns.length - 1];
           if (!turn || turn.role !== "assistant") {
-            turn = { role: "assistant", ts, parts: [] };
+            turn = { role: "assistant", ts, parts: [], text_rows: [] };
             turns.push(turn);
           }
           const orphan: Extract<ConversationPart, { kind: "tool" }> = {

@@ -246,6 +246,11 @@ describe("pickedTurn", () => {
     expect(pickedTurn(turns, second!)).toBe(2);
     // the first went on from the second's words since: either could be the searched one
     expect(pickedTurn([answer(`${lead} second way and more`), user("again"), answer(`${lead} second way`)], second!)).toBe("several");
+    // the searched answer's words became a progress note, after another note with them: either may be it
+    const noted = (last: "commentary" | undefined): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [
+      { kind: "text", text: lead }, { kind: "text", text: "needle progress", phase: "commentary" }, { kind: "text", text: "needle target", ...(last === undefined ? {} : { phase: last }) }] });
+    const target = searchTurns([noted(undefined)], searchPattern("needle")!)[0]!;
+    expect(pickedTurn([noted("commentary"), user("again"), noted(undefined)], target)).toBe("several");
     // an older server's match has no digest: none is opened, as before
     const { text_digest: _, ...old } = second!;
     expect(pickedTurn(turns, old)).toBe("several");
@@ -282,6 +287,12 @@ describe("pickedTurn", () => {
     const joined = parseHermesRows([row(99, "assistant", "deploy it, you said"), row(101, "assistant", "Checking.")]);
     expect(pickSettled(joined, prompt)).toBe(true);
     expect(pickedTurn(joined, prompt)).toBe("none");
+    // a turn of a tool alone is no older server's: a row gone since opens none, not another call of its name
+    const call = JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]);
+    const called = searchTurns(parseHermesRows([row(9, "user", "go"), { ...row(10, "assistant", "needle"), tool_calls: call }]), searchPattern("needle")!)[0]!;
+    const recalled = parseHermesRows([row(9, "user", "go"), { ...row(11, "assistant", ""), content: null, tool_calls: call, timestamp: 1_700_000_010 }]);
+    expect(pickSettled(recalled, called)).toBe(true);
+    expect(pickedTurn(recalled, called)).toBe("none");
     // turns a page from an older server brought, without rows, go by name
     const older = parseHermesRows(rows).map(({ text_rows: _, ...turn }) => turn);
     expect(pickSettled(older, whole)).toBe(true);
