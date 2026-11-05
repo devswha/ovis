@@ -773,3 +773,16 @@ test("a key paired again in one of two state dirs stays paired, without its tomb
     rmSync(sibling, { recursive: true, force: true });
   }
 });
+
+test("a key revoked before the PC joined an account stays out: a member's signed add for it is refused", async () => {
+  const f = fixture();
+  const store = f.app.context.services.devices;
+  const revoked = await accountKey();
+  const before = store.pairRelay(store.startPairing().code, "Old phone", revoked.spki);
+  if (!before) throw new Error("Expected relay enrollment");
+  store.revoke(before.device.id);
+  const { key, link } = await member(f);
+  const outcome = await post(link, "/api/account/records", { records: [await add(key, revoked.spki)] });
+  expect((outcome.body as unknown as { results: { outcome: string; code?: string }[] }).results[0]).toMatchObject({ outcome: "refused", code: "tombstoned" });
+  expect(store.hasKey(revoked.spki)).toBe(false);
+});

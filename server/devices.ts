@@ -175,6 +175,9 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
 
+/** The most tombstones of revokes on this PC kept (record_id "local"); an account's removals are not counted. */
+export const LOCAL_TOMBSTONES_MAX = 1000;
+
 /** A key removed through the account, kept in `account-tombstones.json` beside devices.json. */
 export interface AccountTombstone { key: string; account: string; record_id: string; removed_at: string }
 
@@ -457,14 +460,16 @@ export class DeviceStore {
     // a code started through the relay is not a pairing made on this PC (docs/account.md, rule 5)
     const remote = this.pending?.remote ?? false;
     const startedBy = this.pending?.startedBy ?? null;
-    // a code started through the relay is not a pairing made on this PC; a member's code goes with the member
-    if ((remote && (this.accountError !== null || this.isTombstoned(publicKey))) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
+    // a code started through the relay is not a pairing made on this PC; a member's code goes with the member.
+    // On a PC in no account no record can bring a key back, so such a code may, as before account linking
+    const accountless = this.account() === null;
+    if ((remote && !accountless && (this.accountError !== null || this.isTombstoned(publicKey))) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
       this.noteRelayFailure("code", now);
       return null;
     }
     // a device let in by a code started through the relay is its starter's addition, not a pairing made on this PC (removeAccountKey)
     const paired = this.enrollRelay(label, publicKey, now, true, startedBy ?? undefined);
-    if (!remote) this.clearTombstone(publicKey);
+    if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
   }
 
@@ -779,15 +784,17 @@ export class DeviceStore {
   }
 
   /**
-   * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. None on a
-   * PC in no account: no record applies there, and its revoked keys may pair again with any code.
+   * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. At most
+   * LOCAL_TOMBSTONES_MAX of them, the oldest dropped first; an account's removals all stay.
    */
   private tombstone(rows: readonly StoredDevice[], now: number): void {
-    if (this.account() === null) return;
     const keys = [...new Set(rows.flatMap((d) => d.relay_public_key === undefined || this.isTombstoned(d.relay_public_key) ? [] : [d.relay_public_key]))];
     const removedAt = new Date(now).toISOString();
-    const next = [...this.tombstones,
+    const added = [...this.tombstones,
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
+    const local = added.filter((t) => t.record_id === "local");
+    const dropped = new Set(local.slice(0, Math.max(0, local.length - LOCAL_TOMBSTONES_MAX)));
+    const next = added.filter((t) => !dropped.has(t));
     if (!keys.length) return;
     // with the main file unreadable the revoke still wins: its tombstone waits beside it
     if (this.accountError !== null) {
