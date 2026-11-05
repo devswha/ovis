@@ -231,6 +231,22 @@ it.skipIf(process.platform !== "linux")("never replays a log copy older than the
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("keeps an observed release through a truncation no copy continues", async () => {
+  const fixture = await logFixture([session]);
+  const { environment, log, pid } = fixture;
+  const read = () => readCopilotProcessSession(environment, ["copilot"], pid);
+  try {
+    appendFileSync(log, register(session) + register(session, "Unregistering"));
+    expect(read().diagnostic).toBe("copilot_session_unregistered");
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "after an uncopied truncation\n");
+    expect(read().diagnostic).toBe("copilot_session_unregistered");
+    expect(copilotProcessSession(environment, ["copilot"], pid, "unregistered")).toBeNull();
+    appendFileSync(log, register(session));
+    expect(read().session).toMatchObject({ sessionId: session, logged: true });
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("follows a second rotation that comes before the rotated log holds a line", async () => {
   const fixture = await logFixture([session, other]);
   const { log } = fixture;

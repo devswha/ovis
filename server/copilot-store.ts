@@ -104,8 +104,9 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: num
       if (logPrefix(fd, cached.size)?.digest("hex") === consumed) continued = archives.length - 1;
     }
     // No copy carries on from the bytes read (an older one could revive a session left since):
-    // what was logged in between is unknown, so the rejection stands.
-    if (continued < 0) return null;
+    // what was logged in between is unknown, so the rejection stands. A release already seen stays one,
+    // naming no session a handoff could take.
+    if (continued < 0) return cached.selection.kind === "unregistered" ? { kind: "unregistered", binding: null } : null;
     let selected = cached.selection;
     // Until a rotated file holds a line, each read replays these copies from the same anchor: one binding.
     const epoch = cached.epoch;
