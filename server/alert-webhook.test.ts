@@ -12,6 +12,8 @@ interface Received { path: string; headers: Headers; body: string }
 /** A destination on loopback that records every post and answers with `status` (or the next of `statuses`). */
 function startDestination() {
   const received: Received[] = [];
+  const waiters: Array<() => void> = [];
+  let gate: Promise<void> | null = null;
   let statuses: number[] = [];
   let status = 200;
   const server = Bun.serve({
@@ -19,12 +21,28 @@ function startDestination() {
     hostname: "127.0.0.1",
     async fetch(request) {
       received.push({ path: new URL(request.url).pathname, headers: request.headers, body: await request.text() });
+      for (const wake of waiters.splice(0)) wake();
+      if (gate) await gate;
       return new Response("ok", { status: statuses.shift() ?? status });
     },
   });
   return {
     url: (path = "/hook") => `http://127.0.0.1:${server.port}${path}`,
     received,
+    /** resolves once `count` posts arrived, or fails after 5 s */
+    posts(count: number): Promise<void> {
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`fewer than ${count} posts`)), 5_000);
+        const check = () => { if (received.length >= count) { clearTimeout(timer); resolve(); } else waiters.push(check); };
+        check();
+      });
+    },
+    /** holds every answer until the returned release is called */
+    hold(): () => void {
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => { release = () => { gate = null; resolve(); }; });
+      return release;
+    },
     answer(next: number | number[]) { if (Array.isArray(next)) statuses = [...next]; else status = next; },
     stop: () => server.stop(true),
   };
@@ -185,13 +203,21 @@ describe("alert webhook staleness and bounds", () => {
     const hook = webhook([60_000]);
     hook.save({ preset: "json", url: destination.url("/old") }, undefined);
     hook.send(alert);
-    const deadline = Date.now() + 5_000;
-    while (destination.received.length === 0) { if (Date.now() > deadline) throw new Error("no first post"); await Bun.sleep(5); }
+    await destination.posts(1);
     destination.answer(200);
     hook.save({ preset: "json", url: destination.url("/new") }, undefined);
     hook.send(alert);
     await hook.settled();
     expect(destination.received.map((post) => post.path)).toEqual(["/old", "/new"]);
+  });
+
+  it("tests a new destination, not the one a test was still out for", async () => {
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url("/a") }, undefined);
+    const first = hook.test();
+    hook.save({ preset: "json", url: destination.url("/b") }, undefined);
+    await Promise.all([first, hook.test()]);
+    expect(destination.received.map((post) => post.path).sort()).toEqual(["/a", "/b"]);
   });
 
   it("sends one test at a time, and a test of a removed destination records nothing", async () => {
@@ -224,6 +250,9 @@ describe("/api/alerts/webhook", () => {
   });
 });
 
+let inUseNow = false;
+let mutedNow = false;
+
 describe("web push alerts reach the webhook", () => {
   function pane(paneId: string, status: AgentStatus): HerdrPane {
     return { pane_id: paneId, agent_status: status, terminal_title: "codex", focused: false, revision: 0, tab_id: "t1", terminal_id: "term_1", workspace_id: "w1" };
@@ -254,6 +283,31 @@ describe("web push alerts reach the webhook", () => {
     inUse = true;
     await step(() => push.onStatus("w1:p1", "blocked"));
     expect(destination.received).toHaveLength(3);
+  });
+
+  it.each([
+    ["the terminal ended", async (push: ReturnType<typeof createPushService>) => { await push.onEnded("w1:p1"); }],
+    // the new blocked alert is held back by a window in use; only the old one's retry could reach the destination
+    ["it went working and blocked again", async (push: ReturnType<typeof createPushService>) => { inUseNow = true; await push.onStatus("w1:p1", "working"); await push.onStatus("w1:p1", "blocked"); await push.settled(); inUseNow = false; }],
+    ["it was muted and unmuted", async (push: ReturnType<typeof createPushService>) => { mutedNow = true; push.mutesChanged(); mutedNow = false; push.mutesChanged(); }],
+  ])("drops a retry once %s", async (_name, change) => {
+    destination.answer([503, 200]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hook = createAlertWebhook({ stateDir, loopbackHttp: true, retryDelays: [1] });
+    hook.save({ preset: "json", url: destination.url(), alerts: { input: true, done: "off" } }, undefined);
+    const push = createPushService({ stateDir, timing: { short: 0, long: 0, longTurn: 0 }, inUse: () => inUseNow, muted: () => mutedNow,
+      webhook: { prefs: hook.prefs, wants: hook.wants, send: (sent) => { hook.send(sent); release(); } } });
+    push.seed([pane("w1:p1", "working")]);
+    const answer = destination.hold();
+    await push.onStatus("w1:p1", "blocked");
+    await held;
+    await destination.posts(1);
+    await change(push);
+    answer();
+    await push.settled();
+    await hook.settled();
+    expect(destination.received).toHaveLength(1);
   });
 
   it("drops a retry once the pane changed, as an answered question calls off a device's alert", async () => {

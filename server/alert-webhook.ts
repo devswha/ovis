@@ -176,7 +176,8 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
   /** the alert waiting to go out after the one being sent (or retried): a newer one replaces it */
   let next: WebhookAlert | null = null;
   let running: Promise<void> | null = null;
-  let testing: Promise<WebhookResult | null> | null = null;
+  /** the test out for the destination of generation `at`: a test asked for meanwhile shares its answer */
+  let testing: { at: number; result: Promise<WebhookResult | null> } | null = null;
   /** ends the backoff under way: a new destination does not wait for the old one's */
   let wake: (() => void) | null = null;
   /** bumped by a save or removal: a post for the destination before it is not retried or recorded */
@@ -276,16 +277,17 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       running ??= drain().finally(() => { running = null; });
     },
     test() {
-      // one at a time: a test asked for while one is out shares its answer
-      testing ??= (async () => {
+      if (testing !== null && testing.at === generation) return testing.result;
+      const at = generation;
+      const run = (async () => {
         const target = current();
         if (target === null) return null;
-        const at = generation;
         const result = await post(target, null);
         if (at === generation) record(result);
         return result;
-      })().finally(() => { testing = null; });
-      return testing;
+      })().finally(() => { if (testing?.at === at) testing = null; });
+      testing = { at, result: run };
+      return run;
     },
     view,
     save(input, linkBase, owner) {

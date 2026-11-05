@@ -77,7 +77,7 @@ export function AlertWebhookGroup() {
   if (view === null) return null;
   const lastError = saved && view.last_error !== null && line === null ? t("Last post failed: {error}", { error: view.last_error }) : null;
   return (
-    <SettingsGroup title={t("Also send to")} section="alert-webhook" note={t("This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane; never what the agent asked or said.")}>
+    <SettingsGroup title={t("Also send to")} section="alert-webhook" note={t("This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.")}>
       <SettingsRow label={t("Destination")} htmlFor="settings-alert-webhook" wide>
         <SettingsSelect id="settings-alert-webhook" value={preset} disabled={busy} onChange={(event) => pick(event.target.value as AlertWebhookPreset | "off")}>
           <option value="off">{t("Off")}</option>
@@ -122,7 +122,7 @@ export function AlertWebhookGroup() {
           <Toggle disabled={busy} label={t("Needs permission")} checked={alerts.permission ?? alerts.input} onChange={(permission) => choose({ permission })} />
         </SettingsRow>
         <SettingsRow label={t("Finished")} wide>
-          <Segmented label={t("Finished")} value={alerts.done} onChange={(done: DoneAlerts) => choose({ done })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
+          <Segmented disabled={busy} label={t("Finished")} value={alerts.done} onChange={(done: DoneAlerts) => choose({ done })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
         </SettingsRow>
         <SettingsRow label={t("Stopped on an error")}>
           <Toggle disabled={busy} label={t("Stopped on an error")} checked={alerts.error === true} onChange={(error) => choose({ error })} />

@@ -532,7 +532,8 @@ To get the same alerts in a chat app, choose a destination under **Settings → 
 to**: an ntfy topic, a Slack or Discord webhook, a Telegram bot (its token and a chat id), or
 plain JSON to any URL. It has its own choice of alerts, waits and holds back like a device does,
 and is saved on this PC, owner-only, and shown masked afterwards. A message names the PC, the pane
-and what happened, with a link to the pane, never what the agent asked or said. **Send a test**
+and what happened, with a link to the pane, never what the agent asked or said; the pane goes by its
+terminal title, which an agent may take from your task. **Send a test**
 checks it; a destination that fails shows its last error and is retried a few times, with at most
 one alert waiting.
 
@@ -1130,7 +1131,7 @@ Optional features can send data off the PC:
 - [Subscription usage](#subscription-usage), when enabled, sends each provider's credentials to that provider's usage endpoint.
 - Updates and remote-PC setup fetch releases or configured runtime bundles over the network; remote panes are reached over SSH.
 - Enabled push alerts go through the browser vendor's push service as encrypted notifications.
-- A destination under **Settings → Alerts → Also send to** gets each alert it chose in plain text: the PC's and the pane's names, what happened and a link to the pane.
+- A destination under **Settings → Alerts → Also send to** gets each alert it chose in plain text: the PC's and the pane's names (a pane's is its terminal title, which an agent may take from your task), what happened and a link to the pane.
 - [Portal](#behind-a-reverse-proxy), while it runs, carries every connection to the app through the relay you chose: the relay sees connection addresses, timing and volume, and holds the certificate for the address.
 - The [Ovis relay](#through-the-ovis-relay), while it's on, carries everything between a paired phone and this PC through `relay.ovis.sh`, end-to-end encrypted: the relay sees connection addresses, timing and sizes, down to the timing of keystrokes, but none of the content. The app on the phone comes from `app.ovis.sh`, which itself sees only requests for the app's files, whose path names the PC. You have to trust whoever serves that app, since it's the code that holds the phone's key and shows you the PC ([trust model](relay.md#trust-model)).
 

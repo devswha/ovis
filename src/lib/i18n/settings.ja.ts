@@ -382,6 +382,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Saved on this PC. Leave the field empty to keep it.": "この PC に保存済みです。空欄のままなら変わりません。",
   "Send a test": "テストを送る",
   "Test sent. Check the destination.": "テストを送りました。送り先を確認してください。",
-  "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane; never what the agent asked or said.": "この PC は通知をチャットアプリや任意の URL にも送ります。メッセージには PC、ペイン、起きたこととペインへのリンクだけが入り、エージェントの質問や発言は入りません。",
+  "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "この PC は通知をチャットアプリや任意の URL にも送ります。メッセージには PC、ペイン、起きたこととペインへのリンクが入ります。ペイン名はターミナルのタイトルで、エージェントが作業内容から付けることもあります。",
   "Webhook URL": "Webhook の URL",
 };

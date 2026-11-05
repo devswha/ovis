@@ -710,17 +710,28 @@ export function createPushService(options: PushServiceOptions): PushService {
   /** The alert, as the webhook says it: a pane of this PC is named with the PC, one of another PC's title already is. */
   function tellWebhook(key: string, machineId: string, paneId: string, message: PushPayload): void {
     const workspace = workspaces.get(key);
-    const at = lastStatus.get(key);
+    const at = epochs.get(key) ?? 0;
+    hooked.set(key, { machineId, paneId });
     options.webhook?.send({
       kind: message.kind ?? "input", title: message.title, body: message.body, pane_id: paneId,
       // a retry is news only while the pane is as it was, unmuted, and no window of the app is in use
-      current: () => lastStatus.get(key) === at && !muted(machineId, paneId) && options.inUse?.() !== true,
+      current: () => (epochs.get(key) ?? 0) === at && !muted(machineId, paneId) && options.inUse?.() !== true,
       ...(machineId === "local" ? { pc: pcKeys(machineId)[0] } : { machine_id: machineId }),
       ...(workspace ? { workspace_id: workspace } : {}),
     });
   }
 
+  /**
+   * Bumped whenever an alert for the pane is called off (its next change, its end, a resync) or the pane is muted:
+   * a webhook retry is news only while it is unchanged, so a mute undone or a status come back resurrects nothing
+   */
+  const epochs = new Map<string, number>();
+  /** the panes a webhook alert went out for, so a mute can call off its retries */
+  const hooked = new Map<string, { machineId: string; paneId: string }>();
+  const bump = (key: string): void => { epochs.set(key, (epochs.get(key) ?? 0) + 1); };
+
   function callOff(key: string): void {
+    bump(key);
     waiting.get(key)?.cancel();
     waiting.delete(key);
   }
@@ -995,6 +1006,11 @@ export function createPushService(options: PushServiceOptions): PushService {
     },
 
     mutesChanged() {
+      for (const [key, pane] of hooked) {
+        if (!muted(pane.machineId, pane.paneId)) continue;
+        bump(key);
+        hooked.delete(key);
+      }
       // an unmute resurrects nothing: what was called off while muted stays called off, including
       // an alert whose timer has fired and whose title is still being looked up
       for (const entry of [...unsent]) {
