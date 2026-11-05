@@ -8,6 +8,8 @@ import { PtySession } from "./pty/session.ts";
 
 /** A left click as xterm reports it with herdr's SGR mouse mode on: press, then release. */
 const CLICK = "\x1b[<0;5;3M\x1b[<0;5;3m";
+/** xterm's answers to a herdr-core attach's questions (focus, colours, cursor colour, DA1), as #2816 saw them typed. */
+const REPLIES = "\x1b[I\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\\x1b]11;rgb:1818/1616/1313\x1b\\\x1b]12;rgb:f0f0/a8a8/3030\x1b\\\x1b[?1;2c";
 
 /** Hold one keys RPC so the next chord or text waits across attachment transitions. */
 async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "refresh", input = false, text = "queued text") {
@@ -86,12 +88,13 @@ async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "r
     }
     release();
     if (leave === "none" || leave === "refresh") {
-      if (input && text === CLICK) {
+      if (input && (text === CLICK || text === REPLIES)) {
         // a mouse report keeps the attach input path, where herdr encodes it for the program's
-        // own mouse mode; pane.send_text would type its bytes literally (#667)
-        await until(() => written.includes(CLICK) || texts.length > 0);
+        // own mouse mode; pane.send_text would type its bytes literally (#667). The terminal's
+        // answers go to the attach that asked, never typed into the program (#2816)
+        await until(() => written.includes(text) || texts.length > 0);
         expect(texts).toEqual([]);
-        expect(written).toContain(CLICK);
+        expect(written).toContain(text);
         expect(owner.seen.filter((frame) => frame.type === "error")).toEqual([]);
       } else if (input) {
         await until(() => texts.length === 1);
@@ -136,6 +139,7 @@ it("preserves queued text on repeated attach without detach", () => queuedKeys("
 it("writes a click queued behind an arrow into the attach, not through send_text", () => queuedKeys("none", true, CLICK), 20_000);
 it("drops a queued click after its sender detaches while a peer keeps the attachment", () => queuedKeys("detach", true, CLICK), 20_000);
 it("drops a queued click after its attachment is replaced", () => queuedKeys("replace", true, CLICK), 20_000);
+it("writes the terminal's answers queued behind a key into the attach, never typed (#2816)", () => queuedKeys("none", true, REPLIES), 20_000);
 
 it("cancels a pending attach continuation when detach and reattach installs a new claim", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-attach-claim-"));
