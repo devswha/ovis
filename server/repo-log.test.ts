@@ -178,7 +178,7 @@ describe("GET /api/workspace/git/show", () => {
     expect(detail.base).toBe(detail.commit.parents[0]!);
     expect(detail.commit.refs).toEqual(["refs/heads/main"]);
     expect(detail.refs_truncated).toBe(false);
-    const changes = await repoDiffFiles(root, query({ scope: "commit", base: detail.base, head: detail.commit.oid }));
+    const changes = await repoDiffFiles(root, query({ scope: "commit", base: detail.commit.parents[0]!, head: detail.commit.oid }));
     expect(changes.files.map((file) => file.path)).toEqual(["side.txt"]);
   });
 
@@ -186,9 +186,9 @@ describe("GET /api/workspace/git/show", () => {
     const detail = await repoCommit(root, query({ rev: first }));
     expect(detail.commit.parents).toEqual([]);
     expect(detail.base).toBe(EMPTY_TREE);
-    const changes = await repoDiffFiles(root, query({ scope: "commit", base: detail.base, head: first }));
+    const changes = await repoDiffFiles(root, query({ scope: "commit", base: EMPTY_TREE, head: first }));
     expect(changes.files.map((file) => [file.path, file.status])).toEqual([["a.txt", "added"]]);
-    expect((await repoDiffFile(root, query({ scope: "commit", base: detail.base, head: first, path: "a.txt" }))).patch).toContain("\n+root commit\n");
+    expect((await repoDiffFile(root, query({ scope: "commit", base: EMPTY_TREE, head: first, path: "a.txt" }))).patch).toContain("\n+root commit\n");
     // the empty tree is a base only: it is no commit to read from
     expect(await codeOf(repoDiffFiles(root, query({ scope: "commit", base: first, head: EMPTY_TREE })))).toBe("revision_not_found");
   });
