@@ -54,9 +54,9 @@ export interface KeyBarProps {
   /** the keyboard control refuses its tap, keeping the focus and the composition a blur would end,
    * and while a paste reads the clipboard (the paste's own focus would bring a hidden keyboard back) */
   keyboardRefused?: boolean;
-  /** on a touch screen in direct typing: the files picked from the Attach files key, for the terminal as a drop's
-   * (Settings > Terminal, off by default) */
-  onAttach?: (files: File[]) => void;
+  /** on a touch screen in direct typing: the Attach files key's tap (Settings > Terminal, off by default), which
+   * fixes what the files are for and answers where the picked files go, or null (with nothing opened) */
+  onAttach?: () => ((files: File[]) => void) | null;
 }
 
 /**
@@ -285,6 +285,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
   const hasKeyboardToggle = onToggleKeyboard !== undefined;
   const hasAttach = onAttach !== undefined;
   const picker = useRef<HTMLInputElement | null>(null);
+  const attachTo = useRef<((files: File[]) => void) | null>(null);
   useLayoutEffect(() => {
     const bar = barRef.current;
     const row = rowRef.current;
@@ -371,7 +372,10 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
         )}
         {/* beside the keyboard control, a tap that opens the system picker; never a hold */}
         {onAttach && (
-          <Key disabled={disabled} dataKey="attach" label={t("Attach files")} onPress={() => picker.current?.click()}>
+          <Key disabled={disabled} dataKey="attach" label={t("Attach files")} onPress={() => {
+            attachTo.current = onAttach();
+            if (attachTo.current !== null) picker.current?.click();
+          }}>
             <Paperclip aria-hidden="true" />
           </Key>
         )}
@@ -385,7 +389,9 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
       {onAttach && <input ref={picker} type="file" multiple hidden onChange={(event) => {
         const picked = Array.from(event.currentTarget.files ?? []);
         event.currentTarget.value = "";
-        if (picked.length > 0) onAttach(picked);
+        const attach = attachTo.current;
+        attachTo.current = null;
+        if (picked.length > 0 && attach !== null) attach(picked);
       }} />}
       {/* pinned at the row's end, out of its scroll: the way to the second row is never scrolled away */}
       {onToggleExpanded && (

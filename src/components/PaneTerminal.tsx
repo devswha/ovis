@@ -239,7 +239,7 @@ export function PaneTerminal({
   const { answerPanePrompt, uploadPaneImage } = useMachineApi();
   const uploadFileRef = useRef(uploadPaneImage);
   uploadFileRef.current = uploadPaneImage;
-  const attachFilesRef = useRef<(files: File[]) => void>(() => {});
+  const attachFilesRef = useRef<(files: File[], still: () => boolean) => void>(() => {});
   // the peek is this pane's only (App passes it to the selected pane alone; this guards a pane switch's render)
   const peek = peekProp !== null && peekProp.paneId === paneId && peekProp.machineId === machineId ? peekProp : null;
   const peekRef = useRef(peek); peekRef.current = peek;
@@ -720,13 +720,20 @@ export function PaneTerminal({
 
   // what a paste into the line is for: this PC's pane on this connection, while it can type there.
   // Read at the tap and once the clipboard answers (TerminalInput.tsx): any difference drops the paste
-  const pasteTarget = useCallback((): string | null => {
+  /** the PC, pane, connection and input lease a paste (the input line) or an attach (direct typing) is for; null while it cannot take one */
+  const inputTarget = useCallback((line: boolean): string | null => {
     const socket = socketRef.current;
     const pane = paneRef.current;
     // a pane put out of sight (another pane picked in the split) is no longer where the user pastes
-    if (!socket || pane === null || !socket.connected || !activeRef.current || !presentedRef.current || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || !inputLineRef.current) return null;
+    if (!socket || pane === null || !socket.connected || !activeRef.current || !presentedRef.current || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || inputLineRef.current !== line) return null;
     return `${paneStorageId(machineId, pane)}:${socket.inputLease(pane)}`;
   }, [machineId]);
+  const pasteTarget = useCallback(() => inputTarget(true), [inputTarget]);
+  // the key bar's Attach files: what the tap found must still hold when the files are stored, or nothing is typed
+  const attachTarget = useCallback(() => {
+    const target = inputTarget(false);
+    return target === null ? null : (files: File[]) => attachFilesRef.current(files, () => inputTarget(false) === target);
+  }, [inputTarget]);
 
   // the key bar's Paste goes into the input line, never into the grid: with the line put away
   // (direct typing), the bar says so beside the Input line key it names, in its own row (never over
@@ -1400,7 +1407,7 @@ export function PaneTerminal({
         {...(coarse ? { directTyping, onToggleDirect: toggleDirect, directDisabled: lineComposing, onPaste: pasteIntoLine, pasteDisabled: linePasting,
           note: pasteGuidance ? t("Tap Input line to paste.") : null, onNoteDismiss: dismissPasteGuidance,
           onToggleKeyboard: toggleKeyboard, keyboardOwner, keyboardDisabled: !connected || !inputReady || held || ended, keyboardRefused: composing || lineComposing || linePasting } : {})}
-        {...(coarse && directTyping && settings.terminalAttachButton ? { onAttach: (files: File[]) => attachFilesRef.current(files) } : {})} />}
+        {...(coarse && directTyping && settings.terminalAttachButton ? { onAttach: attachTarget } : {})} />}
     </div>
   );
 }

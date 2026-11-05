@@ -6,7 +6,7 @@ import { readTerminalDraft, writeTerminalDraft, TERMINAL_LINE_LIMIT, subscribeTe
 
 import { AttachmentTooLargeError, assertAttachable } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { plainError } from "../lib/paneTerminalShared.ts";
+import { CONTROL_CHARACTER, plainError } from "../lib/paneTerminalShared.ts";
 import { useSettings } from "../lib/settings.ts";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 
@@ -337,8 +337,10 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   const uploadPaths = useCallback(async (files: Blob[]): Promise<string> => {
     const paths: string[] = [];
     for (const file of files) paths.push(await uploadFile!(file));
+    // a line break in a path (a pane's folder may hold one) would split the line and send it as Enter
+    if (paths.some((path) => CONTROL_CHARACTER.test(path))) throw new Error(t("Not pasted: the file's path holds a line break, which the terminal would take as Enter."));
     return paths.map((path) => `'${path.replaceAll("'", "'\\''")}'`).join(" ") + " ";
-  }, [uploadFile]);
+  }, [t, uploadFile]);
   const uploadFailed = useCallback((error: unknown): string => error instanceof AttachmentTooLargeError ? error.message : plainError(error), []);
 
   /** Files for the line at its selection, from a paste (`native`: the keyboard's own) or the picker. */
@@ -365,6 +367,26 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     pasteFiles(event.currentTarget, files, true);
   };
   const picker = useRef<HTMLInputElement>(null);
+  /** what the picker was opened for: the pane, connection and input lease, and the draft as written */
+  const pickedFor = useRef<{ target: string; version: number } | null>(null);
+  const openPicker = (): void => {
+    const target = pasteTarget?.() ?? null;
+    if (target === null) { setNote(t("Not pasted: the terminal is not ready.")); return; }
+    pickedFor.current = { target, version: terminalDraftVersion(owner) };
+    picker.current?.click();
+  };
+  const onPicked = (files: File[]): void => {
+    const opened = pickedFor.current;
+    pickedFor.current = null;
+    const element = box.current;
+    if (opened === null || files.length === 0 || element === null) return;
+    // a reconnect, another pane or an edit while the picker was up: the paths are not for this line now
+    if ((pasteTarget?.() ?? null) !== opened.target || terminalDraftVersion(owner) !== opened.version) {
+      setNote(t("Not pasted: the line or the terminal changed meanwhile. Paste again."));
+      return;
+    }
+    pasteFiles(element, files, false);
+  };
 
   /**
    * The key bar's Paste: the clipboard is read from the user's tap and for this line alone, at the
@@ -513,7 +535,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
             onChange={(event) => {
               const picked = Array.from(event.currentTarget.files ?? []);
               event.currentTarget.value = "";
-              if (picked.length > 0 && box.current !== null) pasteFiles(box.current, picked, false);
+              onPicked(picked);
             }}
           />
           <button
@@ -523,7 +545,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
             title={t("Attach files")}
             disabled={!connected || sending || pending !== null}
             onPointerDown={(event) => event.preventDefault()}
-            onClick={() => picker.current?.click()}
+            onClick={openPicker}
           >
             <span className="terminal-input-caption" aria-hidden="true">{t("Attach")}</span>
             <span className="terminal-input-face"><Paperclip aria-hidden="true" /></span>

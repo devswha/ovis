@@ -6,7 +6,10 @@
  * caret (nothing sent).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import type { Browser, Page } from "playwright-core";
 
 const quoted = (path: string): string => `'${path.replaceAll("'", "'\\''")}'`;
@@ -103,7 +106,59 @@ export async function checkTerminalAttach(browser: Browser, origin: string, pane
   assert.deepEqual(sent.slice(before), [], "the line sends nothing until Send");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "the line still fits a 390 wide screen");
   await line.fill("");
+
+  // an edit while the picker is up: the paths are not for that line any more
+  await line.fill("echo ");
+  const opened = page.waitForEvent("filechooser");
+  await button.click();
+  const late = await opened;
+  await line.fill("echo changed ");
+  await late.setFiles([{ name: "late.md", mimeType: "text/markdown", buffer: Buffer.from("late\n") }]);
+  await page.locator(".terminal-input-note", { hasText: "Not pasted: the line or the terminal changed meanwhile. Paste again." }).waitFor();
+  assert.equal(await line.inputValue(), "echo changed ");
+
+  // a key-bar upload still on its way when the user turns to the input line types nothing behind it
+  await line.fill("");
+  await page.getByRole("button", { name: "Input line", exact: true }).click();
+  await page.locator(".terminal-input").waitFor({ state: "detached" });
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const reached = new Promise<void>((resolve) => {
+    void page.route("**/api/pane/image", async (route) => { resolve(); await held; await route.continue(); });
+  });
+  const chooser = page.waitForEvent("filechooser");
+  await key.click();
+  await (await chooser).setFiles([{ name: "slow.txt", mimeType: "text/plain", buffer: Buffer.from("slow\n") }]);
+  await reached;
+  await page.getByRole("button", { name: "Input line", exact: true }).click();
+  await line.waitFor();
+  const quiet = sent.length;
+  const answered = page.waitForResponse((response) => response.url().endsWith("/api/pane/image"));
+  release();
+  await (await answered).finished();
+  await page.unroute("**/api/pane/image");
+  // the paste would follow the stored answer within a frame: two frames after it, nothing went
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  assert.deepEqual(sent.slice(quiet), [], "an upload for direct typing types nothing once the input line is up");
   assert.deepEqual(errors, []);
   await context.close();
-  console.log("PASS the input line's Attach button puts picked files' paths at the caret and sends nothing");
+  console.log("PASS the input line's Attach button puts picked files' paths at the caret and sends nothing, and a stale pick or upload types nothing");
+
+  // a pane whose folder holds a line break: its stored path would reach the program as Enter, so nothing is typed
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-attach-")));
+  const cwd = join(root, "two\nlines");
+  mkdirSync(cwd);
+  const workspace = await workspaceCreate({ cwd, label: "ovis-test-attach-newline" });
+  try {
+    const broken = await openPhone(browser, origin, workspace.root_pane.pane_id, true);
+    const [path] = await pick(broken.page, () => broken.page.locator('.key-bar [data-key="attach"]').click(), [{ name: "a.txt", mimeType: "text/plain", buffer: Buffer.from("a\n") }]);
+    assert.match(path!, /\n/, "the stored path holds the folder's line break");
+    await broken.page.locator(".terminal-banner", { hasText: "Not pasted: the file's path holds a line break, which the terminal would take as Enter." }).waitFor();
+    assert.deepEqual(broken.sent, [], "nothing is typed");
+    await broken.context.close();
+  } finally {
+    await workspaceClose(workspace.workspace.workspace_id).catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log("PASS a stored path with a line break is refused with a note and types nothing");
 }
