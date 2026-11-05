@@ -101,8 +101,6 @@ export const MACHINES_ZH: Record<string, string> = {
   "Choose the PCs this device shows": "选择此设备显示的 PC",
   "1 PC hidden on this device": "此设备上隐藏了 1 台 PC",
   "{n} PCs hidden on this device": "此设备上隐藏了 {n} 台 PC",
-  "Filter": "筛选",
-  "Workspaces and agents": "工作区和代理",
   "Clear filter": "清除筛选",
   "Close filter": "关闭筛选",
   "No workspaces or agents match": "没有匹配的工作区或代理",

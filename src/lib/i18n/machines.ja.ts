@@ -101,8 +101,6 @@ export const MACHINES_JA: Record<string, string> = {
   "Choose the PCs this device shows": "このデバイスに表示する PC を選ぶ",
   "1 PC hidden on this device": "このデバイスで非表示の PC: 1 台",
   "{n} PCs hidden on this device": "このデバイスで非表示の PC: {n} 台",
-  "Filter": "絞り込み",
-  "Workspaces and agents": "ワークスペースとエージェント",
   "Clear filter": "絞り込みを消去",
   "Close filter": "絞り込みを閉じる",
   "No workspaces or agents match": "一致するワークスペースやエージェントはありません",

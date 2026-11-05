@@ -1123,10 +1123,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   apps keep it; the roster has only the label filter below, which the maintainer approved in #1043
   and which differs from the palette-only design on purpose: it narrows the lists in place, by the
   words the rows show, and holds no state.
-- **Filter workspaces and agents** (`.sidebar-filter`, MachineSidebar.tsx) is its word, **Filter**
-  (`.sidebar-filter-label`, in `--text-dim` at the size of the field's text, in view whatever is typed), then one
-  `.input` the height of a row (`--side-row`, so a finger's `--touch-target` on a phone) in the rows'
-  gutter above the lists, its placeholder naming the scope (**Workspaces and agents**) and its
+- **Filter workspaces and agents** (`.sidebar-filter`, MachineSidebar.tsx) is one `.input` the height
+  of a row (`--side-row`, so a finger's `--touch-target` on a phone) in the rows' gutter above the
+  lists, with a `--text-dim` glass (`.sidebar-filter-glass`, `aria-hidden`) in its leading cell and no
+  word beside it, as VS Code's and macOS's search fields have none: its placeholder is its accessible
+  name, **Filter workspaces and agents**, so what a sighted reader and a screen reader are told is the
+  same, and its
   suggestions the names the rows show (a `<datalist>`, rebuilt from the roster, nothing typed kept),
   with its clear (`.sidebar-filter-clear`, the same square, inside the field's trailing
   cell) only while there is text; the browser's own search cancel glyph is off, so there is one. The
