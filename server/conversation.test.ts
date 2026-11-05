@@ -1793,6 +1793,51 @@ describe("OmO background task results", () => {
   });
 });
 
+describe("OmO goal continuation and waits", () => {
+  /** what OmO writes when it continues an active goal on its own (the TUI's "goal continues") */
+  const continuation = (ts: string, objective: string) => JSON.stringify({
+    type: "custom_message", customType: "goal-continuation", display: false, timestamp: ts, details: { ticketId: "t1" },
+    content: `Continue working toward the active thread goal.\n\n<untrusted_objective>\n${objective}\n</untrusted_objective>\n\nUsage so far:\n- Tokens used: 120`,
+  });
+  const turnStart = (ts: string, cause: string) => JSON.stringify({ type: "custom", customType: "engine-turn-start", data: { customType: cause }, timestamp: ts });
+  /** OmO's goal waiting on background work before it continues, and its end */
+  const warmup = (ts: string, phase: string, dueAtMs: number) => JSON.stringify({
+    type: "custom", customType: "goal-cache-warmup", timestamp: ts,
+    data: { phase, goalId: "g1", delayMs: 270_000, dueAtMs, iteration: 1, activeMonitorCount: 3, wakeSources: { "omo-dag": 1, "omo-wake-queue": 4, "senpi-codemode": 0, "senpi-task": 2, "terminal-background-sessions": 1, "terminal-monitors": 3 } },
+  });
+  const final = (ts: string, text: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } });
+  const due = Date.parse("2026-10-05T00:06:30.000Z");
+
+  it("draws a turn OmO started to continue its goal as a notice in the user's seat, with the goal's objective", () => {
+    const text = [
+      omoUser("2026-10-05T00:00:00.000Z", "set a goal"),
+      final("2026-10-05T00:01:00.000Z", "Waiting for CI."),
+      turnStart("2026-10-05T00:02:00.000Z", "goal-continuation"),
+      continuation("2026-10-05T00:02:00.000Z", "Ship the &lt;ver&gt; guard &amp; its test"),
+      final("2026-10-05T00:03:00.000Z", "CI is green."),
+    ].join("\n");
+    const turns = parseOmpTranscript(text);
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(turns[2]).toEqual({ role: "user", ts: "2026-10-05T00:02:00.000Z", parts: [{ kind: "notice", text: "Ship the <ver> guard & its test", source: "goal-continuation" }] });
+  });
+
+  it("shows the goal waiting on background work while it is the conversation's last word, with when it resumes and what it waits on", () => {
+    const waiting = [omoUser("2026-10-05T00:00:00.000Z", "go"), final("2026-10-05T00:02:00.000Z", "Started the checks."), warmup("2026-10-05T00:02:00.000Z", "scheduled", due)];
+    expect(parseOmpTranscript(waiting.join("\n")).at(-1)).toEqual({ role: "user", ts: "2026-10-05T00:02:00.000Z", parts: [{
+      kind: "goal_wait", due_at: "2026-10-05T00:06:30.000Z", waiting_on: { tasks: 2, monitors: 3, terminals: 1, dags: 1, cells: 0 },
+    }] });
+    const kinds = (lines: string[]) => parseOmpTranscript(lines.join("\n")).map((turn) => turn.parts[0]?.kind);
+    // it ends when it resumes, when a wake starts a turn, or once anything else is said after it
+    expect(kinds([...waiting, warmup("2026-10-05T00:06:30.000Z", "resumed", due)])).toEqual(["text", "text"]);
+    expect(kinds([...waiting, turnStart("2026-10-05T00:03:00.000Z", "senpi-monitor:notification")])).toEqual(["text", "text"]);
+    expect(kinds([...waiting, final("2026-10-05T00:03:00.000Z", "A check failed.")])).toEqual(["text", "text", "text"]);
+    // a later wait takes the earlier one's place
+    const again = parseOmpTranscript([...waiting, warmup("2026-10-05T00:03:00.000Z", "scheduled", due + 60_000)].join("\n"));
+    expect(again.map((turn) => turn.parts[0]?.kind)).toEqual(["text", "text", "goal_wait"]);
+    expect(again.at(-1)?.parts[0]).toMatchObject({ due_at: "2026-10-05T00:07:30.000Z" });
+  });
+});
+
 const omoUser = (ts: string, text: string) => JSON.stringify({ type: "message", timestamp: ts, message: { role: "user", content: [{ type: "text", text }] } });
 /** an OmO `task` call and the result that names the tasks it started */
 const omoSpawn = (ts: string, id: string, input: Record<string, unknown>, details: Record<string, unknown>) => [
