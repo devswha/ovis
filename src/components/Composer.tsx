@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, MessageSquarePlus, Minimize2, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, MessageSquarePlus, Minimize2, MonitorUp, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -71,6 +71,7 @@ import { useT } from "../lib/i18n.ts";
 import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
+import { chooseWindow, type WindowCapture } from "../lib/windowCapture.ts";
 
 export interface ComposerProps {
   connected: boolean;
@@ -163,6 +164,7 @@ type Attachment = {
 
 /** an upload that failed: its tile, and the failure's parts for the note over the box */
 type UploadFailure = { attachment: Attachment; failure: UserFailure };
+type ActiveWindowShare = { id: string; path: string; capture: WindowCapture; timer: ReturnType<typeof setTimeout> | null; stopped: boolean };
 
 function readSlashUsage(): Record<string, number> {
   try {
@@ -269,7 +271,7 @@ export function Composer({
   const activeRef = useRef(active);
   activeRef.current = active;
   const machineId = useMachineId();
-  const { fetchPaneFiles } = useMachineApi();
+  const { fetchPaneFiles, windowShareFrame, stopWindowShare } = useMachineApi();
   const { settings, resolvedLanguage } = useSettings();
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   // a touch screen's Return breaks the line until this device chooses otherwise; Send (or Mod+Enter) sends
@@ -332,6 +334,10 @@ export function Composer({
   const highlightedSearchKey = useRef<string | null>(null);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [sharedWindows, setSharedWindows] = useState<{ id: string; path: string }[]>([]);
+  const sharesRef = useRef(new Map<string, ActiveWindowShare>());
+  const startingShare = useRef(false);
+  const [shareBusy, setShareBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [note, setNote] = useState<string | DraftRefusal | UploadFailure | null>(null);
   // shown only when chosen in Settings → Quick replies: a button beside the box was one more thing to read
@@ -409,12 +415,20 @@ export function Composer({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      for (const share of sharesRef.current.values()) {
+        share.stopped = true;
+        if (share.timer) clearTimeout(share.timer);
+        share.capture.stop();
+        void stopWindowShare(paneId, share.id).catch(() => undefined);
+        composerDrafts.set(draftKey, (current) => current.replace(imageMention(share.path), ""));
+      }
+      sharesRef.current.clear();
       // files not yet sent and paths not yet placed go with the pane
       uploadQueue.current = [];
       waitingMentions.current = [];
       for (const attachment of attachmentsRef.current) URL.revokeObjectURL(attachment.previewUrl);
     };
-  }, []);
+  }, [draftKey, paneId, stopWindowShare]);
 
   // The app's faces swap in after the first paint (fonts/fonts.css, font-display: swap) and are
   // not as wide as the fallback they replace. No box changes size for that, so nothing else
@@ -667,6 +681,70 @@ export function Composer({
     if (element) element.setSelectionRange(moved(start), moved(end), direction);
     return 0;
   }, []);
+
+  const stopShare = useCallback((share: ActiveWindowShare) => {
+    if (share.stopped) return;
+    share.stopped = true;
+    if (share.timer) clearTimeout(share.timer);
+    share.capture.stop();
+    sharesRef.current.delete(share.id);
+    void stopWindowShare(paneId, share.id).catch(() => undefined);
+    if (mounted.current) setSharedWindows((current) => current.filter((item) => item.id !== share.id));
+    setText((current) => {
+      const next = current.replace(imageMention(share.path), "");
+      textRef.current = next;
+      caretRef.current = Math.min(caretRef.current, next.length);
+      return next;
+    });
+  }, [paneId, setText, stopWindowShare]);
+
+  const startShare = useCallback(async () => {
+    if (startingShare.current || !connected || role === "observe" || sharesRef.current.size >= 4) return;
+    startingShare.current = true;
+    setShareBusy(true);
+    let capture: WindowCapture | null = null;
+    let created: { id: string; path: string } | null = null;
+    try {
+      capture = await chooseWindow();
+      if (!mounted.current) { capture.stop(); return; }
+      created = await windowShareFrame(paneId, await capture.frame());
+      if (!created) throw new Error("window_capture_unavailable");
+      if (!mounted.current) { capture.stop(); await stopWindowShare(paneId, created.id); return; }
+      const missing = insertMentionAtStart(imageMention(created.path), [...sharesRef.current.values()].map((item) => imageMention(item.path)));
+      if (missing > 0) {
+        capture.stop();
+        await stopWindowShare(paneId, created.id);
+        setNote(t("Shorten the message to add the shared window."));
+        return;
+      }
+      const share: ActiveWindowShare = { ...created, capture, timer: null, stopped: false };
+      sharesRef.current.set(share.id, share);
+      setSharedWindows((current) => [...current, { id: share.id, path: share.path }]);
+      capture.onEnded(() => stopShare(share));
+      const refresh = async () => {
+        if (share.stopped) return;
+        try {
+          await windowShareFrame(paneId, await share.capture.frame(), share.id);
+          if (!share.stopped) share.timer = setTimeout(() => void refresh(), 3_000);
+        } catch {
+          stopShare(share);
+          if (mounted.current) setNote(t("Window sharing stopped. Check the connection and share again."));
+        }
+      };
+      share.timer = setTimeout(() => void refresh(), 3_000);
+    } catch (error) {
+      capture?.stop();
+      if (created) void stopWindowShare(paneId, created.id).catch(() => undefined);
+      if (!(error instanceof DOMException && error.name === "NotAllowedError") && mounted.current) {
+        setNote(t(error instanceof Error && error.message === "window_only"
+          ? "Choose a window or tab, not the entire screen."
+          : "Couldn't share this window."));
+      }
+    } finally {
+      startingShare.current = false;
+      if (mounted.current) setShareBusy(false);
+    }
+  }, [connected, insertMentionAtStart, paneId, role, stopShare, stopWindowShare, t, windowShareFrame]);
 
   // one queue for the whole box: a pick made while another uploads waits its turn
   const uploadQueue = useRef<Attachment[]>([]);
@@ -1308,6 +1386,19 @@ export function Composer({
         <p className="visually-hidden" role="alert">{filesFailedShown ? t("Couldn't load suggestions. Keep typing to try again.") : null}</p>
         <p className="visually-hidden" aria-live="polite">{announcement && <span key={announcement.id}>{announcement.text}</span>}</p>
 
+        {sharedWindows.length > 0 && <div className="composer-window-shares" aria-label={t("Shared windows")}>
+          {sharedWindows.map((share, index) => <div className="composer-window-share" key={share.id}>
+            <MonitorUp aria-hidden="true" />
+            <span>{t("Window {number} · Live", { number: index + 1 })}</span>
+            <button type="button" aria-label={t("Stop sharing window {number}", { number: index + 1 })}
+              onClick={() => { const active = sharesRef.current.get(share.id); if (active) stopShare(active); }}>
+              <X aria-hidden="true" />
+            </button>
+          </div>)}
+          {sharedWindows.some((share) => text.includes(imageMention(share.path))) &&
+            <p className="composer-window-hint">{t("Send the message so the agent can read the live window.")}</p>}
+        </div>}
+
         {attachments.length > 0 && (
           <div className="composer-attachments" aria-label={t("Attached files")}>
             {attachments.map((attachment) => (
@@ -1409,6 +1500,16 @@ export function Composer({
           >
             <Plus aria-hidden="true" />
           </button>
+          {document.documentElement.dataset.ovisDemo !== "true" && window.isSecureContext && typeof navigator.mediaDevices?.getDisplayMedia === "function" && <button
+            type="button"
+            className="icon-button composer-window-button"
+            aria-label={t("Share a window")}
+            title={t("Share a window")}
+            disabled={!connected || role === "observe" || shareBusy || sharedWindows.length >= 4}
+            onClick={() => void startShare()}
+          >
+            {shareBusy ? <LoaderCircle aria-hidden="true" /> : <MonitorUp aria-hidden="true" />}
+          </button>}
           {dictation.shown && <MicButton dictation={dictation} />}
           {/* only once this device turned it on (Settings → Chat → Composer; the composer's row stays minimal, and
               the tab menu opens the same dialog), and in a mouse-driven window only, like the usage glance: a phone's

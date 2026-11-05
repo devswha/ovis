@@ -282,6 +282,11 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         or content) before the pane is looked up or anything is written. A signature check, not
  *         a decode. Any other type keeps its sanitised `name` (.bin without a usable extension).
  *         empty_image 400 and image_too_large 413 are checked first.
+ *  POST   /api/pane/window-share { pane_id, action: "start" | "update" | "stop", share_id?, data_base64? }
+ *         start -> { ok: true, id, path }; update/stop -> { ok: true }. A user-selected browser
+ *         window or tab is a JPEG file at path, updated atomically until stop or a 30 s lease
+ *         expires. Only start omits share_id; only stop omits data_base64. A frame is at most 4 MB.
+ *         This route never sends a prompt: the browser inserts @path into the user's draft.
  *  GET    /api/pane/commands?pane_id=   -> { commands: SlashCommand[] } (the agent's slash
  *         commands: built-ins per agent kind + the user's and the project's custom commands)
  *  GET    /api/pane/omo-tasks?pane_id=  -> OmoActivity (the background tasks and workflows the

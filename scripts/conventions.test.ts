@@ -137,6 +137,7 @@ describe("demo transport", () => {
     "/api/pane/conversation/image": "an image in a chat turn: the demo's transcripts carry none (listed when this guard was added)",
     "/api/pane/conversation/tool-output": "a tool call's full output: not part of the demo (listed when this guard was added)",
     "/api/pane/image": "pasting an image: the demo stores no files (listed when this guard was added)",
+    "/api/pane/window-share": "the demo marks itself as fictional before the app loads, so the composer hides window sharing and never calls this file-writing route",
     "/api/pane/read": "the scrollback read behind a chat with no transcript: the demo answers /api/pane/conversation instead (listed when this guard was added)",
     "/api/pane/selection": "copying a selection across screens: not part of the demo (listed when this guard was added)",
     "/api/updates/check": "the demo's /api/updates says managed: false, so Settings offers no check",

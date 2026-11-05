@@ -33,6 +33,8 @@ export function useMachineApi() {
     fetchPanePromptState: (pane: string) => api.fetchPanePromptState(pane, id),
     answerPanePrompt: (answer: Parameters<typeof api.answerPanePrompt>[0]) => api.answerPanePrompt(answer, id),
     uploadPaneImage: (pane: string, image: Blob) => api.uploadPaneImage(pane, image, id),
+    windowShareFrame: (pane: string, image: Blob, shareId?: string) => api.windowShareFrame(pane, image, id, shareId),
+    stopWindowShare: (pane: string, shareId: string) => api.stopWindowShare(pane, shareId, id),
     fetchPaneCommands: (pane: string) => api.fetchPaneCommands(pane, id),
     fetchAgentCommands: (agent: string, cwd: string | null) => api.fetchAgentCommands(agent, cwd, id),
     fetchPaneFiles: (pane: string, query: string, limit = 20) => api.fetchPaneFiles(pane, query, limit, id),

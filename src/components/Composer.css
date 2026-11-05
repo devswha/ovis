@@ -571,6 +571,49 @@
   padding: var(--space-1) 0 var(--space-3) var(--space-3);
 }
 
+.composer-window-shares {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
+}
+
+.composer-window-share {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--chip-h);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+
+.composer-window-share > svg,
+.composer-window-share button svg { width: 1rem; height: 1rem; }
+
+.composer-window-share button {
+  display: grid;
+  place-items: center;
+  width: var(--chip-h);
+  height: var(--chip-h);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.composer-window-share button:focus-visible { outline: 2px solid var(--accent); }
+
+.composer-window-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
 .composer-controls-right {
   grid-area: right;
   padding: var(--space-1) var(--space-3) var(--space-3) 0;

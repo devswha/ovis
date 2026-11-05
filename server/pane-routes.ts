@@ -17,6 +17,7 @@ import { agentRename, HerdrError, layoutSetSplitRatio, paneClear, paneClose, pan
 import { paneContext, resolveAgent, versionSourceOf } from "./pane-context.ts";
 import { ompScreenContext } from "./omp-status.ts";
 import { PasteImageError, readImageBody, savePaneImage } from "./paste.ts";
+import { WindowShareError, type WindowShares } from "./window-share.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "./dialogs/claude.ts";
 import { claudeRewindOpen } from "./prompt.ts";
 import { expandedDirectory } from "./workspace-routes.ts";
@@ -25,7 +26,7 @@ import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
 const conversationDiagnostics = new ConversationDiagnostics();
 
 /** the native stores createServer was given; unset, each reader finds its own */
-export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string };
+export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string; windowShares?: WindowShares };
 
 /** the sides herdr's pane.swap and pane.resize take; anything else is refused before the RPC, which would answer invalid_request */
 const isPaneDirection = (value: unknown): value is PaneDirection => value === "left" || value === "right" || value === "up" || value === "down";
@@ -417,6 +418,32 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       const resize = await paneResize(paneId, payload.direction, payload.amount);
       return jsonResponse({ ok: true, changed: resize.changed, reason: resize.reason } satisfies PaneResized);
     } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (pathname === "/api/pane/window-share") {
+    setRequestRoute(pathname);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
+    let payload: unknown;
+    try { payload = JSON.parse(await readImageBody(request)); }
+    catch (error) {
+      if (error instanceof PasteImageError) return jsonResponse({ error: { code: error.code, message: error.message } }, error.status);
+      return badRequest("invalid_json", "request body must be JSON");
+    }
+    if (!isJsonObject(payload)) return badRequest("invalid_body", "request body must be a JSON object");
+    if (typeof payload.pane_id !== "string" || !payload.pane_id.trim()) return badRequest("missing_pane_id", "pane_id is required");
+    if (payload.action !== "start" && payload.action !== "update" && payload.action !== "stop") return badRequest("invalid_action", "action must be start, update or stop");
+    if (payload.action !== "start" && (typeof payload.share_id !== "string" || !payload.share_id)) return badRequest("missing_share_id", "share_id is required");
+    if (payload.action !== "stop" && typeof payload.data_base64 !== "string") return badRequest("invalid_frame", "data_base64 must be a string");
+    if (!options.windowShares) return jsonResponse({ error: { code: "unavailable", message: "window sharing is unavailable" } }, 503);
+    try {
+      if (payload.action === "start") return jsonResponse({ ok: true, ...await options.windowShares.start(payload.pane_id, payload.data_base64 as string) });
+      if (payload.action === "update") options.windowShares.update(payload.pane_id, payload.share_id as string, payload.data_base64 as string);
+      else options.windowShares.stop(payload.pane_id, payload.share_id as string);
+      return jsonResponse({ ok: true });
+    } catch (error) {
+      if (error instanceof WindowShareError) return jsonResponse({ error: { code: error.code, message: error.message } }, error.status);
       return errorResponse(error);
     }
   }

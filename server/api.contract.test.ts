@@ -1123,7 +1123,7 @@ describe("mutation body validation", () => {
   it("rejects non-object JSON without touching herdr or losing the error envelope", async () => {
     for (const path of [
       "/api/workspace/create", "/api/tab/create", "/api/tab/rename", "/api/tab/close", "/api/tab/move", "/api/tab/move-to-workspace", "/api/workspace/rename", "/api/workspace/move", "/api/workspace/close",
-      "/api/pane/rename", "/api/pane/input", "/api/pane/keys", "/api/pane/close", "/api/pane/image",
+      "/api/pane/rename", "/api/pane/input", "/api/pane/keys", "/api/pane/close", "/api/pane/image", "/api/pane/window-share",
       "/api/pane/scroll", "/api/agent/rename",
     ]) {
       for (const body of [null, [], "text", 42, true]) {
@@ -1142,6 +1142,7 @@ describe("mutation body validation", () => {
       ["/api/pane/close", { pane_id: 5 }, "missing_pane_id"],
       ["/api/pane/keys", { pane_id: "unknown", keys: [null] }, "missing_keys"],
       ["/api/pane/image", { pane_id: "unknown", content_type: "image/png", data_base64: {} }, "invalid_image"],
+      ["/api/pane/window-share", { pane_id: "unknown", action: "start", data_base64: {} }, "invalid_frame"],
       ["/api/workspace/create", { agent: { kind: "claude", args: "--help" } }, "invalid_agent"],
     ] as const) {
       const response = await fetch(`${base()}${path}`, {
@@ -2920,6 +2921,42 @@ describe("POST /api/pane/image", () => {
     expect(res.status).toBe(400);
     const health = await fetch(`${base()}/api/health`);
     expect(health.status).toBe(200);
+  });
+});
+
+describe("POST /api/pane/window-share", () => {
+  it("updates one file through a pane's share and removes it when stopped", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-window-api-"));
+    const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: "ovis-test-window-share", cwd, focus: false });
+    const paneId = created.root_pane.pane_id;
+    const jpeg = (last: number) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, last]).toString("base64");
+    const post = (action: "start" | "update" | "stop", shareId?: string, dataBase64?: string) => fetch(`${base()}/api/pane/window-share`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pane_id: paneId, action, ...(shareId ? { share_id: shareId } : {}), ...(dataBase64 ? { data_base64: dataBase64 } : {}) }),
+    });
+    try {
+      const started = await post("start", undefined, jpeg(1));
+      expect(started.status).toBe(200);
+      const { id, path } = await started.json() as { id: string; path: string };
+      expect(path.startsWith(join(cwd, ".ovis"))).toBe(true);
+      expect(readFileSync(path).at(-1)).toBe(1);
+      expect((await post("update", id, jpeg(2))).status).toBe(200);
+      expect(readFileSync(path).at(-1)).toBe(2);
+      expect((await post("stop", id)).status).toBe(200);
+      expect(existsSync(path)).toBe(false);
+      const manager = { endpoint: () => ({ url: base(), token: "" }), trackTerminal: () => () => undefined } as unknown as MachineManager;
+      const proxied = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/pane/window-share", {
+        method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+        body: JSON.stringify({ pane_id: paneId, action: "start", data_base64: jpeg(3) }),
+      }), manager);
+      expect(proxied.status).toBe(200);
+      const remoteShare = await proxied.json() as { id: string; path: string };
+      expect(readFileSync(remoteShare.path).at(-1)).toBe(3);
+      expect((await post("stop", remoteShare.id)).status).toBe(200);
+    } finally {
+      await herdrRpc("workspace.close", { workspace_id: created.workspace.workspace_id });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
 

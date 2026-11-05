@@ -849,6 +849,30 @@ export async function uploadPaneImage(paneId: string, image: Blob, machineId = "
   return ((await response.json()) as { path: string }).path;
 }
 
+/** The selected window's latest JPEG occupies one file until sharing stops. */
+export async function windowShareFrame(paneId: string, image: Blob, machineId = "local", shareId?: string): Promise<{ id: string; path: string } | null> {
+  assertAttachable(image);
+  const url = machinePath(machineId, "pane/window-share");
+  const data_base64 = base64FromBytes(new Uint8Array(await image.arrayBuffer()));
+  const response = await apiFetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+    body: JSON.stringify({ pane_id: paneId, action: shareId ? "update" : "start", ...(shareId ? { share_id: shareId } : {}), data_base64 }),
+  });
+  if (!response.ok) throw await errorFrom(url, response);
+  return shareId ? null : await response.json() as { id: string; path: string };
+}
+
+export async function stopWindowShare(paneId: string, shareId: string, machineId = "local"): Promise<void> {
+  const url = machinePath(machineId, "pane/window-share");
+  const response = await apiFetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-herdr-machine": "1" },
+    body: JSON.stringify({ pane_id: paneId, action: "stop", share_id: shareId }),
+  });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 async function sendJson(url: string, method: "POST" | "PATCH" | "DELETE", body: unknown): Promise<Response> {
   const response = await apiFetch(url, {
     method,
