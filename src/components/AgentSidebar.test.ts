@@ -194,6 +194,8 @@ describe("AgentSidebar folded helpers (#772)", () => {
     stored["ovis:fold-helpers"] = "true";
     const html = draw();
     expect(entries(html)).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5 hidden", "t3", "t6 hidden", "t4"]);
+    // a screen reader hears whose helpers they are, not only "Helpers" and a count
+    expect(html).toMatch(/data-helpers-of="local:t1"[\s\S]*?<span class="agent-helpers-name" aria-hidden="true">Helpers<\/span><span class="visually-hidden">Helpers of t1<\/span>/);
     // the line says which of the folded ones ask for a look
     expect(html).toMatch(/data-helpers-of="local:t1"[\s\S]*?data-state="blocked"[\s\S]*?1 need you[\s\S]*?data-state="working"[\s\S]*?2 working/);
     // the helper still in sight hangs from the line, with no line running on past it

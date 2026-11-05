@@ -162,6 +162,15 @@ const BACKGROUND_FOLD_KEY = "ovis:agents-background-collapsed";
 /** Settings → Fold helpers under their agent: the agents whose helpers this device lists in full, each by its pin key; every other agent's start folded */
 const HELPERS_OPEN_KEY = "ovis:agents-helpers-open";
 
+/** The fold that hides a row: the nearest line above it in sight that folds rows (an agent's helpers, a named group, the background part). */
+function foldControlAbove(item: Element): HTMLButtonElement | null {
+  for (let above = item.previousElementSibling; above; above = above.previousElementSibling) {
+    if (above.hasAttribute("hidden")) continue;
+    if (above.matches(".agent-helpers, .agent-named-group-label, .agent-background-label")) return above.querySelector("button");
+  }
+  return null;
+}
+
 function loadOpenHelpers(): string[] {
   try {
     const stored: unknown = JSON.parse(window.localStorage.getItem(HELPERS_OPEN_KEY) ?? "[]");
@@ -301,12 +310,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     if (target === null) return;
     refocusPin.current = null;
     const control = sectionRef.current?.querySelector<HTMLButtonElement>(`.agent-item[data-pin-key="${CSS.escape(target.key)}"] .${target.control}`);
-    // a row unpinned into a fold (its agent's helpers, the background part) is hidden: the fold's line above it takes the focus
-    let item = control?.closest("li");
-    if (item?.hidden) {
-      while (item && (item.hidden || !(item.classList.contains("agent-helpers") || item.classList.contains("agent-background-label")))) item = item.previousElementSibling as HTMLLIElement | null;
-    }
-    (item && item !== control?.closest("li") ? item.querySelector<HTMLButtonElement>("button") : control)?.focus({ preventScroll: true });
+    // a row unpinned into a fold (its agent's helpers, a named group, the background part) is hidden: the fold's line above it takes the focus
+    const item = control?.closest("li");
+    (item?.hidden ? foldControlAbove(item) : control)?.focus({ preventScroll: true });
   }, [pinned]);
   const [menu, setMenu] = useState<PinMenu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -403,10 +409,19 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     }
     return { restDepths, restLines, helpersOf, foldedHelpers };
   }, [parts, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
+  // a helper with the focus that folds away (it stopped needing the reader, or the selection moved) hands it to its line
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    const item = active && sectionRef.current?.contains(active) ? active.closest("li") : null;
+    if (item?.hidden) foldControlAbove(item)?.focus({ preventScroll: true });
+  }, [foldedHelpers]);
   const toggleHelpers = (key: string): void => {
-    // the agents gone from the list leave with this change, so the kept list never outgrows the roster
-    const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
-    const next = openHelpers.includes(key) ? openHelpers.filter((held) => held !== key) : [...openHelpers.filter((held) => live.has(held)), key];
+    // read anew, so another tab's choices are kept; as the pins, the agents gone from a loaded PC leave with this
+    // change, and none of a PC still loading or hidden on this device, which cannot say its panes are gone
+    const stored = loadOpenHelpers();
+    const live = new Set(machines.flatMap((machine) => machine.snapshot?.panes.map((pane) => sidebarPinKey(machine.id, pane.pane_id)) ?? []));
+    const kept = pruneSidebarPins(stored.filter((held) => held !== key), live, machines, hidden);
+    const next = openHelpers.includes(key) ? kept : [...kept, key];
     setOpenHelpers(next);
     try { window.localStorage.setItem(HELPERS_OPEN_KEY, JSON.stringify(next)); } catch { /* private mode: this page keeps it */ }
   };
@@ -422,7 +437,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     return <li className="agent-helpers" key={`helpers:${key}`} data-helpers-of={key} data-more={more ? "" : undefined} hidden={hidden || undefined}>
       <button type="button" className="agent-helpers-toggle" aria-expanded={open} title={t("Helpers of {title}", { title: rowTitle(agentRow.entry) })} onClick={() => toggleHelpers(key)}>
         {open ? <ChevronDown className="agent-section-caret" aria-hidden="true" /> : <ChevronRight className="agent-section-caret" aria-hidden="true" />}
-        <span className="agent-helpers-name">{t("Helpers")}</span>
+        <span className="agent-helpers-name" aria-hidden="true">{t("Helpers")}</span>
+        <span className="visually-hidden">{t("Helpers of {title}", { title: rowTitle(agentRow.entry) })}</span>
         {blockedCount > 0 && <span className="agent-named-group-dot" data-state="blocked" title={t("{count} need you", { count: blockedCount })}><span className="visually-hidden">{t("{count} need you", { count: blockedCount })}</span></span>}
         {workingCount > 0 && <span className="agent-named-group-dot" data-state="working" title={t("{count} working", { count: workingCount })}><span className="visually-hidden">{t("{count} working", { count: workingCount })}</span></span>}
         <span className="agent-section-count">{helpers.length}</span>
