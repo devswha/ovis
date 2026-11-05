@@ -49,6 +49,7 @@ import { rosterPanes } from "./lib/dagPane.ts";
 import { adjacentTabPane, adjacentWorkspacePane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
+import { movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
 import { loadSettings, useSettings } from "./lib/settings.ts";
 import { useShownMachines } from "./lib/hiddenMachines.ts";
@@ -352,9 +353,12 @@ export function App() {
   const followPaneMove = (machineId: string, from: string, to: string): void => {
     carryMovedPane(machineId, from, to);
     // its lock goes with its pin (lib/paneLocks.ts); the locks as last saved, as this call may come from an older render's event
-    const locks = loadSettings().lockedAgents;
+    const { lockedAgents: locks, agentGroupOf } = loadSettings();
     const movedLocks = movedSidebarPins(locks, machineId, from, to);
     if (movedLocks !== locks) updateSettings({ lockedAgents: [...movedLocks] });
+    // its named group goes with it the same way (lib/namedAgentGroups.ts)
+    const movedGroups = movedAgentGroup(agentGroupOf, machineId, from, to);
+    if (movedGroups !== agentGroupOf) updateSettings({ agentGroupOf: { ...movedGroups } });
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);

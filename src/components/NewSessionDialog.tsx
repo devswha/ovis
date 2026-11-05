@@ -16,7 +16,9 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useAgentSkills } from "../lib/useAgentSkills.ts";
 import { useT } from "../lib/i18n.ts";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil } from "../lib/latestRead.ts";
-import { useSettings } from "../lib/settings.ts";
+import { loadSettings, useSettings } from "../lib/settings.ts";
+import { assignAgentGroup, folderAgentGroup, rememberFolderAgentGroup } from "../lib/namedAgentGroups.ts";
+import { sidebarPinKey } from "../lib/sidebarPins.ts";
 import { learnTabLabel } from "../lib/tabLabels.ts";
 import { launchCapabilities, modelSuggestions } from "../lib/agentLaunchMode.ts";
 import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
@@ -94,7 +96,7 @@ export function insertToken(text: string, at: number, token: string): { text: st
 
 export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false }: NewSessionDialogProps) {
   const t = useT();
-  const { settings } = useSettings();
+  const { settings, update: updateSettings } = useSettings();
   const machineId = useMachineId();
   const { createTab, createWorkspace, fetchAgentKinds, fetchAgentCommands } = useMachineApi();
   const machineSessions = useMachineSessions();
@@ -106,6 +108,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [effort, setEffort] = useState("");
   const [ultracode, setUltracode] = useState(false);
   const [prompt, setPrompt] = useState("");
+  // Settings -> Named agent groups: the group the new pane goes in ("": none), the folder's last one until one is picked
+  const groupNames = settings.agentNamedGroups ? settings.agentGroupNames : [];
+  const [group, setGroup] = useState("");
+  const [groupPicked, setGroupPicked] = useState(false);
   // the skills the picked agent would offer in the folder, before any process exists (GET /api/agent/commands)
   const skillFolder = tab ? tab.cwd : cwd.trim() || null;
   const [skills, setSkills] = useAgentSkills(open, agentKind, skillFolder, fetchAgentCommands, t);
@@ -160,6 +166,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     setEffort("");
     setUltracode(false);
     setPrompt("");
+    setGroupPicked(false);
     setSkills(null);
     setError(null);
     setPending(false);
@@ -197,6 +204,13 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       cancelled = true;
     };
   }, [open]);
+
+  // the folder's last group, as the folder changes, until the reader picks one
+  const groupFolder = tab ? tab.cwd : cwd;
+  const groupKey = groupNames.join("\n");
+  useEffect(() => {
+    if (open && !groupPicked) setGroup(folderAgentGroup(machineId, groupFolder, groupNames) ?? "");
+  }, [open, groupPicked, machineId, groupFolder, groupKey]);
 
   useEffect(() => {
     if (!open || !onDraft) return;
@@ -321,6 +335,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     if (started === null) { setPending(false); return; }
     try {
       const result = await started;
+      // the pane is made, whatever came of its agent: it goes in the group picked, from the groups as last saved
+      const picked = groupNames.includes(group) ? group : null;
+      rememberFolderAgentGroup(machineId, tab ? tab.cwd : directory, picked);
+      if (picked !== null) updateSettings({ agentGroupOf: assignAgentGroup(loadSettings().agentGroupOf, sidebarPinKey(machineId, result.pane_id), picked) });
       if (agentKind && !result.agent_started && result.error?.message) {
         setPending(false);
         // the workspace exists: say so plainly, keep the PC's own words beneath, and Open it rather than make another
@@ -429,6 +447,14 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             />
             <span className="field-hint">{t(tab ? "Tab name (optional)" : "Optional workspace label")}</span>
           </label>
+          {groupNames.length > 0 && <div className="field">
+            <label className="field-label" htmlFor="new-session-group">{t("Group")}</label>
+            <select id="new-session-group" className="select" value={group} disabled={fieldsDisabled} onChange={(event) => { setGroup(event.target.value); setGroupPicked(true); }}>
+              <option value="">{t("No group")}</option>
+              {groupNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <span className="field-hint">{t("Where the Agents list shows it")}</span>
+          </div>}
           {/* the launch's own choices, only where the agent's command line takes them (lib/agentLaunchMode.ts) */}
           {(can.model || can.efforts.length > 0) && <div className="new-session-launch">
             {can.model && <div className="field">

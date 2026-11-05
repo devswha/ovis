@@ -394,4 +394,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Test sent. Check the destination.": "테스트를 보냈습니다. 받는 곳을 확인하세요.",
   "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "이 PC가 알림을 채팅 앱이나 원하는 URL에도 보냅니다. 메시지에는 PC, 창, 무슨 일이 있었는지와 창을 여는 링크가 담깁니다. 창 이름은 터미널 제목이며, 에이전트가 작업 내용으로 정할 수도 있습니다.",
   "Webhook URL": "웹훅 URL",
+  "Named agent groups": "이름 붙인 에이전트 그룹",
+  "Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.": "에이전트 목록을 Agents, Replies, Tasks처럼 직접 이름 붙인 그룹으로 나눕니다. 새 워크스페이스와 새 탭에서 그룹을 고를 수 있고, 에이전트 메뉴에서 옮길 수 있습니다. 모든 브라우저가 함께 씁니다.",
 };
