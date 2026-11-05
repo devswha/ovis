@@ -334,10 +334,13 @@ export class Updater {
     return null;
   }
 
-  /** A failed or timed-out check is not eligible: the source checkout runs, still managed and blocked. */
+  /** Still detached, clean and at the revision read at the start; a failed or timed-out check is
+   * not eligible: the source checkout runs, still managed and blocked. */
   private async detachedAndClean(): Promise<boolean> {
     try {
-      return await this.git("branch", "--show-current") === "" && !await this.git("status", "--porcelain", "--untracked-files=all");
+      return await this.git("branch", "--show-current") === ""
+        && !await this.git("status", "--porcelain", "--untracked-files=all")
+        && await this.git("rev-parse", "HEAD") === this.sourceRevision;
     } catch {
       return false;
     }
