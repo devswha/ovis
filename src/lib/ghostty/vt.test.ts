@@ -67,6 +67,10 @@ describe("GhosttyVt widths", () => {
     ["keycap", "a1️⃣b"],
     ["Unicode 15 emoji", "a🫨b"],
     ["Hangul and Han", "a한漢b"],
+    ["Bengali", "aবাংলাb"],
+    ["Indic conjunct", "aक्षb"],
+    ["text-presentation selector", "a⚽︎b"],
+    ["subdivision flag", "a🏴󠁧󠁢󠁳󠁣󠁴󠁿b"],
   ] as const) {
     it(`draws each grapheme in xterm's cell: ${name}`, async () => {
       expect(await ghosttyLayout(text)).toEqual(await xtermLayout(text));
@@ -86,18 +90,19 @@ describe("GhosttyVt widths", () => {
   }
 
   for (const [name, prefix] of [
-    ["the program turns mode 2027 off", "\x1b[?2027l"],
-    ["it turns 2027 off among other modes", "\x1b[?1;2027l"],
+    ["the program turns mode 2027 on", "\x1b[?2027h"],
+    ["it turns 2027 on among other modes", "\x1b[?1;2027h"],
+    ["it restores a saved 2027", "\x1b[?2027h\x1b[?2027s\x1b[?2027r"],
     ["the terminal is reset", "\x1bc"],
   ] as const) {
-    it(`keeps grapheme clusters after ${name}`, async () => {
+    it(`lays out as xterm after ${name}`, async () => {
       expect(await ghosttyLayout(`${prefix}ABC👨‍👩‍👧XYZ`)).toEqual(await xtermLayout(`${prefix}ABC👨‍👩‍👧XYZ`));
     });
   }
 
-  it("keeps grapheme clusters when a mode 2027 off is split between two writes", async () => {
-    expect(await ghosttyLayout("\x1b[?20", "27lABC👨‍👩‍👧XYZ")).toEqual(await xtermLayout("\x1b[?2027lABC👨‍👩‍👧XYZ"));
-    expect(await ghosttyLayout("\x1b[?2027", "lABC👨‍👩‍👧XYZ")).toEqual(await xtermLayout("\x1b[?2027lABC👨‍👩‍👧XYZ"));
+  it("lays out as xterm when a mode 2027 on is split between two writes", async () => {
+    expect(await ghosttyLayout("\x1b[?20", "27hABCक्षXYZ")).toEqual(await xtermLayout("\x1b[?2027hABCक्षXYZ"));
+    expect(await ghosttyLayout("\x1b[?2027", "hABCक्षXYZ")).toEqual(await xtermLayout("\x1b[?2027hABCक्षXYZ"));
   });
 
   it("draws a ZWJ sequence longer than the grapheme buffer", async () => {
@@ -111,8 +116,9 @@ describe("GhosttyVt widths", () => {
     expect(await ghosttyLayout("aน้ำb")).toEqual(await xtermLayout("aน้ำb"));
   });
 
-  it("finds a mode 2027 off with a control byte inside it or across a reset", async () => {
-    expect(await ghosttyLayout("\x1b[\x00?2027la👨‍👩‍👧X")).toEqual(await xtermLayout("\x1b[\x00?2027la👨‍👩‍👧X"));
-    expect(await ghosttyScreen(40, 1, ["\x1b[?20", "27la👨‍👩‍👧X"])).toEqual(await xtermLayout("a👨‍👩‍👧X"));
+  it("finds a mode 2027 on with a control byte or DEL inside it or across a reset", async () => {
+    expect(await ghosttyLayout("\x1b[\x00?2027haक्षX")).toEqual(await xtermLayout("\x1b[\x00?2027haक्षX"));
+    expect(await ghosttyLayout("\x1b[?2027\x7fhaक्षX")).toEqual(await xtermLayout("\x1b[?2027\x7fhaक्षX"));
+    expect(await ghosttyScreen(40, 1, ["\x1b[?20", "27haक्षX"])).toEqual(await xtermLayout("aक्षX"));
   });
 });

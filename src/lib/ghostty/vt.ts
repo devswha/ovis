@@ -8,8 +8,6 @@
  * ghostty_type_json(), so a row costs one wasm call plus a few per style change.
  */
 
-import { FIRST_SPACING_MARK, SPACING_MARK } from "../terminalWidths.ts";
-
 interface Bits { lsb: number; width: number; arms?: Record<string, { bits: Record<string, Bits> } | null> }
 interface TypeLayout { types: Record<string, { fields?: Record<string, { offset: number }>; bits?: Record<string, Bits> }> }
 
@@ -95,20 +93,19 @@ const RS_DATA_IMAGE_ITERATOR = 22, RS_DATA_IMAGE_PLACEMENTS_GENERATION = 23;
 const ROW_DATA_CELLS = 3, ROW_DATA_CELLS_RAW = 5;
 const CELLS_STYLE = 2, CELLS_BG = 5, CELLS_FG = 6, CELLS_GRAPHEMES_UTF8 = 9;
 const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 13, OPT_COLOR_PALETTE = 14;
-const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE_DEFAULT = 33, OPT_MODE = 34;
+const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE = 34;
 /** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
 const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3;
-const spacingMarks = new Map<number, boolean>();
-const isSpacingMark = (codepoint: number): boolean => {
-  if (codepoint < FIRST_SPACING_MARK) return false;
-  let mark = spacingMarks.get(codepoint);
-  if (mark === undefined) {
-    mark = SPACING_MARK.test(String.fromCodePoint(codepoint));
-    spacingMarks.set(codepoint, mark);
-  }
-  return mark;
-};
+/**
+ * Whether a code point joins the emoji before it into one cell: ZWJ, the emoji-presentation selector,
+ * skin tones, the keycap mark, tags (subdivision flags) and regional indicators (country flags).
+ */
+const joinsEmoji = (codepoint: number): boolean =>
+  codepoint === 0x200d || codepoint === 0xfe0f || codepoint === 0x20e3
+  || (codepoint >= 0x1f3fb && codepoint <= 0x1f3ff) || (codepoint >= 0xe0020 && codepoint <= 0xe007f)
+  || (codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff);
+const PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
 const DATA_KITTY_GRAPHICS = 30;
 const SCROLL_BOTTOM = 1, SCROLL_DELTA = 2;
 const IMAGE_ID = 2, IMAGE_GENERATION = 3, IMAGE_LAYER = 4, IMAGE_Z = 5, IMAGE_COL = 6, IMAGE_ROW = 7, IMAGE_OFFSET_X = 10, IMAGE_OFFSET_Y = 11;
@@ -177,6 +174,8 @@ export class GhosttyVt {
   private csi = CSI_GROUND;
   private param = 0;
   private sawGraphemeMode = false;
+  /** whether the last code point printed was a ZWJ */
+  private afterZwj = false;
 
   private constructor(exports: Exports, layout: TypeLayout, cols: number, rows: number) {
     this.x = exports;
@@ -210,9 +209,6 @@ export class GhosttyVt {
     this.images = take(exports.ghostty_render_state_image_iterator_new(0, this.slot), "image_iterator_new");
     this.view().setBigUint64(this.scratch, IMAGE_STORAGE_BYTES, true);
     this.check(exports.ghostty_terminal_set(this.terminal, OPT_KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
-    // xterm (terminalWidths.ts) and herdr give a whole grapheme one cell, two columns for an emoji
-    // sequence; libghostty does that only with mode 2027 on, here also after a reset
-    this.setGraphemeClusters(OPT_MODE_DEFAULT, true);
     this.setScrollback(0);
   }
 
@@ -238,35 +234,43 @@ export class GhosttyVt {
       this.input = this.x.ghostty_wasm_alloc(this.inputCap);
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
-    // Two places where libghostty's clusters would differ from xterm's (terminalWidths.ts):
-    // - xterm ignores a program's own 2027 off (CSI ? ... 2027 ... l): so does the layer, which turns it
-    //   back on right after the sequence, which may span writes;
-    // - herdr and xterm give a spacing mark (a Devanagari vowel sign, Thai SARA AM) a cell of its own, where a cluster
-    //   would join it to the letter before: the layer prints each one with 2027 off.
+    // xterm (terminalWidths.ts) and herdr give an emoji sequence (ZWJ family, skin tone, flag, keycap,
+    // an emoji-presentation selector) one two-column cell, and otherwise lay out as libghostty does with
+    // grapheme clustering (mode 2027) off: clustering also joins spacing marks, Indic conjuncts and text
+    // selectors that they keep apart. So mode 2027 stays off, and each code point that joins an emoji
+    // (joinsEmoji, or a pictograph right after a ZWJ) is printed with it on. A program's own 2027 on
+    // (CSI ? ... 2027 ... h, or r restoring it), which xterm ignores, is turned off again right after;
+    // the sequence may span writes.
     let start = 0;
+    const flush = (end: number): void => {
+      if (end > start) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, end - start);
+      start = end;
+    };
     for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
       if (byte === 0x1b) { this.csi = CSI_ESC; continue; }
-      // a C0 control inside an escape sequence runs without ending it; CAN and SUB cancel it
-      if (this.csi !== CSI_GROUND && byte < 0x20 && byte !== 0x18 && byte !== 0x1a) continue;
-      switch (this.csi) {
-        case CSI_GROUND: {
-          if (byte < 0xe0) continue;
-          const length = byte >= 0xf0 ? 4 : 3;
-          if (at + length > bytes.length) continue;
-          const codepoint = length === 3
-            ? ((byte & 0x0f) << 12) | ((bytes[at + 1]! & 0x3f) << 6) | (bytes[at + 2]! & 0x3f)
-            : ((byte & 0x07) << 18) | ((bytes[at + 1]! & 0x3f) << 12) | ((bytes[at + 2]! & 0x3f) << 6) | (bytes[at + 3]! & 0x3f);
-          if (isSpacingMark(codepoint)) {
-            if (at > start) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, at - start);
-            this.setGraphemeClusters(OPT_MODE, false);
-            this.x.ghostty_terminal_vt_write(this.terminal, this.input + at, length);
-            this.setGraphemeClusters(OPT_MODE, true);
-            start = at + length;
-          }
-          at += length - 1;
-          continue;
+      if (this.csi === CSI_GROUND) {
+        if (byte < 0x20) continue;
+        if (byte >= 0x80 && byte < 0xc0) continue;
+        if (byte < 0xe0 || byte >= 0xf8) { this.afterZwj = false; continue; }
+        const length = byte >= 0xf0 ? 4 : 3;
+        if (at + length > bytes.length) continue;
+        const codepoint = length === 3
+          ? ((byte & 0x0f) << 12) | ((bytes[at + 1]! & 0x3f) << 6) | (bytes[at + 2]! & 0x3f)
+          : ((byte & 0x07) << 18) | ((bytes[at + 1]! & 0x3f) << 12) | ((bytes[at + 2]! & 0x3f) << 6) | (bytes[at + 3]! & 0x3f);
+        if (joinsEmoji(codepoint) || (this.afterZwj && codepoint <= 0x10ffff && PICTOGRAPHIC.test(String.fromCodePoint(codepoint)))) {
+          flush(at);
+          this.setGraphemeClusters(true);
+          flush(at + length);
+          this.setGraphemeClusters(false);
         }
+        this.afterZwj = codepoint === 0x200d;
+        at += length - 1;
+        continue;
+      }
+      // a C0 control or DEL inside an escape sequence runs without ending it; CAN and SUB cancel it
+      if ((byte < 0x20 && byte !== 0x18 && byte !== 0x1a) || byte === 0x7f) continue;
+      switch (this.csi) {
         case CSI_ESC:
           this.csi = byte === 0x5b ? CSI_BRACKET : CSI_GROUND;
           continue;
@@ -280,24 +284,23 @@ export class GhosttyVt {
       else if (byte === 0x3b || byte === 0x3a) {
         if (this.param === MODE_GRAPHEME_CLUSTER) this.sawGraphemeMode = true;
         this.param = 0;
-      } else if (byte === 0x18 || byte === 0x1a || byte >= 0x20) {
-        if (byte === 0x6c && (this.sawGraphemeMode || this.param === MODE_GRAPHEME_CLUSTER)) {
-          this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, at + 1 - start);
-          this.setGraphemeClusters(OPT_MODE, true);
-          start = at + 1;
+      } else {
+        if ((byte === 0x68 || byte === 0x72) && (this.sawGraphemeMode || this.param === MODE_GRAPHEME_CLUSTER)) {
+          flush(at + 1);
+          this.setGraphemeClusters(false);
         }
         this.csi = CSI_GROUND;
       }
     }
-    if (start < bytes.length) this.x.ghostty_terminal_vt_write(this.terminal, this.input + start, bytes.length - start);
+    flush(bytes.length);
   }
 
-  private setGraphemeClusters(option: number, on: boolean): void {
+  private setGraphemeClusters(on: boolean): void {
     // GhosttyTerminalModeConfig { uint16_t mode; bool value }
     const dv = this.view();
     dv.setUint16(this.scratch + 1000, MODE_GRAPHEME_CLUSTER, true);
     dv.setUint8(this.scratch + 1002, on ? 1 : 0);
-    this.check(this.x.ghostty_terminal_set(this.terminal, option, this.scratch + 1000), "grapheme clusters");
+    this.check(this.x.ghostty_terminal_set(this.terminal, OPT_MODE, this.scratch + 1000), "grapheme clusters");
   }
 
   reset(): void {
