@@ -108,6 +108,18 @@ export class AccountMailbox {
     return fresh();
   }
 
+  /**
+   * A `remove` a client relayed (POST /api/account/records) that was refused only because its signer
+   * is not a member here yet: kept with the mailbox's own such records, so it applies on the pull after
+   * its signer joins (#2956). One already waiting is not kept twice.
+   */
+  wait(record: unknown): void {
+    const id = typeof record === "object" && record !== null ? (record as { id?: unknown }).id : undefined;
+    if (this.pending.some((kept) => typeof kept === "object" && kept !== null && (kept as { id?: unknown }).id === id)) return;
+    this.pending = [...this.pending, record].slice(-PENDING_MAX);
+    if (this.options.pendingPath) writePrivateState(this.options.pendingPath, this.pending);
+  }
+
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
@@ -145,7 +157,8 @@ export class AccountMailbox {
       }
     };
     /** On disk before any page that put a record here is acknowledged, so a stop never loses one. */
-    const save = () => { if (this.options.pendingPath) writePrivateState(this.options.pendingPath, early.slice(-PENDING_MAX)); };
+    // with any a client relayed meanwhile (wait), which this.pending holds until the pull ends
+    const save = () => { if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending].slice(-PENDING_MAX)); };
     try {
       const admissions = new Map<string, number>();
       await retry();
@@ -167,15 +180,15 @@ export class AccountMailbox {
         ack = Math.max(...entries.map(({ seq }) => seq));
       }
       // still waiting on a signer: kept for later pulls, the oldest dropped past PENDING_MAX
-      this.pending = early.slice(-PENDING_MAX);
       save();
+      this.pending = [...early, ...this.pending].slice(-PENDING_MAX);
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
-      this.pending = early.slice(-PENDING_MAX);
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
+      this.pending = [...early, ...this.pending].slice(-PENDING_MAX);
     }
     return applied;
   }

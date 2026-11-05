@@ -169,6 +169,32 @@ test("a member's remove cuts the device off at once and keeps it out: its add re
   expect(f.app.context.services.devices.isTombstoned(lost.spki)).toBe(false);
 });
 
+test("a removal's signed record stays with its tombstone and is listed in the status, verbatim, after a restart too", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const lost = await accountKey();
+  await post(link, "/api/account/records", { records: [await add(key, lost.spki)] });
+  const removal = await remove(key, lost.spki);
+  expect((await post(link, "/api/account/records", { records: [removal] })).body.results?.[0]?.outcome).toBe("applied");
+  // a later remove of the same key by the same signer keeps the first record
+  await post(link, "/api/account/records", { records: [await remove(key, lost.spki)] });
+  // another member's removal of it is kept beside the first
+  const second = await member(f);
+  const secondRemoval = await remove(second.key, lost.spki);
+  expect((await post(second.link, "/api/account/records", { records: [secondRemoval] })).body.results?.[0]?.outcome).toBe("unchanged");
+  // a Revoke on the PC leaves a tombstone with no record, which is not listed
+  const revoked = await relayDevice(f);
+  f.app.context.services.devices.revoke(revoked.id);
+  const listed = await (await link.open("/api/account/status").response).json() as { removals?: unknown };
+  expect(listed.removals).toEqual([removal, secondRemoval]);
+  expect(new DeviceStore(f.stateDir).accountRemovals() as unknown[]).toEqual([removal, secondRemoval]);
+  // a record damaged on disk is dropped, never listed altered
+  const path = join(f.stateDir, "account-tombstones.json");
+  const saved = JSON.parse(readFileSync(path, "utf8")) as { v: 1; tombstones: { records?: Record<string, unknown>[] }[] };
+  writeFileSync(path, JSON.stringify({ ...saved, tombstones: saved.tombstones.map((t) => ({ ...t, records: t.records?.map((r) => ({ ...r, signature: undefined })) })) }), { mode: 0o600 });
+  expect(new DeviceStore(f.stateDir).accountRemovals()).toEqual([]);
+});
+
 test("a member removed from the account signs nothing more here", async () => {
   const f = fixture();
   const first = await member(f);
@@ -836,6 +862,21 @@ test("merging two dirs keeps the account's removal of a key over a revoke on the
     for (const dir of [a, b]) {
       const kept = JSON.parse(readFileSync(join(dir, "account-tombstones.json"), "utf8")) as { tombstones: { record_id: string; removed_at: string }[] };
       expect(kept.tombstones.map((t) => [t.record_id, t.removed_at])).toEqual([["r1", "2026-11-02T00:00:00.000Z"]]);
+    }
+  } finally { for (const dir of [a, b]) rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("merging two dirs keeps the signed removals of both, one per signer", () => {
+  const [a, b] = [mkdtempSync(join(tmpdir(), "ovis-account-a-")), mkdtempSync(join(tmpdir(), "ovis-account-b-"))];
+  try {
+    const key = "a-removed-key";
+    const [first, second] = [{ id: "r1", signer: "member-1" }, { id: "r2", signer: "member-2" }];
+    writeFileSync(join(a, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: ACCOUNT, record_id: "r1", removed_at: "2026-11-01T00:00:00.000Z", records: [first] }] }));
+    writeFileSync(join(b, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: ACCOUNT, record_id: "r1", removed_at: "2026-11-01T00:00:00.000Z", records: [first, second] }] }));
+    expect(mergeAccountTombstones(a, b)).toBeNull();
+    for (const dir of [a, b]) {
+      const kept = JSON.parse(readFileSync(join(dir, "account-tombstones.json"), "utf8")) as { tombstones: { records?: unknown[] }[] };
+      expect(kept.tombstones.map((t) => t.records)).toEqual([[first, second]]);
     }
   } finally { for (const dir of [a, b]) rmSync(dir, { recursive: true, force: true }); }
 });
