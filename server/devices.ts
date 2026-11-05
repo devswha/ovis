@@ -461,9 +461,11 @@ export class DeviceStore {
     const remote = this.pending?.remote ?? false;
     const startedBy = this.pending?.startedBy ?? null;
     // a code started through the relay is not a pairing made on this PC; a member's code goes with the member.
-    // On a PC in no account no record can bring a key back, so such a code may, as before account linking
+    // On a PC in no account such a code may bring back a key this PC revoked itself, as before account linking;
+    // never one the account removed
     const accountless = this.account() === null;
-    if ((remote && !accountless && (this.accountError !== null || this.isTombstoned(publicKey))) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
+    const refusedKey = accountless ? this.tombstones.some((t) => t.key === publicKey && t.record_id !== "local") : this.isTombstoned(publicKey);
+    if ((remote && (this.accountError !== null || refusedKey)) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
       this.noteRelayFailure("code", now);
       return null;
     }
@@ -756,7 +758,10 @@ export class DeviceStore {
     if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.created_at > record.issuedAt)) return false;
     const recordId = record.id;
     const fresh = !this.isTombstoned(key);
-    if (fresh) this.writeTombstones([...this.tombstones, { key, account, record_id: recordId, removed_at: new Date(now).toISOString() }]);
+    const removal = { key, account, record_id: recordId, removed_at: new Date(now).toISOString() };
+    if (fresh) this.writeTombstones([...this.tombstones, removal]);
+    // a key this PC revoked first becomes the account's removal, which the cap on local revokes never drops
+    else if (this.tombstones.some((t) => t.key === key && t.record_id === "local")) this.writeTombstones(this.tombstones.map((t) => t.key === key ? removal : t));
     const ids = this.devices.filter((d) => d.relay_public_key === key).map((d) => d.id);
     for (const id of ids) this.revoke(id, record.by);
     return fresh || ids.length > 0;
@@ -792,7 +797,7 @@ export class DeviceStore {
     const removedAt = new Date(now).toISOString();
     const added = [...this.tombstones,
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
-    const local = added.filter((t) => t.record_id === "local");
+    const local = added.filter((t) => t.record_id === "local").sort((a, b) => a.removed_at.localeCompare(b.removed_at));
     const dropped = new Set(local.slice(0, Math.max(0, local.length - LOCAL_TOMBSTONES_MAX)));
     const next = added.filter((t) => !dropped.has(t));
     if (!keys.length) return;

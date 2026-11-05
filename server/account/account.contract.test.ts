@@ -786,3 +786,16 @@ test("a key revoked before the PC joined an account stays out: a member's signed
   expect((outcome.body as unknown as { results: { outcome: string; code?: string }[] }).results[0]).toMatchObject({ outcome: "refused", code: "tombstoned" });
   expect(store.hasKey(revoked.spki)).toBe(false);
 });
+
+test("an account remove for a key this PC revoked first makes its tombstone the account's", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const store = f.app.context.services.devices;
+  const gone = await accountKey();
+  await post(link, "/api/account/records", { records: [await add(key, gone.spki)] });
+  store.revoke(accountDeviceId(SERVER_ID, gone.spki));
+  const removal = await remove(key, gone.spki);
+  await post(link, "/api/account/records", { records: [removal] });
+  const kept = JSON.parse(readFileSync(join(f.stateDir, "account-tombstones.json"), "utf8")) as { tombstones: { key: string; record_id: string }[] };
+  expect(kept.tombstones.find((t) => t.key === gone.spki)?.record_id).toBe(removal.id);
+});
