@@ -443,6 +443,18 @@ it.skipIf(process.platform !== "linux")("sends the rest of a lease through the t
   expect(reads()).toBe(2);
   expect(into.toString()).toBe("abcd");
 });
+it.skipIf(process.platform !== "linux")("counts two slow reads in a row with a fast stat between them (a scan stats its file each window)", async () => {
+  const path = onFilesystem(0x9123683e);
+  const advance = stillClock();
+  const reads = readsNow((count) => { if (count <= 2) advance(3); });
+  const reader = new TranscriptReader();
+  expect(await reader.read(path, async (file) => {
+    let text = "";
+    for (let at = 0; at < 4; at += 1) { await file.stat(); text += (await file.window(at, 1)).toString(); }
+    return text;
+  })).toBe("abcd");
+  expect(reads()).toBe(2);
+});
 it.skipIf(process.platform !== "linux")("leaves the event loop on the second slow call in a row, not on one alone (a pause of the process's own)", async () => {
   // a buffer of the caller's whose subarray, which a read takes once it has read, holds the clock 3 ms:
   // a call that stalls, as one a garbage collection lands in does

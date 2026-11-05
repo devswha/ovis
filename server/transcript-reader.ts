@@ -244,7 +244,9 @@ export class TranscriptReader {
             let now = direct !== null && !slowOpen;
             let slowBefore = false;
             let waited = true;
-            const timed = <V>(call: (direct: TranscriptHandleNow) => V): Promise<V> => {
+            // `read`: a read of the file's bytes. Only a fast read ends a run of slow calls: a scan stats its
+            // file each window, and a stat the inode cache answers says nothing of the disk
+            const timed = <V>(call: (direct: TranscriptHandleNow) => V, read = false): Promise<V> => {
               try {
                 current();
                 if (!accepting) throw new Error("the transcript lease is closed");
@@ -254,7 +256,7 @@ export class TranscriptReader {
                 waited = false;
                 const slow = performance.now() - started > SLOW_MS;
                 if (slow && slowBefore) { now = false; this.slowed(path); }
-                slowBefore = slow;
+                if (slow || read) slowBefore = slow;
                 current();
                 return Promise.resolve(value);
               } catch (caught) { return Promise.reject(caught); }
@@ -340,10 +342,10 @@ export class TranscriptReader {
                 current();
                 return stats;
               }),
-              read: (position, length, into) => now ? timed((direct) => fillNow(direct, position, length, into ?? Buffer.allocUnsafe(length)))
+              read: (position, length, into) => now ? timed((direct) => fillNow(direct, position, length, into ?? Buffer.allocUnsafe(length)), true)
                 : operation(() => fill(position, length, into ?? Buffer.allocUnsafe(length))),
               // no read ahead is started while reads are on the event loop
-              window: (position, length) => now ? timed((direct) => fillNow(direct, position, length, front ??= spareWindow())) : operation(async () => {
+              window: (position, length) => now ? timed((direct) => fillNow(direct, position, length, front ??= spareWindow()), true) : operation(async () => {
                 const read = readAhead;
                 readAhead = null;
                 if (read !== null) {
