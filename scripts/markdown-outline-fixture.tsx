@@ -14,7 +14,7 @@ function Fixture() {
   window.outlineQA = { keyboard: (active) => flushSync(() => setKeyboardActive(active)) };
   const docked = new URLSearchParams(location.search).has("docked");
   const viewer = <FileViewer path="guide.md" paneId={null} docked={docked} keyboardActive={keyboardActive} onClose={() => document.getElementById("root")!.replaceChildren()} />;
-  return docked ? <div style={{ display: "flex", height: "100vh" }}><main style={{ flex: 1 }} />{viewer}</div> : viewer;
+  return docked ? <div style={{ display: "flex", height: "100vh" }}><main style={{ flex: 1 }}><textarea aria-label="Pane input" /></main>{viewer}</div> : viewer;
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><SettingsProvider><Fixture /></SettingsProvider></React.StrictMode>);

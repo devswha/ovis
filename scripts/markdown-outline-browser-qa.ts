@@ -261,9 +261,15 @@ try {
     await page.locator(".file-panel .markdown-outline.is-drawer").waitFor();
     await markedAt(page, 0);
     if (evidence) await page.screenshot({ path: join(evidence, "outline-docked-1280-dark.png") });
+    // the pane beside the panel keeps its own Escape (a terminal's): the drawer neither takes it nor pulls the focus
+    const paneInput = page.getByRole("textbox", { name: "Pane input" });
+    await paneInput.focus();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Pane input", "the focus stays in the pane");
+    assert.equal(await page.locator(".file-panel .markdown-outline.is-drawer").count(), 1, "the drawer did not take the pane's Escape");
     assert.deepEqual(errors, []);
     await close();
-    console.log("PASS docked: the toolbar's Outline button opens a drawer over the panel");
+    console.log("PASS docked: the toolbar's Outline button opens a drawer over the panel; the pane beside it keeps its Escape");
   }
   console.log("markdown outline: browser OK");
 } finally {
