@@ -20,7 +20,9 @@ export function InstallHint() {
   const prompt = useInstallPrompt();
   const [dismissed, setDismissed] = useState(readHintDismissed);
   useEffect(() => {
-    if (prompt.installed) writeHintDismissed();
+    if (!prompt.installed) return;
+    writeHintDismissed();
+    setDismissed(true);
   }, [prompt.installed]);
   const kind = installHintKind({
     userAgent: navigator.userAgent,
@@ -43,7 +45,7 @@ export function InstallHint() {
         ? <span>{before}<Share className="install-hint-glyph" aria-hidden="true" />{after}</span>
         : <span>{prompt.canInstall ? t("Install the app for alerts.") : t("Install the app for alerts: Menu → Install app")}</span>}
       <div className="install-hint-actions">
-        {kind === "android" && prompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void prompt.install()}>{t("Install")}</button>}
+        {kind === "android" && prompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => prompt.install().catch((error: unknown) => console.error("install prompt", error))}>{t("Install")}</button>}
         <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={dismiss}><X /></button>
       </div>
     </div>
