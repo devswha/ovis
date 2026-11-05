@@ -84,13 +84,26 @@ describe("alert webhook presets", () => {
   it("keeps the secret owner-only on disk and answers it only masked", () => {
     const hook = webhook();
     const view = hook.save({ preset: "discord", url: "https://discord.com/api/webhooks/1/SECRETabcd" }, undefined);
-    expect(view.target).toBe("https://discord.com/…abcd");
+    expect(view.target).toBe("discord.com/…");
+    // an ntfy topic is the whole secret: no part of it is answered
+    expect(hook.save({ preset: "ntfy", url: "https://ntfy.sh/abcd" }, undefined).target).toBe("ntfy.sh/…");
+    expect(hook.save({ preset: "telegram", token: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", chat_id: "1" }, undefined).target).toBe("…");
+    hook.save({ preset: "discord", url: "https://discord.com/api/webhooks/1/SECRETabcd" }, undefined);
     expect(JSON.stringify(view)).not.toContain("SECRET");
     if (process.platform !== "win32") expect(statSync(join(stateDir, "alert-webhook.json")).mode & 0o777).toBe(0o600);
     // a save without the URL keeps it: the form never has it to send back
     hook.save({ preset: "discord", alerts: { input: false, done: "always" } }, undefined);
     expect(JSON.parse(readFileSync(join(stateDir, "alert-webhook.json"), "utf8")).secret).toBe("https://discord.com/api/webhooks/1/SECRETabcd");
     expect(webhook().view()).toMatchObject({ configured: true, preset: "discord", alerts: { input: false, done: "always" } });
+  });
+
+  it("keeps the link base a relay request cannot give", async () => {
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url() }, "https://pc.example:7421");
+    hook.save({ preset: "json", alerts: { input: true, done: "always" } }, "https://relay.ovis.invalid");
+    hook.send(alert);
+    await hook.settled();
+    expect(JSON.parse(destination.received[0]!.body).url).toBe("https://pc.example:7421/?pane=w1%3Ap1&view=chat");
   });
 
   it("refuses a destination it could not post to", () => {
@@ -130,6 +143,45 @@ describe("alert webhook delivery", () => {
     expect(await hook.test()).toEqual({ ok: true });
     expect(hook.view()).toMatchObject({ last_error: null });
     expect(JSON.parse(destination.received[1]!.body)).toEqual({ type: "test", text: "Ovis: alerts reach this destination" });
+  });
+});
+
+describe("alert webhook staleness and bounds", () => {
+  it("does not retry an alert that is no longer news", async () => {
+    destination.answer([503, 200]);
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url() }, undefined);
+    let news = true;
+    hook.send({ ...alert, current: () => news });
+    news = false;
+    await hook.settled();
+    expect(destination.received).toHaveLength(1);
+  });
+
+  it("sends to a new destination at once, not after the old one's backoff", async () => {
+    destination.answer(503);
+    const hook = webhook([60_000]);
+    hook.save({ preset: "json", url: destination.url("/old") }, undefined);
+    hook.send(alert);
+    const deadline = Date.now() + 5_000;
+    while (destination.received.length === 0) { if (Date.now() > deadline) throw new Error("no first post"); await Bun.sleep(5); }
+    destination.answer(200);
+    hook.save({ preset: "json", url: destination.url("/new") }, undefined);
+    hook.send(alert);
+    await hook.settled();
+    expect(destination.received.map((post) => post.path)).toEqual(["/old", "/new"]);
+  });
+
+  it("sends one test at a time, and a test of a removed destination records nothing", async () => {
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url() }, undefined);
+    await Promise.all(Array.from({ length: 5 }, () => hook.test()));
+    expect(destination.received).toHaveLength(1);
+    destination.answer(500);
+    const pending = hook.test();
+    hook.remove();
+    await pending;
+    expect(hook.view().last_error).toBeNull();
   });
 });
 
@@ -180,5 +232,21 @@ describe("web push alerts reach the webhook", () => {
     inUse = true;
     await step(() => push.onStatus("w1:p1", "blocked"));
     expect(destination.received).toHaveLength(3);
+  });
+
+  it("drops a retry once the pane changed, as an answered question calls off a device's alert", async () => {
+    destination.answer([503, 200]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const hook = createAlertWebhook({ stateDir, loopbackHttp: true, retryDelays: [1] });
+    hook.save({ preset: "json", url: destination.url() }, undefined);
+    const push = createPushService({ stateDir, timing: { short: 0, long: 0, longTurn: 0 }, webhook: { prefs: hook.prefs, wants: hook.wants, send: (sent) => { hook.send(sent); release(); } } });
+    push.seed([pane("w1:p1", "working")]);
+    await push.onStatus("w1:p1", "blocked");
+    await held;
+    await push.onStatus("w1:p1", "working");
+    await push.settled();
+    await hook.settled();
+    expect(destination.received).toHaveLength(1);
   });
 });

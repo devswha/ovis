@@ -22,6 +22,7 @@ import { type AlertKind, type AlertPrefs, alertKindAllowed, DEFAULT_ALERTS, pars
 import { isLoopbackHost } from "./access.ts";
 import { badRequest, jsonResponse, setRequestRoute } from "./http.ts";
 import { writePrivateState } from "./private-state.ts";
+import { RELAY_ORIGIN } from "./relay/session.ts";
 
 const FILE = "alert-webhook.json";
 const TIMEOUT_MS = 10_000;
@@ -51,6 +52,8 @@ export interface WebhookAlert {
   pane_id: string;
   machine_id?: string;
   workspace_id?: string;
+  /** whether the alert is still news (the pane unchanged, not muted, no window in use): asked before each try */
+  current?: () => boolean;
 }
 
 export type WebhookResult = { ok: true } | { ok: false; error: string; retry: boolean };
@@ -108,11 +111,10 @@ function checkUrl(preset: AlertWebhookPreset, value: unknown, loopbackHttp = fal
   return url.href;
 }
 
-/** Enough of the secret to tell it apart, not to use it. */
+/** Which service it is, and nothing of the path or token, which is the secret (an ntfy topic is all of it). */
 export function maskSecret(preset: AlertWebhookPreset, secret: string): string {
-  const tail = secret.slice(-4);
-  if (preset === "telegram") return `…${tail}`;
-  try { return `${new URL(secret).origin}/…${tail}`; } catch { return `…${tail}`; }
+  if (preset === "telegram") return "…";
+  try { return `${new URL(secret).host}/…`; } catch { return "…"; }
 }
 
 /** The link that opens the pane in the app (src/lib/deepLink.ts), where the app's address is known. */
@@ -169,6 +171,9 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
   /** the alert waiting to go out after the one being sent (or retried): a newer one replaces it */
   let next: WebhookAlert | null = null;
   let running: Promise<void> | null = null;
+  let testing: Promise<WebhookResult | null> | null = null;
+  /** ends the backoff under way: a new destination does not wait for the old one's */
+  let wake: (() => void) | null = null;
   /** bumped by a save or removal: a post for the destination before it is not retried or recorded */
   let generation = 0;
 
@@ -202,7 +207,10 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
     lastError = result.error;
   }
 
-  const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const wait = (ms: number): Promise<void> => new Promise((resolve) => {
+    const timer = setTimeout(() => { wake = null; resolve(); }, ms);
+    wake = () => { clearTimeout(timer); wake = null; resolve(); };
+  });
 
   async function drain(): Promise<void> {
     while (next !== null) {
@@ -211,7 +219,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       const at = generation;
       for (let attempt = 0; ; attempt += 1) {
         const target = current();
-        if (target === null || at !== generation) break;
+        if (target === null || at !== generation || alert.current?.() === false || !alertKindAllowed(target.alerts, alert.kind)) break;
         const result = await post(target, alert);
         if (at !== generation) break;
         record(result);
@@ -244,6 +252,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
 
   function forgetOutcome(): void {
     generation += 1;
+    wake?.();
     next = null;
     lastSuccess = null;
     lastFailure = null;
@@ -261,12 +270,17 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       next = alert;
       running ??= drain().finally(() => { running = null; });
     },
-    async test() {
-      const target = current();
-      if (target === null) return null;
-      const result = await post(target, null);
-      record(result);
-      return result;
+    test() {
+      // one at a time: a test asked for while one is out shares its answer
+      testing ??= (async () => {
+        const target = current();
+        if (target === null) return null;
+        const at = generation;
+        const result = await post(target, null);
+        if (at === generation) record(result);
+        return result;
+      })().finally(() => { testing = null; });
+      return testing;
     },
     view,
     save(input, linkBase) {
@@ -287,7 +301,8 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
         secret = typed || !same ? checkUrl(input.preset, input.url, options.loopbackHttp) : same.secret;
       }
       let base = same?.link_base ?? before?.link_base;
-      if (linkBase) { try { base = new URL(linkBase).origin; } catch { /* keep the one saved */ } }
+      // a relay request names no address the app opens at (relay/session.ts RELAY_ORIGIN): the saved base stays
+      if (linkBase && linkBase !== RELAY_ORIGIN) { try { base = new URL(linkBase).origin; } catch { /* keep the one saved */ } }
       const saved: StoredWebhook = {
         preset: input.preset, secret, ...(chatId ? { chat_id: chatId } : {}),
         alerts: input.alerts === undefined ? same?.alerts ?? DEFAULT_ALERTS : parseAlerts(input.alerts),

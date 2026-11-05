@@ -46,7 +46,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await group.getByRole("button", { name: "Save", exact: true }).click();
   await group.getByRole("status").filter({ hasText: "Saved" }).waitFor();
   assert.equal(await url.inputValue(), "", `${tag}: the URL leaves the field once saved`);
-  assert.equal(await url.getAttribute("placeholder"), "…abcd", `${tag}: shown masked`);
+  assert.equal(await url.getAttribute("placeholder"), "discord.com/…", `${tag}: shown masked`);
   assert.equal((await group.innerText()).includes("demo-secret"), false, `${tag}: the secret is nowhere on the page`);
 
   await group.getByRole("button", { name: "Send a test", exact: true }).click();

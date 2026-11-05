@@ -710,8 +710,11 @@ export function createPushService(options: PushServiceOptions): PushService {
   /** The alert, as the webhook says it: a pane of this PC is named with the PC, one of another PC's title already is. */
   function tellWebhook(key: string, machineId: string, paneId: string, message: PushPayload): void {
     const workspace = workspaces.get(key);
+    const at = lastStatus.get(key);
     options.webhook?.send({
       kind: message.kind ?? "input", title: message.title, body: message.body, pane_id: paneId,
+      // a retry is news only while the pane is as it was, unmuted, and no window of the app is in use
+      current: () => lastStatus.get(key) === at && !muted(machineId, paneId) && options.inUse?.() !== true,
       ...(machineId === "local" ? { pc: pcKeys(machineId)[0] } : { machine_id: machineId }),
       ...(workspace ? { workspace_id: workspace } : {}),
     });

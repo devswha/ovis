@@ -53,6 +53,8 @@ export function AlertWebhookGroup() {
   });
   // a saved destination takes a new choice at once; a new one keeps it until Save
   const choose = (patch: Partial<AlertPrefs>) => {
+    // one save at a time: a quicker second one could land first and the older choice win
+    if (busy) return;
     const next = { ...alerts, ...patch };
     setAlerts(next);
     if (saved) void save(next);
@@ -114,16 +116,16 @@ export function AlertWebhookGroup() {
           <p className={line?.error || lastError ? "settings-hint alert-webhook-error" : "settings-hint"} role="status">{line?.text ?? lastError}</p>
         </div>
         <SettingsRow label={t("Needs input")}>
-          <Toggle label={t("Needs input")} checked={alerts.input} onChange={(input) => choose({ input })} />
+          <Toggle disabled={busy} label={t("Needs input")} checked={alerts.input} onChange={(input) => choose({ input })} />
         </SettingsRow>
         <SettingsRow label={t("Needs permission")}>
-          <Toggle label={t("Needs permission")} checked={alerts.permission ?? alerts.input} onChange={(permission) => choose({ permission })} />
+          <Toggle disabled={busy} label={t("Needs permission")} checked={alerts.permission ?? alerts.input} onChange={(permission) => choose({ permission })} />
         </SettingsRow>
         <SettingsRow label={t("Finished")} wide>
           <Segmented label={t("Finished")} value={alerts.done} onChange={(done: DoneAlerts) => choose({ done })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
         </SettingsRow>
         <SettingsRow label={t("Stopped on an error")}>
-          <Toggle label={t("Stopped on an error")} checked={alerts.error === true} onChange={(error) => choose({ error })} />
+          <Toggle disabled={busy} label={t("Stopped on an error")} checked={alerts.error === true} onChange={(error) => choose({ error })} />
         </SettingsRow>
       </>}
       {preset === "off" && line !== null && <p className={line.error ? "settings-item settings-hint alert-webhook-error" : "settings-item settings-hint"} role="status">{line.text}</p>}

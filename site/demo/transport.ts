@@ -2122,6 +2122,7 @@ async function pushRoute(path: string, method: string, init: RequestInit | undef
 /** Settings → Alerts → Also send to: kept in this page only, and never posted anywhere. */
 const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, last_success_at: null, last_failure_at: null, last_error: null };
 let demoWebhook: AlertWebhookView = NO_WEBHOOK;
+const demoMask = (preset: string, secret: string): string => { if (preset === "telegram") return "…"; try { return `${new URL(secret).host}/…`; } catch { return "…"; } };
 
 function alertWebhookRoute(path: string, method: string, init: RequestInit | undefined): Response {
   if (path === "/api/alerts/webhook/test" && method === "POST") {
@@ -2139,7 +2140,7 @@ function alertWebhookRoute(path: string, method: string, init: RequestInit | und
   const secret = preset === "telegram" ? body.token : body.url;
   const same = demoWebhook.configured && demoWebhook.preset === preset;
   if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
-  demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? `…${secret.slice(-4)}` : demoWebhook.target,
+  demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
     chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts };
   return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
