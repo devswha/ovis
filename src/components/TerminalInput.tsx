@@ -36,7 +36,7 @@ export interface TerminalInputProps {
   onFocus?: () => void;
   /** Settings > Terminal > Keyboard only from the key bar, with the keyboard down: focus raises none (#1635) */
   keyboardHeld?: boolean;
-  /** Settings > Terminal > Fold the key bar: the key bar's own controls, first among the actions (KeyBar.tsx LineKeyControls) */
+  /** Settings > Terminal > Fold the key bar: the Terminal keys button, first among the actions (KeyBar.tsx LineKeysButton) */
   keyControls?: ReactNode;
   ref?: Ref<TerminalInputHandle>;
 }

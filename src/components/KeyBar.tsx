@@ -196,22 +196,16 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
 
 /**
  * Settings > Terminal > Fold the key bar (#1531): in Input line mode on a touch screen the key bar's
- * row is folded, and the line's actions (TerminalInput.tsx) start with the bar's mode key and a
- * Terminal keys button that opens and folds the row, pressed while it is open. Round targets as
- * the line's, without words over them: the line's own two keep the room for theirs.
+ * row is folded, and the line's actions (TerminalInput.tsx) start with a Terminal keys button that
+ * opens and folds it, pressed while it is open. A round target as the line's, without words over it:
+ * the line's own two keep the room for theirs. The mode key stays first in the opened row.
  */
-export function LineKeyControls({ open, onToggleOpen, onToggleDirect, directDisabled }: { open: boolean; onToggleOpen: () => void; onToggleDirect: () => void; directDisabled: boolean }) {
+export function LineKeysButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const t = useT();
-  return <>
-    <button type="button" className="terminal-input-action terminal-input-mode" aria-label={t("Input line")} title={t("Input line")} aria-pressed="true"
-      disabled={directDisabled} onPointerDown={keepFocus} onMouseDown={keepFocus} onClick={onToggleDirect}>
-      <span className="terminal-input-face"><Keyboard aria-hidden="true" /></span>
-    </button>
-    <button type="button" className="terminal-input-action terminal-input-keys" aria-label={t("Terminal keys")} title={t("Terminal keys")} aria-pressed={open}
-      onPointerDown={keepFocus} onMouseDown={keepFocus} onClick={onToggleOpen}>
-      <span className="terminal-input-face"><Ellipsis aria-hidden="true" /></span>
-    </button>
-  </>;
+  return <button type="button" className="terminal-input-action terminal-input-keys" aria-label={t("Terminal keys")} title={t("Terminal keys")} aria-pressed={open}
+    onPointerDown={keepFocus} onMouseDown={keepFocus} onClick={onToggle}>
+    <span className="terminal-input-face"><Ellipsis aria-hidden="true" /></span>
+  </button>;
 }
 
 type Direction = "up" | "down" | "left" | "right";

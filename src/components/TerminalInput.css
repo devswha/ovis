@@ -61,6 +61,23 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
+/* with Terminal keys in the line (Settings > Terminal > Fold the key bar) the actions may not fit the
+   narrowest phone beside the field with Attach and the microphone on too: the field keeps a width to type in, and the actions wrap to a
+   second row above their last one (the line grows upward, as a long draft does), Send kept last */
+.terminal-input.has-key-controls {
+  grid-template-columns: minmax(min(8rem, 40%), 1fr) minmax(0, auto);
+}
+
+.terminal-input.has-key-controls.has-voice {
+  grid-template-columns: minmax(min(8rem, 40%), 1fr) auto minmax(0, auto);
+}
+
+.terminal-input.has-key-controls .terminal-input-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 /* the field's name, above it on the left; the actions' words stand level with it on the right */
 .terminal-input-label {
   grid-column: 1;
@@ -103,7 +120,7 @@
   resize: none;
 }
 
-/* with the key bar's pair in the line (Settings > Terminal > Fold the key bar) the field is narrower on a
+/* with Terminal keys in the line (Settings > Terminal > Fold the key bar) the field is narrower on a
    phone: its placeholder is cut on one row rather than wrapped to a second, which would grow the line */
 .terminal-input.has-key-controls .terminal-input-text::placeholder {
   overflow: hidden;
@@ -169,7 +186,6 @@
    Terminal, off by default) stands before it the same way */
 .terminal-input-insert .terminal-input-face,
 .terminal-input-attach .terminal-input-face,
-.terminal-input-mode .terminal-input-face,
 .terminal-input-keys .terminal-input-face {
   border-color: var(--text-dim);
   background: var(--bg-elevated);
@@ -182,7 +198,6 @@
 @media (hover: hover) {
   .terminal-input-insert:hover:not(:disabled) .terminal-input-face,
   .terminal-input-attach:hover:not(:disabled) .terminal-input-face,
-  .terminal-input-mode:hover:not(:disabled) .terminal-input-face,
   .terminal-input-keys:hover:not(:disabled) .terminal-input-face {
     background: var(--bg-hover);
   }
@@ -190,14 +205,12 @@
 
 .terminal-input-insert:active:not(:disabled) .terminal-input-face,
 .terminal-input-attach:active:not(:disabled) .terminal-input-face,
-.terminal-input-mode:active:not(:disabled) .terminal-input-face,
 .terminal-input-keys:active:not(:disabled) .terminal-input-face {
   border-color: var(--accent);
   color: var(--text-strong);
 }
 
-/* the key bar's own pair, first in the line (KeyBar.tsx LineKeyControls): pressed as an armed key */
-.terminal-input-mode[aria-pressed="true"]:not(:disabled) .terminal-input-face,
+/* Terminal keys, first in the line (KeyBar.tsx LineKeysButton): pressed as an armed key while the row is open */
 .terminal-input-keys[aria-pressed="true"] .terminal-input-face {
   border-color: var(--accent);
   color: var(--text-strong);

@@ -585,7 +585,7 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       </SettingsRow>
       {/* the line's Terminal keys button and the folded key bar are drawn on a touch screen only (PaneTerminal.tsx), so it is offered only there */}
       {touch && (
-        <SettingsRow label={t("Fold the key bar")} description={t("On a touch screen in Input line mode, the key bar stays folded and the terminal gets its row back. A Terminal keys button in the input line opens and folds it, and the Input line key moves into the line beside it.")}>
+        <SettingsRow label={t("Fold the key bar")} description={t("On a touch screen in Input line mode, the key bar stays folded and the terminal gets its row back. A Terminal keys button in the input line opens and folds it.")}>
           <Toggle label={t("Fold the key bar")} checked={settings.terminalFoldKeyBar} onChange={(terminalFoldKeyBar) => update({ terminalFoldKeyBar })} />
         </SettingsRow>
       )}
