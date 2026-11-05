@@ -48,8 +48,11 @@ const nativeReads = new Set<AbortController>();
 
 function nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  // a write is never given up for the caller: the server may have done it
-  if (method !== "GET" && method !== "HEAD") return fetch(input, init);
+  const origin = typeof location === "undefined" ? "http://localhost" : location.origin;
+  const target = new URL(input instanceof Request ? input.url : String(input), origin);
+  // only this server's reads: a write is never given up for the caller (the server may have done it),
+  // and another host's connections were not found dead
+  if ((method !== "GET" && method !== "HEAD") || target.origin !== origin || !target.pathname.startsWith("/api/")) return fetch(input, init);
   const own = init?.signal ?? (input instanceof Request ? input.signal : undefined);
   const read = new AbortController();
   // the caller's abort keeps reaching the body after the headers came
