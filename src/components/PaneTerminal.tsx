@@ -71,6 +71,7 @@ import { useComposerSends } from "../lib/useComposerSends.ts";
 import { usePeekReturn } from "../lib/usePeekReturn.ts";
 import { useChatCallbacks } from "../lib/useChatCallbacks.ts";
 import { useTypedKeys } from "../lib/useTypedKeys.ts";
+import { useTerminalImages } from "../lib/terminalImages.ts";
 import { mountRole, paneObserving } from "../lib/paneObserving.ts";
 
 /** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
@@ -452,6 +453,7 @@ export function PaneTerminal({
   /** read by the OSC 52 handler, which is attached once for the terminal's life */
   const osc52AllowedRef = useRef(settings.paneClipboard);
   osc52AllowedRef.current = settings.paneClipboard;
+  useTerminalImages(terminal, settings.terminalImages, coarse);
   /** read once per terminal, as it mounts (lib/ghostty/capture.ts): a pane opened after the change follows it */
   const ghosttyRef = useRef(settings.terminalGhostty);
   ghosttyRef.current = settings.terminalGhostty;

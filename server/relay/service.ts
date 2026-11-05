@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { encodeOffer } from "../../shared/relay-offer.ts";
@@ -7,7 +7,7 @@ import type { RelayStatus } from "../../shared/protocol.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
-import { loadRelayIdentity, RelayIdentityError, rotateRelayIdentity } from "./identity.ts";
+import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { RelayLink } from "./link.ts";
 import type { RelayLinkOptions } from "./link.ts";
@@ -78,6 +78,8 @@ export class RelayService {
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
+  /** the saved identity's server_id read before the relay started (serverId); null: there was none */
+  private saved: string | null | undefined;
   private enabled = false;
   private shuttingDown = false;
   private resetting = false;
@@ -99,6 +101,18 @@ export class RelayService {
         .map((relay) => relayEndpoint(relay, "wss:")).filter((relay) => relay !== this.relay);
   }
 
+  /** This PC's relay identity once the relay has started: what the account service knows it by (server/account/mailbox.ts). */
+  currentIdentity(): RelayIdentity | undefined {
+    if (this.identity) return this.identity;
+    // one already on disk (the relay off since a restart) still names the PC; none is ever made here
+    if (!existsSync(relayIdentityPath(this.options.stateDir))) return undefined;
+    try { return loadRelayIdentity(this.options.stateDir); } catch (error) {
+      if (error instanceof RelayIdentityError) return undefined;
+      throw error;
+    }
+  }
+
+
   /** The relay new pairing offers name: the regional one while its link is online, else the global one. */
   private get advertised(): string {
     return this.regionalRelay !== null && this.regionalPhase === "online" ? this.regionalRelay : this.relay;
@@ -107,6 +121,16 @@ export class RelayService {
   /** What a phone is told to save for this PC: the relay new offers name, then the global one it falls back to. */
   private relayHints(): readonly string[] {
     return [...new Set([this.advertised, this.relay])];
+  }
+
+  /**
+   * This PC's relay ID: the identity in use, else the one saved (read once), also while the relay is off, as a
+   * phone that subscribed to alerts through it still gets them. Undefined where it never had one.
+   */
+  serverId(): string | undefined {
+    if (this.identity) return this.identity.server_id;
+    if (this.saved === undefined) this.saved = savedServerId(this.options.stateDir) ?? null;
+    return this.saved ?? undefined;
   }
 
   /** Phase and error are the global link's: every phone can reach the PC there. */
