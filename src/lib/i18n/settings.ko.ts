@@ -377,8 +377,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Lock pinned agents (experimental)": "고정 에이전트 잠그기 (실험적)",
   "A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.": "에이전트 목록에서 고정한 에이전트의 메뉴에 '에이전트 잠금'이 생깁니다. 잠긴 에이전트의 패널, 탭, 워크스페이스는 모든 브라우저에서 이 앱으로 닫을 수 없습니다. herdr 자체나 스크립트로는 여전히 닫을 수 있습니다.",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "이 기기에서 에이전트를 워크스페이스 위에 보여 줍니다. 내 응답이 필요한 에이전트가 먼저, 그다음 작업 중, 완료, 대기 순입니다. 고정한 에이전트는 맨 위에 그대로 있습니다.",
-  "Fold helpers under their agent": "도우미를 에이전트 아래에 접기",
-  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "이 기기의 에이전트 목록에서 에이전트의 도우미를 그 행 아래 한 줄로 접고 개수를 보여 줍니다. 내 응답이 필요한 도우미와 선택한 도우미는 계속 보입니다.",
   "Within a state": "같은 상태 안에서",
   "Longest wait": "오래 기다린 순",
   "Also send to": "다른 곳에도 보내기",

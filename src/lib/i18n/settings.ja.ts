@@ -377,8 +377,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Lock pinned agents (experimental)": "固定したエージェントをロック（実験的）",
   "A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.": "エージェント一覧で固定したエージェントのメニューに「エージェントをロック」が加わります。ロックしたエージェントのペイン、タブ、ワークスペースは、どのブラウザでもこのアプリから閉じられません。herdr 本体やスクリプトからは閉じられます。",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "このデバイスでは、エージェントをワークスペースの上に表示します。応答が必要なものが先で、次に作業中、完了、待機の順です。ピン留めしたエージェントは一番上のままです。",
-  "Fold helpers under their agent": "ヘルパーをエージェントの下にたたむ",
-  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "このデバイスのエージェント一覧で、エージェントのヘルパーをその行の下の 1 行にたたみ、数を表示します。応答が必要なヘルパーと選択中のヘルパーは表示されたままです。",
   "Within a state": "同じ状態の中で",
   "Longest wait": "待ち時間順",
   "Also send to": "ほかの送り先",

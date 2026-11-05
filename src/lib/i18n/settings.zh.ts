@@ -377,8 +377,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Lock pinned agents (experimental)": "锁定固定的 Agent（实验性）",
   "A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.": "在 Agent 列表中，已固定 Agent 的菜单会提供“锁定 Agent”。之后在所有浏览器中，本应用都无法关闭已锁定 Agent 的面板、标签页或工作区。通过 herdr 本身或脚本关闭不受影响。",
   "On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.": "在此设备上，把代理列在工作区上方：先是需要你回应的，然后是工作中、已完成和空闲。已固定的代理仍在最上面。",
-  "Fold helpers under their agent": "把助手折叠在其代理下",
-  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "在此设备的代理列表中，把代理的助手折叠为其行下方的一行，并显示数量。需要你回应的助手和选中的助手仍然可见。",
   "Within a state": "同一状态内",
   "Longest wait": "按等待时长",
   "Also send to": "同时发送到",
