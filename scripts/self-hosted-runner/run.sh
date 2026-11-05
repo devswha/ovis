@@ -148,8 +148,15 @@ build_cache_args() {
   local outbox="$BUILD_CACHE_ROOT/outbox/$1"
   BUILD_CACHE_ARGS=()
   [ -n "$BUILD_CACHE_ROOT" ] || return 0
-  # a file the runners' user made in it is this user's to delete (sticky directory); its directories may not be
-  if [ -d "$outbox" ]; then find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null || true; fi
+  # a file the runners' user made in it is this user's to delete (sticky directory); a directory's contents
+  # are that user's only, so a throwaway container of the image, as that user, empties what is left
+  if [ -d "$outbox" ]; then
+    find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null || true
+    if [ -n "$(find "$outbox" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+      docker run --rm --network none --security-opt no-new-privileges --cap-drop ALL --user 1001:1001 \
+        -v "$outbox:/outbox" --entrypoint sh "$IMAGE" -c 'chmod -R u+rwX /outbox 2>/dev/null; find /outbox -mindepth 1 -delete' </dev/null >/dev/null 2>&1 || true
+    fi
+  fi
   mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0
   BUILD_CACHE_ARGS=(-v "$BUILD_CACHE_ROOT/entries:/build-cache:ro" -v "$BUILD_CACHE_ROOT/locks:/build-cache-locks"
     -v "$outbox:/build-cache-outbox" -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks
@@ -163,7 +170,7 @@ promote_loop() {
   for slot in $(seq 1 "$COUNT"); do names+=("${PREFIX}${slot}"); done
   while true; do
     bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
-    [ "$ONCE" = 1 ] && return 0
+    # with --once too: until cleanup stops it, after the slots' containers end
     sleep 1
   done
 }

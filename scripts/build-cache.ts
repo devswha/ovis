@@ -17,8 +17,8 @@
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** Raise when the entry layout or what the key covers changes: older entries then simply miss. */
 const FORMAT = "2";
@@ -100,12 +100,17 @@ function parseManifest(text: string): Map<string, string> {
 export function restore(cacheDir: string, key: string, dist: string, usedDir?: string): boolean {
   const entry = join(cacheDir, key);
   if (!existsSync(join(entry, MANIFEST))) return false;
-  const staging = mkdtempSync(`${dist}.cache-`);
+  // beside dist/ (one file system, for the rename), under a directory git ignores: a crash leaves the checkout clean
+  const scratch = join(dirname(dist), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const staging = mkdtempSync(join(scratch, "ovis-build-cache-restore-"));
   try {
     cpSync(entry, staging, { recursive: true, verbatimSymlinks: true });
     const expected = parseManifest(readFileSync(join(staging, MANIFEST), "utf8"));
     rmSync(join(staging, MANIFEST), { force: true });
     if (manifestOf(hashes(staging)) !== manifestOf(expected)) throw new Error("the entry's files do not match its manifest");
+    // mkdtemp's 0700, which a fresh build's dist/ does not have
+    chmodSync(staging, 0o755);
     rmSync(dist, { recursive: true, force: true });
     renameSync(staging, dist);
   } catch (error) {
@@ -203,9 +208,9 @@ export function takeLock(lockDir: string, key: string, staleMs = 900_000): boole
 
 export const releaseLock = (lockDir: string, key: string): void => rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true });
 
-/** Waits until the entry for `key` is in the cache, or (`untilUnlocked`) its lock is gone, or `ms` pass. */
-export async function awaitBuild(cacheDir: string, key: string, ms: number, lockDir = cacheDir, untilUnlocked = true): Promise<void> {
-  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || (untilUnlocked && !existsSync(join(lockDir, `.lock-${key}`)));
+/** Waits until the entry for `key` is in the cache, or `pending` (its lock, or a claim the launcher has not judged yet) is gone, or `ms` pass. */
+export async function awaitBuild(cacheDir: string, key: string, ms: number, pending = join(cacheDir, `.lock-${key}`)): Promise<void> {
+  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || !existsSync(pending);
   const deadline = Date.now() + ms;
   while (!settled() && Date.now() < deadline) await Bun.sleep(200);
 }
@@ -252,7 +257,7 @@ if (import.meta.main) {
     if (!owner) {
       // another job of this commit is building it: a wait costs no CPU, a second build does
       console.log(`build cache: another job is building ${name}; waiting for it`);
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, lockDir);
+      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_WAIT_SECONDS"] ?? "300") * 1000, join(lockDir, `.lock-${key.key}`));
       if (restored()) process.exit(0);
       owner = takeLock(lockDir, key.key);
     }
@@ -270,8 +275,8 @@ if (import.meta.main) {
     try {
       if (!/^\d+$/.test(run) || !/^\d+$/.test(attempt)) throw new Error("no GitHub run to name");
       deliver(outbox, key.key, dist, run, attempt);
-      // the jobs waiting on the lock restore once the launcher has taken it in, if this run is trusted
-      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, lockDir, false);
+      // the jobs waiting on the lock restore once the launcher has taken it in; it deletes the claim either way
+      await awaitBuild(cacheDir, key.key, Number(process.env["OVIS_BUILD_CACHE_PROMOTE_SECONDS"] ?? "60") * 1000, join(outbox, `${key.key}.claim`));
       console.log(existsSync(join(cacheDir, key.key, MANIFEST)) ? `build cache: stored ${name}` : `build cache: ${name} was not taken in (only trusted runs write the cache)`);
     } catch (error) {
       console.log(`build cache: could not hand ${name} over (${(error as Error).message})`);

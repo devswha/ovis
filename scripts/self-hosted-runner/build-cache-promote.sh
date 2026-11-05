@@ -86,7 +86,7 @@ for name in "$@"; do
   outbox="$ROOT/outbox/$name"
   [ -d "$outbox" ] || continue
   for claim in "$outbox"/*.claim; do
-    [ -e "$claim" ] || continue
+    [ -e "$claim" ] || [ -L "$claim" ] || continue
     file="${claim##*/}" key="${file%.claim}" tar="$outbox/${file%.claim}.tar"
     run="" attempt=""
     # only plain files: a link could make this host user read or keep a file of its own
@@ -97,7 +97,8 @@ for name in "$@"; do
       [ "$(stat -c %s "$tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
       if admit "$tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
     fi
-    rm -f "$claim" "$tar"
+    # whatever it is (a directory named like a claim included): it must not stop the other slots
+    rm -rf "$claim" "$tar" 2>/dev/null || true
   done
 done
 if [ "$promoted" = 1 ]; then evict; fi

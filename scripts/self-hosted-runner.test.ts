@@ -349,6 +349,12 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
       expect([mode(join(root, "entries")), mode(join(root, "locks")), mode(join(root, "outbox")), mode(join(root, "outbox/herdr-ci-" + spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim() + "-1"))]).toEqual(["755", "1777", "755", "1777"]);
       expect(runRunner().calls).not.toContain("build-cache");
+      // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
+      const first = join(root, "outbox", "herdr-ci-" + spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim() + "-1");
+      mkdirSync(join(first, "junk"), { recursive: true });
+      writeFileSync(join(first, "junk/blob"), "x");
+      const again = runRunner({ args: ["--build-cache", join(home, "shm")] });
+      expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
@@ -774,7 +780,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha") {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -788,6 +794,8 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
       writeFileSync(join(outbox, `${key}.claim`), "7 1\n");
+      // an earlier slot whose job left a directory named like a claim
+      if (junkSlot) mkdirSync(join(root, "outbox", "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
       const sha = "5".repeat(40);
       const answers: Record<string, unknown> = {
         jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
@@ -805,7 +813,7 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
-      const result = spawnSync("bash", [promoteScript, "owner/repo", root, writer, "2048", slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const result = spawnSync("bash", [promoteScript, "owner/repo", root, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
       const entry = join(root, "entries", key);
       return {
         status: result.status,
@@ -827,6 +835,12 @@ esac
     expect(run.entries).toEqual([key]);
     expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
     expect(run.outbox).toEqual([]);
+  });
+
+  it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
+    const run = promote({}, "files", "devswha", true);
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
   });
 
   it("takes in the build of a push to the default branch", () => {

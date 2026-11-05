@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { awaitBuild, cacheKey, deliver, evict, releaseLock, restore, store, takeLock } from "./build-cache.ts";
@@ -160,7 +160,16 @@ describe("store and restore", () => {
       expect(() => restore(cache, "k", join(root, "dist"))).toThrow("the entry's files do not match its manifest");
       expect(files(join(root, "dist"))).toEqual({ "index.html": "mine" });
     }
-    expect(readdirSync(root).filter((name) => name.startsWith("dist.cache-"))).toEqual([]);
+    expect(readdirSync(join(root, "node_modules/.cache"))).toEqual([]);
+  });
+
+  it("restores dist/ readable by others, as a fresh build leaves it", () => {
+    const root = temp("ovis-build-cache-mode-");
+    const cache = join(root, "cache");
+    store(cache, "k", dist(root, { "index.html": "<p>" }), 1 << 30);
+    rmSync(join(root, "dist"), { recursive: true });
+    expect(restore(cache, "k", join(root, "dist"))).toBe(true);
+    expect(statSync(join(root, "dist")).mode & 0o777).toBe(0o755);
   });
 
   it("refuses an entry holding a link, even one its manifest names", () => {
@@ -340,6 +349,26 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     expect(runs()).toBe(1);
     expect(readdirSync(cache)).toEqual([]);
     expect(readdirSync(outbox).map((name) => name.replace(/^[0-9a-f]{64}/, "<key>")).sort()).toEqual(["<key>.claim", "<key>.tar"]);
+    expect(readdirSync(locks)).toEqual([]);
+  }, 60_000);
+
+  it("stops waiting as soon as the launcher has judged its build, taken in or not", async () => {
+    const { root } = project();
+    const base = temp("ovis-build-cache-refused-");
+    const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
+    for (const dir of [cache, outbox, locks]) mkdirSync(dir);
+    const env: Record<string, string | undefined> = { ...process.env, OVIS_BUILD_CACHE_DIR: cache, OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_PROMOTE_SECONDS: "120", GITHUB_RUN_ID: "7", GITHUB_RUN_ATTEMPT: "1" };
+    for (const name of ["GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    const job = Bun.spawn([process.execPath, script], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const claimed = (): string | undefined => readdirSync(outbox).find((name) => name.endsWith(".claim"));
+    const deadline = Date.now() + 30_000;
+    while (!claimed() && Date.now() < deadline) await Bun.sleep(25);
+    // the launcher refuses it: it deletes the claim and the build
+    for (const name of readdirSync(outbox)) rmSync(join(outbox, name));
+    const refusedAt = Date.now();
+    expect(await job.exited).toBe(0);
+    expect(Date.now() - refusedAt).toBeLessThan(10_000);
+    expect(await new Response(job.stdout).text()).toContain("was not taken in");
     expect(readdirSync(locks)).toEqual([]);
   }, 60_000);
 
