@@ -192,14 +192,18 @@ export function MachineSidebar(props: Props) {
   const closeHiddenMenu = useCallback(() => setHiddenMenu(null), []);
   const pcsToggle = useRef<HTMLButtonElement>(null);
   // showing the last one takes the count out of the head, with the focus the menu gave back to it: the focus
-  // stays in the head, on the PCs fold, rather than falling to the page
+  // stays in the head, on the PCs fold, rather than falling to the page. So does a last one taken from outside
+  // (the roster dropping it, another tab showing it) while the menu was open and its focus fell with it; a
+  // focus anywhere else is left where it is
   const focusPcsHead = useRef(false);
   useEffect(() => {
     const refocus = focusPcsHead.current;
     focusPcsHead.current = false;
     if (hiddenCount > 0) return;
+    const menuWasOpen = hiddenMenu !== null;
     setHiddenMenu(null);
-    if (refocus) pcsToggle.current?.focus({ preventScroll: true });
+    const focusLost = document.activeElement === null || document.activeElement === document.body;
+    if (refocus || (menuWasOpen && focusLost)) pcsToggle.current?.focus({ preventScroll: true });
   }, [hiddenCount]);
   const showMachine = (id: string) => {
     focusPcsHead.current = hiddenList.length === 1 && hiddenList[0]!.id === id;

@@ -15,7 +15,7 @@ import { openSettingsPage } from "./settings-page.ts";
 // selection off it, keeps the last PC shown, survives a reload, and leaves a link to its pane
 // working; the PCs head's hidden count brings it back. On three PCs at 390 and 1280, light and dark, that
 // count's menu shows each hidden PC again in place, by keyboard and by touch, gives the focus somewhere
-// it can stay when the last one is shown, and goes to Settings, where the last PC shown stays locked on.
+// it can stay when the last one is shown or taken from outside, and goes to Settings, where the last PC shown stays locked on.
 // Screenshots go to UI_EVIDENCE_DIR when it is set.
 const app = mkdtempSync(join(tmpdir(), "herdr-hide-pc-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -24,7 +24,7 @@ const patch = `(() => {
   const json = (value) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
   let last = null;
   // the PCs a check asks for (open()'s roster), else the Host and Work PC
-  const ids = window.hidePcRoster ?? ["local", "work"];
+  let ids = window.hidePcRoster ?? ["local", "work"];
   const names = { local: "Laptop", work: "Work PC", lab: "Lab PC" };
   const roster = (original) => ids.map((id) => {
     const machine = structuredClone(original.find((item) => item.id === "local"));
@@ -33,18 +33,26 @@ const patch = `(() => {
     machine.state = "connected";
     return machine;
   });
+  // the server's roster changing under the page (a PC removed elsewhere): the open streams carry the new one
+  const sources = new Set();
+  let lastRoster = null;
+  window.hidePcSetRoster = (next) => {
+    ids = next;
+    for (const source of sources) if (lastRoster) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...lastRoster, machines: roster(last) }) }));
+  };
   window.EventSource = class extends EventTarget {
     constructor(url, options) {
       super(); this.inner = new EventSourceDemo(url, options); this.readyState = 1;
+      sources.add(this);
       this.inner.onmessage = (event) => {
         const message = JSON.parse(event.data);
-        if (message.type === "machines") { last = message.machines; message.machines = roster(last); }
+        if (message.type === "machines") { last = message.machines; lastRoster = message; message.machines = roster(last); }
         this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(message) }));
       };
       this.inner.onerror = (event) => this.onerror?.(event);
       this.inner.onopen = (event) => this.onopen?.(event);
     }
-    close() { this.inner.close(); this.readyState = 2; }
+    close() { this.inner.close(); this.readyState = 2; sources.delete(this); }
   };
   window.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
@@ -354,6 +362,45 @@ try {
           } finally { await close(); }
         }
 
+        // the last hidden PC taken away from outside while its menu holds the focus (the roster dropping it, or
+        // another tab showing it): the count and its menu go, and the focus stays in the PCs head, not the page
+        for (const leave of ["roster", "another tab"] as const) {
+          const { page, errors, phone, close } = await open(browser, width, "", { roster: ["local", "work", "lab"], hidden: ["lab"] });
+          try {
+            await sidebar(page, phone);
+            await hiddenPill(page).waitFor();
+            if (phone) await hiddenPill(page).tap();
+            else { await hiddenPill(page).focus(); await page.keyboard.press("Enter"); }
+            await hiddenChoice(page, phone, "Show Lab PC").waitFor();
+            await page.waitForFunction((phone) => document.activeElement?.closest(phone ? ".row-sheet" : ".row-menu") != null, phone);
+            if (leave === "roster") await page.evaluate(() => (window as unknown as { hidePcSetRoster(ids: string[]): void }).hidePcSetRoster(["local", "work"]));
+            else await page.evaluate(() => {
+              localStorage.setItem("ovis:hidden-pcs", "[]");
+              window.dispatchEvent(new StorageEvent("storage", { key: "ovis:hidden-pcs" }));
+            });
+            await hiddenPill(page).waitFor({ state: "detached" });
+            await page.locator(phone ? ".row-sheet" : ".row-menu").waitFor({ state: "detached" });
+            await page.waitForFunction(() => document.activeElement?.matches(".pcs-sidebar > .sidebar-section-head .sidebar-section-toggle") === true, undefined, { timeout: 5000 })
+              .catch(async () => assert.fail(`the ${leave} took the last hidden PC: the focus fell to ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80) ?? "nothing")}`));
+            assert.deepEqual(errors, []);
+          } finally { await close(); }
+        }
+        // with the menu closed, the same change leaves the focus where the reader put it
+        if (width > 480) {
+          const { page, errors, close } = await open(browser, width, "", { roster: ["local", "work", "lab"], hidden: ["lab"] });
+          try {
+            await sidebar(page, false);
+            await hiddenPill(page).waitFor();
+            const field = page.locator(".sidebar-filter-input");
+            await field.focus();
+            await page.evaluate(() => (window as unknown as { hidePcSetRoster(ids: string[]): void }).hidePcSetRoster(["local", "work"]));
+            await hiddenPill(page).waitFor({ state: "detached" });
+            await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            assert.equal(await isFocused(field), true, "the focus is not taken from another control");
+            assert.deepEqual(errors, []);
+          } finally { await close(); }
+        }
+
         // a stored list that hides every PC shows them all, so the head counts none and no PC is out of reach
         {
           const { page, errors, phone, close } = await open(browser, width, "", { roster: ["local", "work", "lab"], hidden: ["local", "work", "lab"] });
@@ -365,7 +412,7 @@ try {
             assert.deepEqual(errors, []);
           } finally { await close(); }
         }
-        console.log(`PASS ${width}px hidden-PCs head: count in words, menu by ${width <= 480 ? "touch" : "keyboard"}, Show one keeps the rest, Show the last keeps the focus in the head, Settings route keeps the last PC shown, light and dark`);
+        console.log(`PASS ${width}px hidden-PCs head: count in words, menu by ${width <= 480 ? "touch" : "keyboard"}, Show one keeps the rest, Show the last keeps the focus in the head, as does the last taken by the roster or another tab while the menu is open (and not from another control), Settings route keeps the last PC shown, light and dark`);
       }
     } finally { await browser.close(); }
   } finally { await server.stop(true); }

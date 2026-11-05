@@ -1243,7 +1243,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   stays connected, that shows each PC again in place (**Show Work PC**), in the roster's order, or goes
   to that Settings group (**Choose PCs in Settings…**). Showing one follows the switch's rules and moves
   no selection; showing the last takes the pill away, and the focus it held goes to the PCs head's fold,
-  not the page. VS Code's view heads list the views hidden there to show again the same way. The banner of
+  not the page; so does the focus of an open menu whose last PC the roster or another tab takes away.
+  VS Code's view heads list the views hidden there to show again the same way. The banner of
   a PC that needs setup or a bridge update still shows for a hidden PC: it asks for an action. herdr's
   TUI shows one session at a time and Orca hides other clients' workspaces; Ovis shows every PC of
   the roster, so the choice is per PC and per device, not a sidebar switch.
