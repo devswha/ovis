@@ -43,8 +43,14 @@ export interface Transport {
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
 }
 
-/** Reads in flight on the browser's own connections, each with the abort abandonNativeReads ends it by. */
-const nativeReads = new Set<AbortController>();
+/** Reads in flight on the browser's own connections: the abort abandonNativeReads ends each by, and the PC it reads. */
+const nativeReads = new Map<AbortController, string>();
+
+/** The PC a server path reads: another PC's go through /api/machines/<id>/, the rest are this server's own. */
+function readMachine(pathname: string): string {
+  const remote = /^\/api\/machines\/([^/]+)\//.exec(pathname);
+  return remote ? decodeURIComponent(remote[1]!) : "local";
+}
 
 function nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -60,7 +66,7 @@ function nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   if (own && typeof AbortSignal.any === "function") signal = AbortSignal.any([own, read.signal]);
   else if (own?.aborted) read.abort(own.reason);
   else own?.addEventListener("abort", () => read.abort(own.reason), { once: true });
-  nativeReads.add(read);
+  nativeReads.set(read, readMachine(target.pathname));
   return fetch(input, { ...init, signal }).finally(() => { nativeReads.delete(read); });
 }
 
@@ -68,11 +74,16 @@ function nativeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Resp
  * The connection to the server was found dead without a close (an unanswered probe): a read sent on
  * one of the browser's connections lost with it never answers, and holds one of the few connections
  * the browser keeps to a host, so every later request, the chat's reads too, waits behind it until
- * the browser gives that connection up, often a minute later. The reads still waiting are given up.
+ * the browser gives that connection up, often a minute later. The reads still waiting are given up:
+ * all of them for this server's own connection (its loss is the browser's path to the server), only
+ * that PC's for another PC's, whose loss may be the server's own way to it.
  */
-export function abandonNativeReads(): void {
-  for (const read of nativeReads) read.abort(new DOMException("The connection to the server was lost.", "AbortError"));
-  nativeReads.clear();
+export function abandonNativeReads(machineId = "local"): void {
+  for (const [read, machine] of nativeReads) {
+    if (machineId !== "local" && machine !== machineId) continue;
+    read.abort(new DOMException("The connection to the server was lost.", "AbortError"));
+    nativeReads.delete(read);
+  }
 }
 
 export const nativeTransport: Transport = {

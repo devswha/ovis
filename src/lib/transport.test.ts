@@ -99,3 +99,25 @@ it("gives up the reads in flight on the browser's own connections, not a write n
     globalThis.fetch = original;
   }
 });
+
+it("gives up only another PC's reads when that PC's connection was lost, and every read when this server's was", async () => {
+  // Given
+  const original = globalThis.fetch;
+  const signals = new Map<string, AbortSignal>();
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    signals.set(String(input), init!.signal!);
+    return new Promise<Response>(() => undefined);
+  }) as typeof fetch;
+  try {
+    for (const path of ["/api/pane/conversation?pane_id=p", "/api/machines/pc%202/pane/conversation?pane_id=p", "/api/machines/pc3/files"]) void nativeTransport.fetch(path);
+    // When: the server's way to "pc 2" may be what was lost
+    abandonNativeReads("pc 2");
+    // Then
+    expect([...signals.values()].map((signal) => signal.aborted)).toEqual([false, true, false]);
+    // When: this server's own connection was lost, so was every read on the browser's way to it
+    abandonNativeReads();
+    expect([...signals.values()].map((signal) => signal.aborted)).toEqual([true, true, true]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

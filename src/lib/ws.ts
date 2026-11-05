@@ -363,7 +363,7 @@ export class HerdrSocket {
       // the path is back: reads sent on the lost one would hold the browser's connections to the server
       if (this.pathLost) {
         this.pathLost = false;
-        abandonNativeReads();
+        abandonNativeReads(new URL(this.url, "http://localhost").searchParams.get("machine_id") ?? "local");
       }
       // always send the role, never only when non-default: a user can flip the role
       // while disconnected (setMode stores it without sending), so without this frame
