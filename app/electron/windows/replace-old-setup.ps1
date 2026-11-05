@@ -2,10 +2,14 @@
 # replaces it is installed; installer.nsh runs it. That app has no uninstaller, and its Remove button
 # also takes the Ovis server off the PC, so it is never run. What it leaves (app/windows/src/LoginItem.cs)
 # is its copy at %LOCALAPPDATA%\Programs\Ovis\Ovis.exe, a Start menu Ovis.lnk to that copy, and an HKCU
-# Run value "Ovis" that starts the copy with --start. Only those go; herdr, the Ovis server it installed
-# and their state stay. Anything that is not provably that app's is left alone. Each step runs even when
-# one before it failed; the exit code says whether any did.
-param([Parameter(Mandatory = $true)][string]$NewExe)
+# Run value "Ovis" that starts the copy with --start. That sign-in start is what starts herdr's server
+# when the Ovis plugin is installed (app/windows/src/Program.cs StartAtLogin), so while herdr says the
+# plugin is installed the copy and its sign-in start stay, and only its windows and shortcuts go. Without
+# the plugin all of it goes. herdr, the Ovis server it installed and their state stay. Anything that is
+# not provably that app's is left alone. Each step runs even when one before it failed; the exit code
+# says whether any did.
+# -Herdr: the herdr to ask; when empty, found where that app looks for it (app/windows/src/Paths.cs).
+param([Parameter(Mandatory = $true)][string]$NewExe, [string]$Herdr = '')
 $ErrorActionPreference = 'Stop'
 $failed = 0
 function Step([string]$What, [scriptblock]$Body) {
@@ -31,11 +35,39 @@ if ($present -and -not (IsOldSetup $exe)) {
     exit 0
 }
 
+# herdr's own answer, as that app reads it (Model.FindPlugin): the Ovis plugin under its id, or the one
+# releases up to 0.4.13 used. No herdr, or no answer within 15 s, is no plugin.
+function OvisPluginInstalled {
+    $herdr = $Herdr
+    if (-not $herdr) {
+        $dirs = @((Join-Path $env:USERPROFILE '.bun\bin'), (Join-Path $env:LOCALAPPDATA 'Programs\Herdr\bin')) +
+            ([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') + ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')
+        $herdr = @($dirs | Where-Object { $_ } | ForEach-Object { Join-Path ([Environment]::ExpandEnvironmentVariables($_)) 'herdr.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+    }
+    if (-not $herdr) { return $false }
+    $start = New-Object System.Diagnostics.ProcessStartInfo $herdr
+    $start.Arguments = 'plugin list --json'
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::Start($start)
+    $output = $process.StandardOutput.ReadToEndAsync()
+    if (-not $process.WaitForExit(15000)) { $process.Kill(); return $false }
+    if ($process.ExitCode -ne 0) { return $false }
+    # as Setup.ParsePlugin reads it: an entry with that plugin_id and a plugin_root
+    $listed = @((ConvertFrom-Json $output.Result).result.plugins | Where-Object { ($_.plugin_id -eq 'devswha.ovis' -or $_.plugin_id -eq 'devswha.herdr-web-ui') -and $_.plugin_root })
+    return $listed.Count -gt 0
+}
+$keepStart = $false
+Step 'ask herdr for the Ovis plugin' { $script:keepStart = OvisPluginInstalled }
+
 # every open window of it, the installed copy's or one opened from a download: an open one could set
 # its shortcut and sign-in start up again, or run its Remove. It only drives herdr and the Ovis server,
 # which run on their own and keep running.
 Step 'close its windows' {
-    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'Ovis.exe'")) {
+    # a second download saves as Ovis (1).exe
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name LIKE 'Ovis%.exe'")) {
         if (IsOldSetup $process.ExecutablePath) {
             Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
             Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
@@ -45,30 +77,34 @@ Step 'close its windows' {
 }
 
 # the sign-in start it writes, word for word (also when its copy is already gone); a value the user
-# pointed elsewhere is theirs
-Step 'remove its sign-in start' {
-    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    $value = (Get-ItemProperty -Path $runKey -Name Ovis -ErrorAction SilentlyContinue).Ovis
-    if ($value -ieq ('"' + $exe + '" --start')) {
-        Remove-ItemProperty -Path $runKey -Name Ovis
-        Write-Output 'removed its sign-in start'
-    }
-}
-
-# its shortcuts (the Start menu one, and any the user copied to the desktop); this app's own are left
-Step 'remove its shortcuts' {
-    $shell = New-Object -ComObject WScript.Shell
-    foreach ($folder in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
-        foreach ($file in @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) {
-            if ($shell.CreateShortcut($file.FullName).TargetPath -ieq $exe) {
-                Remove-Item -LiteralPath $file.FullName -Force
-                Write-Output "removed its shortcut $($file.FullName)"
-            }
+# pointed elsewhere is theirs. With the Ovis plugin installed it stays: it starts herdr's server at sign-in.
+if ($keepStart) {
+    Write-Output "kept its sign-in start and $exe`: they start herdr's server at sign-in for the Ovis plugin"
+} else {
+    Step 'remove its sign-in start' {
+        $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        $value = (Get-ItemProperty -Path $runKey -Name Ovis -ErrorAction SilentlyContinue).Ovis
+        if ($value -ieq ('"' + $exe + '" --start')) {
+            Remove-ItemProperty -Path $runKey -Name Ovis
+            Write-Output 'removed its sign-in start'
         }
     }
 }
 
-if ($present) {
+# its shortcuts (the Start menu one, also in a folder, and any the user copied to the desktop); this app's own are left
+Step 'remove its shortcuts' {
+    $shell = New-Object -ComObject WScript.Shell
+    $links = @(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Programs')) -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue) +
+        @(Get-ChildItem -LiteralPath ([Environment]::GetFolderPath('Desktop')) -Filter '*.lnk' -File -ErrorAction SilentlyContinue)
+    foreach ($file in $links) {
+        if ($shell.CreateShortcut($file.FullName).TargetPath -ieq $exe) {
+            Remove-Item -LiteralPath $file.FullName -Force
+            Write-Output "removed its shortcut $($file.FullName)"
+        }
+    }
+}
+
+if ($present -and -not $keepStart) {
     Step "remove $exe" {
         Remove-Item -LiteralPath $exe -Force
         Write-Output "removed $exe"

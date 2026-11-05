@@ -1,6 +1,7 @@
 ; The desktop app replaces Ovis for Windows (app/windows, the one-file setup app):
-; replace-old-setup.ps1 takes that app's copy, sign-in start, shortcuts and open windows off the PC, and
-; leaves herdr, the Ovis server and their state as they are. customInstall runs after this app's Start
+; replace-old-setup.ps1 closes that app's windows and takes its shortcuts off the PC, and its copy and
+; sign-in start too unless herdr says the Ovis plugin is installed (then they keep starting herdr's server
+; at sign-in). herdr, the Ovis server and their state stay as they are. customInstall runs after this app's Start
 ; menu shortcut is made; when that shortcut was one of that app's (an update keeps the shortcut it
 ; finds) and the script removed it, it is made again here. One the user deleted stays deleted.
 
