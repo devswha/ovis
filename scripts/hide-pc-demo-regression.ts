@@ -109,6 +109,16 @@ const group = (page: Page, name: string) => page.locator(`section.machine-group[
 const NO_DROPLET = ".droplet { visibility: hidden !important; }";
 const HIDDEN_HEAD = /Hidden on this device\s+A hidden PC stays connected\. A link or an alert still opens its panes\./;
 
+/** The last hidden PC taken away from outside: the roster dropping it, or another tab showing it. */
+async function takeLastHidden(page: Page, leave: "roster" | "another tab"): Promise<void> {
+  if (leave === "roster") await page.evaluate(() => (window as unknown as { hidePcSetRoster(ids: string[]): void }).hidePcSetRoster(["local", "work"]));
+  else await page.evaluate(() => {
+    localStorage.setItem("ovis:hidden-pcs", "[]");
+    window.dispatchEvent(new StorageEvent("storage", { key: "ovis:hidden-pcs" }));
+  });
+  await hiddenPill(page).waitFor({ state: "detached" });
+}
+
 /** The sidebar in view: a phone's drawer is opened for it. */
 async function sidebar(page: Page, phone: boolean): Promise<void> {
   if (phone) {
@@ -373,15 +383,22 @@ try {
             else { await hiddenPill(page).focus(); await page.keyboard.press("Enter"); }
             await hiddenChoice(page, phone, "Show Lab PC").waitFor();
             await page.waitForFunction((phone) => document.activeElement?.closest(phone ? ".row-sheet" : ".row-menu") != null, phone);
-            if (leave === "roster") await page.evaluate(() => (window as unknown as { hidePcSetRoster(ids: string[]): void }).hidePcSetRoster(["local", "work"]));
-            else await page.evaluate(() => {
-              localStorage.setItem("ovis:hidden-pcs", "[]");
-              window.dispatchEvent(new StorageEvent("storage", { key: "ovis:hidden-pcs" }));
-            });
-            await hiddenPill(page).waitFor({ state: "detached" });
+            await takeLastHidden(page, leave);
             await page.locator(phone ? ".row-sheet" : ".row-menu").waitFor({ state: "detached" });
             await page.waitForFunction(() => document.activeElement?.matches(".pcs-sidebar > .sidebar-section-head .sidebar-section-toggle") === true, undefined, { timeout: 5000 })
               .catch(async () => assert.fail(`the ${leave} took the last hidden PC: the focus fell to ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80) ?? "nothing")}`));
+            assert.deepEqual(errors, []);
+          } finally { await close(); }
+        }
+        // with the menu closed and the count itself focused, the same change keeps the focus in the PCs head
+        for (const leave of ["roster", "another tab"] as const) {
+          const { page, errors, phone, close } = await open(browser, width, "", { roster: ["local", "work", "lab"], hidden: ["lab"] });
+          try {
+            await sidebar(page, phone);
+            await hiddenPill(page).focus();
+            await takeLastHidden(page, leave);
+            await page.waitForFunction(() => document.activeElement?.matches(".pcs-sidebar > .sidebar-section-head .sidebar-section-toggle") === true, undefined, { timeout: 5000 })
+              .catch(async () => assert.fail(`the ${leave} took the last hidden PC from the focused count: the focus fell to ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80) ?? "nothing")}`));
             assert.deepEqual(errors, []);
           } finally { await close(); }
         }
@@ -409,6 +426,24 @@ try {
             await group(page, "Lab PC").waitFor();
             assert.equal(await group(page, "Work PC").count(), 1);
             assert.equal(await hiddenPill(page).count(), 0, "nothing is said hidden while every PC is drawn");
+            assert.deepEqual(errors, []);
+          } finally { await close(); }
+        }
+        // between a phone's width and the desktop's the sidebar is a drawer and the menu a popover: the first Escape
+        // closes the popover alone, the next the drawer (lib/useSidebarLayout.ts)
+        if (width > 480) {
+          const { page, errors, close } = await open(browser, 700, "", { roster: ["local", "work", "lab"], hidden: ["lab"] });
+          try {
+            await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+            await page.locator(".sidebar.is-open").waitFor();
+            await hiddenPill(page).click();
+            await page.getByRole("menu").waitFor();
+            await page.keyboard.press("Escape");
+            await page.getByRole("menu").waitFor({ state: "detached" });
+            assert.equal(await page.locator(".sidebar.is-open").count(), 1, "700px: Escape on the popover leaves the drawer out");
+            assert.equal(await isFocused(hiddenPill(page)), true, "700px: and gives the focus back to the count");
+            await page.keyboard.press("Escape");
+            await page.locator(".sidebar.is-open").waitFor({ state: "detached" });
             assert.deepEqual(errors, []);
           } finally { await close(); }
         }

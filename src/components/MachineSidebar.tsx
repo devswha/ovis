@@ -194,8 +194,8 @@ export function MachineSidebar(props: Props) {
   const pcsToggle = useRef<HTMLButtonElement>(null);
   // showing the last one takes the count out of the head, with the focus the menu gave back to it: the focus
   // stays in the head, on the PCs fold, rather than falling to the page. So does a last one taken from outside
-  // (the roster dropping it, another tab showing it) while the menu was open and its focus fell with it; a
-  // focus anywhere else is left where it is
+  // (the roster dropping it, another tab showing it) while the menu or the count itself held the focus and it
+  // fell with them; a focus anywhere else is left where it is
   const focusPcsHead = useRef(false);
   useEffect(() => {
     const refocus = focusPcsHead.current;
@@ -204,7 +204,7 @@ export function MachineSidebar(props: Props) {
     const menuWasOpen = hiddenMenu !== null;
     setHiddenMenu(null);
     const focusLost = document.activeElement === null || document.activeElement === document.body;
-    if (refocus || (menuWasOpen && focusLost)) pcsToggle.current?.focus({ preventScroll: true });
+    if (refocus || ((menuWasOpen || hiddenHeldFocus) && focusLost)) pcsToggle.current?.focus({ preventScroll: true });
   }, [hiddenCount]);
   const showMachine = (id: string) => {
     focusPcsHead.current = hiddenList.length === 1 && hiddenList[0]!.id === id;
@@ -244,6 +244,8 @@ export function MachineSidebar(props: Props) {
   // PC shown is not offered, and App moves a selection off the PC. The PC's header goes with it, so the focus goes
   // to the PCs head's count of the PCs hidden here, whose menu shows them again
   const hiddenButton = useRef<HTMLButtonElement>(null);
+  // read as this render starts, while the count is still in the page: its focus falls to the page once it goes
+  const hiddenHeldFocus = hiddenButton.current !== null && document.activeElement === hiddenButton.current;
   const focusHiddenButton = useRef(false);
   useEffect(() => {
     if (!focusHiddenButton.current || hiddenButton.current === null) return;
