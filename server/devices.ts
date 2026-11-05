@@ -778,8 +778,12 @@ export class DeviceStore {
     this.writeTombstones(this.tombstones.filter((t) => t.key !== key));
   }
 
-  /** Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. */
+  /**
+   * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. None on a
+   * PC in no account: no record applies there, and its revoked keys may pair again with any code.
+   */
   private tombstone(rows: readonly StoredDevice[], now: number): void {
+    if (this.account() === null) return;
     const keys = [...new Set(rows.flatMap((d) => d.relay_public_key === undefined || this.isTombstoned(d.relay_public_key) ? [] : [d.relay_public_key]))];
     const removedAt = new Date(now).toISOString();
     const next = [...this.tombstones,

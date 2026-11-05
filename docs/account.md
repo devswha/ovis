@@ -265,7 +265,9 @@ is what authenticates the PC.
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be (`unchanged`), so a late or replayed one cannot undo it. A row an `add` or a remote
   approval made goes, however late the `remove` arrives.
-- **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back.
+- **Revoke** and **Revoke all** on a PC that belongs to an account leave a tombstone too, so no
+  record brings the key back. A PC in no account keeps none: no record applies there, and a revoked
+  key may pair again with any code.
 - A pairing made on this PC (a code started on the PC, or a comparison approved here) clears that
   key's tombstone, after its row is written. A code started through the relay, or a comparison an
   account member approves remotely, is refused for a tombstoned key.

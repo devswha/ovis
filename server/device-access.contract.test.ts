@@ -1180,3 +1180,22 @@ it("a script's first pairing on a fresh install is kept at once, so its token st
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("a PC in no account keeps no tombstones, so a revoked key may pair again with a code started through the relay", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-repair-"));
+  try {
+    const store = new DeviceStore(stateDir);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    const first = store.pairRelay(store.startPairing().code, "Relay phone", publicKey);
+    if (!first) throw new Error("Expected relay enrollment");
+    store.revoke(first.device.id);
+    expect(store.isTombstoned(publicKey)).toBe(false);
+    const again = store.pairRelay(store.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false }).code, "Relay phone", publicKey);
+    expect(again?.device.label).toBe("Relay phone");
+    store.revokeAll();
+    expect(new DeviceStore(stateDir).isTombstoned(publicKey)).toBe(false);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
