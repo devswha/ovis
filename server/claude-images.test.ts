@@ -441,6 +441,28 @@ it.skipIf(process.platform === "win32")("a filesystem exception revokes a reject
   expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull();
 });
 
+it("rejects an image when the path's last check sees a same-size rewrite that put the modification time back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-image-ctime-"));
+  roots.push(dir);
+  const path = join(dir, "session.jsonl");
+  const other = Buffer.from(png);
+  other[40] = other[40]! ^ 1;
+  const text = (bytes: Buffer) => line({ type: "user", uuid: id(1), parentUuid: null, message: { content: [{ ...picture, source: { ...picture.source, data: bytes.toString("base64") } }] } });
+  writeFileSync(path, text(png));
+  const time = Math.floor(Date.now() / 1000) - 10;
+  utimesSync(path, time, time);
+  // the lookup's last path check, after its last stat of the pinned file: only the change time moved
+  let checks = 0;
+  const stat = fs.statSync;
+  const watch = spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+    if (args[0] === path && ++checks === 3) { writeFileSync(path, text(other)); utimesSync(path, time, time); }
+    return stat(...args);
+  }) as typeof fs.statSync);
+  try { expect(await transcriptImageAsync(path, `${id(1)}:0`)).toBeNull(); } finally { watch.mockRestore(); }
+  expect(checks).toBe(3);
+  expect(Buffer.from((await transcriptImageAsync(path, `${id(1)}:0`))!.bytes)).toEqual(other);
+});
+
 // Windows makes a symbolic link only with Developer Mode or the right to make one, which a test
 // run may not have: the reader's `follow` is checked with injected IO there (transcript-reader.test.ts)
 describe.skipIf(process.platform === "win32")("a transcript reached through a link", () => {

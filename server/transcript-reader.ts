@@ -96,6 +96,8 @@ export interface TranscriptFile {
   /** The pinned handle's whole stat, for a reader that keys on more than a TranscriptVersion (its change time). */
   stats(): Promise<Stats>;
   pathVersion(): Promise<TranscriptVersion | null>;
+  /** The path's whole stat (followed as `pathVersion` is), change time included. */
+  pathStats(): Promise<Stats>;
   /**
    * Owned bytes, at an explicit position, at most one MiB. Short reads are completed up to EOF.
    * `into`: the caller's buffer they are read into (at least `length` long), so none is allocated.
@@ -331,6 +333,12 @@ export class TranscriptReader {
                 const version = transcriptVersion(await this.io.stat(path, follow));
                 current();
                 return version;
+              }),
+              pathStats: () => now ? timed(() => this.io.statNow!(path, follow)) : operation(async () => {
+                current();
+                const stats = await this.io.stat(path, follow);
+                current();
+                return stats;
               }),
               read: (position, length, into) => now ? timed((direct) => fillNow(direct, position, length, into ?? Buffer.allocUnsafe(length)))
                 : operation(() => fill(position, length, into ?? Buffer.allocUnsafe(length))),

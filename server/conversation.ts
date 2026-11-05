@@ -2830,11 +2830,10 @@ function* transcriptImageSteps(path: string, ref: string, apart: boolean, file?:
   // a lease (`file`) pins the file itself
   const fd = file === undefined ? openSync(path, "r") : undefined;
   const pinned = function* (): Steps<Stats> { return file === undefined ? fstatSync(fd!) : yield* awaited(file.stats()); };
-  // the path still names the file as `snapshot` saw it
+  // the path still names the file as `snapshot` saw it, its change time included: a same-size rewrite
+  // can put the modification time back
   const named = function* (snapshot: Stats): Steps<boolean> {
-    if (file === undefined) return sameImageFile(snapshot, statSync(path));
-    const version = yield* awaited(file.pathVersion());
-    return version !== null && version.id === `${snapshot.dev}:${snapshot.ino}` && version.size === snapshot.size && version.mtimeMs === snapshot.mtimeMs;
+    return sameImageFile(snapshot, file === undefined ? statSync(path) : yield* awaited(file.pathStats()));
   };
   const boundary = clearScans.get(path);
   const boundaryScanned = boundary?.scanned;
