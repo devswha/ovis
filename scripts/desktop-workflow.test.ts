@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 interface Step { name?: string; run?: string; env?: Record<string, string> }
 interface Workflow { jobs: { build: { steps: Step[] } } }
 
-const workflow = Bun.YAML.parse(readFileSync(new URL("../.github/workflows/desktop.yml", import.meta.url).pathname, "utf8")) as Workflow;
+const workflow = Bun.YAML.parse(readFileSync(fileURLToPath(new URL("../.github/workflows/desktop.yml", import.meta.url)), "utf8")) as Workflow;
 const build = workflow.jobs.build.steps.find((step) => step.name?.startsWith("Build "))!;
 const signing = ["CSC_LINK", "CSC_KEY_PASSWORD", "WIN_CSC_LINK", "WIN_CSC_KEY_PASSWORD"];
 
