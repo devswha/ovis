@@ -126,7 +126,8 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
 
   /**
    * One pass of the pending reveal: a mounted row within a pixel of its place ends it; one further
-   * off is scrolled into place, and an unmounted one to its estimated position. The render a scroll
+   * off is scrolled into place, and an unmounted one to its estimated position (or, already there,
+   * waits for the render that draws its window). The render a scroll
    * causes settles the next pass, which also catches the virtualizer moving the row again as it
    * re-measures; a scroll that changes nothing renders nothing, so a frame later looks once more.
    */
@@ -152,6 +153,10 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
       if (position === undefined) { reveal.current = null; return; }
       const offset = pending.align === "center" ? (view.height - position.height) / 2 : 0;
       target = (file.top ?? 0) + position.top - offset;
+      // already there with the row still unmounted: the virtualizer has not yet drawn the window
+      // for the last scroll (wrapped rows re-measuring after a remount take a few frames), and the
+      // render that draws it settles the next pass; ending here would leave the line off screen
+      if (Math.abs(root.scrollTop - Math.max(0, target)) <= 1) return;
     }
     if (pending.passes >= MAX_REVEAL_PASSES) { reveal.current = null; return; }
     pending.passes += 1;
@@ -166,10 +171,10 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     fileRef.current = instance as unknown as VirtualizedFile;
     containerRef.current = node;
     if (node.shadowRoot !== null) keepEmptyRows(node.shadowRoot);
-    readAnchor();
     // this fires inside the virtualizer's render pass, which ends by fixing its scroll anchor: a
-    // scroll made here would be undone, so the reveal waits for the pass to finish
-    queueMicrotask(settle);
+    // scroll made here would be undone, and the layout read here is not yet the one shown (a
+    // marked line in the middle of the view can read as off it), so both wait for the pass to finish
+    queueMicrotask(() => { readAnchor(); settle(); });
   }, [readAnchor, settle]);
 
   const onVirtualizer = useCallback((instance: VirtualizerInstance | undefined): void => { virtualizerRef.current = instance; }, []);
@@ -199,14 +204,16 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   }, [settle, readAnchor, anchoredReveal]);
 
   // SettingsProvider writes a new --file-source-scale in a passive effect, after this component's: the height is read
-  // a frame later, and the file mounted again at it reveals the line the view showed, as a wrap toggle does
+  // a frame later, and the file mounted again at it reveals the line the view showed, as a wrap toggle does. The line
+  // is taken now, before the new scale resizes the old rows (a smaller size clamps the scroll to their new end)
   const sizedOnce = useRef(false);
   useEffect(() => {
     if (!sizedOnce.current) { sizedOnce.current = true; return; }
+    const anchored = anchoredReveal();
     const frame = requestAnimationFrame(() => {
       const next = measureLine();
       if (next === null || next === lineHeightRef.current) return;
-      reveal.current = anchoredReveal();
+      reveal.current = anchored;
       lineHeightRef.current = next;
       setLineHeight(next);
     });
