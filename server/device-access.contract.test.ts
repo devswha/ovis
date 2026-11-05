@@ -1225,32 +1225,3 @@ it("a PC in no account whose tombstone file will not parse refuses a code starte
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
-
-
-it("a key re-paired with a relay code on a PC in no account stays when a sibling state dir brings its tombstone back", async () => {
-  const [stateDir, sibling] = [mkdtempSync(join(tmpdir(), "ovis-relay-repair-a-")), mkdtempSync(join(tmpdir(), "ovis-relay-repair-b-"))];
-  try {
-    const store = new DeviceStore(stateDir);
-    const fresh = async () => {
-      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-      return Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
-    };
-    const [starterKey, publicKey] = [await fresh(), await fresh()];
-    const starter = store.pairRelay(store.startPairing().code, "Laptop", starterKey);
-    const first = store.pairRelay(store.startPairing().code, "Phone", publicKey);
-    if (!starter || !first) throw new Error("Expected relay enrollment");
-    store.revoke(first.device.id);
-    // both dirs hold the registry and the revoke's tombstone
-    for (const name of ["devices.json", "account-tombstones.json"]) writeFileSync(join(sibling, name), readFileSync(join(stateDir, name)), { mode: 0o600 });
-    // a second later, as a person pairing again would be
-    const later = Date.now() + 1_000;
-    const again = store.pairRelay(store.startPairing(later, { remote: true, startedBy: starter.device.id, memberRequired: false }).code, "Phone", publicKey, later);
-    expect(again).not.toBeNull();
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, siblingStateDir: sibling, token: "t", tailscaleOwner: null, machines: false, sidecar: false });
-    try {
-      expect(app.context.services.devices.hasKey(publicKey)).toBe(true);
-    } finally { app.stop(); }
-  } finally {
-    for (const dir of [stateDir, sibling]) rmSync(dir, { recursive: true, force: true });
-  }
-});

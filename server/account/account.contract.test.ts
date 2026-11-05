@@ -822,12 +822,27 @@ test("a key revoked on this PC stays out when a sibling dir that missed the revo
   } finally { rmSync(sibling, { recursive: true, force: true }); }
 });
 
-test("merging two dirs keeps the account's removal of a key over a later revoke on the PC", () => {
+test("merging two dirs keeps the account's removal of a key over a revoke on the PC, with the later time", () => {
   const [a, b] = [mkdtempSync(join(tmpdir(), "ovis-account-a-")), mkdtempSync(join(tmpdir(), "ovis-account-b-"))];
   try {
     const key = "a-removed-key";
     writeFileSync(join(a, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: ACCOUNT, record_id: "r1", removed_at: "2026-11-01T00:00:00.000Z" }] }));
     writeFileSync(join(b, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: "", record_id: "local", removed_at: "2026-11-02T00:00:00.000Z" }] }));
+    expect(mergeAccountTombstones(a, b)).toBeNull();
+    for (const dir of [a, b]) {
+      const kept = JSON.parse(readFileSync(join(dir, "account-tombstones.json"), "utf8")) as { tombstones: { record_id: string; removed_at: string }[] };
+      expect(kept.tombstones.map((t) => [t.record_id, t.removed_at])).toEqual([["r1", "2026-11-02T00:00:00.000Z"]]);
+    }
+  } finally { for (const dir of [a, b]) rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("merging two dirs rewrites a dir whose tombstone for the key is the PC's revoke at the same time as the account's removal", () => {
+  const [a, b] = [mkdtempSync(join(tmpdir(), "ovis-account-a-")), mkdtempSync(join(tmpdir(), "ovis-account-b-"))];
+  try {
+    const key = "a-removed-key";
+    const at = "2026-11-02T00:00:00.000Z";
+    writeFileSync(join(a, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: "", record_id: "local", removed_at: at }] }));
+    writeFileSync(join(b, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key, account: ACCOUNT, record_id: "r1", removed_at: at }] }));
     expect(mergeAccountTombstones(a, b)).toBeNull();
     for (const dir of [a, b]) {
       const kept = JSON.parse(readFileSync(join(dir, "account-tombstones.json"), "utf8")) as { tombstones: { record_id: string }[] };

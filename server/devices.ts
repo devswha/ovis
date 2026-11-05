@@ -206,13 +206,16 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
   const merged = new Map<string, AccountTombstone>();
   for (const tombstone of [...read.flatMap((list) => list ?? []), ...pending]) {
     const kept = merged.get(tombstone.key);
-    // an account's removal outranks a revoke on the PC, whatever their times: only the account's keeps a relay code out
-    const rank = (t: AccountTombstone) => t.record_id === "local" ? 0 : 1;
-    if (!kept || rank(tombstone) > rank(kept) || (rank(tombstone) === rank(kept) && tombstone.removed_at > kept.removed_at)) merged.set(tombstone.key, tombstone);
+    if (!kept) { merged.set(tombstone.key, tombstone); continue; }
+    // the account's removal outranks a revoke on the PC (only it keeps a relay code out), with the later of the two times
+    const local = (t: AccountTombstone) => t.record_id === "local";
+    const winner = local(kept) && !local(tombstone) ? tombstone : !local(kept) && local(tombstone) ? kept : tombstone.removed_at > kept.removed_at ? tombstone : kept;
+    const removedAt = tombstone.removed_at > kept.removed_at ? tombstone.removed_at : kept.removed_at;
+    merged.set(tombstone.key, { ...winner, removed_at: removedAt });
   }
   const tombstones = [...merged.values()];
   for (const [index, path] of paths.entries()) {
-    if ((read[index] ?? []).length !== tombstones.length || tombstones.some((t) => !read[index]?.some((own) => own.key === t.key && own.removed_at === t.removed_at))) {
+    if ((read[index] ?? []).length !== tombstones.length || tombstones.some((t) => !read[index]?.some((own) => own.key === t.key && own.removed_at === t.removed_at && own.record_id === t.record_id))) {
       writePrivateState(path, { v: 1, tombstones });
     }
   }
@@ -311,12 +314,9 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a member's row (an add or a remote approval: `account` and `added_by`) goes with its key's tombstone whatever
-    // its time, as removeAccountKey takes it; any other row, a relay code's re-pairing included, only with one newer
-    // than itself, an account's removal taking a relay code's row whatever its time too
+    // a row an add or a remote approval made goes whatever its time, as removeAccountKey takes it
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key
-        && ((device.added_by !== undefined && (device.account !== undefined || t.record_id !== "local")) || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || t.removed_at >= device.created_at));
   }
 
   /**
