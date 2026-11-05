@@ -40,6 +40,7 @@ import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
 import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
+import { isKiroChatProcess, resolveKiroTranscript, kiroConversation, kiroToolOutput, type KiroTranscript } from "./kiro.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
@@ -48,7 +49,9 @@ import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
-import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
+import { coreSocket } from "./herdr-core/discovery.ts";
+import { coreSocketPath, servingCore } from "./herdr-core/runtime.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
@@ -1442,11 +1445,52 @@ export async function labelOmoPanes(snapshot: SessionSnapshot): Promise<SessionS
 }
 
 /**
+ * The local terminal an `hc attach <t>` in front shows, by the address hc itself reports for it: the
+ * word typed must be that address, never a name hc resolves to another terminal, nor another
+ * machine's terminal (whose pids name nothing here).
+ */
+function hcAttachWord(argv: readonly string[] | null | undefined): string | null {
+  if (!argv || argv.length !== 3 || argv[1] !== "attach") return null;
+  const program = programName(argv[0]!);
+  return (program === "hc" || program === "herdr-core") && /^[A-Za-z0-9]+$/.test(argv[2]!) ? argv[2]! : null;
+}
+
+/** A process's environment as it started (Linux /proc, macOS sysctl), the first value of each name; null when it cannot be read. */
+function startEnvironment(pid: number): Record<string, string> | null {
+  const entries = process.platform === "linux" ? processEnviron(pid) : process.platform === "darwin" ? darwinProcess.environment(pid)?.split("\0") ?? null : null;
+  const env: Record<string, string> = {};
+  for (const entry of entries ?? []) {
+    const at = entry.indexOf("=");
+    if (at > 0 && !Object.hasOwn(env, entry.slice(0, at))) env[entry.slice(0, at)] = entry.slice(at + 1);
+  }
+  // an environment read empty is a process gone or not ours to read
+  return Object.keys(env).length === 0 ? null : env;
+}
+
+/**
+ * Whether an `hc attach` client reaches the core this server serves: a client goes to whatever core its
+ * own environment names (HC_SOCKET, HC_SESSION, its runtime and config folders), where the terminal
+ * numbers (t1, t2...) repeat. Its socket, found from that environment as hc finds it, must be this
+ * server's core's; an environment that cannot be read follows nothing.
+ */
+function reachesOwnCore(client: number): boolean {
+  const env = startEnvironment(client);
+  if (env === null) return false;
+  const theirs = coreSocket({ env }).path;
+  const ours = coreSocketPath();
+  if (theirs === ours) return true;
+  try { return realpathSync(theirs) === realpathSync(ours); } catch { return false; }
+}
+
+/**
  * The Claude processes in a pane's foreground (`known`: herdr's answer already read); none when herdr cannot say.
  * On Windows herdr and herdr-core name only the shell in front, even while Claude runs in it, and
  * herdr-core reports no session for it: the Claude below the shell is taken from the process table (#2896).
+ * Elsewhere herdr-core names only the first process of the foreground job, where herdr names them all: the one
+ * Claude below it in the job (a launcher's child), or, in a tab running `hc attach <t>`, the Claude of the
+ * terminal it shows (#3009). `viewed`: the terminal such a tab shows, which is followed no further.
  */
-async function claudeProcesses(paneId: string, known?: KnownProcesses): Promise<{ pid: number; name?: string; argv0?: string; argv?: string[] }[]> {
+async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = false): Promise<{ pid: number; name?: string; argv0?: string; argv?: string[] }[]> {
   let info: KnownProcesses;
   if (known !== undefined) info = known;
   else {
@@ -1457,9 +1501,15 @@ async function claudeProcesses(paneId: string, known?: KnownProcesses): Promise<
   const front = (info?.foreground_processes ?? []).map(({ pid, name, argv0, argv }) => ({
     pid, name, ...(typeof argv0 === "string" ? { argv0 } : {}), ...(Array.isArray(argv) ? { argv } : {}),
   })).filter(isClaudeProcess);
+  if (viewed && info?.pane_id !== paneId) return [];
+  if (front.length > 0) return front;
   const shell = info?.shell_pid;
-  if (front.length > 0 || process.platform !== "win32" || typeof shell !== "number") return front;
-  return (await windowsShellClaude(shell).catch(() => null)) ?? [];
+  if (process.platform === "win32") return typeof shell === "number" ? (await windowsShellClaude(shell).catch(() => null)) ?? [] : [];
+  const leader = info?.foreground_processes?.[0];
+  if (!servingCore() || leader === undefined || typeof leader.pid !== "number") return [];
+  const word = viewed ? null : hcAttachWord(leader.argv);
+  if (word !== null) return reachesOwnCore(leader.pid) ? claudeProcesses(word, undefined, true) : [];
+  return (await jobClaude(leader.pid)) ?? [];
 }
 
 /** The pid of the one Claude process in a pane's foreground, or null. */
@@ -1752,7 +1802,8 @@ type ResolvedTranscript =
   ))
   | { source: "opencode-transcript"; path: string; session: string }
   | { source: "hermes-transcript"; path: string; sessionId: string }
-  | ({ source: "dsh-transcript" } & DshTranscript);
+  | ({ source: "dsh-transcript" } & DshTranscript)
+  | ({ source: "kiro-transcript" } & KiroTranscript);
 
 /** A native file or database session, resolved without parsing conversation turns. */
 export type NativeTranscript =
@@ -1790,10 +1841,15 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       agent = "dsh";
       if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
     }
+    // herdr labels Kiro from its screen: before that shows, its chat TUI in front says the same
+    else if (foreground.some((process) => Array.isArray(process.argv) && isKiroChatProcess(process.argv))) {
+      agent = "kiro";
+      if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
+    }
     else if (await kiroCodexProcess(info?.process_info as ProcessInfo | undefined) !== null) agent = "codex";
   }
-  // a Muse, Letta or dsh pane's processes are asked for once, for omo and for its own binding
-  if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
+  // a Muse, Letta, dsh or Kiro pane's processes are asked for once, for omo and for its own binding
+  if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui" || agent === "kiro") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
     return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
   }
@@ -1803,6 +1859,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   try {
     // dsh-tui reports itself to herdr as `dsh-tui`; the other dsh TUIs are found by their process above
     if (agent === "dsh" || agent === "dsh-tui") return { source: "dsh-transcript", ...await resolveDshTranscript(known) };
+    if (agent === "kiro") return { source: "kiro-transcript", ...await resolveKiroTranscript(known) };
     if (agent === "copilot") return { source: "copilot-transcript", ...await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
       const found = await resolveGrokStore(pane, grokHome);
@@ -2057,6 +2114,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   if (resolved.source === "dsh-transcript") {
     rememberPaneRead(paneId, resolved.path);
     return await dshConversation(resolved, page);
+  }
+  if (resolved.source === "kiro-transcript") {
+    rememberPaneRead(paneId, resolved.path);
+    return await kiroConversation(resolved, page);
   }
   if (resolved.source === "devin-transcript") {
     try {
@@ -2477,7 +2538,12 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
   // the store decides the parser, not the pane's label: omo writes omp's
   // session shape while herdr may be calling that same pane `claude`. The page
   // bounds the turns, so none are cut: they must meet the next page exactly.
-  const turns = live?.turns ?? parseTurns(source, path, text, undefined, undefined, start);
+  // a page is parsed in stretches (before and after the newest turn start), and OmO's goal wait is
+  // only ever the conversation's last word: on an older page, or anywhere but the end, it is over
+  const parsed = live?.turns ?? parseTurns(source, path, text, undefined, undefined, start);
+  const turns = parsed.some((turn, index) => turn.parts[0]?.kind === "goal_wait" && (page.before !== undefined || index < parsed.length - 1))
+    ? parsed.filter((turn, index) => turn.parts[0]?.kind !== "goal_wait" || (page.before === undefined && index === parsed.length - 1))
+    : parsed;
   const metadata = live?.metadata ?? parseConversationMetadata(`${head}\n${text}`, source, undefined, piAgentDir);
   // Record the stat from BEFORE the read: an append during parsing must cause
   // another read on the next poll, not permanently cache a torn tail.
@@ -3157,6 +3223,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   }
   rememberPaneRead(paneId, resolved.path);
   if (resolved.source === "dsh-transcript") return await dshToolOutput(resolved, ref);
+  if (resolved.source === "kiro-transcript") return await kiroToolOutput(resolved, ref);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
   let nativeRef = ref;
   if (resolved.source === "copilot-transcript") {

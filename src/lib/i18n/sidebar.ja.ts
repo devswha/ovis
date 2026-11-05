@@ -1,11 +1,15 @@
 /**
  * Japanese for the keys only the sidebar files use:
- * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx.
+ * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
+ * components/SidebarSplit.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_JA: Record<string, string> = {
   "Pin agent": "エージェントを固定",
   "Unpin agent": "エージェントの固定を解除",
+  "Lock agent": "エージェントをロック",
+  "Unlock agent": "エージェントのロックを解除",
+  "Locked": "ロック中",
   "Mute alerts": "通知をミュート",
   "Unmute alerts": "通知のミュートを解除",
   "Alerts muted": "通知ミュート中",
@@ -13,6 +17,11 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Unpin workspace": "ワークスペースの固定を解除",
   "Pinned": "固定済み",
   "Background agents": "バックグラウンドのエージェント",
+  "Background workspaces": "バックグラウンドのワークスペース",
+  "Helpers": "ヘルパー",
+  "Helpers of {title}": "{title} のヘルパー",
+  "Fold helpers under their agent": "ヘルパーをエージェントの下にたたむ",
+  "On this device, an agent's helpers fold under one line below its row in the Agents list, with how many there are. A helper that needs you and the selected one stay in sight.": "このデバイスのエージェント一覧で、エージェントのヘルパーをその行の下の 1 行にたたみ、数を表示します。応答が必要なヘルパーと選択中のヘルパーは表示されたままです。",
   "Background tasks running: {count}": "実行中のバックグラウンドタスク: {count}",
   "Agent waiting on background work": "エージェントがバックグラウンドの作業を待っています",
   "Has a question": "質問があります",
@@ -32,6 +41,7 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Reorder workspace {name}": "ワークスペース {name} を並べ替え",
   "Drag to reorder · Alt+↑/↓": "ドラッグで並べ替え · Alt+↑/↓",
   "Resize sidebar": "サイドバーの幅を変更",
+  "Resize PCs and Agents": "PC とエージェントの高さを調整",
   "More for {title}": "{title} のその他",
   "Rename workspace": "ワークスペース名を変更",
   "Close workspace": "ワークスペースを閉じる",
@@ -59,4 +69,7 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Shell": "シェル",
   "Working": "作業中",
   "Idle": "待機",
+  "{count} need you": "{count} 件が対応待ち",
+  "Move to {group}": "{group} に移動",
+  "Remove from {group}": "{group} から外す",
 };

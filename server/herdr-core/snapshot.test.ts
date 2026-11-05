@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import { buildSnapshot, type HcTerminal, keyBytes, OTHER_WORKSPACE_ID } from "./snapshot.ts";
+import { buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID } from "./snapshot.ts";
 
 function terminal(address: string, extra: Partial<HcTerminal> = {}): HcTerminal {
   return { address, cols: 120, rows: 40, cwd: "/home/u", state: "live", ...extra };
@@ -60,6 +60,49 @@ describe("buildSnapshot", () => {
     const snapshot = buildSnapshot([terminal("t1", { labels: { where: "tmp / 3" } })], layout, "0.1.14");
     expect(snapshot.workspaces[0]!.label).toBe("tmp");
     expect(snapshot.tabs[0]!.label).toBe("3");
+  });
+
+  // A server can show a Windows PC's terminals from any host (machine-scope.ts): the path's shape decides how it splits
+  const named = (cwd: string, folder?: string) => buildSnapshot([terminal("t1", { cwd })], {
+    spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
+  }, "0.1.17").workspaces[0]!.label;
+
+  it("names a space with nothing else to go by after the last folder of a Windows path", () => {
+    expect(named("C:\\repos\\ovis-app")).toBe("ovis-app");
+    expect(named("C:\\repos\\ovis-app\\")).toBe("ovis-app");
+    expect(named("C:/repos\\ovis-app")).toBe("ovis-app");
+    expect(named("c:\\work\\web")).toBe("web");
+    expect(named("\\\\server\\share\\site")).toBe("site");
+    expect(named("/home/u", "D:\\work\\web\\")).toBe("web");
+    // a terminal Ovis started in a workspace of its own, before the app adopts it
+    const unplaced = buildSnapshot([terminal("t2", { cwd: "C:\\Users\\u\\api", labels: { "herdr.space": "ovis-s1" } })], null, "0.1.17");
+    expect(unplaced.workspaces.map((w) => [w.workspace_id, w.label])).toEqual([["ovis-s1", "api"]]);
+    // a space of the app's with nothing live in it, named by the first terminal labeled into it: its folder, else that terminal's
+    const adopted = (folder?: string) => buildSnapshot([terminal("t5", { cwd: "C:\\Users\\u\\api", labels: { "herdr.space": "s1" } })], {
+      spaces: [{ id: "s1", name: "", ...(folder === undefined ? {} : { folder }), tabs: [{ id: "s1t1", name: "", root: block("t1") }] }],
+    }, "0.1.17").workspaces[0]!.label;
+    expect(adopted("D:\\work\\web")).toBe("web");
+    expect(adopted()).toBe("api");
+  });
+
+  it("keeps a POSIX folder's name whole, backslash and all, and a forward-slash Windows path's as before", () => {
+    expect(named("/home/u/back\\slash")).toBe("back\\slash");
+    expect(named("/home/u/back\\slash/")).toBe("back\\slash");
+    expect(named("/mnt/c:\\work")).toBe("c:\\work");
+    expect(named("/mnt/c:/")).toBe("c:");
+    expect(named("/home//u/")).toBe("u");
+    expect(named("/")).toBe("/");
+    expect(named("d:/work/web")).toBe("web");
+    // neither a drive with its separator nor a UNC path: it stays whole
+    expect(named("\\foo\\bar")).toBe("\\foo\\bar");
+    expect(named("C:foo\\bar")).toBe("C:foo\\bar");
+  });
+
+  it("leaves a drive root as written, so it still reads as a place", () => {
+    expect(named("C:\\")).toBe("C:\\");
+    expect(named("C:/")).toBe("C:/");
+    expect(named("\\\\?\\C:\\")).toBe("\\\\?\\C:\\");
+    expect(named("\\\\?\\C:\\repos\\ovis-app")).toBe("ovis-app");
   });
 
   it("leaves out finished terminals and tabs left with none, and gives a terminal no tab holds a tab of its own", () => {
@@ -347,6 +390,21 @@ describe("buildSnapshot, what herdr-core reports beyond placement", () => {
       ["t4", undefined, undefined, undefined],
       ["t5", undefined, undefined, undefined],
     ]);
+  });
+});
+
+describe("OpenCode sessions", () => {
+  it("reads OpenCode's own pending records only, by their ids", () => {
+    expect(opencodeRecords({ ses_a: { app: "opencode", state: "working" }, deploy: { app: "make", state: "working" }, ses_b: "working" })).toEqual(["ses_a"]);
+    expect(opencodeRecords(undefined)).toEqual([]);
+  });
+
+  it("puts the session it is given on the pane and its agent", () => {
+    const session = { agent: "opencode", source: "herdr:opencode", kind: "id", value: "ses_a" };
+    const snapshot = buildSnapshot([terminal("t1", { status: { app: "opencode", state: "idle" } }), terminal("t2")], null, "0.1.18", undefined, undefined,
+      (entry) => entry.address === "t1" ? session : null);
+    expect(snapshot.panes.map((pane) => pane.agent_session ?? null)).toEqual([session, null]);
+    expect(snapshot.agents.map((agent) => agent.agent_session ?? null)).toEqual([session]);
   });
 });
 

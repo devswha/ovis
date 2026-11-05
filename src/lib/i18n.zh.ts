@@ -1,5 +1,6 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
+import { SETTINGS_COMPOSER_ZH } from "./i18n/settings-composer.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
 import { COMPOSER_ZH } from "./i18n/composer.zh.ts";
 import { CHAT_ZH } from "./i18n/chat.zh.ts";
@@ -29,6 +30,8 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
+  "Attach files": "附加文件",
   "Sign out": "退出登录",
 
   "Only for {pc}": "仅限 {pc}",
@@ -38,6 +41,12 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "已使用 {provider} 登录",
   "Signing in…": "正在登录…",
   "The sign-in did not finish. Try again.": "登录未完成。请重试。",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "打开 GitHub 并输入此代码。仅当这是你在此页面上自己发起的登录时才输入。",
+  "Waiting for GitHub…": "正在等待 GitHub 批准…",
+  "Open GitHub": "打开 GitHub",
+  "GitHub refused the sign-in.": "GitHub 拒绝了此次登录。",
+  "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",
+  "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
   "Add {device}?": "添加 {device}？",
@@ -105,6 +114,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "显示终端",
   "Show the chat": "显示聊天",
   "Close this half": "关闭这一半",
+  "Remove from the split": "从拆分中移除",
+  "Resize the split": "调整拆分大小",
   "Toggle sidebar (⌘⇧B)": "切换侧边栏 (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "聊天记录 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "实时终端 (⌘⇧J)",
@@ -197,6 +208,7 @@ const BASE: Record<string, string> = {
   // ---- command palette ----
   "Refresh": "刷新",
   "Search panes and actions": "搜索窗格和操作",
+  "Search conversation": "搜索对话",
 
   // ---- new workspace ----
   "Browse": "浏览",
@@ -232,6 +244,7 @@ const BASE: Record<string, string> = {
   "Submit": "提交",
   "Recommended": "推荐",
   "Agents": "代理",
+  "Show {name}": "显示 {name}",
   "Check again": "重新检查",
   "Setup guide": "设置向导",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
@@ -347,6 +360,8 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "窗格交换被拒绝：{reason}",
   "The panes are in different tabs.": "窗格位于不同的标签页中。",
   "Choose two different panes.": "请选择两个不同的窗格。",
+  "The pane moved to the right instead.": "窗格改为移到了右侧。",
+  "The pane moved below instead.": "窗格改为移到了下方。",
   "A pane is no longer available.": "窗格已不可用。",
   "There is no pane on that side.": "该方向没有窗格。",
   "Split pane right": "向右拆分窗格",
@@ -396,12 +411,32 @@ const BASE: Record<string, string> = {
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} 想通过中继配对。只有它的屏幕显示以下数字时才批准:",
   "Decline": "拒绝",
   "differs": "不同",
+  "this PC": "这台电脑",
+  "It matches": "一致",
+  "Does {name}'s screen show this ID?": "{name} 的屏幕上显示的是这个 ID 吗？",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "电脑会在“设置 → 手机和设备”中代码下方显示它的 ID。只有每一组都一致时才配对。",
+  "ID of the PC this code found": "此代码找到的电脑的 ID",
+  "A code has ten letters and digits, like 7K3QD-M2XHA.": "代码由十个字母和数字组成，例如 7K3QD-M2XHA。",
+  "No PC shows this code. Check it, or show a new one on the PC.": "没有电脑显示这个代码。请检查，或在电脑上显示新代码。",
+  "That code did not work. Check it and try again; after three wrong tries the PC needs a new code.": "该代码无效。请检查后重试；输错三次后需要在电脑上生成新代码。",
+  "That code ran out. Show a new one on the PC.": "该代码已过期。请在电脑上显示新代码。",
+  "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "另一台设备正在尝试此代码，或尝试次数过多。请稍候，或在电脑上显示新代码。",
+  "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "该响应并非来自本应用可配对的电脑。请在电脑上显示新代码，或扫描其二维码。",
+  "The relay could not be reached. Check this device's connection, then try again.": "无法连接中继。请检查此设备的网络连接，然后重试。",
+  "Reset": "重置",
+  "Group name": "分组名称",
+  "Remove group {group}": "删除分组 {group}",
+  "New group": "新分组",
+  "Add group": "添加分组",
+  "No group": "无分组",
+  "Context {percent}% left": "上下文剩余 {percent}%",
+  "{used} of {window} tokens": "{used} / {window} Token",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH },
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,

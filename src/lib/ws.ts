@@ -904,6 +904,11 @@ export class HerdrSocket {
     return !this.featuresKnown || this.features.has("watch");
   }
 
+  /** Whether this connection's server has listed its features yet (hasTerminalHistory is final once it has). */
+  featuresListed(): boolean {
+    return this.featuresKnown;
+  }
+
   /** Whether the browser keeps a pane's scrollback (`terminal-history`); false until the features come. */
   hasTerminalHistory(): boolean {
     return this.terminalHistory;
@@ -943,6 +948,11 @@ export class HerdrSocket {
     state.keepSize = false;
     state.releaseSizeOwed = true;
     this.send({ type: "resize", pane_id: paneId, cols, rows });
+  }
+
+  /** Whether the PC searches a pane's conversation (`conversation-search`); false until the features come, and from an older bridge. */
+  canSearchConversation(): boolean {
+    return this.features.has("conversation-search");
   }
 
   /** Whether this connection may take a held pane from another web bridge: a server that knows how, and not observing. */

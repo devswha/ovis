@@ -149,10 +149,14 @@ describe("demo transport", () => {
     "/api/pane/selection": "copying a selection across screens: not part of the demo (listed when this guard was added)",
     "/api/updates/check": "the demo's /api/updates says managed: false, so Settings offers no check",
     "/api/updates/install": "the demo's /api/updates says managed: false, so Settings offers no install",
+    "/api/workspace/git/branches": "a repository's history, for API clients: no screen of the app asks for it yet",
+    "/api/workspace/git/log": "a repository's history, for API clients: no screen of the app asks for it yet",
+    "/api/workspace/git/show": "a repository's history, for API clients: no screen of the app asks for it yet",
   };
   /** Client frames the demo needs no case for, each with its reason; any other frame gets a case in site/demo/transport.ts. */
   const DEMO_IGNORES: Record<string, string> = {
     "pty-ack": "the demo has no output flow control to release; its switch's default branch drops it",
+    "prompt-watch": "the demo does not advertise the prompt-watch feature, and the browser never sends it; its switch's default branch drops it",
   };
 
   it("answers every /api route the server handles", () => {

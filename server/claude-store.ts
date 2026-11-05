@@ -15,13 +15,14 @@
 
 import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
-import { open, readFile, readdir, readlink, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, readlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import nodePath, { basename, dirname, isAbsolute, join, type PlatformPath } from "node:path";
 import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
 import { darwinStartTime, sysctlCall } from "./darwin-process.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { processAlive, processStartUpperBoundAsync } from "./process-start.ts";
+import { jobProcessesBelow, type JobProcess } from "./foreground-job.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
 
@@ -45,17 +46,62 @@ export function isClaudeProcess(entry: { name?: string; argv0?: string; argv?: r
 /**
  * The Claude processes under a Windows pane's shell, from the process table: herdr and herdr-core
  * name only the shell in front there (windows-processes.ts). The nearest one, and any other not
- * started by it (two of them: which one a session belongs to cannot be told). Null when the table
- * says nothing, which is no proof that no Claude runs there.
+ * started by it (two of them: which one a session belongs to cannot be told). The native claude.exe
+ * the shell started can run the session in a child claude.exe, and only that child writes the PID
+ * record: a Claude with no record file in any store hands over to the nearest Claudes below it that
+ * have one (windowsLaunchedClaude). Null when the table says nothing, which is no proof that no
+ * Claude runs there.
  */
-export async function windowsShellClaude(shellPid: number, table: () => Promise<ProcessRow[]> = recentProcessTable): Promise<{ pid: number; argv: string[] }[] | null> {
+export async function windowsShellClaude(shellPid: number, table: () => Promise<ProcessRow[]> = recentProcessTable, home = userHome()): Promise<{ pid: number; argv: string[] }[] | null> {
   const rows = await table();
   if (rows.length === 0) return null;
-  const claude = descendantProcesses(rows, shellPid).filter(isClaudeProcess);
+  const claude = nearestOf(rows, descendantProcesses(rows, shellPid).filter(isClaudeProcess));
+  return (await Promise.all(claude.map((entry) => windowsLaunchedClaude(entry, rows, home)))).flat();
+}
+
+/** The first of `claude` (nearest first) and any other it did not start. */
+function nearestOf<T extends { pid: number }>(rows: readonly ProcessRow[], claude: T[]): T[] {
   const first = claude[0];
   if (first === undefined) return [];
   const below = new Set(descendantProcesses(rows, first.pid).map((entry) => entry.pid));
   return claude.filter((entry) => entry === first || !below.has(entry.pid));
+}
+
+/**
+ * The Claude that runs the session `entry` started: `entry` itself, unless it has no PID record file
+ * in any store and a Claude below it has one: then the nearest such Claude and any other that one
+ * did not start, whatever their records say (the callers check them, and refuse a store that cannot
+ * be told). Only a file's presence counts: a torn or leftover record still marks the Claude that
+ * runs the session, so a Claude that one started (`claude -p`) never takes its place, and a Claude
+ * beside it with no record is still told apart from none. A `claude attach` client writes no record
+ * and names its session by its job: it counts as one that has a record, so it never hands over and
+ * is never passed over.
+ */
+async function windowsLaunchedClaude(entry: { pid: number; argv: string[] }, rows: readonly ProcessRow[], home: string): Promise<{ pid: number; argv: string[] }[]> {
+  const inner = descendantProcesses(rows, entry.pid).filter(isClaudeProcess);
+  const named = (claude: { pid: number; argv: string[] }) => claudeAttachArgs(claude.argv) !== null || hasRecordFile(home, claude.pid);
+  if (inner.length === 0 || await named(entry)) return [entry];
+  const recorded = await Promise.all(inner.map(named));
+  const holders = inner.filter((_, index) => recorded[index]);
+  return holders.length > 0 ? nearestOf(rows, holders) : [entry];
+}
+
+/** Whether any store Claude may use has a PID record file of `pid`, readable or not; one that cannot be looked at counts as there. */
+async function hasRecordFile(home: string, pid: number): Promise<boolean> {
+  const found = await Promise.all((await knownClaudeStores(home)).map((store) => lstat(join(store, "sessions", `${pid}.json`)).then(() => true, (error: unknown) => !absent(error))));
+  return found.includes(true);
+}
+
+/**
+ * The Claude below a herdr-core terminal's foreground process, in its job (foreground-job.ts): a
+ * launcher or script that runs Claude as its child (#3009). Only one Claude there is taken: with two,
+ * which one the terminal shows cannot be told, and none is. Null when the job cannot be read.
+ */
+export async function jobClaude(pid: number): Promise<JobProcess[] | null> {
+  const job = await jobProcessesBelow(pid);
+  if (job === null) return null;
+  const claude = job.filter((entry) => isClaudeProcess({ name: entry.name, argv: entry.argv, ...(entry.argv[0] === undefined ? {} : { argv0: entry.argv[0] }) }));
+  return claude.length === 1 ? claude : [];
 }
 
 /** Java's String.hashCode, which Claude Code uses for the suffix of a long name. */

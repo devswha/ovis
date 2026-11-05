@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { linkThisDevice, needsLink, pcAccountStatus, takeIntroduction } from "../account/join.ts";
+import { enrollOnPc, keepRemovals, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -32,6 +32,7 @@ import { readAlertFilters, withAlertFilters } from "../alertFilters.ts";
 import { onLazyChunkFailure } from "../lazyChunk.ts";
 import { requestFreshShell } from "../shellMode.ts";
 import { setTransport } from "../transport.ts";
+import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
 import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
@@ -209,6 +210,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await showFront();
     try {
       const directory = await account.listPcs();
+      // an add this device signed that some PCs missed goes out again whenever the account answers
+      sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
       accountView = { ...signedIn, pcs: myPcs(directory, await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account }) };
     } catch (error) {
       if (error instanceof SignedOutError) accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
@@ -381,11 +384,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
+      // a PC this link brings into the account gets the removals this client signed (enrollPc)
+      if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
-      if (linking || fresh) opened.renew();
+      if (linking || fresh) {
+        const renewed = opened.renew();
+        // a Devices panel open since before the link reads the list again, over the session that proved the new key
+        if (linking) void renewed.then(() => window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT)));
+      }
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) return;
+      // the account's removals this PC holds, checked and kept as signed, for a PC this client enrolls later (#2956)
+      if (!linking) await keepRemovals({ store: accountStore, account: session.account, removals: status.removals });
       // the PC lists this row as a member: only now does it count as in the account here
       if (!linking && device.account !== session.account && device.device_id !== null && !status.unlinked.includes(device.device_id)) {
         const known = device;
@@ -393,6 +404,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
+      // listed first, so a removal this client signs from now on reaches it by mailbox too
+      if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
+        // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
+        let signedIn = opened;
+        try {
+          if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
+          await enrollOnPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId });
+        } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
+        finally { if (signedIn !== opened) signedIn.close(); }
+      }
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
       const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
       for (;;) {
