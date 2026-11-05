@@ -68,8 +68,10 @@ export class RelayService {
   /** The regional relay's link, besides the global one, once it was chosen. */
   private regionalLink: RelayLink | undefined;
   private regionalPhase: RelayStatus["phase"] = "off";
-  private advertised: string;
+  private regionalRelay: string | null = null;
   private readonly regionalRelays: readonly string[];
+  /** A regional relay named by OVIS_RELAY_URL: used with no measuring, and still beside the global one. */
+  private readonly pinned: string | null;
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
@@ -82,28 +84,36 @@ export class RelayService {
 
   constructor(private readonly options: RelayServiceOptions) {
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
-    this.relay = relayEndpoint(named ?? GLOBAL_RELAY, "wss:");
+    const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
+    // A phone falls back from Ovis's regional relays to the global one, so a PC on one is always on both.
+    this.pinned = origin !== undefined && REGIONAL_RELAYS.includes(origin) ? origin : null;
+    this.relay = origin === undefined || this.pinned ? GLOBAL_RELAY : origin;
     this.app = relayEndpoint(options.app ?? process.env["OVIS_RELAY_APP_URL"] ?? "https://app.ovis.sh", "https:");
-    this.regionalRelays = (options.regionalRelays ?? (named === undefined ? REGIONAL_RELAYS : []))
-      .map((relay) => relayEndpoint(relay, "wss:")).filter((relay) => relay !== this.relay);
-    this.advertised = this.relay;
+    this.regionalRelays = this.pinned ? [this.pinned]
+      : (options.regionalRelays ?? (origin === undefined ? REGIONAL_RELAYS : []))
+        .map((relay) => relayEndpoint(relay, "wss:")).filter((relay) => relay !== this.relay);
   }
 
-  /** `relay` is the one new pairing offers name: the regional one once chosen, else the global one. */
+  /** The relay new pairing offers name: the regional one while its link is online, else the global one. */
+  private get advertised(): string {
+    return this.regionalRelay !== null && this.regionalPhase === "online" ? this.regionalRelay : this.relay;
+  }
+
+  /** Phase and error are the global link's: every phone can reach the PC there. */
   status(): RelayStatus {
-    const regionalOnline = this.regionalLink !== undefined && this.regionalPhase === "online";
-    return { phase: regionalOnline ? "online" : this.phase, relay: this.advertised, app: this.app,
+    return { phase: this.phase, relay: this.advertised, app: this.app,
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0),
-      blocked: this.blocked, error: regionalOnline ? null : this.error };
+      blocked: this.blocked, error: this.error };
   }
 
   private regionPath(): string { return join(this.options.stateDir, "relay", "region.json"); }
 
-  /** A saved regional choice is kept; with none, the relays are measured on every start. */
-  private async chooseRegion(): Promise<string | null> {
+  /** A saved regional choice is kept (`save` false); with none, the relays are measured on every start. */
+  private async chooseRegion(): Promise<{ relay: string; save: boolean } | null> {
+    if (this.pinned) return { relay: this.pinned, save: false };
     try {
       const saved: unknown = JSON.parse(readFileSync(this.regionPath(), "utf8"));
-      if (isJsonObject(saved) && typeof saved.relay === "string" && this.regionalRelays.includes(saved.relay)) return saved.relay;
+      if (isJsonObject(saved) && typeof saved.relay === "string" && this.regionalRelays.includes(saved.relay)) return { relay: saved.relay, save: false };
     } catch { /* none saved, or unreadable: measure again */ }
     const probe = this.options.probe ?? probeRelay;
     const [global, ...regional] = await Promise.all([this.relay, ...this.regionalRelays].map((relay) => probe(relay)));
@@ -114,23 +124,24 @@ export class RelayService {
     }
     // The choice is kept, so it needs both answers: a global relay briefly down says nothing of where the PC is.
     if (chosen === null || global == null || fastest > global * REGIONAL_SHARE) return null;
-    writePrivateState(this.regionPath(), { relay: chosen });
-    return chosen;
+    return { relay: chosen, save: true };
   }
 
   private startRegional(link: RelayLink, services: RequestServices, identity: RelayIdentity): void {
     if (this.regionalRelays.length === 0) return;
-    void this.chooseRegion().catch(() => null).then((relay) => {
-      // stopped, restarted or reset meanwhile: that start chooses again
-      if (!relay || this.link !== link || this.regionalLink) return;
+    void this.chooseRegion().catch(() => null).then((choice) => {
+      // stopped, restarted or reset meanwhile: that start chooses again, and this measurement is not kept
+      if (!choice || this.link !== link || this.regionalLink) return;
+      const { relay } = choice;
+      if (choice.save) writePrivateState(this.regionPath(), { relay });
       const regional = new RelayLink({
         relay, identity, services, port: this.port,
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
       });
       this.regionalLink = regional;
+      this.regionalRelay = relay;
       this.regionalPhase = "connecting";
-      this.advertised = relay;
       regional.start();
     });
   }
@@ -195,7 +206,7 @@ export class RelayService {
     this.link = undefined;
     this.regionalLink = undefined;
     this.regionalPhase = "off";
-    this.advertised = this.relay;
+    this.regionalRelay = null;
     this.phase = "off";
     this.error = null;
     this.ending = Promise.all([this.ending, link?.stop(), regional?.stop()]).then(() => undefined);

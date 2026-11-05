@@ -621,24 +621,35 @@ it("never evicts a signed-in session to make room", async () => {
   expect(f.service.status().sessions).toBe(5);
 });
 
-/** A PC that names no relay of its own, between a global and a regional local relay with the given round trips. */
-async function regionalFixture(rtt: { global: number | null; regional: number | null }, stateDir?: string) {
+/**
+ * A PC between a global and a regional local relay with the given round trips. By default it names
+ * no relay of its own and measures the regional one; `named` sets OVIS_RELAY_URL's value instead.
+ */
+async function regionalFixture({ rtt = { global: 130, regional: 13 } as { global: number | null; regional: number | null },
+  stateDir = undefined as string | undefined, probeGate = undefined as Promise<void> | undefined, named = undefined as string | undefined } = {}) {
   const relays = { global: startBunRelay({ port: 0 }), regional: startBunRelay({ port: 0 }) };
   cleanup.push(() => relays.global.stop(), () => relays.regional.stop());
   const dir = stateDir ?? mkdtempSync(join(tmpdir(), "ovis-relay-region-"));
   if (!stateDir) cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
-  const synced = { "global.test": deferred<void>(), "regional.test": deferred<void>() };
+  const globalHost = named ? "relay.ovis.sh" : "global.test";
+  const synced = { global: deferred<void>(), regional: deferred<void>() };
+  const lost = { global: deferred<void>(), regional: deferred<void>() };
   const probed: string[] = [];
   const service = new RelayService({
-    stateDir: dir, relay: "wss://global.test", regionalRelays: ["wss://regional.test"],
-    probe: async (relay) => { probed.push(relay); return relay === "wss://global.test" ? rtt.global : rtt.regional; },
+    stateDir: dir, ...(named ? { relay: named } : { relay: "wss://global.test", regionalRelays: ["wss://regional.test"] }),
+    probe: async (relay) => {
+      probed.push(relay);
+      await probeGate;
+      return relay === `wss://${globalHost}` ? rtt.global : rtt.regional;
+    },
     connect: (url) => {
       const target = new URL(url);
-      const host = target.hostname as keyof typeof synced;
-      const socket = new WebSocket(`ws://127.0.0.1:${(host === "global.test" ? relays.global : relays.regional).port}${target.pathname}${target.search}`);
+      const which = target.hostname === globalHost ? "global" : "regional";
+      const socket = new WebSocket(`ws://127.0.0.1:${relays[which].port}${target.pathname}${target.search}`);
       socket.addEventListener("message", (event) => {
-        if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced[host].resolve();
+        if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced[which].resolve();
       });
+      if (!target.searchParams.has("connection_id")) socket.addEventListener("close", () => lost[which].resolve());
       return socket;
     },
   });
@@ -646,16 +657,16 @@ async function regionalFixture(rtt: { global: number | null; regional: number | 
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
   const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
-  return { dir, relays, synced, probed, service, post,
+  return { dir, relays, synced, lost, probed, service, post,
     async offer() { return decodeOffer(((await (await post("/offer")).json()) as { url: string }).url)!; } };
 }
 
 it("advertises a regional relay that answers much faster, stays on the global one too, and keeps the choice", async () => {
   // Given a regional relay at a tenth of the global relay's round trip
-  const f = await regionalFixture({ global: 130, regional: 13 });
+  const f = await regionalFixture();
   expect((await f.post("/start")).status).toBe(200);
   // Then the PC is on both relays, and new offers name the regional one
-  await bounded(Promise.all([f.synced["global.test"].promise, f.synced["regional.test"].promise]));
+  await bounded(Promise.all([f.synced.global.promise, f.synced.regional.promise]));
   expect(f.service.status()).toMatchObject({ phase: "online", relay: "wss://regional.test" });
   const offer = await f.offer();
   expect(offer.relay).toBe("wss://regional.test");
@@ -667,18 +678,18 @@ it("advertises a regional relay that answers much faster, stays on the global on
   }
   // And a restart keeps the choice without measuring again
   await f.service.shutdown();
-  const again = await regionalFixture({ global: null, regional: null }, f.dir);
+  const again = await regionalFixture({ rtt: { global: null, regional: null }, stateDir: f.dir });
   expect((await again.post("/start")).status).toBe(200);
-  await bounded(again.synced["regional.test"].promise);
+  await bounded(again.synced.regional.promise);
   expect(again.probed).toEqual([]);
   expect((await again.offer()).relay).toBe("wss://regional.test");
 });
 
 it("stays on the global relay alone when a regional one is not much faster or the global one does not answer", async () => {
   for (const rtt of [{ global: 100, regional: 60 }, { global: null, regional: 10 }]) {
-    const f = await regionalFixture(rtt);
+    const f = await regionalFixture({ rtt });
     expect((await f.post("/start")).status).toBe(200);
-    await bounded(f.synced["global.test"].promise);
+    await bounded(f.synced.global.promise);
     expect([...f.probed].sort()).toEqual(["wss://global.test", "wss://regional.test"]);
     expect(f.service.status().relay).toBe("wss://global.test");
     expect((await f.offer()).relay).toBe("wss://global.test");
@@ -686,3 +697,44 @@ it("stays on the global relay alone when a regional one is not much faster or th
   }
 });
 
+it("keeps no measurement that finishes after the relay was turned off", async () => {
+  // Given a measurement still running when the relay is turned off
+  const gate = deferred<void>();
+  const f = await regionalFixture({ probeGate: gate.promise });
+  expect((await f.post("/start")).status).toBe(200);
+  await bounded(f.synced.global.promise);
+  expect((await f.post("/stop")).status).toBe(200);
+  // When it finishes, nothing is saved and no regional link opens
+  gate.resolve();
+  // a macrotask runs only once every microtask the measurement queued has run
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(existsSync(join(f.dir, "relay", "region.json"))).toBe(false);
+  expect(f.service.status()).toMatchObject({ phase: "off", relay: "wss://global.test" });
+});
+
+it("names the global relay in new offers while the regional link is down, and reports the global link's state", async () => {
+  // Given a PC on both relays
+  const f = await regionalFixture();
+  expect((await f.post("/start")).status).toBe(200);
+  await bounded(Promise.all([f.synced.global.promise, f.synced.regional.promise]));
+  // When the regional relay goes away, offers name the global relay again, which stays online
+  await f.relays.regional.stop();
+  await bounded(f.lost.regional.promise);
+  expect(f.service.status()).toMatchObject({ phase: "online", relay: "wss://global.test", error: null });
+  expect((await f.offer()).relay).toBe("wss://global.test");
+  // And when the global relay goes away too, the status says so
+  await f.relays.global.stop();
+  await bounded(f.lost.global.promise);
+  expect(f.service.status().phase).toBe("error");
+});
+
+it("keeps a PC whose OVIS_RELAY_URL names a regional relay on the global relay too, without measuring", async () => {
+  // Given OVIS_RELAY_URL naming Ovis's regional relay, which its phones fall back from
+  const f = await regionalFixture({ named: "wss://relay-ap.ovis.sh" });
+  expect((await f.post("/start")).status).toBe(200);
+  // Then the PC is on both relays, measured nothing, and offers name the regional relay
+  await bounded(Promise.all([f.synced.global.promise, f.synced.regional.promise]));
+  expect(f.probed).toEqual([]);
+  expect((await f.offer()).relay).toBe("wss://relay-ap.ovis.sh");
+  expect(existsSync(join(f.dir, "relay", "region.json"))).toBe(false);
+});

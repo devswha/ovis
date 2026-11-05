@@ -537,9 +537,12 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   is turned on (the best of two round trips after a first one that opens the connection). A regional
   relay that answers in at most half the global relay's time, with both answering, is saved in
   `relay/region.json` under `OVIS_STATE_DIR` and kept from then on; with none saved, the PC measures
-  again at every start. A PC with `OVIS_RELAY_URL` set uses that relay alone.
+  again at every start, and a measurement that finishes after the relay was turned off is dropped.
+  A PC with `OVIS_RELAY_URL` set uses that relay alone, unless it names one of Ovis's regional
+  relays: that one is used with no measuring, and beside `relay.ovis.sh`, as below.
 - **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
-  same key and proof, to the regional relay. New pairing QR codes name the regional relay; a phone
+  same key and proof, to the regional relay. New pairing QR codes name the regional relay while its
+  link is online (the global one otherwise), and the relay status is the global link's; a phone
   paired before keeps the relay it saved, so it still connects through `relay.ovis.sh`. Each link
   has its own session limits.
 - **The phone falls back.** A phone whose saved relay is one of the regional ones and that cannot get
