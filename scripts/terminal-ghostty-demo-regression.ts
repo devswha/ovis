@@ -14,6 +14,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { readableColor } from "../src/lib/terminalFold.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; text?: string; features?: string[] }
 interface GhosttyFixture { inputs: Frame[]; print(data: string): void }
@@ -195,8 +196,13 @@ try {
 
         // a dark palette names no ANSI colours: they are xterm's own, not black
         await print(page, "\x1b[31mRED-TEXT\x1b[0m\r\n", "COLOURED");
-        const ansiRed = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .ghostty-row span")].find((span) => span.textContent?.includes("RED-TEXT"))?.style.color);
-        assert.equal(ansiRed, "rgb(204, 0, 0)", "core: ANSI red is xterm's red under a palette that names none");
+        const ansiRed = await page.evaluate(() => {
+          const span = [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .ghostty-row span")].find((s) => s.textContent?.includes("RED-TEXT"))!;
+          const rgb = (css: string) => `#${(css.match(/\d+/g) ?? []).slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
+          return { color: rgb(getComputedStyle(span).color), background: rgb(getComputedStyle(document.querySelector(".pane-frame.is-current .xterm-viewport")!).backgroundColor) };
+        });
+        // xterm draws it at its minimum contrast (4.5) against the background, as terminalFold.ts computes it
+        assert.equal(ansiRed.color, readableColor("#cc0000", ansiRed.background, 4.5), "core: ANSI red is xterm's red under a palette that names none, made readable as xterm makes it");
 
         // a wide character after a combining accent keeps its two cells: the accent is part of the cell before it
         await print(page, "e\u0301\u754cX\r\n", "COMBINED");
@@ -263,6 +269,16 @@ try {
         assert.ok(glyphs.separator >= 0.75, `core: a Powerline separator keeps the row's full height (${glyphs.separator} rows)`);
         assert.ok(Math.abs(glyphs.textDrop) < 0.5, `core: the text after an icon stands on the row's baseline (${glyphs.textDrop}px lower)`);
         assert.ok(Math.abs(glyphs.column - 3) < 0.1, `core: the text after them starts at xterm's column 3 (${glyphs.column})`);
+
+        // a bold, coloured, underlined wide cell: bold (xterm's own rule would set its box to normal), and its underline in its colour
+        await print(page, "\x1b[1;32;4m\uAC00\x1b[0m|\r\n", "BOLDLINE");
+        const boldLine = await page.evaluate(() => {
+          const glyph = [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .ghostty-wide, .pane-frame.is-current .ghostty-fit")].filter((el) => el.textContent === "\uAC00").at(-1)!;
+          const lined = glyph.closest<HTMLElement>("[style*='text-decoration']")!;
+          return { weight: getComputedStyle(glyph).fontWeight, glyph: getComputedStyle(glyph).color, line: getComputedStyle(lined).textDecorationColor, lineColor: getComputedStyle(lined).color };
+        });
+        assert.ok(Number(boldLine.weight) >= 600, `core: a bold wide cell is drawn bold (${boldLine.weight})`);
+        assert.equal(boldLine.line === "currentcolor" ? boldLine.lineColor : boldLine.line, boldLine.glyph, "core: an underline is in its text's colour");
 
         await print(page, "\x1b_Ga=d,d=I,i=7,q=2\x1b\\", "RED-DELETED");
         assert.equal(await picture(page), null, "core: a picture the program deletes goes");
