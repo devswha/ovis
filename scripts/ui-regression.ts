@@ -15,6 +15,7 @@ import { alertsOffMarked, alertsState, runMoreItem } from "./header-more.ts";
 import { routeDrained } from "./drained-route.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 import { checkTerminalFileInput } from "./terminal-file-input-regression.ts";
+import { checkTerminalAttach } from "./terminal-attach-regression.ts";
 import { checkTerminalInput } from "./terminal-input-regression.ts";
 import { checkSafariIme } from "./terminal-safari-ime-regression.ts";
 import { checkIpadIme } from "./terminal-ipad-ime-regression.ts";
@@ -190,7 +191,8 @@ try {
       if (message.type === "input-ready") inputStates.set(message.pane_id, { ready: message.ready !== false, at: Date.now(), socket });
     });
     socket.on("framesent", ({ payload }) => {
-      const message = JSON.parse(String(payload));
+      // `id` is the per-connection receipt number ("input-receipt"), not what was sent
+      const { id: _receipt, ...message } = JSON.parse(String(payload));
       // composer messages go out as "submit" on servers that list it (#15), keystrokes as "input"
       if (message.type === "input" || message.type === "submit") inputs.push(message);
       if (message.type === "pending-action") pendingActions.push(message);
@@ -2407,6 +2409,7 @@ try {
   if (touchEvidence) await touchEvidence.finish();
   await touch.close();
   console.log("PASS touch terminal input line sends whole lines, Enter alone, and yields to direct typing");
+  await checkTerminalAttach(browser, origin, paneB);
 
   // A closed pane and an obsolete saved pane both yield to a live pane. Local access
   // is automatic, so it must not offer a sign-out action that cannot lock the app.

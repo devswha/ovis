@@ -48,7 +48,7 @@ import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
-import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
@@ -66,7 +66,7 @@ import { museSession, museToolOutput, MuseUnavailable, parseMuseTranscript } fro
 import { resolveMuseSession } from "./muse-store.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
 import { lettaLocalSettings, resolveLettaTranscript } from "./letta-store.ts";
-import { kimiToolOutput, kimiTranscriptPathForPane, parseKimiTranscript } from "./kimi.ts";
+import { followKimiUndo, kimiToolOutput, kimiTranscriptPathForPane, parseKimiTranscript, type KimiUndo } from "./kimi.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
@@ -407,7 +407,7 @@ type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | 
  * `branch.answers` does) and a small line that sets the same value again, shared while it repeats.
  */
 type ClaudeSettings = Record<"model" | "effort", { line: string; start: number; end: number }[]>;
-const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettings; pictures?: PictureIndex }>();
+const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch; claude?: ClaudeSettings; pictures?: PictureIndex; undo?: KimiUndo }>();
 
 /**
  * Where a Claude transcript's pictures are, as the boundary scan reads past them, so a lookup goes
@@ -620,7 +620,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // a file rewritten since a boundary was kept can still end in the tail that boundary is checked by
   let scan = fresh ? undefined : previous;
   if (!scan || scan.id !== stream.id || scan.scanned > stream.length || (yield* bytesBeforeSteps(stream, scan.scanned)) !== scan.tail) {
-    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}) };
+    scan = { id: stream.id, scanned: 0, floor: 0, tail: "", settings: {}, ...(source === "claude-transcript" ? { branch: { last: null, ends: new Map(), answers: [], forks: [] }, claude: { model: [], effort: [] }, pictures: noPictures(0, stream) } : {}), ...(source === "kimi-transcript" ? { undo: { anchors: [], undone: [] } } : {}) };
   } else if (apart) scan = structuredClone(scan);
   const branch = scan.branch;
   let position = scan.scanned;
@@ -679,6 +679,7 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
           if (entry !== undefined && scan.pictures) notePicture(scan.pictures, branch.ends, known, entry, line, base + offset, base + newline);
         }
       }
+      if (!skipping && scan.undo) followKimiUndo(scan.undo, line, base + offset, base + newline + 1);
       if (!skipping && scan.pictures && mayBeUnread(line)) scan.pictures.unread.push([base + offset, base + newline]);
       skipping = false;
       offset = newline + 1;
@@ -691,6 +692,9 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
     // screenshot can still be where the session's branch forks
     if (carry.length > (branch ? CLAUDE_CARRY_BYTES : METADATA_HEAD_BYTES)) {
       if (scan.pictures && scan.pictures.blind === null) scan.pictures.blind = base + offset;
+      // a user's message (Kimi names a record's type and a message's role first) may be a prompt: an
+      // /undo counting back over it would take back another
+      if (scan.undo && carry.subarray(0, 512).includes('"context.append_message"') && carry.subarray(0, 512).includes('"role":"user"')) scan.undo.anchors = [];
       carry = Buffer.alloc(0);
       skipping = true;
     }
@@ -709,7 +713,14 @@ function* applyHistoryBoundarySteps(path: string, stream: TranscriptStream, sour
   // A valid final JSON object is visible before its newline; rescan it on append.
   stream.floor = !skipping && carry.length > 0 && isClear(carry) ? stream.length - carry.length : scan.floor;
   if (stream.floor > 0) stream.id += `-clear-${stream.floor.toString(36)}`;
-  const forks = branch ? claudeForks(branch) : [];
+  // what a Kimi /undo took back reads as off the branch too, the final record's before its newline
+  let undone = scan.undo?.undone ?? [];
+  if (scan.undo && !skipping && carry.length > 0) {
+    const final = { anchors: [...scan.undo.anchors], undone: [...undone] };
+    followKimiUndo(final, carry, stream.length - carry.length, stream.length);
+    undone = final.undone;
+  }
+  const forks = branch ? claudeForks(branch) : undone;
   const hidden = forks.filter(([, end]) => end > stream.floor);
   if (hidden.length > 0) {
     stream.hidden = hidden;
@@ -1430,19 +1441,25 @@ export async function labelOmoPanes(snapshot: SessionSnapshot): Promise<SessionS
   };
 }
 
-/** The Claude processes in a pane's foreground (`known`: herdr's answer already read); none when herdr cannot say. */
+/**
+ * The Claude processes in a pane's foreground (`known`: herdr's answer already read); none when herdr cannot say.
+ * On Windows herdr and herdr-core name only the shell in front, even while Claude runs in it, and
+ * herdr-core reports no session for it: the Claude below the shell is taken from the process table (#2896).
+ */
 async function claudeProcesses(paneId: string, known?: KnownProcesses): Promise<{ pid: number; name?: string; argv0?: string; argv?: string[] }[]> {
-  if (known !== undefined) {
-    return (known?.foreground_processes ?? []).map(({ pid, name, argv0, argv }) => ({
-      pid, name, ...(typeof argv0 === "string" ? { argv0 } : {}), ...(Array.isArray(argv) ? { argv } : {}),
-    })).filter(isClaudeProcess);
+  let info: KnownProcesses;
+  if (known !== undefined) info = known;
+  else {
+    try {
+      info = (await herdrRpc<{ process_info?: ProcessInfo }>("pane.process_info", { pane_id: paneId })).process_info ?? null;
+    } catch { return []; /* herdr busy: the default store */ }
   }
-  try {
-    const processInfo = await herdrRpc<{ process_info?: { foreground_processes?: { pid: number; name?: string; argv0?: string; argv?: string[] }[] } }>(
-      "pane.process_info", { pane_id: paneId },
-    );
-    return processInfo.process_info?.foreground_processes?.filter(isClaudeProcess) ?? [];
-  } catch { return []; /* herdr busy: the default store */ }
+  const front = (info?.foreground_processes ?? []).map(({ pid, name, argv0, argv }) => ({
+    pid, name, ...(typeof argv0 === "string" ? { argv0 } : {}), ...(Array.isArray(argv) ? { argv } : {}),
+  })).filter(isClaudeProcess);
+  const shell = info?.shell_pid;
+  if (front.length > 0 || process.platform !== "win32" || typeof shell !== "number") return front;
+  return (await windowsShellClaude(shell).catch(() => null)) ?? [];
 }
 
 /** The pid of the one Claude process in a pane's foreground, or null. */
@@ -2404,8 +2421,10 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
   const cached = cache.get(key);
   // the answer is a function of the page asked for and the file's state, so they name it
   const version = answerVersion(key, signature);
+  // the file's size as it was read (in `signature`): the newest page says it, an older one need not
+  const size = page.before === undefined ? { transcript_bytes: stat.size } : {};
   if (cached?.signature === signature) {
-    return { source, turns: cached.turns, metadata: cached.metadata, cursor: cached.cursor, abandoned: cached.abandoned, history_id: stream.id, version };
+    return { source, turns: cached.turns, metadata: cached.metadata, cursor: cached.cursor, abandoned: cached.abandoned, history_id: stream.id, version, ...size };
   }
 
   let start: number;
@@ -2467,7 +2486,7 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
   // straight line answers { count: 0 }, which is most sessions and costs the client nothing
   const abandoned = (source === "pi-transcript" || source === "cmd-transcript") ? piAbandonedTurns(path, stat.size) ?? undefined : undefined;
   rememberPage(cache, key, { source, signature, turns, metadata, cursor, abandoned }, 32);
-  return { source, turns, metadata, cursor, abandoned, history_id: stream.id, version };
+  return { source, turns, metadata, cursor, abandoned, history_id: stream.id, version, ...size };
 }
 
 /**
