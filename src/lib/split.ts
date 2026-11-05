@@ -300,6 +300,20 @@ export function withoutSlots(state: SplitState, closed: ReadonlySet<SplitSlot>):
   return { split: { ...state, root, panes }, solo: state.active };
 }
 
+/**
+ * The split as two halves side by side, as it is drawn without rows and columns: the active slot and
+ * the first other slot in reading order keep their ids (and terminals), in reading order, at half each.
+ * The same state when it already is two halves.
+ */
+export function asHalves(state: SplitState): SplitState {
+  const root = state.root;
+  if (!isLeaf(root) && root.dir === "row" && root.ratio === 0.5 && isLeaf(root.first) && isLeaf(root.second)) return state;
+  const slots = slotsOf(root);
+  const other = slots.find((slot) => slot !== state.active)!;
+  const [first, second] = slots.filter((slot) => slot === state.active || slot === other);
+  return { root: { dir: "row", ratio: 0.5, first: { slot: first! }, second: { slot: second! } }, panes: { [other]: state.panes[other]! }, active: state.active };
+}
+
 /** A slot's pane replaced (its pane closed and another of its tab takes its place). */
 export function replaceSlotPane(state: SplitState, slot: SplitSlot, target: SplitTarget): SplitState {
   if (!(slot in state.panes)) return state;
@@ -317,15 +331,19 @@ export function dropSide(x: number, left: number, width: number, previous: Split
 
 /**
  * The zone of a half of the pane area, as the two halves take a drop: with one pane, beside it on
- * that side; split, in the place of the slot drawn at the middle of that half.
+ * that side; split, in the place of the slot that covers most of that half, the active one where
+ * slots cover it alike (two slots stacked cover both halves alike).
  */
 export function sideZone(state: SplitState | null, solo: SplitSlot, side: SplitSide): DropZone | null {
   if (state === null) return { slot: solo, edge: side };
-  const x = side === "left" ? 0.25 : 0.75;
+  const [from, to] = side === "left" ? [0, 0.5] : [0.5, 1];
+  let best: { slot: SplitSlot; share: number } | null = null;
   for (const [slot, rect] of slotRects(state.root)) {
-    if (x >= rect.x && x < rect.x + rect.w && 0.5 >= rect.y && 0.5 < rect.y + rect.h) return { slot, edge: null };
+    const share = Math.max(0, Math.min(rect.x + rect.w, to) - Math.max(rect.x, from)) * rect.h;
+    const tied = best !== null && Math.abs(share - best.share) < 1e-9;
+    if (best === null || share > best.share + 1e-9 || (tied && slot === state.active)) best = { slot, share };
   }
-  return null;
+  return best && best.share > 0 ? { slot: best.slot, edge: null } : null;
 }
 
 /**

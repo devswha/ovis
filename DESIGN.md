@@ -1906,7 +1906,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (PaneFollowContext). Closing the active slot gives its place and the selection to the slot it
   shared a split with. Two slots side by side are the two halves again (`data-side`, Close this
   half); the split is kept in `ovis:split` for a reload, and a split saved by the two-half
-  version opens as before. This follows VS Code's editor groups (split right or down into a
+  version opens as before. Turned off, the setting leaves two halves: the active slot and the
+  first other one in reading order, each keeping its terminals, at half each. This follows VS Code's editor groups (split right or down into a
   grid, draggable boundaries, the drop overlay by edge or centre), with the grid's tree model
   from bricks-8's fork; moving a pane to a window of its own and stepping slots from the
   keyboard are left for later.

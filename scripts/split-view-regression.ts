@@ -974,7 +974,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       const { page, errors } = await open([one, two, three], "terminal", async (context) => {
         await context.addInitScript(() => {
           const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
-          localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: true }));
+          if (!("splitGrid" in settings)) localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: true }));
         });
         context.on("page", (opened) => opened.on("websocket", (socket) => sockets.push(socket)));
       });
@@ -1035,18 +1035,33 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await shows("c", three);
       await page.waitForFunction(() => document.querySelector('.pane-split-divider[data-dir="row"]')?.getAttribute("aria-valuenow") === "60");
 
-      // closing the active slot gives its place to the pane above it, then two slots are two halves again
-      const right = (await slot("b").locator(".pane-terminal").elementHandle())!;
-      await slot("c").getByRole("button", { name: "Remove from the split", exact: true }).click();
+      // closing another slot leaves the active one where it is
+      const active = (await slot("c").locator(".pane-terminal").elementHandle())!;
+      await slot("b").getByRole("button", { name: "Remove from the split", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2);
-      await page.waitForFunction(() => document.querySelector('.pane-slot[data-slot="b"]')?.classList.contains("is-active") === true);
-      assert.equal(await page.locator('.pane-slot[data-side="right"][data-slot="b"]').count(), 1, "the two slots left are side by side again");
-      assert.equal(await right.evaluate((node) => node.isConnected), true, "the slot that takes the place keeps its terminal");
+      assert.equal(await active.evaluate((node) => node.isConnected), true, "the active slot keeps its terminal");
+      // three slots again, then the setting turned off: two halves, the active slot and the first other at half each
+      await dropAt(two, 0.75, 0.07, "top", 3);
+      await shows("b", two);
+      await page.evaluate(() => {
+        const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
+        localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: false }));
+      });
+      await page.reload();
+      await page.locator(".conn-live").waitFor();
+      await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2
+        && document.querySelector('.pane-slot[data-side="left"][data-slot="a"]') !== null
+        && document.querySelector('.pane-slot[data-side="right"][data-slot="b"].is-active') !== null);
+      assert.equal(await page.locator(".pane-split-divider").count(), 0, "two halves have no boundary to move");
+      await page.waitForFunction((width) => {
+        const box = document.querySelector('.pane-slot[data-slot="a"]')?.getBoundingClientRect();
+        return box !== undefined && Math.abs(box.width - width / 2) < 2;
+      }, area.width);
       await slot("a").getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 1 && sessionStorage.getItem("ovis:split") === null);
       await shows("b", two);
       assert.deepEqual(errors, []);
-      console.log("PASS rows and columns: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard and a reload keeps the layout");
+      console.log("PASS rows and columns: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard, a reload keeps the layout and the setting turned off leaves two halves");
     }
 
     // A saved partner on a removed PC is discarded only after the roster arrives.

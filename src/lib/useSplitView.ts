@@ -2,7 +2,7 @@ import { type Dispatch, type DragEvent, type RefObject, type SetStateAction, use
 import type { HerdrPane, HerdrWorkspace, PaneDirection } from "../../shared/protocol.ts";
 import { paneStorageId, type HerdrIdentity, type Machine } from "../../shared/machines.ts";
 import { fetchSession, type HealthInfo } from "./api.ts";
-import { activateSlot as activatedSlot, besideSide, closeSlots, dockPane, draggedPane, dropSide, dropZone, pickInSlot, PANE_DRAG_TYPE, replaceSlotPane, resizeSplit, sameTarget, sideZone, slotRects, slotsOf, splitDividers, storedSplit, storeSplit, withoutSlots, zoneRect, type DropZone, type SplitChange, type SplitRect, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
+import { activateSlot as activatedSlot, asHalves, besideSide, MAX_SPLIT_SLOTS, closeSlots, dockPane, draggedPane, dropSide, dropZone, pickInSlot, PANE_DRAG_TYPE, replaceSlotPane, resizeSplit, sameTarget, sideZone, slotRects, slotsOf, splitDividers, storedSplit, storeSplit, withoutSlots, zoneRect, type DropZone, type SplitChange, type SplitRect, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
 import { paneDrag, type PaneDrag } from "./paneDrag.ts";
 
 const SELECTION_KEY = "ovis:selection";
@@ -246,18 +246,29 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
     if (next !== split) { setSplit(next); return; }
     if (asks.length === 0) return;
     let cancelled = false;
-    for (const [slot, target] of asks) {
-      void fetchSession(target.machineId).then((session) => {
-        if (cancelled || moving(target) || session.panes.some((pane) => pane.pane_id === target.paneId)) return;
-        const now = splitRef.current;
-        if (now && sameTarget(now.panes[slot], target)) applyLayout(withoutSlots(now, new Set([slot])));
-      }).catch(() => {
+    // every answer first, then one change: two slots confirmed gone must not each be closed from the same split
+    void Promise.allSettled(asks.map(([, target]) => fetchSession(target.machineId))).then((answers) => {
+      if (cancelled) return;
+      const now = splitRef.current;
+      const gone = new Set<SplitSlot>();
+      answers.forEach((answer, index) => {
+        const [slot, target] = asks[index]!;
         // a failed read is not evidence that the pane closed: ask again on the next roster
-        if (!cancelled) otherRecheck.current = true;
+        if (answer.status === "rejected") { otherRecheck.current = true; return; }
+        if (!moving(target) && !answer.value.panes.some((pane) => pane.pane_id === target.paneId) && now && sameTarget(now.panes[slot], target)) gone.add(slot);
       });
-    }
+      if (now && gone.size > 0) applyLayout(withoutSlots(now, gone));
+    });
     return () => { cancelled = true; };
   }, [split, machineRosterLoaded, machines, otherRosterTick, applyLayout, setSplit]);
+
+  // without rows and columns the split is two halves: a grid left by the setting turned off keeps the
+  // active slot and the first other one, each keeping its terminals
+  useEffect(() => {
+    if (grid || !split) return;
+    const halves = asHalves(split);
+    if (halves !== split) setSplit(halves);
+  }, [grid, split, setSplit]);
 
   /** A split change and the pane it selects. The slot that becomes active keeps its terminals: only
    *  a slot whose pane moves to another PC attaches again and reports its connection. */
@@ -298,7 +309,9 @@ export function useSplitLayout({ machines, split, grid, wideScreen, selectedPane
    *  and is the active one, or a new slot beside a single pane does; the others keep what they show. */
   const dockSide = (dragged: SplitTarget, side: SplitSide): void => {
     if (!wideScreen || current === null) return;
-    const zone = sideZone(splitOn ? split : null, soloSlot, side);
+    // with rows and columns and room for another slot, the pane opens beside the active slot on that side
+    const room = grid && (!splitOn || slotsOf(split.root).length < MAX_SPLIT_SLOTS);
+    const zone = room ? { slot: splitOn ? split.active : soloSlot, edge: side } : sideZone(splitOn ? split : null, soloSlot, side);
     const change = zone ? dockPane(splitOn ? split : null, current, dragged, zone, soloSlot) : null;
     if (change) applySplit(change);
   };
