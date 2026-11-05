@@ -329,6 +329,25 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(runRunner().calls).not.toContain("--env-file");
   });
 
+  it("mounts the build cache read-write in every runner container only when asked", () => {
+    const home = mkdtempSync(join(tmpdir(), "herdr-runner-build-cache-test-"));
+    try {
+      const { result, calls } = runRunner({ count: 2, args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "512"] });
+      expect(result.status).toBe(0);
+      const dir = join(home, "shm/owner/repo");
+      const lines = calls.split("\n");
+      const runners = lines.filter((call) => runnerRun.test(call));
+      expect(runners).toHaveLength(2);
+      for (const call of runners) expect(call).toContain(`-v ${dir}:/build-cache -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_MAX_MB=512 `);
+      expect(lines.filter((call) => call.startsWith("docker run -d ")).every((call) => !call.includes("build-cache"))).toBe(true);
+      expect(spawnSync("stat", ["-c", "%a", dir], { encoding: "utf8" }).stdout.trim()).toBe("1777");
+      expect(runRunner().calls).not.toContain("build-cache");
+      expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a host env file it cannot read before starting anything", () => {
     const { result, calls } = runRunner({ envFile: "missing" });
     expect(result.status).toBe(2);

@@ -3,7 +3,7 @@
 #
 # Usage: scripts/self-hosted-runner/run.sh [--repo OWNER/NAME] [--count N] [--labels self-hosted-ovis]
 #          [--reserved N] [--reserved-labels self-hosted-ovis-main] [--env-file FILE] [--build] [--once]
-#          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache]
+#          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache] [--build-cache DIR [--build-cache-mb N]]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,8 @@ ONCE=0
 CACHE=1
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ovis-ci-runner"
 CACHE_WAIT=120
+BUILD_CACHE=""
+BUILD_CACHE_MB=2048
 
 usage() {
   sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -38,6 +40,8 @@ while [ $# -gt 0 ]; do
     --cache-dir) CACHE_DIR="${2:?--cache-dir needs a value}"; shift 2 ;;
     --cache-wait) CACHE_WAIT="${2:?--cache-wait needs a value}"; shift 2 ;;
     --no-cache) CACHE=0; shift ;;
+    --build-cache) BUILD_CACHE="${2:?--build-cache needs a value}"; shift 2 ;;
+    --build-cache-mb) BUILD_CACHE_MB="${2:?--build-cache-mb needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -51,6 +55,7 @@ case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; e
 case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number up to --count" >&2; exit 2 ;; esac
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
 case "$CACHE_WAIT" in ''|*[!0-9]*|?????*) echo "--cache-wait must be a whole number of seconds" >&2; exit 2 ;; esac
+case "$BUILD_CACHE_MB" in ''|*[!0-9]*|0|??????*) echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2 ;; esac
 # What this host can take (CHECK_HOST_* in scripts/check.ts), for every runner container: read now,
 # so a missing file stops the launcher instead of every container failing to start.
 ENV_ARGS=()
@@ -113,6 +118,23 @@ if [ "$CACHE" = 1 ]; then
     CACHE=0
   fi
 fi
+# The client build cache (README "Build cache"): unlike the caches above, every runner writes it, so
+# each job of a commit after the first restores dist/ instead of building it (scripts/build-cache.ts).
+BUILD_CACHE_ARGS=()
+if [ -n "$BUILD_CACHE" ]; then
+  case "$REPO" in
+    .*|*/.*|*/*/*|*[!A-Za-z0-9._/-]*|*/|/*) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
+    */*)
+      # the runners' user is not the host's: a directory of the host user's that every user may write
+      if build_cache_dir="$(mkdir -p "$BUILD_CACHE/$REPO" && chmod 1777 "$BUILD_CACHE/$REPO" && cd "$BUILD_CACHE/$REPO" && pwd -P)"; then
+        BUILD_CACHE_ARGS=(-v "$build_cache_dir:/build-cache" -e OVIS_BUILD_CACHE_DIR=/build-cache -e "OVIS_BUILD_CACHE_MAX_MB=$((10#$BUILD_CACHE_MB))")
+      else
+        echo "[build-cache] cannot use $BUILD_CACHE/$REPO: running without it" >&2
+      fi ;;
+    *) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
+  esac
+fi
+
 # The cache loop runs in its own process: files here tell the launcher it warmed the caches, and it
 # that the launcher is stopping. Made with the EXIT trap that removes it.
 STATE_DIR=""
@@ -346,6 +368,7 @@ slot_loop() {
       -e RUNNER_NAME="$name" \
       -e RUNNER_LABELS="$labels" \
       ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
+      ${BUILD_CACHE_ARGS[@]+"${BUILD_CACHE_ARGS[@]}"} \
       ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
       "$IMAGE"; then
       container_status=0
