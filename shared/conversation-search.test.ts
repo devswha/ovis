@@ -193,13 +193,15 @@ describe("pickedTurn", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
   });
 
-  it("opens the one of two answers of its time sharing their first words that holds the match, or none", () => {
-    // both begin with the same 80 characters, so they share a name
+  it("opens none of two answers of its time that share their first words", () => {
+    // both begin with the same 80 characters, so they share a name; which one holds the match does not
+    // tell them apart (an answer's words can leave the search, as Codex marking them commentary)
     const lead = "x".repeat(90);
     const apples = answer(`${lead} APPLES`), bananas = answer(`${lead} BANANAS`);
     expect(conversationTurnAnchor(apples)).toBe(conversationTurnAnchor(bananas));
     const picked = searchTurns([bananas], searchPattern("bananas")!)[0]!;
-    expect(pickedTurn([apples, user("again"), bananas], picked)).toBe(2);
+    expect(pickedTurn([apples, user("again"), bananas], picked)).toBe("several");
+    expect(pickedTurn([bananas], picked)).toBe(0);
     const both = searchTurns([answer(`${lead} fruit`)], searchPattern("fruit")!)[0]!;
     expect(pickedTurn([answer(`${lead} fruit`), user("again"), answer(`${lead} fruit`)], both)).toBe("several");
   });
