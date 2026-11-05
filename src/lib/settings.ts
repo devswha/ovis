@@ -714,6 +714,18 @@ function readVoiceEngine(): VoiceEngineChoice {
 /** Settings → Chat → History page size, kept in a key of its own for the same reason: an old tab's save drops a field it does not know. */
 export const HISTORY_PROMPTS_STORAGE_KEY = "ovis:history-prompts";
 
+/** Settings → File text size, kept in a key of its own for the same reason. */
+export const FILE_FONT_SIZE_STORAGE_KEY = "ovis:file-font-size";
+
+function readFileFontSize(): number | null {
+  try {
+    const raw = window.localStorage.getItem(FILE_FONT_SIZE_STORAGE_KEY);
+    return sanitizeSettings({ fileFontSize: raw === null ? null : JSON.parse(raw) }).fileFontSize;
+  } catch {
+    return DEFAULT_SETTINGS.fileFontSize;
+  }
+}
+
 function readHistoryPrompts(): number {
   try {
     const raw = window.localStorage.getItem(HISTORY_PROMPTS_STORAGE_KEY);
@@ -794,7 +806,7 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), historyPrompts: readHistoryPrompts(), fileFontSize: readFileFontSize(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
     reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
     composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
@@ -810,7 +822,7 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, terminalGhostty, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, voiceEngine, agentGroups, agentGroupSort, historyPrompts, fileFontSize, composerArtifacts, composerPasteSend, expandThinking, foldWork, reuseExternalLinkTab, terminalImages, terminalGhostty, ...main } = mirrored;
     window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
@@ -818,6 +830,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(AGENT_GROUPS_STORAGE_KEY, JSON.stringify(agentGroups));
     window.localStorage.setItem(AGENT_GROUP_SORT_STORAGE_KEY, JSON.stringify(agentGroupSort));
     window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
+    window.localStorage.setItem(FILE_FONT_SIZE_STORAGE_KEY, JSON.stringify(fileFontSize));
     window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));

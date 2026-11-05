@@ -5,6 +5,7 @@ import { File, useVirtualizer, Virtualizer, type FileOptions } from "@pierre/dif
 import { DiffWorkerPool } from "./DiffWorkerPool.tsx";
 import { VIRTUAL_HIGHLIGHT_LINES } from "../lib/sourcePreview.ts";
 import { contentKey, keepEmptyRows, SCROLL_CONFIG, SHADOW_CSS, SOURCE_THEME } from "../lib/sourceTheme.ts";
+import { useSettings } from "../lib/settings.ts";
 import "./VirtualSource.css";
 
 export interface VirtualSourceProps {
@@ -55,7 +56,9 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   const anchor = useRef<{ width: number | null; top: number | null; markedInView: boolean }>({ width: null, top: null, markedInView: false });
   const markedRef = useRef(markedLine);
   markedRef.current = markedLine;
-  // the row estimate is the host's line-height, measured once: the metrics are read when the file mounts
+  // the row estimate is the host's line-height, measured when the file mounts and again when Settings → File text size
+  // changes it: the metrics are read when the file mounts, so a new height mounts the file again (keyed on it below)
+  const { fileFontSize } = useSettings().settings;
   const [lineHeight, setLineHeight] = useState<number | null>(null);
 
   useLayoutEffect(() => {
@@ -63,7 +66,7 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     if (host === null) return;
     const measured = Number.parseFloat(getComputedStyle(host).lineHeight);
     setLineHeight(Number.isFinite(measured) && measured > 0 ? measured : DEFAULT_VIRTUAL_FILE_METRICS.lineHeight);
-  }, []);
+  }, [fileFontSize]);
 
   const scrollRoot = useCallback((): HTMLElement | null => {
     const root = virtualizerRef.current?.getRoot();
@@ -228,7 +231,7 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     <DiffWorkerPool>
       <Virtualizer className="virtual-source-scroll" contentClassName="virtual-source-column" config={SCROLL_CONFIG}>
         <VirtualizerProbe onInstance={onVirtualizer} />
-        {metrics !== null && <File className="virtual-source-file" file={file} options={options} metrics={metrics} selectedLines={selected} />}
+        {metrics !== null && <File key={metrics.lineHeight} className="virtual-source-file" file={file} options={options} metrics={metrics} selectedLines={selected} />}
       </Virtualizer>
     </DiffWorkerPool>
   </div>;

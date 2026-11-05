@@ -160,6 +160,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
   });
 
+  it("keeps the file text size in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().fileFontSize).toBeNull();
+    saveSettings(sanitizeSettings({ fileFontSize: 20 }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("fileFontSize");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().fileFontSize).toBe(20);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), fileFontSize: null });
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "\"20\"");
+    expect(loadSettings().fileFontSize).toBeNull();
+    records.set("ovis:file-font-size", "not json");
+    expect(loadSettings().fileFontSize).toBeNull();
+  });
+
   it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().terminalImages).toBe(false);
     saveSettings(sanitizeSettings({ terminalImages: true }));

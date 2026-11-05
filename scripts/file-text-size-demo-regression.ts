@@ -23,6 +23,7 @@ const FILES_SCRIPT = `<script>(${(() => {
   const files: Record<string, { text: string; mime: string; kind: string }> = {
     "notes.md": { text: `# Plan\n\n${body}\n\n- 첫째 항목\n- second item\n\n\`\`\`ts\nconst size = 18;\n\`\`\`\n`, mime: "text/markdown", kind: "text" },
     "notes.txt": { text: `${body}\n둘째 줄\n`, mime: "text/plain", kind: "text" },
+    "long.log": { text: Array.from({ length: 3000 }, (_, at) => `line ${at + 1} 한글 🙂`).join("\n"), mime: "text/plain", kind: "text" },
   };
   window.fetch = (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
@@ -43,9 +44,13 @@ const px = (page: Page, selector: string): Promise<number> =>
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query: string): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
-  await context.addInitScript((value) => {
-    if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value);
-  }, JSON.stringify({ language: "en", ...settings }));
+  // the file text size is kept in a key of its own (lib/settings.ts), not in ovis:settings
+  const { fileFontSize, ...main } = settings;
+  await context.addInitScript(([value, size]) => {
+    if (localStorage.getItem("ovis:settings") !== null) return;
+    localStorage.setItem("ovis:settings", value!);
+    if (size !== "") localStorage.setItem("ovis:file-font-size", size!);
+  }, [JSON.stringify({ language: "en", ...main }), fileFontSize === undefined ? "" : JSON.stringify(fileFontSize)]);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -123,6 +128,48 @@ try {
           console.log(`PASS ${width}px ${theme}: preview ${base.preview}→${own.preview}px, source ${base.source}→${own.source}px, chat ${own.chat}px, title ${own.title}px`);
         }
 
+        // a long file's source is virtualized: its rows, in a shadow root, take the size and the row estimate matches
+        // them, so its last line is drawn at the end; a size changed while it is open re-measures the rows
+        {
+          const { page, errors, close } = await open(browser, width, { fileFontSize: 24 }, "&file=long.log&settings=appearance&section=typography");
+          try {
+            const rowAt = (): Promise<{ host: number; row: number; last: boolean }> => page.evaluate(() => {
+              const host = document.querySelector<HTMLElement>(".virtual-source")!;
+              const shadow = document.querySelector("diffs-container")!.shadowRoot!;
+              const row = shadow.querySelector<HTMLElement>("[data-line]")!;
+              const scroll = document.querySelector<HTMLElement>(".virtual-source-scroll")!;
+              const bottom = scroll.getBoundingClientRect().bottom;
+              const last = shadow.querySelector<HTMLElement>('[data-line="3000"]');
+              const box = last?.getBoundingClientRect();
+              return { host: Number.parseFloat(getComputedStyle(host).lineHeight), row: row.getBoundingClientRect().height, last: box !== undefined && box.bottom <= bottom + 1 && box.bottom > bottom - scroll.clientHeight };
+            });
+            const toEnd = async (): Promise<void> => {
+              await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
+              for (let pass = 0; pass < 6; pass++) {
+                await page.evaluate(() => { const scroll = document.querySelector<HTMLElement>(".virtual-source-scroll")!; scroll.scrollTop = scroll.scrollHeight; });
+                await page.waitForFunction(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))));
+              }
+            };
+            await toEnd();
+            const big = await rowAt();
+            assert.ok(Math.abs(big.row - big.host) < 0.5, `${width}px: a virtualized row is drawn at the measured line height (${big.row} vs ${big.host})`);
+            assert.ok(big.last, `${width}px: the last line is in view at the end of a long file`);
+            const stepper = page.locator(".settings-dialog").getByRole("group", { name: "File text size", exact: true });
+            for (let step = 24; step > 12; step--) await stepper.getByRole("button", { name: "Decrease file text size", exact: true }).click();
+            assert.equal(await stepper.locator("output").textContent(), "12px");
+            await page.keyboard.press("Escape");
+            await page.locator(".settings-dialog").waitFor({ state: "detached" });
+            await page.waitForFunction((before) => Number.parseFloat(getComputedStyle(document.querySelector(".virtual-source")!).lineHeight) < before, big.host);
+            await toEnd();
+            const small = await rowAt();
+            assert.ok(Math.abs(small.row - small.host) < 0.5, `${width}px: a size changed while open re-measures the rows (${small.row} vs ${small.host})`);
+            assert.ok(small.last, `${width}px: the last line is still in view after the change`);
+            if (evidence) await page.screenshot({ path: join(evidence, `virtual-source-${width}.png`) });
+            assert.deepEqual(errors, []);
+            console.log(`PASS ${width}px: a virtualized source draws its rows at the file size (${big.row}px, then ${small.row}px) and reaches its last line`);
+          } finally { await close(); }
+        }
+
         // the control: a step sets a size of its own, kept for the device; Follow chat drops it
         const { page, errors, close } = await open(browser, width, { chatFontSize: 16 }, "&settings=appearance&section=typography");
         try {
@@ -133,11 +180,11 @@ try {
           assert.equal(await dialog.getByRole("button", { name: "Follow chat", exact: true }).count(), 0, "nothing to reset while it follows");
           await stepper.getByRole("button", { name: "Increase file text size", exact: true }).click();
           assert.equal(await stepper.locator("output").textContent(), "17px");
-          assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").fileFontSize), 17, "kept on this device");
+          assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:file-font-size") ?? "null")), 17, "kept on this device");
           if (evidence) await page.screenshot({ path: join(evidence, `settings-file-text-size-${width}.png`) });
           await dialog.getByRole("button", { name: "Follow chat", exact: true }).click();
           assert.equal(await stepper.locator("output").textContent(), "16px", "Follow chat gives the chat's size back");
-          assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").fileFontSize), null);
+          assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:file-font-size") ?? "null")), null);
           assert.deepEqual(errors, []);
           console.log(`PASS ${width}px: File text size steps from the chat's size, is kept, and Follow chat drops it`);
         } finally { await close(); }
