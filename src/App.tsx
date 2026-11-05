@@ -732,7 +732,7 @@ export function App() {
         )}
         <div className="header-meta">
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
-          <ConnectionRouteMark />
+          <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
           {!guideShown && <ConnectionChip
             connected={connected}
             word={connWord}

@@ -2017,13 +2017,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is not said once another is shown, and a pane's first connection is not a reconnect. A stalled
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
 - Beside the chip, always shown, one quiet mark says how this device reaches Ovis (`.conn-route`,
-  `lib/connectionRoute.ts`): a 14px glyph and one short `--text-dim` word, **relay** (the hosted
-  shell), **Tailscale** (a MagicDNS name or tailnet address), **LAN** (a private address or local
-  name), **direct** (any other address) or **on this PC** (loopback), with the full sentence as its
-  title and accessible text. It is read from what the page owns (the relay transport, the address
-  the browser loaded), never guessed from the server. It is not a button and never wraps: the phone
-  header keeps one line, the title giving it room. It follows Paseo's app, which says beside a host
-  whether it is reached directly or through its relay.
+  `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
+  `--text-dim` word, **relay** (the hosted shell, or a Portal sign-in), **Tailscale** (a MagicDNS
+  name or tailnet address), **LAN** (a private address or a local-only name), **direct** (any other
+  address, a bare machine name and a request the server saw come through Funnel included) or
+  **local** (loopback: this PC, or a tunnel to another, which nothing can tell apart). The route,
+  not the connection's state, is its title and accessible text ("Via Tailscale"); the chip tells the
+  state. It is read from what the page owns and the server's own word on the request
+  (`observed_ingress`), never guessed. It is not a button and never wraps. At `<=480px` only the
+  relay keeps its word (the one most asked for) and the rest keep the glyph; below `360px` the
+  relay's word goes too, so the pane title keeps its room. The phone app's demo shows none. It
+  follows Paseo's app, which says beside a host whether it is reached directly or through its relay.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
