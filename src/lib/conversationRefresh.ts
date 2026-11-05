@@ -23,6 +23,8 @@ export class ConversationRefresh {
   private pushes = false;
   private waiting = false;
   private readonly pages: (() => Promise<void>)[] = [];
+  /** refreshed() callers, answered when the next newest read to begin ends */
+  private readonly waiters: (() => void)[] = [];
 
   /** A replaced screen releases its REST read before the new screen enters the serial lane. */
   setRead(read: (signal: AbortSignal) => Promise<void>): void {
@@ -66,6 +68,15 @@ export class ConversationRefresh {
     this.pending = true;
     this.invalidated = false;
     void this.drain();
+  }
+
+  /** A newest read now, answered once a newest read begun after this call has ended (or the screen went). */
+  refreshed(): Promise<void> {
+    if (this.read === null) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.waiters.push(resolve);
+    this.refresh();
+    return promise;
   }
 
   /**
@@ -112,6 +123,7 @@ export class ConversationRefresh {
     this.clearTimer();
     this.scope?.abort();
     this.scope = null;
+    for (const done of this.waiters.splice(0)) done();
   }
 
   private backstop(): number {
@@ -145,10 +157,12 @@ export class ConversationRefresh {
         const end = (): void => current.abort(scope.reason);
         scope.addEventListener("abort", end, { once: true });
         this.current = current;
+        const waiters = this.waiters.splice(0);
         try { await this.read(current.signal); }
         finally {
           scope.removeEventListener("abort", end);
           if (this.current === current) this.current = null;
+          for (const done of waiters) done();
         }
       }
     } finally {

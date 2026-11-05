@@ -103,7 +103,7 @@ import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import type { ConversationSearchMatch } from "../../shared/conversation-search.ts";
-import { pickedTurn, pickSettled } from "../../shared/conversation-search.ts";
+import { pickAhead, pickedTurn, pickSettled } from "../../shared/conversation-search.ts";
 import type { AgentStatus, CommandOutcome, ConversationMetadata, ConversationPart, ConversationResponse, ConversationTurn, InteractivePrompt, OmoTaskResult, PendingMessage, SlashCommand } from "../../shared/protocol.ts";
 import { chatIsBlank, type ChatRead } from "../lib/greeting.ts";
 import { TurnTime } from "./TurnTime.tsx";
@@ -2544,7 +2544,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
    * Opens the chat at a search's pick: the pages before the oldest shown are read, the largest page
    * at a time, until its turn is in and no page not read yet can hold the turn it was (pickSettled). A
    * turn that changed since the search has another name, which a later turn of its time may have
-   * taken: the one turn that is the match is opened (pickedTurn), never one of two. `missing`: no
+   * taken: the one turn that is the match is opened (pickedTurn), never one of two. A match in a store
+   * row the chat has not read (pickAhead) is decided once the newest page is read again. `missing`: no
    * such turn, or its transcript was replaced meanwhile.
    */
   const revealTurn = async (match: ConversationSearchMatch): Promise<RevealResult> => {
@@ -2554,8 +2555,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       setRevealTick((tick) => tick + 1);
     });
     let read: readonly ConversationTurn[] = shownTurns;
-    if (pickSettled(read, match)) return reveal();
     const generation = olderGeneration.current;
+    if (pickAhead(read, match)) {
+      await conversationRefresh.refreshed();
+      return olderGeneration.current === generation ? reveal() : "missing";
+    }
+    if (pickSettled(read, match)) return reveal();
     for (let before = olderCursor; typeof before === "string";) {
       const page = await loadOlder({ before, prompts: LARGEST_PAGE });
       if (olderGeneration.current !== generation) return "missing";
