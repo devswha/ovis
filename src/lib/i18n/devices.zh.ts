@@ -3,7 +3,7 @@
  * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const DEVICES_ZH: Record<string, string> = {
@@ -207,4 +207,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Code to type": "要输入的代码",
   "On the other device, open app.ovis.sh, choose Pair with a code and type it. Expires in {time}. It works once.": "在另一台设备上打开 app.ovis.sh，选择“用代码配对”并输入。{time} 后过期，只能使用一次。",
   "That device then shows an ID: pair only if it matches this PC's ID below, every group.": "随后该设备会显示一个 ID：只有与下方本电脑的 ID 每一组都一致时才配对。",
+  "Add to Home Screen for alerts: {glyph} Share → Add to Home Screen": "添加到主屏幕即可接收提醒：{glyph} 分享 → 添加到主屏幕",
+  "Install the app for alerts.": "安装应用即可接收提醒。",
+  "Install the app for alerts: Menu → Install app": "安装应用即可接收提醒：菜单 → 安装应用",
 };

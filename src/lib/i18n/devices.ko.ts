@@ -3,7 +3,7 @@
  * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
  * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
  * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * lib/install.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const DEVICES_KO: Record<string, string> = {
@@ -207,4 +207,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Code to type": "입력할 코드",
   "On the other device, open app.ovis.sh, choose Pair with a code and type it. Expires in {time}. It works once.": "다른 기기에서 app.ovis.sh를 열고 코드로 페어링을 골라 입력하세요. {time} 후 만료되며, 한 번만 쓸 수 있습니다.",
   "That device then shows an ID: pair only if it matches this PC's ID below, every group.": "그러면 그 기기에 ID가 뜹니다. 아래 이 PC의 ID와 모든 묶음이 같을 때만 페어링하세요.",
+  "Add to Home Screen for alerts: {glyph} Share → Add to Home Screen": "알림을 받으려면 홈 화면에 추가하세요: {glyph} 공유 → 홈 화면에 추가",
+  "Install the app for alerts.": "알림을 받으려면 앱을 설치하세요.",
+  "Install the app for alerts: Menu → Install app": "알림을 받으려면 앱을 설치하세요: 메뉴 → 앱 설치",
 };
