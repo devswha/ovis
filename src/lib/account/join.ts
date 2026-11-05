@@ -16,9 +16,6 @@ import type { AccountKey, AccountStore } from "./store.ts";
 
 export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
-/** Sent on `window` once this client's pairing is linked to the account: a device list read before it is out of date. */
-export const ACCOUNT_LINKED_EVENT = "ovis:account-linked";
-
 /** The PC refused an account request; `code` is its error code, never its words. */
 export class AccountPcError extends Error {
   constructor(readonly status: number, readonly code: string) {

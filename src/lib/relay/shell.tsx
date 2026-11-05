@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { ACCOUNT_LINKED_EVENT, enrollOnPc, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { enrollOnPc, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -385,10 +385,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account gets the removals this client signed (enrollPc)
       if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
-      if (linking) {
-        device = await linkThisDevice({ fetch, device, key, account: session.account, store });
-        window.dispatchEvent(new Event(ACCOUNT_LINKED_EVENT));
-      }
+      if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) opened.renew();
       // a PC of another account is not this account's to list or introduce from

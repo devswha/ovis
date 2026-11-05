@@ -11,7 +11,6 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { SettingsRow } from "./SettingsControls.tsx";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
-import { ACCOUNT_LINKED_EVENT } from "../lib/account/join.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -80,12 +79,11 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
   const generation = useRef(0);
   const pairingSelfLock = useRef(false);
 
-  /** `quiet`: a failed read leaves the list as it is and only answers false */
-  const load = useCallback(async (quiet = false): Promise<boolean> => {
+  const load = useCallback(async () => {
     const started = generation.current;
     try {
       const list = await fetchDevices();
-      if (started !== generation.current) return false;
+      if (started !== generation.current) return;
       setDevices(list);
       setError(null);
       // a device that appeared while a code was out just paired with it
@@ -96,13 +94,11 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
       }
       known.current = new Set(list.map((d) => d.id));
       loaded.current = true;
-      return true;
     } catch (e) {
-      if (started !== generation.current || quiet) return false;
+      if (started !== generation.current) return;
       setDevices([]);
       if (e instanceof ApiError && e.status === 404) setUnavailable(true);
       setError(e instanceof ApiError && e.status === 404 ? t("Devices are managed on a real server.") : e instanceof Error ? e.message : String(e));
-      return false;
     }
   }, [t, onDevicePaired]);
   useEffect(() => { void load(); }, [load]);
@@ -167,21 +163,6 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
     indexedAccountStore.key().then((key) => { if (live) setAccountKey(key.public_spki); }, () => undefined);
     return () => { live = false; };
   }, [signedIn]);
-  // a list read before this client's pairing joined the account would hide its removals; the shell
-  // renews its relay connection right after the link, so the list is read again once the PC answers
-  useEffect(() => {
-    let timer: number | undefined;
-    const onLinked = () => {
-      window.clearInterval(timer);
-      let tries = 0;
-      timer = window.setInterval(() => {
-        if (++tries >= 10) window.clearInterval(timer);
-        void load(true).then((read) => { if (read) window.clearInterval(timer); });
-      }, POLL_MS);
-    };
-    window.addEventListener(ACCOUNT_LINKED_EVENT, onLinked);
-    return () => { window.removeEventListener(ACCOUNT_LINKED_EVENT, onLinked); window.clearInterval(timer); };
-  }, [load]);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
   const disconnect = async (id: string, key: string, account: string) => {
