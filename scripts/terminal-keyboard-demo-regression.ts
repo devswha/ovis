@@ -514,6 +514,83 @@ async function keyboardOnRequest(browser: Browser): Promise<Record<string, unkno
   return { scenario: "keyboard-on-request", results };
 }
 
+// ---- scenario: Settings > Terminal > Fold the key bar (#1531) ---------------------------------------
+
+interface FoldState { bar: boolean; barModeKey: boolean; lineKeys: string | null; lineMode: boolean; modeDisabled: boolean | null; gridHeight: number; slotBottom: number; padBottom: number; viewport: number }
+
+const foldState = (page: Page): Promise<FoldState> => page.evaluate(() => {
+  const frame = document.querySelector(".pane-frame:not(.is-hidden)")!;
+  const line = frame.querySelector(".terminal-input");
+  const mode = frame.querySelector<HTMLButtonElement>(".terminal-input-mode");
+  return {
+    bar: frame.querySelector(".key-bar") !== null,
+    barModeKey: frame.querySelector('.key-bar [data-key="direct"]') !== null,
+    lineKeys: frame.querySelector(".terminal-input-keys")?.getAttribute("aria-pressed") ?? null,
+    lineMode: mode !== null,
+    modeDisabled: mode?.disabled ?? null,
+    gridHeight: Math.round(frame.querySelector(".xterm-screen")!.getBoundingClientRect().height),
+    slotBottom: Math.round(frame.querySelector(".terminal-input-slot")?.getBoundingClientRect().bottom ?? 0),
+    padBottom: line ? parseFloat(getComputedStyle(line).paddingBottom) : 0,
+    viewport: window.innerHeight,
+  };
+});
+
+async function foldKeyBar(browser: Browser): Promise<Record<string, unknown>> {
+  const results: Record<string, unknown> = {};
+  for (const fold of [false, true]) {
+    const context = await phone(browser, { language: "en", theme: "dark", terminalInputMode: "line", defaultView: "terminal" });
+    if (fold) await context.addInitScript(() => { localStorage.setItem("ovis:terminal-fold-key-bar", "true"); });
+    try {
+      const { page, errors } = await open(context);
+      // folded there is no key bar to wait on: the line's mode key turns on once the pane takes input
+      if (fold) await page.locator(".pane-frame:not(.is-hidden) .terminal-input-mode:not(:disabled)").waitFor();
+      else await ready(page);
+      await settled(page);
+      const rest = await foldState(page);
+      results[fold ? "on" : "off"] = rest;
+      if (!fold) {
+        assert.deepEqual([rest.bar, rest.barModeKey, rest.lineKeys, rest.lineMode], [true, true, null, false], "off: the key bar stays under the line with its mode key, as on main");
+        console.log("PASS fold the key bar off: the key bar and its mode key under the input line, as on main");
+        assert.deepEqual(errors, []);
+        continue;
+      }
+      const off = results["off"] as FoldState;
+      assert.deepEqual([rest.bar, rest.lineKeys, rest.lineMode, rest.modeDisabled], [false, "false", true, false], "on: the key bar is folded, Terminal keys and the mode key sit in the line");
+      assert.equal(rest.slotBottom, rest.viewport, "on: the input line is the screen's bottom row");
+      assert.ok(rest.padBottom >= 8, `on: the folded line keeps at least --space-2 under its controls (${rest.padBottom})`);
+      assert.ok(rest.gridHeight > off.gridHeight, `on: the terminal gets the key bar's row back (${off.gridHeight} -> ${rest.gridHeight})`);
+      // Terminal keys opens the row, pressed, without a second mode key; a second tap folds it
+      await page.locator(".pane-frame:not(.is-hidden) .terminal-input-keys").tap();
+      await page.locator(".pane-frame:not(.is-hidden) .key-bar").waitFor();
+      await settled(page);
+      const opened = await foldState(page);
+      assert.deepEqual([opened.bar, opened.barModeKey, opened.lineKeys], [true, false, "true"], "on: Terminal keys opens the key bar, pressed, with no second mode key");
+      assert.ok(opened.slotBottom < opened.viewport, "on, open: the line stands over the key bar again");
+      await page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="Escape"]').waitFor();
+      await page.locator(".pane-frame:not(.is-hidden) .terminal-input-keys").tap();
+      await page.locator(".pane-frame:not(.is-hidden) .key-bar").waitFor({ state: "detached" });
+      assert.equal((await foldState(page)).lineKeys, "false", "on: a second tap folds the key bar again");
+      // a composition in the line greys out the mode key, as it does the key bar's
+      await composition(page, lineOf(page), "compositionstart");
+      await page.waitForFunction(() => document.querySelector<HTMLButtonElement>(".pane-frame:not(.is-hidden) .terminal-input-mode")?.disabled === true);
+      await composition(page, lineOf(page), "compositionend");
+      await page.waitForFunction(() => document.querySelector<HTMLButtonElement>(".pane-frame:not(.is-hidden) .terminal-input-mode")?.disabled === false);
+      // the line's mode key switches to direct typing: the key bar is back whole, its mode key first
+      await page.locator(".pane-frame:not(.is-hidden) .terminal-input-mode").tap();
+      await page.locator("[data-direct-typing]").waitFor();
+      await page.locator('.pane-frame:not(.is-hidden) .key-bar-row > [data-key="direct"]:first-child').waitFor();
+      assert.equal((await foldState(page)).lineKeys, null, "on, direct typing: no input line, so no Terminal keys button");
+      // and back: the line, with the key bar folded again
+      await page.locator('.pane-frame:not(.is-hidden) .key-bar [data-key="direct"]').tap();
+      await page.locator("[data-direct-typing]").waitFor({ state: "detached" });
+      await page.locator(".pane-frame:not(.is-hidden) .key-bar").waitFor({ state: "detached" });
+      assert.deepEqual(errors, []);
+      console.log(`PASS fold the key bar on: folded under a bottom input line (+${rest.gridHeight - off.gridHeight}px of grid), Terminal keys opens and folds it, the mode key moved into the line`);
+    } finally { await context.close(); }
+  }
+  return { scenario: "fold-key-bar", results };
+}
+
 // ---- scenario: composing, or no field to show the keyboard for --------------------------------------
 
 async function composingOrUnavailableTarget(browser: Browser): Promise<Record<string, unknown>> {
@@ -978,7 +1055,7 @@ try {
     } else {
       const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
       try {
-        const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
+        const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await foldKeyBar(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
         if (evidence) {
           mkdirSync(evidence, { recursive: true });
           for (const report of reports) writeFileSync(join(evidence, `terminal-keyboard-${report["scenario"]}.json`), JSON.stringify({ ...report, synthetic: "Chromium with scripted visualViewport geometry; not a native keyboard" }, null, 2));

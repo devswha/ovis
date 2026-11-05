@@ -3295,7 +3295,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
   speed, input mode, Key bar, Keyboard only from the key bar (off by default, the device setting
-  `terminalKeyboardOnRequest`), Clipboard from a pane, Pictures in the terminal (off by default, the
+  `terminalKeyboardOnRequest`), Fold the key bar (touch screens, off by default, the device setting
+  `terminalFoldKeyBar`), Clipboard from a pane, Pictures in the terminal (off by default, the
   device setting `terminalImages`), Draw with libghostty (off by default, the device setting
   `terminalGhostty`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
@@ -3885,6 +3886,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   draft with a separate no-Enter insert; agent-of-empires' compose sheet has Insert beside Send but
   clears its draft on a synchronous boolean, which this design rejects: the draft is cleared on the
   bridge's acknowledgement, as Send's is, and nothing typed is queued across a disconnect.
+- **Fold the key bar** (Settings > Terminal, touch screens only, off by default, the device setting
+  `terminalFoldKeyBar`, #1531): in Input line mode the key bar's row is folded and the terminal gets
+  it back (about 48 px). The line's actions start with the bar's mode key and a **Terminal keys**
+  button (`LineKeyControls` in KeyBar.tsx), round targets without words over them, pressed as an
+  armed key while the row is open; the open row has no second mode key. Send stays last, at the edge,
+  as in the composer. Folded, a line that reaches the screen's bottom keeps
+  `max(--space-2, safe-area-inset-bottom)` under its controls, and its placeholder is cut on one row
+  rather than wrapped. Direct typing keeps the whole bar, mode key first. Design reference: the
+  Claude and Codex phone apps, which keep one input row with its actions at its end.
 - **Attach files** in the terminal lens (#1633; Settings > Terminal > **Attach files button**, the
   device setting `terminalAttachButton`, off by default and offered on a touch screen only, so the
   input line and the key bar stay as they were). On, the input line gets **Attach**
