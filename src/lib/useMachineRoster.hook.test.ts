@@ -49,7 +49,7 @@ describe("roster and health polling beside the event stream", () => {
       selectionHint: { current: null }, setSelectedPaneId: noop, setNotificationViewTarget: noop,
       setTerminalPeek: noop, setAutoSelected: noop, preferencesResubscribedRef: { current: noop },
       preferencesDisconnectedRef: { current: noop }, preferencesClosedRef: { current: noop },
-      dropIn: noop, chime: noop, setPairedNotices: noop, getTakeNotificationTargetRef: () => ({ current: noop }),
+      dropIn: noop, chime: noop, setPairedNotices: noop, setRelayPairings: noop, getTakeNotificationTargetRef: () => ({ current: noop }),
     });
     return null;
   }
