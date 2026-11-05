@@ -1022,7 +1022,7 @@ function AddRelayPc() {
         <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); void add(); }}>
           <input ref={input} className="input relay-pc-input" type="url" placeholder="https://app.ovis.sh/s/…" aria-label={t("Pairing link")}
             autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy} />
-          <button type="submit" className="btn" disabled={busy} aria-busy={busy || undefined}>{t("Add PC")}</button>
+          <button type="submit" className="btn" disabled={busy} aria-busy={busy || undefined} aria-label={t("Add a PC through the relay")}>{t("Add PC")}</button>
         </form>
       </SettingsRow>
       {result && <p className="settings-item settings-hint" role={result.error ? "alert" : "status"}>{result.text}</p>}
