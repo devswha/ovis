@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "./index.ts";
 import { MachineManager } from "./machines.ts";
 import type { CompletionTracker } from "./completion.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
@@ -60,5 +61,25 @@ describe("herdr-core's machines as PCs (#2497)", () => {
     manager.syncHcMachines([]);
     expect(manager.list()).toHaveLength(1);
     expect(events).toEqual(["start lab", "stop lab", "start lab", "stop lab", "start lab2", "stop lab2"]);
+  });
+});
+
+describe("a machine's own server (#2497)", () => {
+  it("shows, lists, diffs and makes no file of this disk as that machine's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-hc-machine-files-"));
+    const file = join(dir, "only-on-this-pc.txt");
+    writeFileSync(file, "this PC");
+    const token = "t".repeat(64);
+    const served = (localFiles: boolean) => createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, bridgeOnly: true, localFiles, stateDir: join(dir, `state-${localFiles}`) });
+    const machine = served(false);
+    const own = served(true);
+    cleanups.push(() => { machine.stop(); own.stop(); rmSync(dir, { recursive: true, force: true }); });
+    const get = (server: ReturnType<typeof served>, path: string) => fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    const ask = `/api/fs/file?path=${encodeURIComponent(file)}`;
+    expect((await get(own, ask)).status).toBe(200);
+    for (const path of [ask, `/api/fs/stat?path=${encodeURIComponent(file)}`, `/api/workspace/directories?path=${encodeURIComponent(dir)}`, "/api/workspace/diff/files?pane_id=t1", "/api/pane/files?pane_id=t1"]) {
+      const answer = await get(machine, path);
+      expect({ path, status: answer.status, code: ((await answer.json()) as { error?: { code?: string } }).error?.code }).toEqual({ path, status: 501, code: "unsupported" });
+    }
   });
 });

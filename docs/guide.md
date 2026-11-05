@@ -915,8 +915,11 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   workspaces and tabs started there. Ovis reaches it through this PC's core: nothing of Ovis is
   installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
   Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
-  own), so its agents' chat history is not read here: their transcripts are on that machine. A folder picked for a new workspace there is checked on this PC; leave it empty to
-  start in that machine's home. Temporary machines (`hc machine add --temp`) are not shown, and
+  own), so its agents' chat history is not read here: their transcripts are on that machine.
+  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
+  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
+  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  there. Temporary machines (`hc machine add --temp`) are not shown, and
   PCs added over SSH or through the relay keep working beside them.
 
 ## Configuration

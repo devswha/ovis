@@ -44,8 +44,7 @@ const READY_MS = 30_000;
  * `stateDir`; it ends with this server (it holds the stdin this one keeps open).
  */
 export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string): Promise<MachineBridge> {
-  // short: the adapter's socket goes in it, and a unix socket's path is short
-  const dir = join(stateDir, "hc-machines", machine.id.slice(0, 16));
+  const dir = join(stateDir, "hc-machines", machine.id);
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const pick = (pattern: RegExp) => Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => pattern.test(entry[0]) && entry[1] !== undefined));
@@ -55,6 +54,7 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
     ...(process.platform === "win32" ? { USERPROFILE: home } : {}),
     OVIS_RUNTIME: "herdr-core",
     OVIS_HC_MACHINE: machine.name,
+    OVIS_HC_MACHINE_ID: machine.id,
     OVIS_HC_MACHINE_STATE: dir,
     OVIS_HC_BIN: hcBin(),
     OVIS_HC_ENV: JSON.stringify(pick(CORE_ENV)),

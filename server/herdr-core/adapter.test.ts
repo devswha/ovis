@@ -140,6 +140,7 @@ async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {
     },
     "terminal.attach": () => ({ channel: cores.at(-1)!.channel(), terminal: terminals[0] }),
     "terminal.keys": () => ({ turn: 0 }),
+    "machine.list": () => ({ machines: machine === undefined ? [] : [{ name: machine, id: `${machine}-id`, host: machine, state: "connected", target: machine, version: "0.1.17" }] }),
     ...extra,
   };
   const spawn = () => {
@@ -147,7 +148,7 @@ async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {
     cores.push(core);
     return core;
   };
-  const hc = machine === undefined ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine);
+  const hc = machine === undefined ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine, `${machine}-id`);
   const adapter = await startHerdrCoreAdapter(hc, socket, observeSeen, { otherMachine: machine !== undefined });
   cleanups.push(() => { adapter.stop(); hc.close(); rmSync(dir, { recursive: true, force: true }); });
   return { socket, cores, hc };
@@ -1189,6 +1190,15 @@ describe("another machine of the core, as its own PC (#2497)", () => {
     expect(failure).toBe("pane_not_found");
     await workspaceCreate({ label: "new" }, socket).catch(() => null);
     expect(started["on"]).toBe("lab");
+  });
+
+  it("reaches no other machine that took its name after a rename", async () => {
+    // lab was renamed, and vps took the name lab: its id is not lab's
+    const { socket, cores } = await setup(listed(), { "machine.list": () => ({ machines: [{ name: "lab", id: "vps-id", host: "vps", state: "connected", target: "vps", version: "0.1.17" }] }) }, undefined, "lab");
+    const failure = await paneSendText("t1", "x", socket).then(() => null, (error: unknown) => (error instanceof HerdrError ? error.code : String(error)));
+    expect(failure).toBe("connect_failed");
+    expect(cores[0]!.typed).toEqual([]);
+    expect(cores[0]!.calls.filter((call) => call.method !== "machine.list" && call.method !== "hello")).toEqual([]);
   });
 
   it("tells no process of that machine, and opens no checkout here", async () => {

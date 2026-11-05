@@ -1,4 +1,4 @@
-import { type ChannelHandlers, HcConnection, type HcStreamMethod, type HcTransport } from "./connection.ts";
+import { type ChannelHandlers, HcConnection, HcError, type HcStreamMethod, type HcTransport } from "./connection.ts";
 import type { HcMethod, HcMethods } from "./hc-api.generated.ts";
 import { isRecord } from "./snapshot.ts";
 
@@ -9,24 +9,37 @@ import { isRecord } from "./snapshot.ts";
  * this connection they are that machine's own again: only `lab/…` terminals, without the prefix, and
  * its own documents, so the adapter and the attach run unchanged, as they would on that machine.
  * Every address goes back to hc with the prefix, and a new terminal or document is made `on` it.
+ * hc names a machine by a name that can be given to another one (`hc machine rename`): each call
+ * first checks the name still names this machine's id, so a rename never sends it to another.
  */
+/** past any event line hc sends (adapter.ts EVENT_LINE_BYTES, 4 MiB) */
+const EVENT_LINE_LIMIT = 4 * 1024 * 1024;
+
 export class MachineScopedConnection extends HcConnection {
   private readonly prefix: string;
 
-  constructor(spawn: () => HcTransport, readonly machine: string) {
+  constructor(spawn: () => HcTransport, readonly machine: string, readonly id: string) {
     super(spawn);
     this.prefix = `${machine}/`;
   }
 
   override async call<M extends HcMethod>(method: M, params: HcMethods[M]["params"], timeoutMs?: number): Promise<HcMethods[M]["result"]> {
+    if (method !== "machine.list") await this.stillThis(timeoutMs);
     const result = await super.call(method, this.scoped(method, params), timeoutMs);
     return this.mine(method, result);
   }
 
   override async open<M extends HcStreamMethod>(method: M, params: HcMethods[M]["params"], handlers: ChannelHandlers, timeoutMs?: number) {
+    await this.stillThis(timeoutMs);
     const heard = method === "events.subscribe" ? { ...handlers, onData: this.eventLines(handlers.onData) } : handlers;
     const opened = await super.open(method, this.scoped(method, params), heard, timeoutMs);
     return { ...opened, result: this.mine(method, opened.result) };
+  }
+
+  private async stillThis(timeoutMs?: number): Promise<void> {
+    const { machines } = await super.call("machine.list", {}, timeoutMs);
+    if (machines.some((machine) => machine.name === this.machine && machine.id === this.id)) return;
+    throw new HcError("closed", `herdr-core no longer calls this machine ${this.machine}: it was renamed or removed`);
   }
 
   address(local: string): string {
@@ -75,6 +88,8 @@ export class MachineScopedConnection extends HcConnection {
     let pending = "";
     return (payload) => {
       pending += decoder.decode(payload, { stream: true });
+      // a line past the adapter's own limit goes on whole, for its reader to refuse and end the stream
+      if (pending.length > EVENT_LINE_LIMIT && !pending.includes("\n")) { onData(encoder.encode(pending)); pending = ""; return; }
       const lines = pending.split("\n");
       pending = lines.pop()!;
       const kept = lines.flatMap((line) => {

@@ -361,7 +361,7 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
         exited: child.exited,
         kill: () => child.kill(),
       };
-    }, "lab");
+    }, "lab", (JSON.parse(await run(here, ["machine", "ls", "--json"])) as { machines: { id: string }[] }).machines[0]!.id);
     socket = join(dir, "lab.sock");
     stopAdapter = (await startHerdrCoreAdapter(hc, socket, undefined, { otherMachine: true })).stop;
   }, TEST_MS);

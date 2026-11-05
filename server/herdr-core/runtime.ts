@@ -81,8 +81,10 @@ export class NoHerdrCoreError extends Error {
  * The other machine of the core this server shows as a PC of its own (OVIS_HC_MACHINE, set by
  * machine-bridge.ts for the server it starts per machine); null for the core's own terminals.
  */
-export function hcMachine(): string | null {
-  return process.env["OVIS_HC_MACHINE"] || null;
+export function hcMachine(): { name: string; id: string } | null {
+  const name = process.env["OVIS_HC_MACHINE"];
+  const id = process.env["OVIS_HC_MACHINE_ID"];
+  return name && id ? { name, id } : null;
 }
 
 /**
@@ -114,7 +116,7 @@ export function coreSeenMarker(): SeenMarker {
 export function coreConnection(): HcConnection {
   const spawn = () => spawnHcConnect(hcBin(), hcEnv());
   const machine = hcMachine();
-  connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine);
+  connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine.name, machine.id);
   return connection;
 }
 
