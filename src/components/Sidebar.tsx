@@ -395,7 +395,6 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   const agentRows = useMemo(() => sidebarAgents(snapshot), [snapshot]);
   const agentByPane = useMemo(() => new Map(agentRows.map((entry) => [entry.pane.pane_id, entry])), [agentRows]);
   const agentNames = useMemo(() => workspaceAgentLabels(agentRows), [agentRows]);
-  const rosterIds = useMemo(() => new Set(roster.map((pane) => pane.pane_id)), [roster]);
   // a repository's worktree workspaces hang under one on its main checkout (lib/workspaceOrder.ts)
   const worktreeGroups = useMemo(() => groupWorktrees(orderedWorkspaces), [orderedWorkspaces]);
   // pinned workspaces stand first, in a card, in pin order (shared with the other browsers,
@@ -764,7 +763,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         {context && selected && <span className="sidebar-filter-note">{t("Selected")}</span>}
         <BackgroundBadge count={online ? pane.background_tasks : 0} />
         <PlanBadge plan={online ? pane.plan : undefined} />
-        <span className="sidebar-pane-meta"><StatusBadge compact status={online ? activity.status(machineId, pane) : undefined} /></span>
+        <ContextBadge context={online && settings.sidebarContext ? pane.context : undefined} />
+        <span className="sidebar-pane-meta">{online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={online ? activity.status(machineId, pane) : undefined} />}</span>
       </button>
     </li>;
   };
@@ -773,8 +773,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const panes = roster.filter((pane) => pane.workspace_id === workspace.workspace_id);
     if (panes.length === 0) return null;
     const pane = currentPane(workspace, panes);
-    // the tree's agents of this workspace, in the roster's order; under the filter the ones it keeps, as the Agents list does
-    const workers = agentTree ? agentRows.filter((entry) => entry.pane.workspace_id === workspace.workspace_id && rosterIds.has(entry.pane.pane_id) && (filtered === null || filtered.panes.has(entry.pane.pane_id))) : [];
+    // the tree's agents of this workspace, the Agents list's rows in its order; under the filter the ones it keeps, as that list does
+    const workers = agentTree ? agentRows.filter((entry) => entry.pane.workspace_id === workspace.workspace_id && (filtered === null || filtered.panes.has(entry.pane.pane_id))) : [];
     // the selected agent's own row carries the selection's fill, its workspace's row the place
     const workerSelected = workers.some((entry) => entry.pane.pane_id === selectedPaneId);
     const selected = panes.some((candidate) => candidate.pane_id === selectedPaneId);

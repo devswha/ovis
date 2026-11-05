@@ -2656,8 +2656,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   agents under it (`.workspace-agents`, a list named "Agents in <workspace>"), in the roster's
   order, one level in on the dim branch a worktree hangs from, and a worktree's agents a level
   further in. An agent row is a one-line workspace row's height: its mark, the title the Agents list
-  gives it, its tab's name where the workspace has several, its background and plan counts, and its
-  state in the rows' trailing cell. It opens its pane as the Agents row does; its pin, mute and group
+  gives it, its live name and its tab's name where the workspace has several, its background and plan
+  counts, the context ring while Context left on agent rows is on, and its state in the rows' trailing
+  cell (NOT RESTORED for a pane herdr could not bring back, as on a workspace row). It opens its pane as the Agents row does; its pin, mute and group
   stay in the Agents list's menu, which stays as it is. The selected agent's row takes the selection's
   fill (and the forced-colors bar) from its workspace's row, so one row is filled. Under the filter
   only the agents it keeps are listed, the selection's as context; a folded worktree group, a folded
