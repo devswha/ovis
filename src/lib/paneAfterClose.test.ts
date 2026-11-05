@@ -37,6 +37,22 @@ describe("paneAfterClose", () => {
     expect(paneAfterClose(before, roster({ w1: { t1: ["a"] }, w2: { t2: ["b"] } }), "c", null)).toBe("b");
   });
 
+  it("keeps the selection in its workspace when a tab made there after `before` is all it has left", () => {
+    const before = roster({ w1: { t1: ["a"] }, w2: { t2: ["x"] } });
+    expect(paneAfterClose(before, roster({ w1: { t3: ["n"] }, w2: { t2: ["x"] } }), "a", null)).toBe("n");
+  });
+
+  it("opens the pane this browser last viewed in the tab or workspace it moves to, as clicking it would", () => {
+    const remembered: Record<string, string> = { "tab:t1": "a2", "workspace:w2": "y" };
+    const viewed = (scope: "tab" | "workspace", id: string) => remembered[`${scope}:${id}`];
+    const tabs = roster({ w1: { t1: ["a1", "a2"], t2: ["c"] } });
+    expect(paneAfterClose(tabs, roster({ w1: { t1: ["a1", "a2"] } }), "c", null, viewed)).toBe("a2");
+    const workspaces = roster({ w1: { t1: ["a"] }, w2: { t2: ["x", "y"] } });
+    expect(paneAfterClose(workspaces, roster({ w2: { t2: ["x", "y"] } }), "a", null, viewed)).toBe("y");
+    // a remembered pane that is gone falls back to the tab's focused pane
+    expect(paneAfterClose(tabs, roster({ w1: { t1: ["a1"] } }), "c", null, viewed)).toBe("a1");
+  });
+
   it("names nothing for a pane it never saw, or when nothing is left", () => {
     const before = roster({ w1: { t1: ["a"] } });
     expect(paneAfterClose(before, before, "gone", null)).toBeNull();

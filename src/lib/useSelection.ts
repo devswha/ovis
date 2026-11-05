@@ -7,6 +7,7 @@ import { pageSearch } from "./pageQuery.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import { markSelection, type SelectionMark } from "./selectionMark.ts";
 import { paneAfterClose } from "./paneAfterClose.ts";
+import { lastViewedPane } from "./lastViewedPane.ts";
 import type { PaneView } from "./actions.ts";
 import type { Translate } from "./i18n.ts";
 import { storedSelection, storeSelection } from "./useSplitView.ts";
@@ -183,7 +184,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     // when nothing it named is open, the usual fallback below with a word in the header
     const seen = lastSeen.current?.machine === selectedMachineId && lastSeen.current.pane === selectedPaneId ? lastSeen.current : null;
     // a closed selection moves as herdr's TUI focus does; herdr's own focus is the last resort
-    const fallback = (current: typeof snapshot) => (seen && paneAfterClose(seen.roster, current, seen.pane, seen.previous))
+    const fallback = (current: typeof snapshot) => (seen && paneAfterClose(seen.roster, current, seen.pane, seen.previous, (scope, id) => lastViewedPane(scope, selectedMachineId, id)))
       ?? current.panes.find((pane) => pane.pane_id === current.focused_pane_id)?.pane_id ?? current.panes[0]?.pane_id ?? null;
     if (selectedPaneId !== null && snapshot.panes.some((pane) => pane.pane_id === selectedPaneId)) {
       const last = lastSeen.current?.machine === selectedMachineId ? lastSeen.current : null;
