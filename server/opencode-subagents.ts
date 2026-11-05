@@ -337,8 +337,16 @@ function scanResult(scan: Scan): OpencodeSubagentState {
   return { ...state, running: state.running + scan.shellRunning, unlisted: state.running + scan.shellRunning - running.length, tasks: [...running, ...settled] };
 }
 
-/** A row of a child's over this is not read for its detail, and is said to be left out (`incomplete`), as a Claude record over its size is. */
+/**
+ * What the detail takes of one row (a step's text and tool calls, or a prompt's text) is left out over this, and said
+ * (`incomplete`), as a Claude record over its size is.
+ */
 const DETAIL_RECORD_BYTES = 64 * 1024;
+/**
+ * A row over this is not looked into at all (said `incomplete`). A step's row also holds its tools' output, which the
+ * sheet never shows, so a step is taken apart in the store and only what is shown is measured against the limits.
+ */
+const DETAIL_ROW_BYTES = 4 * 1024 * 1024;
 
 /**
  * GET /api/pane/background-agent for an OpenCode pane: what the child session `childId` of the session `sessionId` did,
@@ -346,9 +354,10 @@ const DETAIL_RECORD_BYTES = 64 * 1024;
  * snapshot of the store. The prompt is the child's newest `user` row: what its current (or last) run was dispatched
  * with, a child continued by its sessionID having run an earlier task before it. Its work is the text and tool parts of
  * the `assistant` rows since that prompt, the newest as many as max_events and max_read_bytes allow (no reasoning, no
- * tool output); rows are sized before any is read, and a staged `/undo` hides the rows from its message on, as the chat
- * does (server/opencode.ts sessionView). A row over DETAIL_RECORD_BYTES or that is not JSON is left out and said (`incomplete`); rows left unread for
- * the limits are said (`truncated`). Only a child of `sessionId` is answered: another session's is not found. `command`:
+ * tool output), taken out in the store so that only they come out of it; a staged `/undo` hides the rows from its
+ * message on, as the chat does (server/opencode.ts sessionView). A row over DETAIL_ROW_BYTES, one that is not JSON, and
+ * what is shown of one over DETAIL_RECORD_BYTES are left out and said (`incomplete`); rows left unread for the limits
+ * are said (`truncated`). Only a child of `sessionId` is answered: another session's is not found. `command`:
  * the id is one of the session's background commands, which has no work of its own to read.
  */
 export function opencodeAgentDetail(path: string, sessionId: string, childId: string): { detail: Omit<PaneBackgroundAgentDetail, "server_time"> } | { refusal: DetailRefusal | "command" } {
@@ -374,45 +383,48 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
   let incomplete = false;
   const end = sessionView(db, childId)?.end ?? Number.MAX_SAFE_INTEGER;
   const size = supportedRowSize(db);
-  const sized = `CASE WHEN ${size} <= ${DETAIL_RECORD_BYTES} THEN data END AS data, ${size} AS bytes, seq, time_created`;
-  type DetailRow = { data: string | null; bytes: number; seq: number; time_created: number };
-  const parsed = (row: DetailRow): Row | null => {
-    if (row.data === null) { incomplete = true; return null; }
-    try { const data = JSON.parse(row.data) as unknown; if (data !== null && typeof data === "object" && !Array.isArray(data)) return data as Row; } catch { /* said below */ }
-    incomplete = true;
-    return null;
+  // `shown`: what the sheet takes of a row, made in the store, and its size; null when the row is no JSON or over DETAIL_ROW_BYTES
+  type Taken = { seq: number; time_created: number; created: unknown; shown: string | null; bytes: number | null };
+  const take = (shown: string) => `
+    SELECT seq, time_created, created, CASE WHEN length(CAST(shown AS BLOB)) <= ${DETAIL_RECORD_BYTES} THEN shown END AS shown,
+      length(CAST(shown AS BLOB)) AS bytes
+    FROM (SELECT seq, time_created, CASE WHEN ${size} <= ${DETAIL_ROW_BYTES} AND json_valid(data) THEN json_extract(data, '$.time.created') END AS created,
+      CASE WHEN ${size} <= ${DETAIL_ROW_BYTES} AND json_valid(data) THEN ${shown} END AS shown
+      FROM session_message AS m WHERE session_id = ? AND seq = ?)`;
+  /** what was taken of a row, or null and said `incomplete` when nothing of it could be */
+  const kept = (row: Taken | null): Taken & { shown: string; bytes: number } | null => {
+    if (row === null) return null;
+    if (row.shown === null || row.bytes === null) { incomplete = true; return null; }
+    return row as Taken & { shown: string; bytes: number };
   };
-  const first = db.query<DetailRow, [string, number]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND type = 'user' AND seq < ? ORDER BY seq DESC LIMIT 1`).get(childId, end);
-  const dispatch = first === null ? null : parsed(first);
-  const prompt = dispatch !== null && typeof dispatch.text === "string" && dispatch.text.trim().length > 0 ? dispatch.text : null;
-  // the newest rows' sizes first, one more than can be shown to tell whether older ones were left; then only the rows
-  // that fit max_read_bytes are read, so no more than that comes out of the store
-  const sizes = db.query<{ seq: number; bytes: number }, [string, number, number]>(
-    `SELECT seq, ${size} AS bytes FROM session_message WHERE session_id = ? AND type = 'assistant' AND seq > ? AND seq < ? ORDER BY seq DESC LIMIT ${DETAIL_LIMITS.max_events + 1}`,
-  ).all(childId, first?.seq ?? -1, end);
-  let truncated = sizes.length > DETAIL_LIMITS.max_events;
-  let left = DETAIL_LIMITS.max_read_bytes - (first === null || first.data === null ? 0 : first.bytes);
-  const fits: number[] = [];
-  for (const { seq, bytes } of sizes.slice(0, DETAIL_LIMITS.max_events)) {
-    if (bytes > DETAIL_RECORD_BYTES) { incomplete = true; continue; }
-    if (bytes > left) { truncated = true; break; }
-    left -= bytes;
-    fits.push(seq);
-  }
-  const rowAt = db.query<DetailRow, [string, number]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND seq = ?`);
+  const promptRow = db.query<{ seq: number }, [string, number]>("SELECT seq FROM session_message WHERE session_id = ? AND type = 'user' AND seq < ? ORDER BY seq DESC LIMIT 1").get(childId, end);
+  // the prompt's text alone: a prompt's row also carries the files sent with it
+  const dispatch = promptRow === null ? null : kept(db.query<Taken, [string, number]>(take("coalesce(json_extract(data, '$.text'), '')")).get(childId, promptRow.seq));
+  const prompt = dispatch !== null && dispatch.shown.trim().length > 0 ? dispatch.shown : null;
+  // the newest steps since, one more than can be shown to tell whether older ones were left; each step's text and tool
+  // calls (name and input) are taken out in the store, its tools' output left there
+  const steps = db.query<{ seq: number }, [string, number, number]>(
+    `SELECT seq FROM session_message WHERE session_id = ? AND type = 'assistant' AND seq > ? AND seq < ? ORDER BY seq DESC LIMIT ${DETAIL_LIMITS.max_events + 1}`,
+  ).all(childId, promptRow?.seq ?? -1, end);
+  let truncated = steps.length > DETAIL_LIMITS.max_events;
+  let left = DETAIL_LIMITS.max_read_bytes - (dispatch?.bytes ?? 0);
+  const stepAt = db.query<Taken, [string, number]>(take(`(SELECT json_group_array(json_object('type', json_extract(c.value, '$.type'),
+    'text', json_extract(c.value, '$.text'), 'name', json_extract(c.value, '$.name'), 'input', json_extract(c.value, '$.state.input')))
+    FROM json_each(m.data, '$.content') AS c WHERE json_extract(c.value, '$.type') IN ('text', 'tool'))`));
   const taken: PaneBackgroundAgentDetail["events"][] = [];
-  for (const seq of fits) {
-    const row = rowAt.get(childId, seq);
-    if (row === null) continue;
-    const data = parsed(row);
-    if (data === null) continue;
-    const at = iso(stamp(record(data.time).created) ?? row.time_created);
-    taken.push((Array.isArray(data.content) ? data.content : []).flatMap((value): PaneBackgroundAgentDetail["events"] => {
+  for (const { seq } of steps.slice(0, DETAIL_LIMITS.max_events)) {
+    const step = kept(stepAt.get(childId, seq));
+    if (step === null) continue;
+    if (step.bytes > left) { truncated = true; break; }
+    left -= step.bytes;
+    const at = iso(stamp(step.created) ?? step.time_created);
+    let parts: unknown;
+    try { parts = JSON.parse(step.shown); } catch { incomplete = true; continue; }
+    taken.push((Array.isArray(parts) ? parts : []).flatMap((value): PaneBackgroundAgentDetail["events"] => {
       const part = record(value);
       if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) return [{ kind: "text", text: part.text, at }];
       if (part.type === "tool" && typeof part.name === "string" && part.name.trim().length > 0) {
-        const input = record(part.state).input;
-        return [{ kind: "tool", text: `${part.name.trim()} ${input === undefined ? "{}" : JSON.stringify(input)}`, at }];
+        return [{ kind: "tool", text: `${part.name.trim()} ${part.input === undefined || part.input === null ? "{}" : JSON.stringify(part.input)}`, at }];
       }
       return [];
     }));

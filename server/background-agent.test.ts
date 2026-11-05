@@ -241,6 +241,15 @@ describe("handleBackgroundAgentRequest on an OpenCode pane", () => {
     expect([body.prompt, body.events.map((event) => event.text)]).toEqual(["the second task", ["on the second task"]]);
   });
 
+  it("shows a step whose tools' output is large: its text and tool calls, not the output", async () => {
+    const { request, files } = opencodeHarness([PARENT_A]);
+    const output = (file: string) => ({ status: "completed", input: { filePath: file }, content: [{ type: "text", text: "z".repeat(40 * 1024) }] });
+    files.add("ses_childA", "assistant", { content: [{ type: "text", text: "reading both" }, { type: "tool", name: "read", state: output("b.ts") }, { type: "tool", name: "read", state: output("c.ts") }] });
+    const body: PaneBackgroundAgentDetail = await (await request("pane_id=w0:p0&agent_id=ses_childA")).json();
+    expect([body.incomplete, body.events.slice(-3).map((event) => event.text)]).toEqual([false, ["reading both", 'read {"filePath":"b.ts"}', 'read {"filePath":"c.ts"}']]);
+    expect(JSON.stringify(body)).not.toContain("zzz");
+  });
+
   it("hides what a staged /undo took back, as the chat does", async () => {
     const { request, files } = opencodeHarness([PARENT_A]);
     files.add("ses_childA", "assistant", { content: [{ type: "text", text: "undone words" }] });
