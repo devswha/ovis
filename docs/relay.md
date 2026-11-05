@@ -94,6 +94,14 @@ What keeps that in check:
   never leaves the phone either, unless such a file address is copied out and opened in a browser
   without the app.
 
+Once a phone has opened a PC, the app's service worker starts that PC's page from the copy of the
+app it kept and fetches `app.ovis.sh`'s in the background for the next open
+([`public/sw.js`](../public/sw.js)), so a reopen doesn't wait on the host. A new release, a fix
+included, therefore reaches a phone on the open after the one that fetched it. A copy kept more
+than a day ago is not opened first: the host is asked, the copy is used only when it doesn't
+answer. A PC newer than the app reloads the page once onto the host's copy at once (`reloadPage` in
+[`src/lib/relay/shell.tsx`](../src/lib/relay/shell.tsx)).
+
 To take `app.ovis.sh` out of the picture, [host the app yourself](guide.md#running-your-own-relay).
 
 ### Who gets in
@@ -256,13 +264,20 @@ it, and the identity reset is refused.
    the answer is `{"type":"server_proof","answer":"<HMAC-SHA256 hex>"}`. The MAC key is the raw
    X25519 shared secret, and the message is
    `nonce || UTF8(server_id + NUL + role + NUL + connection_id + NUL + "ovis-relay-server-proof-v1")`,
-   with role `control` or `data` and an empty control connection ID. The relay rejects an all-zero
+   with role `control`, `data` or `warm` and an empty connection ID for `control` (the generation for `warm`). The relay rejects an all-zero
    shared secret and compares the MAC in constant time. This proves the PC's secret possession to
    the relay; it does not authenticate the relay to the PC or replace the phone's Noise handshake.
 2. **The phone connects.** The app opens the same address with `role=client`. The relay gives the
    connection a random ID and tells the PC, which opens a data WebSocket for it, and from then on the
    relay passes frames between the two sockets byte for byte
-   ([what it answers](../relay/README.md#what-it-answers)).
+   ([what it answers](../relay/README.md#what-it-answers)). So that a phone does not wait for that
+   socket to open and prove itself, a PC whose relay says it takes one (`"warm":"<generation>"` in
+   `sync`, new for each control socket) keeps one data socket proven in advance
+   (`role=server&warm=<generation>`), which goes with that control socket. The next phone takes it at once:
+   the relay tells it `{"type":"bound","connection_id":"…"}` before the phone's first frame, tells
+   the control socket nothing, and the PC opens the next one. A warm socket proves itself like any
+   other and only carries what the phone and the PC encrypt end to end, so it changes nothing the
+   relay can see or do.
    A phone takes one of eight answered-client slots only when the PC's data socket sends its first
    non-keepalive frame. Up to four unanswered phones may wait; a fifth displaces the oldest with
    `1013`. A waiting phone closes `1013` after 15 seconds in which the PC could answer, reset when
@@ -274,8 +289,15 @@ it, and the identity reset is refused.
    attaches or the phone sends again.
 3. **Handshake.** The phone and the PC run the Noise NK handshake over those sockets, with the PC's
    public key from the QR code.
-4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the
-   PC answers `WELCOME` with 32 fresh random bytes, its version and its limits, the phone sends `PAIR`
+4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`; the
+   PC sends `WELCOME` with 32 fresh random bytes, its version and its limits as soon as its side of
+   the handshake is done, without waiting for `HELLO`, so it reaches the phone one round trip
+   sooner, unless a pairing window is open (then it answers `HELLO`, as older phones expect when they
+   compare digits). That `WELCOME` is marked `provisional`: it offers version 1 with no features, it doesn't
+   say the phone's `HELLO` was accepted, and the PC still checks that `HELLO` (version 1 offered, no
+   required feature it can't select) and requires it before `PAIR` or `AUTH`. A `HELLO` that offers
+   pairing by comparing digits gets a second, final `WELCOME` with what the PC selects, and a phone
+   comparing digits waits for that one. The phone sends `PAIR`
    (the first time, with the code) or `AUTH` (later, with its signature), and the PC answers
    `AUTH_OK`. Nothing else is accepted before that. The phone saves a new PC's key only on
    `AUTH_OK`, so a link whose PC never admits it takes no PC's place on the phone. The PC closes a
@@ -322,15 +344,15 @@ oversized frame ends the session before anything in it is parsed.
 
 | Type | Name | From | Carries |
 | --- | --- | --- | --- |
-| `0x01` | `HELLO` | phone | `protocol: "ovis-mux"`, the versions and features it offers |
-| `0x02` | `WELCOME` | PC | version 1, the limits, `nonce` (32 random bytes), `server_version`, `relay_protocol`, `min_supported_client` |
+| `0x01` | `HELLO` | phone | `protocol: "ovis-mux"`, the versions and features it offers (`relay-hints`, from 0.5.0, which the PC answers in `AUTH_OK`) |
+| `0x02` | `WELCOME` | PC | version 1, the limits, `nonce` (32 random bytes), `server_version`, `relay_protocol`, `min_supported_client`; `provisional` on the one sent before `HELLO` |
 | `0x03` | `AUTH` | phone | `scheme: "device-key"`, `device_id`, `signature` (64 bytes, P-256 `r` and `s`, base64url) |
 | `0x0A` | `PAIR` | phone | the six-digit `code`, a `label` of up to 64 characters, `public_key` (P-256 SPKI, base64url) |
 | `0x0B` | `PAIR_REQUEST` | phone | with `pair-sas`: `label`, `public_key` and `commitment` (32 bytes, base64url) ([comparing digits](#who-gets-in)) |
 | `0x0C` | `PAIR_CHALLENGE` | PC | `nonce`: the PC's 32 random bytes |
 | `0x0D` | `PAIR_REVEAL` | phone | `nonce`: the 32 bytes the commitment was made with |
 | `0x0E` | `PAIR_CONFIRM` | phone | `confirmed: true`: the person said both screens show the same digits |
-| `0x04` | `AUTH_OK` | PC | `session_id`, `device_id`, `role` (`drive` or `watch`) |
+| `0x04` | `AUTH_OK` | PC | `session_id`, `device_id`, `role` (`drive` or `watch`), and with `relay-hints` `relays`: up to two `wss:` origins, the one new connections should use first |
 | `0x05` | `SESSION_ERROR` | either | a `code` from [Errors](#errors-and-close-codes) and a short `message` |
 | `0x06` | `GOAWAY` | either | `shutdown` or `id_exhausted`, the last stream ID taken, how long to drain (up to 5 seconds) |
 | `0x07`, `0x08` | `PING`, `PONG` | either | a 64-bit number, echoed |
@@ -603,9 +625,15 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   relays: that one is used with no measuring, and beside `relay.ovis.sh`, as below.
 - **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
   same key and proof, to the regional relay. New pairing QR codes name the regional relay while its
-  link is online (the global one otherwise), and the relay status is the global link's; a phone
-  paired before keeps the relay it saved, so it still connects through `relay.ovis.sh`. Each link
+  link is online (the global one otherwise), and the relay status is the global link's. Each link
   has its own session limits.
+- **It tells phones paired before.** A phone that offers `relay-hints` is told in `AUTH_OK` the
+  relay new offers name, then `relay.ovis.sh`, and saves the first for that PC; the app uses it from
+  the next time it opens that PC. This comes inside the encrypted channel from the PC the phone authenticated,
+  so the relay cannot change it, and a phone only ever moves between Ovis's own relays: one saved
+  with any other relay, and a named relay that is not Ovis's, are left as they are (`hintedRelay`
+  in [`shared/relay-regions.ts`](../shared/relay-regions.ts)). An older phone or PC offers or takes
+  no hints, and nothing changes for it.
 - **The phone falls back.** A phone (or a PC that added this PC through the relay) whose saved relay
   is one of the regional ones and that cannot get through it (the relay does not answer, or the PC
   does not answer there) tries `relay.ovis.sh` at once, and keeps using the one that worked. A phone never falls back from any other relay, so a
