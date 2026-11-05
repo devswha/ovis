@@ -420,10 +420,10 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId, paneId: item.pane_id }));
           }}>
           <span className="pane-frame-title">{displayPaneTitle(item)}</span>
-          {zoomable && !offTab && <button type="button" className="icon-button pane-frame-zoom" aria-label={t(zoomedHere ? "Unzoom pane" : "Zoom pane")} title={t(zoomedHere ? "Unzoom pane" : "Zoom pane")}
-            onClick={() => zoom(item)}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
           <button type="button" className="icon-button pane-frame-menu" aria-label={t("Pane actions for {name}", { name: displayPaneTitle(item) })}
             onClick={(event) => showMenu(item, event.currentTarget)}><Ellipsis aria-hidden="true" /></button>
+          {zoomable && !offTab && <button type="button" className="icon-button pane-frame-zoom" aria-label={t(zoomedHere ? "Unzoom pane" : "Zoom pane")} title={t(zoomedHere ? "Unzoom pane" : "Zoom pane")}
+            onClick={() => zoom(item)}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;
