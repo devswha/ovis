@@ -11,6 +11,10 @@ import { LARGE_REPLY_BYTES } from "./herdr/client.ts";
 export class RelayReceiptIds {
   private readonly key = randomBytes(32);
 
+  /**
+   * Returns an opaque UUID stable for this server, PC, authenticated device and browser UUID.
+   * Invalid browser UUIDs return undefined; restarting the server invalidates derived identities.
+   */
   scope(machine: string, device: string | undefined, browser: string): string | undefined {
     if (!RECEIPT_RESUME_ID.test(browser)) return undefined;
     const digest = createHmac("sha256", this.key).update(JSON.stringify([machine, device ?? null, browser])).digest();
@@ -135,6 +139,10 @@ export class MachineRelay {
     if (this.closed || !this.client) return;
     if (this.client.send(raw) === 0) this.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
   }
+  /**
+   * Forwards browser frames with scoped resume IDs only for controlling attachments; raw browser
+   * resume IDs and observer resume IDs are stripped. Malformed frames remain upstream's responsibility.
+   */
   message(raw: string | Buffer): void {
     if (this.closed) return;
     if (this.upstream.readyState !== WebSocket.OPEN) { this.close(); return; }
