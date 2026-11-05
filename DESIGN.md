@@ -1138,10 +1138,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   apps keep it; the roster has only the label filter below, which the maintainer approved in #1043
   and which differs from the palette-only design on purpose: it narrows the lists in place, by the
   words the rows show, and holds no state.
-- **Filter workspaces and agents** (`.sidebar-filter`, MachineSidebar.tsx) is its word, **Filter**
-  (`.sidebar-filter-label`, in `--text-dim` at the size of the field's text, in view whatever is typed), then one
-  `.input` the height of a row (`--side-row`, so a finger's `--touch-target` on a phone) in the rows'
-  gutter above the lists, its placeholder naming the scope (**Workspaces and agents**) and its
+- **Filter workspaces and agents** (`.sidebar-filter`, MachineSidebar.tsx) is one `.input` the height
+  of a row (`--side-row`, so a finger's `--touch-target` on a phone) in the rows' gutter above the
+  lists, with a `--text-dim` glass (`.sidebar-filter-glass`, `aria-hidden`) in its leading cell and no
+  word beside it, as VS Code's and macOS's search fields have none: its placeholder is its accessible
+  name, **Filter workspaces and agents**, so what a sighted reader and a screen reader are told is the
+  same, and its
   suggestions the names the rows show (a `<datalist>`, rebuilt from the roster, nothing typed kept),
   with its clear (`.sidebar-filter-clear`, the same square, inside the field's trailing
   cell) only while there is text; the browser's own search cancel glyph is off, so there is one. The
@@ -1203,18 +1205,25 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   footer, rather than clipping rows above an empty band. If both fit, Agents stays docked to the
   footer with the unused space above it. The flex column gives PCs free height first, up to
   their content, and Agents a half-shell basis; neither grows beyond its rows. Empty or folded
-  Agents gives its space back. PC and workspace folds never hide agent rows. The heading stays
-  outside its scroll area and still counts only when folded. The lower-edge fades are unchanged.
+  Agents gives its space back. PC and workspace folds never hide agent rows. Each head stays
+  outside its scroll area. A list fades at an edge only while rows lie past it, top or bottom
+  (`lib/useEdgeFades.ts` marks the edges, a `mask-image` fades them), so a list at its top fades its
+  foot alone, one scrolled to its end its head alone, and one that holds all its rows neither; the
+  mask fades whatever lies under it (a selected row, the pinned card) to the panel. Forced colors
+  draw no fade.
   In the drawer (`max-width: 768px`) Agents starts folded. Its fold stays on this device
   (`ovis:agents-collapsed`) and wins over that default on the next launch; a filter's fold does
   not persist. Until the PCs are in and each connected PC's panes have come, an empty list says
   **Loading agents…**, never "No agents running".
-- The resize line needs a fixed target to fold PCs to, so their roster gets a minimal **PCs**
-  heading with a caret, also for a lone Host. It folds only this section, not its Agents, and
-  keeps the fold on this device (`ovis:pcs-collapsed`); under a filter the fold is temporary.
-  Its rows stay mounted while hidden so their branch labels remain searchable. This heading
-  comes out of the PCs' allocation; it does not shrink Agents' default allocation. The per-PC
-  headers and actions, counts and filter field are unchanged.
+- The resize line needs a fixed target to fold PCs to, so their roster gets a **PCs** head, also
+  for a lone Host. It folds only this section, not its Agents, and keeps the fold on this device
+  (`ovis:pcs-collapsed`); under a filter the fold is temporary. Its rows stay mounted while hidden
+  so their branch labels remain searchable. This head comes out of the PCs' allocation; it does
+  not shrink Agents' default allocation. The **PCs** and **Agents** heads are drawn alike
+  (`.sidebar-section-label`): the fold's caret in the leading cell, always in view, open or
+  folded, so a head reads as a fold at rest; the dim words; and in the trailing cell how many PCs
+  this device shows or how many agents run, open or folded, as VS Code's view heads count theirs. The PCs count says its words (**2 PCs shown**) to a screen
+  reader and in its tooltip, never a bare number. The first PC starts right under the head.
 - Between the lists is a resize line (`SidebarSplit.tsx`, `role="separator"`): a `--border`
   hairline in its own hit area, `--border-strong` on hover, `--accent` while held or focused.
   A grip shows on hover and always under a finger. Dragging gives the upper section its chosen
@@ -1235,7 +1244,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `aria-controls` follow that order. Each order keeps its own height: `ovis:sidebar-split` for
   PCs above, `ovis:sidebar-split-agents-first` for Agents above.
 - Each PC's header stays the head of its workspaces, and its own caret beside the `+` folds
-  those workspaces. The section's new caret folds the whole roster instead.
+  those workspaces; a pointer on its name folds them too, and the keyboard has the caret. The
+  section's caret folds the whole roster instead. A folded PC is one row, with no gap to the
+  next: a `--space-4` gap of its own made each about a row and a half (issue 2617). An open PC's
+  workspaces end with a `--space-2` gap before the next header. At rest a header's trailing cell
+  says how many agents run on that PC (`.machine-agent-count`, its words, **3 agents running**, for
+  a screen reader; no tooltip, as presses pass through it to the `+` and a hover hides it), and a
+  disconnected PC, whose snapshot is the last one seen, counts nothing; a pointer over the header
+  or the focus in it trades that count for its manage button, caret and `+`, as the Codex app shows
+  a row's actions on hover. The caret and the `+` keep their cells while unseen, so the name never
+  moves and a press lands on them. Only a fine pointer that hovers, with no touch screen beside it,
+  gets the trade: under a finger, on a hybrid laptop with a touch screen, or with no hover, the
+  actions always show (a disabled `+` dimmed as ever) and the count stays out of sight, still read by a
+  screen reader. A coarse primary pointer gets the existing finger-sized actions (`Machines.css`);
+  hybrid action visibility does not change that sizing rule. A connected PC's clipped state line keeps no padding, which
+  would lengthen the list's scroll.
 - When the sidebar shows one PC and it is the Host (the only PC, or the others hidden on this device), its group
   has no header: there is no other PC to tell it from, and the workspaces start the list, as the Claude app lists its
   sessions with no heading for the computer they run on. Nothing the header held is lost. The state words, the notice
@@ -2597,6 +2620,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   maintainer-approved adaptation of agent-of-empires' plan strip (#1040): only its step
   visibility is taken, and herdr keeps its existing shared chip rather than importing that
   separate always-visible strip or a progress bar, so the status line stays one row on a phone.
+- Settings > Appearance > **Context left on agent rows** (the device setting `sidebarContext`, off
+  by default, #1305) adds the composer's context ring to each agent row, after the plan count
+  (`.context-count`): the same ring at the badges' size, then the percentage left in the same quiet
+  mono figures, with the composer's words as its name and title ("Context 62% left · 76k of 200k
+  tokens"). It turns `--status-blocked` at 20% left or less, the composer's own threshold, and
+  draws nothing where the composer's ring would draw nothing (no known window), so a row only
+  shows it for Claude Code and Codex panes, whose transcripts the server already reads for the
+  plan. The Codex app, Paseo and T3 Code keep the ring by the composer only, and so does Ovis by
+  default; the row ring is opt-in for people who watch several agents' context at once.
 - The chip opens one list above the card: a **Plan** heading with `N of M done`, the steps in wave
   order (a status glyph, the name, what a running step does now, then a dim state · time · teammate
   line; a waiting step's name is dim), then a **Background tasks** heading over the tasks list when
@@ -4343,3 +4375,14 @@ Other hosts keep opening in a new tab, and unsafe schemes stay blocked; the app'
 limited to its own host. This follows T3 Code's in-thread visual replies and full-screen page view,
 while keeping external page links in the browser as its [HTML renders guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/html-renders.md)
 does. No code or visual assets are copied.
+
+With **In the app** chosen, the command palette also opens such a page by its address: **Open a
+page on this PC…** starts the query as `localhost:`, and a query that is a loopback name with a
+port (`localhost:8448`, `:8448`, `127.0.0.1:3000/docs`) leads the list with **Open** that
+address, so a local tool with a web UI (a Git client, a docs site) sits beside the pane without a
+link printed in a terminal. Without a scheme the address takes the app's own, since an https app
+frames only https pages (a port `tailscale serve` fronts). The page is the PC's that serves the
+app whichever PC is selected, and it goes through the same `panelUrl` checks: the app's own port
+and pages the panel refuses get no row. Nothing is proxied: the browser reaches the page under the
+app's hostname, as for a clicked link. This follows VS Code's Simple Browser, which a palette
+command opens on a typed address; no code is copied.
