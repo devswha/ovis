@@ -5,6 +5,7 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
+import { setSidebarPins } from "../lib/sidebarPins.ts";
 import { RowMenu } from "./RowMenu.tsx";
 import { TabStrip } from "./TabStrip.tsx";
 
@@ -121,6 +122,22 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       expect(strip().props["aria-busy"]).toBe(false);
       expect(requested).toEqual([]);
     });
+  });
+
+  it("offers no Close tab for a tab holding a locked pinned agent, and its Delete and middle click close nothing (#2432)", async () => {
+    stored.set("ovis:settings", JSON.stringify({ lockedAgents: ["local:w1:t1:p"] }));
+    setSidebarPins(["local:w1:t1:p"]);
+    try {
+      await withFetch(async () => {
+        await draw(TUI);
+        expect(await menuOf()).toEqual(["move-right", "move-workspace", "new-agent-tab", "rename-tab"]);
+        await keyDown("Delete");
+        await act(async () => tab().props.onAuxClick({ button: 1, preventDefault() {} }));
+        expect(requested).toEqual([]);
+      });
+    } finally {
+      setSidebarPins([]);
+    }
   });
 
   it("renames, reorders and moves a core PC's tab to another workspace where Ovis keeps its layout", async () => {

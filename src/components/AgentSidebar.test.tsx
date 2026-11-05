@@ -10,7 +10,9 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { SidebarActivityProvider } from "../lib/sidebarActivity.tsx";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
+import { setSidebarPins } from "../lib/sidebarPins.ts";
 import { AgentSidebar } from "./AgentSidebar.tsx";
+import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const paneId = "w1C:p1";
@@ -105,6 +107,28 @@ describe("AgentSidebar phone sheet live row", () => {
       update: async (machines: Machine[]) => { await act(async () => { mounted.update(view(machines)); }); },
     };
   }
+
+  it("locks only a pinned row, which keeps its pin and shows a lock until it is unlocked (#2432)", async () => {
+    setSidebarPins([]);
+    try {
+      const { mounted } = await open();
+      const items = () => mounted.root.findByType(RowMenu).props.items as RowMenuItem[];
+      const ids = () => items().map((item) => item.id);
+      const run = async (id: string) => { await act(async () => { items().find((item) => item.id === id)!.run(); }); };
+      const lockIcons = () => mounted.root.findAllByProps({ "data-testid": "agent-locked" });
+      expect(ids()).toEqual(["pin"]);
+      await act(async () => { setSidebarPins([`local:${paneId}`]); });
+      expect(ids()).toEqual(["unpin", "lock"]);
+      await run("lock");
+      expect(ids()).toEqual(["unlock"]);
+      expect(lockIcons()).toHaveLength(1);
+      await run("unlock");
+      expect(ids()).toEqual(["unpin", "lock"]);
+      expect(lockIcons()).toHaveLength(0);
+    } finally {
+      setSidebarPins([]);
+    }
+  });
 
   it("updates the open sheet when a plugin value changes", async () => {
     // Given an open sheet with the original quota.
