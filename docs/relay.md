@@ -77,8 +77,8 @@ What keeps that in check:
   what `app.ovis.sh` serves with what the tag builds ([Releasing](development.md#releasing)). Your
   browser doesn't make that comparison for you.
 - The app's own pages run scripts from `app.ovis.sh` only. Their Content-Security-Policy is the one
-  the PC's own server sends, with only the relay's `wss:` connections and `blob:` media and frames
-  added (`shellContentSecurityPolicy()` in [`server/static.ts`](../server/static.ts)). A rendered
+  the PC's own server sends, with only the relay's `wss:` connections, the account service (`https://account.ovis.sh`) and
+  `blob:` media and frames added (`shellContentSecurityPolicy()` in [`server/static.ts`](../server/static.ts)). A rendered
   HTML page from the PC runs apart from them, in a sandboxed render host with the PC's own policy
   for rendered pages ([Files](#files)).
 - The host sees requests for static files: the phone's address, and the PC's relay ID in the path
@@ -151,6 +151,13 @@ two screens instead, as in Bluetooth's numeric comparison:
 7. **Confirm and approve.** The phone sends `PAIR_CONFIRM` once its person taps **The numbers
    match**, and the PC's owner approves (`POST /api/relay/pairing`). Only both together make the
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
+   On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
+   waiting phone with its digits and asks y/n: the PC's terminal is the PC itself.
+
+The approval may also come from a phone already linked to the owner's account, connected through
+the relay: it is shown three sets of digits and must pick the new device's
+([Who may admit a device](account.md#who-may-admit-a-device)). Every device connected to the PC
+hears of each admission, and of the account device that approved it.
    Neither the phone nor the PC can finish alone.
 
 Why it holds: the phone is bound to `Np` before it sees `Nc`, and the PC chooses `Nc` before it sees
@@ -167,8 +174,12 @@ commitment is what stops that.
 Limits: a comparison starts only inside the window opened by copying the link; both people have 90 seconds from `PAIR_REQUEST` (under the relay's 120-second idle close),
 after which the session ends with `timeout` and the prompt goes. At most three phones wait for
 approval at once; a fourth gets `auth_failed`. Every comparison that ends without a device
-(declined, abandoned, timed out, a broken commitment) counts toward the same 20 failed relay
-pairings in 10 minutes as a wrong code, after which the PC takes no relay pairing for 10 minutes.
+(declined, abandoned, timed out, a broken commitment, a wrong pick) counts as a failed relay
+pairing. A comparison that pairs this PC only counts toward the same 20 failures in 10 minutes as
+a wrong code, after which the PC takes no such pairing for 10 minutes. One that asks to join the
+account (`pair-intent-account`) counts toward 20 of its own, so a flood of those cannot pause
+pairing with a QR code or a code. A relay in the middle can spend both, so it gets about 40 tries
+in 10 minutes, one in twenty-five thousand, before both pause.
 **Revoke all** ends every comparison under way, an approved one included, and withdraws its prompt. The prompt lives in memory only. The relay learns nothing new: the comparison travels inside the
 encrypted channel, so it sees only a few more frames and their sizes and timing.
 
@@ -188,8 +199,11 @@ the relay saw is therefore no use later, or with another PC.
 "this computer": only the phone's key does. A request through the relay keeps only a short list of
 headers ([below](#requests-through-the-mux)), never `Cookie`, `Authorization`, `Host`, `Origin` or
 forwarding headers, and signing in with the token answers 403 `device_key_required`. A phone on the
-relay can't start or stop the relay, show its QR code or reset its identity (403 `local_required`); like any paired
-device that can type, it can still start a pairing code under Devices.
+relay can't start or stop the relay, show its QR code or reset its identity (403 `local_required`). A pairing
+code admits whoever holds it. On a PC linked to an account, only a phone linked to that account
+with drive access may start one through the relay; any other gets 403 `account_required`
+(`read_only` for a watch device). On a PC in no account, any paired relay device that can type
+may still start one under Devices, as before.
 
 **Who controls the relay.** Start, stop, pairing offers and identity reset require drive access
 and a direct connection to the PC. A Portal visitor may read the state but cannot change it:
@@ -624,8 +638,9 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   A PC with `OVIS_RELAY_URL` set uses that relay alone, unless it names one of Ovis's regional
   relays: that one is used with no measuring, and beside `relay.ovis.sh`, as below.
 - **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
-  same key and proof, to the regional relay. New pairing QR codes name the regional relay while its
-  link is online (the global one otherwise), and the relay status is the global link's. Each link
+  same key and proof, to the regional relay. New pairing QR codes and pairing links without a code
+  name the regional relay while its link is online (the global one otherwise), and the relay status
+  is the global link's. Each link
   has its own session limits.
 - **It tells phones paired before.** A phone that offers `relay-hints` is told in `AUTH_OK` the
   relay new offers name, then `relay.ovis.sh`, and saves the first for that PC; the app uses it from
@@ -638,6 +653,20 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   is one of the regional ones and that cannot get through it (the relay does not answer, or the PC
   does not answer there) tries `relay.ovis.sh` at once, and keeps using the one that worked. A phone never falls back from any other relay, so a
   self-hosted one is never traded for Ovis's.
+
+- **The app comes from nearby too.** Beside each regional relay a copy of the hosted app is served
+  (`app-ap.ovis.sh` beside `relay-ap.ovis.sh`, `REGIONAL_APPS` in the same file). A browser that
+  opens a pairing link on `app.ovis.sh` for a regional relay moves to that copy before the app's
+  bundle loads (`regionalAppUrl`, run by the page's first script), and pairs there. Only a link
+  with a pairing code moves: a phone keeps a PC's key in the address it paired on, so a PC saved on
+  `app.ovis.sh` stays there, and a browser's list of PCs is then split between the two addresses
+  (each lists the PCs paired on it). The iOS and Android apps stay on `app.ovis.sh`. The page moves
+  only once the copy answers with the build `app.ovis.sh` serves, so a copy that is down or a
+  release behind is never moved to. Each file of the copy is checked byte for byte against
+  `app.ovis.sh` before it is served ([relay/README.md](../relay/README.md#a-regional-copy-of-the-app)),
+  but the box still delivers the code that holds the phone's keys: whoever controls it is a trust
+  root, as Cloudflare Pages is for `app.ovis.sh`
+  ([The hosted app is a trust root](#the-hosted-app-is-a-trust-root)).
 
 Which relay carries a connection changes nothing about its protection: the phone and the PC
 encrypt end to end whichever relay passes the frames on, and each relay sees what
