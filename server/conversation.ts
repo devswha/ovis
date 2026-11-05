@@ -48,7 +48,7 @@ import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
-import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
 import { servingCore } from "./herdr-core/runtime.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
@@ -1453,6 +1453,25 @@ function hcAttachWord(argv: readonly string[] | null | undefined): string | null
   return (program === "hc" || program === "herdr-core") && /^[A-Za-z0-9]+$/.test(argv[2]!) ? argv[2]! : null;
 }
 
+/** The HC_* entries of a process's environment as it started (Linux /proc, macOS sysctl), sorted; null when it cannot be read. */
+function hcEnvironment(pid: number): string[] | null {
+  const environ = process.platform === "linux" ? processEnviron(pid) : process.platform === "darwin" ? darwinProcess.environment(pid)?.split("\0") ?? null : null;
+  return environ?.filter((entry) => entry.startsWith("HC_")).sort() ?? null;
+}
+
+/**
+ * Whether an `hc attach` client reaches the core that started its terminal: hc names itself in each
+ * terminal's environment (HC_SOCKET, HC_SESSION), and a client goes to whatever core its own HC_*
+ * name, which another core's terminal numbers (t1, t2...) would repeat. Only the shell's very HC_*
+ * entries, HC_SOCKET among them, prove it.
+ */
+function clientOfOwnCore(client: number, shell: number | null | undefined): boolean {
+  if (typeof shell !== "number") return false;
+  const own = hcEnvironment(shell);
+  const used = hcEnvironment(client);
+  return own !== null && used !== null && own.some((entry) => /^HC_SOCKET=./.test(entry)) && own.join("\0") === used.join("\0");
+}
+
 /**
  * The Claude processes in a pane's foreground (`known`: herdr's answer already read); none when herdr cannot say.
  * On Windows herdr and herdr-core name only the shell in front, even while Claude runs in it, and
@@ -1479,7 +1498,7 @@ async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = 
   const leader = info?.foreground_processes?.[0];
   if (!servingCore() || leader === undefined || typeof leader.pid !== "number") return [];
   const word = viewed ? null : hcAttachWord(leader.argv);
-  if (word !== null) return claudeProcesses(word, undefined, true);
+  if (word !== null) return clientOfOwnCore(leader.pid, shell) ? claudeProcesses(word, undefined, true) : [];
   return (await jobClaude(leader.pid)) ?? [];
 }
 

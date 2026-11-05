@@ -3416,32 +3416,50 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
   });
 
-  /** herdr-core's answers for a tab running `hc attach <word>` (t3), and for the terminal hc resolves that word to */
-  const viewer = (word: string, resolved: string, claudePid: number) => (async (method: string, params: { pane_id?: string }) => {
-    if (method === "agent.get") return { agent: {} };
-    if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: 1, foreground_processes: [{ pid: 2, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
-    return { process_info: { pane_id: resolved, shell_pid: 1, foreground_processes: [{ pid: claudePid, name: "claude", argv: ["claude"] }] } };
-  }) as unknown as typeof herdr.herdrRpc;
+  /** the core this PC's server serves, as hc names it in each of its terminals' environment */
+  const CORE = { HC_SESSION: "default", HC_SOCKET: "/run/user/1000/herdr-core/default/hc.sock", HC_TERMINAL_ID: "t3" };
 
-  it("shows the conversation of the local terminal an `hc attach <t>` tab views", async () => {
+  /**
+   * A tab running `hc attach <word>` (t3): its shell, started by the core with `shellEnv`, and the hc
+   * client in front with `clientEnv`, both real processes; herdr-core's answers for it and for the
+   * terminal hc resolves the word to.
+   */
+  function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = CORE) {
+    const shell = Bun.spawn(["sleep", "30"], { env: { PATH: process.env["PATH"] ?? "", ...CORE } });
+    const client = Bun.spawn(["sleep", "30"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv } });
+    const rpc = (async (method: string, params: { pane_id?: string }) => {
+      if (method === "agent.get") return { agent: {} };
+      if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: shell.pid, foreground_processes: [{ pid: client.pid, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
+      return { process_info: { pane_id: resolved, shell_pid: 1, foreground_processes: [{ pid: claudePid, name: "claude", argv: ["claude"] }] } };
+    }) as unknown as typeof herdr.herdrRpc;
+    return { rpc, stop: () => { shell.kill("SIGKILL"); client.kill("SIGKILL"); } };
+  }
+
+  /** what claudePaneSession binds the viewing tab t3 to */
+  async function viewed(word: string, resolved: string, clientEnv?: Record<string, string>) {
     const job = await claudeStandIns(1);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(viewer("t2", "t2", job.pids[0]!));
+    const tab = viewer(word, resolved, job.pids[0]!, clientEnv);
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(tab.rpc);
     const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
     try {
       const found = await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
-      expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
-    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+      return { found: found === null ? null : [found.path, found.pid], expected: [store.transcript, job.pids[0]!] };
+    } finally { serving.mockRestore(); rpc.mockRestore(); tab.stop(); job.stop(); store.restore(); }
+  }
+
+  it("shows the conversation of the local terminal an `hc attach <t>` tab views", async () => {
+    const { found, expected } = await viewed("t2", "t2");
+    expect(found).toEqual(expected);
   });
 
   it("follows no `hc attach` word hc resolves to another terminal's address, as a name", async () => {
-    const job = await claudeStandIns(1);
-    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(viewer("review", "t2", job.pids[0]!));
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
-    try {
-      expect(await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
-    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+    expect((await viewed("review", "t2")).found).toBeNull();
+  });
+
+  // terminal numbers start at t1 in every core: the same word names another terminal there
+  it("follows no `hc attach` whose client reaches another core than its shell's", async () => {
+    expect((await viewed("t2", "t2", { ...CORE, HC_SESSION: "other" })).found).toBeNull();
   });
 });
 
