@@ -140,8 +140,9 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
         const text = message.text;
         // a click or a wheel (a click replayed behind a held arrow) is the attach's own mouse:
         // herdr encodes it for the program's mouse mode, send_text would type its bytes (#667).
-        // The terminal's answers to its attach's questions go to that attach too, or they are typed (#2816)
-        const viaAttach = isMouseReport(text) || isTerminalReply(text);
+        // The terminal's answers to its attach's questions go to that attach too, or they are typed (#2816):
+        // only what the browser's terminal made itself, so a paste of the same bytes is still typed
+        const viaAttach = isMouseReport(text) || (message.automatic === true && isTerminalReply(text));
         // typed into the attach it saw: one that ended meanwhile (and was attached again) takes none of it
         const roles = connectionOf(client).roles;
         const allowed = () => mayType(client) && connectionOf(client).roles === roles && typingGuards.queuedTyping(sighting.facts());

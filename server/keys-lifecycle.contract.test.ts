@@ -12,7 +12,7 @@ const CLICK = "\x1b[<0;5;3M\x1b[<0;5;3m";
 const REPLIES = "\x1b[I\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\\x1b]11;rgb:1818/1616/1313\x1b\\\x1b]12;rgb:f0f0/a8a8/3030\x1b\\\x1b[?1;2c";
 
 /** Hold one keys RPC so the next chord or text waits across attachment transitions. */
-async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "refresh", input = false, text = "queued text") {
+async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "refresh", input = false, text = "queued text", automatic = false) {
   const root = mkdtempSync(join(tmpdir(), "ovis-keys-lifecycle-"));
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: root });
   const sockets: WebSocket[] = [];
@@ -70,7 +70,7 @@ async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "r
     }
     owner.send({ type: "keys", pane_id: pane, keys: ["ctrl+right"] });
     await until(() => calls.length === 1);
-    owner.send(input ? { type: "input", pane_id: pane, text }
+    owner.send(input ? { type: "input", pane_id: pane, text, ...(automatic ? { automatic: true } : {}) }
       : { type: "keys", pane_id: pane, keys: ["ctrl+alt+shift+left"] });
     if (leave !== "none" && leave !== "refresh") owner.send({ type: "detach", pane_id: pane });
     // An acknowledged later frame is a barrier: the queued key and detach were handled.
@@ -88,7 +88,7 @@ async function queuedKeys(leave: "none" | "detach" | "replace" | "reattach" | "r
     }
     release();
     if (leave === "none" || leave === "refresh") {
-      if (input && (text === CLICK || text === REPLIES)) {
+      if (input && (text === CLICK || automatic)) {
         // a mouse report keeps the attach input path, where herdr encodes it for the program's
         // own mouse mode; pane.send_text would type its bytes literally (#667). The terminal's
         // answers go to the attach that asked, never typed into the program (#2816)
@@ -139,7 +139,8 @@ it("preserves queued text on repeated attach without detach", () => queuedKeys("
 it("writes a click queued behind an arrow into the attach, not through send_text", () => queuedKeys("none", true, CLICK), 20_000);
 it("drops a queued click after its sender detaches while a peer keeps the attachment", () => queuedKeys("detach", true, CLICK), 20_000);
 it("drops a queued click after its attachment is replaced", () => queuedKeys("replace", true, CLICK), 20_000);
-it("writes the terminal's answers queued behind a key into the attach, never typed (#2816)", () => queuedKeys("none", true, REPLIES), 20_000);
+it("writes the terminal's answers queued behind a key into the attach, never typed (#2816)", () => queuedKeys("none", true, REPLIES, true), 20_000);
+it("types a paste of the same bytes queued behind a key, as typing", () => queuedKeys("none", true, REPLIES), 20_000);
 
 it("cancels a pending attach continuation when detach and reattach installs a new claim", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-attach-claim-"));

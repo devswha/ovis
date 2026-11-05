@@ -35,7 +35,7 @@ test("the terminal's own answers are told from typing, so queued ones go to the 
   expect(isTerminalReply("\x1b[6;17;8t")).toBe(true);
   expect(isTerminalReply("\x1b[I\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\\x1b]12;rgb:f0f0/a8a8/3030\x1b\\\x1b[?1;2c")).toBe(true);
   // typing, keys and an answer mixed with typing are not answers
-  for (const text of ["", "I", "\x1b[A", "\x1b[1;2A", "\x1bOB", "\x1b]11;?\x1b\\", "\x1b[Ix", "x\x1b[I", "\x1b]13;rgb:0/0/0\x07"]) {
+  for (const text of ["", "I", "\x1b[A", "\x1b[1;2A", "\x1bOB", "\x1b]11;?\x1b\\", "\x1b[Ix", "x\x1b[I", "\x1b]13;rgb:0/0/0\x07", "\x1b]11;hello\rworld\x07"]) {
     expect(isTerminalReply(text)).toBe(false);
   }
 });
