@@ -254,6 +254,34 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(devices.hasKey(mac.public_spki)).toBe(false);
   });
 
+  it("relays removals in the order they were signed, so a member's removal comes after the ones it signed", async () => {
+    const setup = await setUp();
+    const { y, accountStore, disconnect, linkY } = setup;
+    const { other, remove } = await removedByAnother(setup);
+    // this phone then removes the other phone itself
+    const { remove: removal } = await disconnect(other);
+    const onY = await linkY();
+    const sent: string[] = [];
+    const watching = async (path: string, init?: RequestInit) => {
+      if (path === "/api/account/records") sent.push(...(JSON.parse(String(init?.body)) as { records: { id: string }[] }).records.map(({ id }) => id));
+      return pcFetch(await connect(y, onY))(path, init);
+    };
+    expect(await enrollPc({ fetch: watching, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).toBe(true);
+    expect(sent).toEqual([remove.id, removal.id]);
+  });
+
+  it("still keeps the removals a device signed before this phone removed it, and none it signed after", async () => {
+    const { x, accountStore, approve, disconnect } = await setUp();
+    const [mac, other] = [await approve("Mac app"), await approve("Other phone")];
+    const signedBy = (at: string) => signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: mac.public_spki, issued_at: at, id: newRecordId(), signer: other.public_spki }, other.private_key);
+    const before = await signedBy(new Date(Date.now() - 60_000).toISOString());
+    await disconnect(other);
+    const after = await signedBy(new Date(Date.now() + 60_000).toISOString());
+    expect(x.f.app.context.services.devices.hasKey(other.public_spki)).toBe(false);
+    await keepRemovals({ store: accountStore, account: ACCOUNT, removals: [before, after] });
+    expect(Object.values(await accountStore.get("removals") ?? {})).toEqual([before]);
+  });
+
   it("leaves be a pairing made on the new PC after the relayed removal was signed", async () => {
     const setup = await setUp();
     const { y, accountStore, linkY } = setup;

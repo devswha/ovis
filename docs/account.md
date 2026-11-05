@@ -479,6 +479,11 @@ the account service gets an answer the relay refuses.
   together with a stolen sign-in still could.
 - **A PC that stays off while the account service hides a removal** keeps the removed device until a
   client connects to it and hands over the record directly.
+- **Relayed removals are best effort.** A client relays the removals it kept only when it brings a
+  PC into the account, not ones it learns later; a PC from before relaying (#2956) drops one whose
+  signer is not its member yet; a PC keeps at most 8 signers' records per removed key and at most
+  1000 waiting records, and a client keeps at most 256. None of this admits a device: adds are not
+  enrolled, so a new PC still lets the account's devices in only by approval.
 - **A coding agent on the desktop app's machine** can drive the app's account key (rule 3). The same
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser

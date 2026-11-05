@@ -747,6 +747,35 @@ test("a remove that reaches the PC a pull before its signer's own add still appl
   expect(f.app.context.services.devices.hasKey(c.spki)).toBe(false);
 });
 
+test("a relayed removal waiting on its signer is kept beside the mailbox's, never in place of one, and on disk while a pull retries them", async () => {
+  const f = fixture();
+  await member(f);
+  const identity = rotateRelayIdentity(f.stateDir);
+  const pendingPath = join(f.stateDir, "account-pending.json");
+  const [signer, target] = [await accountKey(), await accountKey()];
+  const waiting = await remove(signer, target.spki);
+  writeFileSync(pendingPath, JSON.stringify([waiting]), { mode: 0o600 });
+  // the pull stops at the service until released, with the waiting record taken out to retry
+  let release = () => {};
+  const asked = Promise.withResolvers<void>();
+  const stalled = async () => { asked.resolve(); await new Promise<void>((resolve) => { release = resolve; }); throw new Error("service away"); };
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test", fetch: stalled, pendingPath });
+  const pulling = mailbox.pull();
+  await bounded(asked.promise);
+  const relayed = await remove(signer, (await accountKey()).spki);
+  mailbox.wait(relayed);
+  // a stop now keeps both: the one the pull holds and the one just relayed
+  expect(JSON.parse(readFileSync(pendingPath, "utf8"))).toEqual([waiting, relayed]);
+  release();
+  await pulling;
+  expect(JSON.parse(readFileSync(pendingPath, "utf8"))).toEqual([waiting, relayed]);
+  // a full queue takes no more relayed records, and pushes none out
+  for (let i = 0; i < 1000; i++) mailbox.wait({ id: String(i) });
+  const full = JSON.parse(readFileSync(pendingPath, "utf8")) as unknown[];
+  expect(full).toHaveLength(1000);
+  expect(full.slice(0, 2)).toEqual([waiting, relayed]);
+});
+
 test("a waiting remove survives a stop right after the service took its page's acknowledgement", async () => {
   const f = fixture();
   const { key, link } = await member(f);

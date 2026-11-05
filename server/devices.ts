@@ -205,7 +205,7 @@ function readTombstones(path: string): AccountTombstone[] | null {
   }
   if (!isJsonObject(parsed) || parsed.v !== 1 || !Array.isArray(parsed.tombstones)
     || !parsed.tombstones.every((t) => isJsonObject(t) && typeof t.key === "string" && typeof t.account === "string"
-      && typeof t.record_id === "string" && typeof t.removed_at === "string")) return null;
+      && typeof t.record_id === "string" && typeof t.removed_at === "string" && (t.records === undefined || Array.isArray(t.records)))) return null;
   return parsed.tombstones as AccountTombstone[];
 }
 

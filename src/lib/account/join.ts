@@ -239,22 +239,27 @@ export const KEPT_REMOVALS_MAX = 256;
 
 /**
  * Keeps, verbatim, the signed `remove`s a PC of the account lists (its status' `removals`) that this
- * client can check: each must verify, be for `account`, and be signed by this client's own key or by
- * a device this client approved itself (an `add` it signed), so a PC cannot fill it with removals
- * signed by keys it made up. Nothing is signed for them: enrollPc relays them as they are (#2956).
+ * client can check: each must verify, be for `account`, and be signed by this client's own key, by a
+ * device this client approved itself (an `add` it signed), or by one it removed, before that removal,
+ * so a PC cannot fill it with removals signed by keys it made up. Nothing is signed for them: enrollPc relays them as they are (#2956).
  */
 export async function keepRemovals(options: { store: AccountStore; account: string; removals: readonly unknown[] }): Promise<void> {
   const own = (await options.store.key()).public_spki;
   const known = (await options.store.get("devices")) ?? {};
-  const vouched = (signer: string) => signer === own || Object.values(known).some((record) => record.kind === "add" && record.account === options.account && record.key === signer);
+  const vouched = (record: RemoveRecord) => {
+    if (record.signer === own) return true;
+    const mine = known[record.signer];
+    return mine !== undefined && mine.account === options.account && (mine.kind === "add" || record.issued_at < mine.issued_at);
+  };
   const checked: RemoveRecord[] = [];
-  for (const value of options.removals.slice(0, KEPT_REMOVALS_MAX)) {
+  // read past the cap, so records that do not check cannot crowd out ones that do
+  for (const value of options.removals.slice(0, KEPT_REMOVALS_MAX * 4)) {
     let record;
     try { record = await readAccountRecord(value); } catch (error) {
       if (error instanceof AccountRecordError) continue;
       throw error;
     }
-    if (record?.kind === "remove" && record.account === options.account && vouched(record.signer)) checked.push(record);
+    if (record?.kind === "remove" && record.account === options.account && vouched(record)) checked.push(record);
   }
   if (checked.length === 0) return;
   await options.store.update("removals", (current) => {
@@ -290,7 +295,9 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   const pending = (devices: KnownDevices | undefined, kept: Readonly<Record<string, RemoveRecord>> | undefined) => [
     ...Object.values(devices ?? {}).filter((record): record is RemoveRecord => record.kind === "remove"),
     ...Object.values(kept ?? {}),
-  ].filter((record, index, all) => record.account === options.account && !planned.done.includes(record.id) && all.findIndex((other) => other.id === record.id) === index);
+  ].filter((record, index, all) => record.account === options.account && !planned.done.includes(record.id) && all.findIndex((other) => other.id === record.id) === index)
+    // in the order they were signed: a removal of a member then comes after the removals that member signed before it
+    .sort((a, b) => a.issued_at < b.issued_at ? -1 : a.issued_at > b.issued_at ? 1 : 0);
   const removes = pending(await options.store.get("devices"), await options.store.get("removals"));
   const done: string[] = [];
   const send = async (records: readonly { id: string }[]): Promise<boolean> => {
