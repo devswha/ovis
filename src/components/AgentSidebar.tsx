@@ -301,8 +301,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     if (target === null) return;
     refocusPin.current = null;
     const control = sectionRef.current?.querySelector<HTMLButtonElement>(`.agent-item[data-pin-key="${CSS.escape(target.key)}"] .${target.control}`);
-    // a row unpinned into the folded background part is hidden: its heading takes the focus
-    (control?.closest("li")?.hidden ? sectionRef.current?.querySelector<HTMLButtonElement>(".agent-background-toggle") : control)?.focus({ preventScroll: true });
+    // a row unpinned into a fold (its agent's helpers, the background part) is hidden: the fold's line above it takes the focus
+    let item = control?.closest("li");
+    if (item?.hidden) {
+      while (item && (item.hidden || !(item.classList.contains("agent-helpers") || item.classList.contains("agent-background-label")))) item = item.previousElementSibling as HTMLLIElement | null;
+    }
+    (item && item !== control?.closest("li") ? item.querySelector<HTMLButtonElement>("button") : control)?.focus({ preventScroll: true });
   }, [pinned]);
   const [menu, setMenu] = useState<PinMenu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);

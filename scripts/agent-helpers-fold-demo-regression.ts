@@ -109,9 +109,13 @@ try {
           const at = order.indexOf(AGENT);
           assert.deepEqual(order.slice(at, at + 3), [AGENT, "LINE", BLOCKED], "agent, its helpers line, the helper in sight");
           // the line is drawn inside the list's width, a helper's height
-          const [lineBox, helperBox] = [(await line(page).boundingBox())!, (await row(page, BLOCKED).boundingBox())!];
-          assert.ok(Math.abs(lineBox.height - helperBox.height) <= 1, `the line is a helper's height (${lineBox.height} vs ${helperBox.height})`);
-          assert.ok(Math.abs(lineBox.x - helperBox.x) <= 1 && Math.abs(lineBox.width - helperBox.width) <= 1, "and as wide as a row");
+          // both read in one frame: the phone's drawer may still be sliding in
+          const [lineBox, helperBox] = await page.evaluate(([agent, helper]) => [
+            document.querySelector(`.agent-list .agent-helpers[data-helpers-of="local:${agent}"]`)!.getBoundingClientRect().toJSON(),
+            document.querySelector(`.agent-list .agent-item[data-pane="${helper}"]`)!.getBoundingClientRect().toJSON(),
+          ] as { x: number; width: number; height: number }[], [AGENT, BLOCKED] as const);
+          assert.ok(Math.abs(lineBox!.height - helperBox!.height) <= 1, `the line is a helper's height (${lineBox!.height} vs ${helperBox!.height})`);
+          assert.ok(Math.abs(lineBox!.x - helperBox!.x) <= 1 && Math.abs(lineBox!.width - helperBox!.width) <= 1, "and as wide as a row");
           await shot("folded");
 
           // opened, every helper is listed, and this device keeps it open
@@ -124,6 +128,23 @@ try {
           assert.equal(await toggle(page).getAttribute("aria-expanded"), "true", "kept open across a reload");
           await toggle(page).click();
           assert.equal(await row(page, IDLE[0]!).isVisible(), false, "folded again");
+
+          // a helper pinned while open and unpinned while folded lands out of sight: the helpers line takes the focus
+          await toggle(page).click();
+          const item = (name: string) => page.getByRole(phone ? "button" : "menuitem", { name, exact: true });
+          const menu = async (list: string) => {
+            const target = page.locator(`${list} .agent-item[data-pane="${IDLE[0]}"]`);
+            await (phone ? target.locator(".row-menu-toggle").click() : target.locator(".agent-select").click({ button: "right" }));
+          };
+          await menu(".agent-list:not(.agent-list-pinned)");
+          await item("Pin agent").click();
+          await page.locator(`.agent-list-pinned .agent-item[data-pane="${IDLE[0]}"]`).waitFor();
+          await toggle(page).click();
+          await menu(".agent-list-pinned");
+          await item("Unpin agent").click();
+          await page.locator(`.agent-list-pinned .agent-item[data-pane="${IDLE[0]}"]`).waitFor({ state: "detached" });
+          assert.equal(await row(page, IDLE[0]!).isVisible(), false, "the unpinned helper is back in its folded family");
+          await page.waitForFunction(() => document.activeElement?.classList.contains("agent-helpers-toggle") ?? false);
 
           // the filter shows what it kept: no fold, no line
           await page.locator(".sidebar-filter-input").fill("omp");
