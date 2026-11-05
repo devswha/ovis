@@ -190,6 +190,20 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("allows for the two clocks drifting apart while an idle chat keeps its first read", () => {
+    const key = waitingKey("local", "clock-drift");
+    const pc = Date.parse("2026-11-05T10:00:00Z");
+    try {
+      // the chat read its turn ten minutes after it was written, with the phone 2 s ahead of the PC;
+      // an hour later the phone runs 2.3 s ahead
+      const earlier = user("earlier", pc + 37);
+      settleWaitingSends(key, [earlier], pc + 602_100, true, new Date(pc + 600_000).toISOString());
+      rememberWaitingSend(key, "an hour later", pc + 4_202_300, waitingBaseline(key));
+      settleWaitingSends(key, [earlier, user("an hour later", pc + 4_200_200)], pc + 4_202_600, true, new Date(pc + 4_200_250).toISOString());
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("bounds an empty chat's read by the PC's clock too: another device's identical first message is not this send's", () => {
     const key = waitingKey("local", "other-device-empty");
     const pc = Date.parse("2026-11-05T10:00:00Z");
