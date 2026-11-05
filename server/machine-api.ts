@@ -275,7 +275,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (!canSendSecret(request)) return fail("https_required", "A pairing code requires HTTPS or localhost", 403);
       const body: unknown = await request.json().catch(() => null);
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing code", 400);
-      try { return jsonResponse(await manager.relayFoundByCode(body.code)); }
+      try { return jsonResponse(await manager.relayFoundByCode(body.code, request.signal)); }
       catch (error) {
         if (!(error instanceof TypedCodeError)) throw error;
         const [message, status] = CODE_FAILURES[error.failure];

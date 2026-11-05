@@ -1071,7 +1071,7 @@ export function AddRelayPc() {
   const t = useT();
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
-  const [found, setFound] = useState<{ server_id: string; name: string | null } | null>(null);
+  const [found, setFound] = useState<{ ticket: string; server_id: string; name: string | null } | null>(null);
   const [result, setResult] = useState<{ error: boolean; text: string } | null>(null);
   const added = (machine: Machine) => setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
   const failed = (error: unknown) => {
@@ -1096,8 +1096,8 @@ export function AddRelayPc() {
       setFound(await findRelayPc(value));
     });
   };
-  const match = (serverId: string) => void run(async () => {
-    try { added((await addFoundRelayPc(serverId)).machine); } finally { setFound(null); }
+  const match = (ticket: string) => void run(async () => {
+    try { added((await addFoundRelayPc(ticket)).machine); } finally { setFound(null); }
   });
   if (found !== null) {
     const pc = found.name ?? t("this PC");
@@ -1106,7 +1106,7 @@ export function AddRelayPc() {
         <div className="relay-pc-found">
           <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
           <div className="relay-pc-actions">
-            <button type="button" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => match(found.server_id)}>{t("It matches")}</button>
+            <button type="button" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => match(found.ticket)}>{t("It matches")}</button>
             <button type="button" className="btn" disabled={busy} onClick={() => setFound(null)}>{t("Cancel")}</button>
           </div>
         </div>

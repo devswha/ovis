@@ -179,21 +179,22 @@ it("finds a PC by the code it shows, keeps its offer while its ID is compared, a
   const found = await findRelayPc(a.base, code.toLowerCase());
   expect(found.status).toBe(200);
   // the ID to compare with B's screen, and no pairing code: the offer that holds one stays on A
-  const answer = await found.json() as Record<string, unknown>;
-  expect(answer).toEqual({ server_id, name: expect.any(String) });
+  const answer = await found.json() as { ticket: string; server_id: string; name: string };
+  expect(answer).toEqual({ ticket: expect.any(String), server_id, name: expect.any(String) });
   // one exchange spends the code: nothing finds B with it again
   expect(await errorCode(await findRelayPc(a.base, code))).toBe("typed_code_no-pc");
 
-  // only the PC the code found is added, and only once
-  const other = await postRelay(a.base, { found: "0".repeat(32) });
+  // only the window holding the ticket adds it: another client naming B's public ID takes nothing
+  const other = await postRelay(a.base, { found: server_id });
   expect(other.status).toBe(400);
   expect((await other.json() as { error: { message: string } }).error.message).toContain("no longer waiting");
-  const added = await postRelay(a.base, { found: server_id });
+  const added = await postRelay(a.base, { found: answer.ticket });
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine.relay?.server_id).toBe(server_id);
   await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
-  expect((await postRelay(a.base, { found: server_id })).status).toBe(400);
+  // and only once
+  expect((await postRelay(a.base, { found: answer.ticket })).status).toBe(400);
 }, 60_000);
 
 it("refuses a link without a pairing code and a PC already added", async () => {

@@ -92,10 +92,10 @@ the other PC as well to remove it there. To add it again, paste a new link or ty
 `POST /api/machines/relay` with `{ "link": "<pairing link>", "name"?: "<PC name>" }` adds one
 (201 `{ machine }`, with `kind: "relay"`), under the same guards as every PC change. With a typed
 code, `POST /api/machines/relay/code` with `{ "code": "<code>" }` runs one exchange and answers
-`{ server_id, name }` (the one-time pairing code it found stays on this server for up to 10
-minutes), or `typed_code_<failure>` (`not-a-code`, `no-pc`, `wrong`, `expired`, `busy`,
-`unreachable`, `forged`); then `POST /api/machines/relay` with `{ "found": "<server_id>" }` adds
-that PC.
+`{ ticket, server_id, name }` (the one-time pairing code it found stays on this server for up to
+10 minutes, under that random ticket), or `typed_code_<failure>` (`not-a-code`, `no-pc`, `wrong`, `expired`, `busy`,
+`unreachable`, `forged`); then `POST /api/machines/relay` with `{ "found": "<ticket>" }` adds
+that PC, once.
 
 ## Runtime and endpoints
 

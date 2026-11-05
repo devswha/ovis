@@ -19,7 +19,7 @@ describe("Add a PC through the relay with a typed code", () => {
   beforeEach(() => {
     requests = [];
     field.value = "";
-    codeAnswer = Response.json({ server_id: SERVER_ID, name: "Lab" });
+    codeAnswer = Response.json({ ticket: "t1", server_id: SERVER_ID, name: "Lab" });
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -75,7 +75,7 @@ describe("Add a PC through the relay with a typed code", () => {
     expect(renderer!.root.findAll((node) => node.type === "form")).toHaveLength(0);
 
     await act(async () => { button("It matches").props.onClick(); });
-    expect(requests.at(-1)).toEqual({ path: "/api/machines/relay", body: { found: SERVER_ID } });
+    expect(requests.at(-1)).toEqual({ path: "/api/machines/relay", body: { found: "t1" } });
     expect(text(renderer!.root.find((node) => node.props.role === "status"))).toContain("Lab was added");
   });
 

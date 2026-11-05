@@ -1433,11 +1433,11 @@ export async function machineRequest<T>(path: string, method = "GET", body?: unk
 export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { link });
 /**
  * POST /api/machines/relay/code: finds the PC that shows this typed code. This PC's server keeps what it found, the
- * one-time pairing code in it, and answers only the ID to compare; addFoundRelayPc then adds that PC.
+ * one-time pairing code in it, under a ticket only this window gets, and answers the ID to compare; addFoundRelayPc then adds that PC.
  * ApiError code `typed_code_<failure>` (shared/relay-code-offer.ts) when it finds none.
  */
-export const findRelayPc = (code: string) => machineRequest<{ server_id: string; name: string | null }>("/relay/code", "POST", { code });
-export const addFoundRelayPc = (serverId: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: serverId });
+export const findRelayPc = (code: string) => machineRequest<{ ticket: string; server_id: string; name: string | null }>("/relay/code", "POST", { code });
+export const addFoundRelayPc = (ticket: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: ticket });
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
