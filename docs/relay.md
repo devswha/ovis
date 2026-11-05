@@ -611,6 +611,16 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   does not answer there) tries `relay.ovis.sh` at once, and keeps using the one that worked. A phone never falls back from any other relay, so a
   self-hosted one is never traded for Ovis's.
 
+- **The app comes from nearby too.** Beside each regional relay a copy of the hosted app is served
+  (`app-ap.ovis.sh` beside `relay-ap.ovis.sh`, `REGIONAL_APPS` in the same file). A browser that
+  opens a pairing link on `app.ovis.sh` for a regional relay moves to that copy before the app's
+  bundle loads (`regionalAppUrl`, run by the page's first script), and pairs there. Only a link
+  with a pairing code moves: a phone keeps a PC's key in the address it paired on, so a PC saved on
+  `app.ovis.sh` stays there. The iOS and Android apps stay on `app.ovis.sh`. The copy is the same
+  release `app.ovis.sh` serves, checked against the SHA-256 published with it
+  ([relay/README.md](../relay/README.md#a-regional-copy-of-the-app)), so it adds no trust root
+  of its own ([The hosted app is a trust root](#the-hosted-app-is-a-trust-root)).
+
 Which relay carries a connection changes nothing about its protection: the phone and the PC
 encrypt end to end whichever relay passes the frames on, and each relay sees what
 [What the relay sees](#what-the-relay-sees) says.

@@ -8,6 +8,11 @@
 // first: this script runs before main.tsx, so it moves the settings saved under the old key itself
 import "./lib/legacyStorage.ts";
 import { applyThemeEntry, savedThemeEntry } from "./lib/themeBoot.ts";
+import { regionalAppUrl } from "../shared/relay-regions.ts";
+
+// a pairing link for a regional relay opens on the app's copy beside it, before this host sends the bundle
+const regional = regionalAppUrl(window.location, "Capacitor" in window);
+if (regional !== null) window.location.replace(regional);
 
 const root = document.documentElement;
 const entry = savedThemeEntry(() => window.localStorage);

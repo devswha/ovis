@@ -93,6 +93,40 @@ export function shellHeaders(): string {
   ].join("\n");
 }
 
+/**
+ * The same site for Caddy, for a copy of the shell served beside a regional relay
+ * (relay/shell-mirror.ts keeps `<root>` current): the rewrites of shellRedirects() and the headers
+ * of shellHeaders(), from the same sources. `bun scripts/shell-caddy.ts <site> [root]` prints it.
+ */
+export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): string {
+  if (!/^[a-z0-9.-]+$/.test(site) || !/^\/[\w./-]+$/.test(root)) throw new Error("not a site address or a folder");
+  const scope = "^/s/[0-9a-f]{32}";
+  return [
+    `${site} {`,
+    `\troot * ${root}`,
+    `\t@bare path_regexp bare ^/s/([0-9a-f]{32})$`,
+    `\tredir @bare /s/{re.bare.1}/ 301`,
+    `\t@render path_regexp render ${scope}/~render$`,
+    `\t@notrender not path_regexp ${scope}/~render$`,
+    `\t@manifest path_regexp manifest ${scope}/manifest\\.webmanifest$`,
+    `\t@worker path_regexp worker ${scope}/sw\\.js$`,
+    `\t@revalidate path / /index.html /sw.js /manifest.webmanifest /s/*`,
+    `\t@hidden path /_headers /_redirects`,
+    `\theader @notrender Content-Security-Policy "${shellContentSecurityPolicy()}"`,
+    `\theader @render Content-Security-Policy "${pagePolicy(null)}"`,
+    `\theader /assets/* Cache-Control "${IMMUTABLE_CACHE}"`,
+    `\theader @revalidate Cache-Control "${REVALIDATE}"`,
+    `\trespond @hidden 404`,
+    `\thandle @render {\n\t\trewrite * /render.html\n\t}`,
+    `\thandle @manifest {\n\t\trewrite * /manifest.webmanifest\n\t}`,
+    `\thandle @worker {\n\t\trewrite * /sw.js\n\t}`,
+    `\thandle_path /s/* {\n\t\trewrite * /index.html\n\t}`,
+    `\tfile_server {\n\t\tprecompressed br gzip\n\t}`,
+    "}",
+    "",
+  ].join("\n");
+}
+
 /** The files the shell build writes beside Vite's output. */
 export function shellFiles(manifest: string): Record<string, string> {
   return {
