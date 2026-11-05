@@ -660,7 +660,9 @@ describe("system API", () => {
   it("answers GET without caching, keeps it behind the token gate, and takes the bridge token too", async () => {
     const dir = mkdtempSync(join(tmpdir(), "herdr-system-contract-"));
     const open = createServer({ port: 0, stateDir: dir, system: sampler });
-    const gated = createServer({ port: 0, stateDir: dir, system: sampler, token: "system-test-token" });
+    const bridge = "b".repeat(64);
+    const gated = createServer({ port: 0, stateDir: dir, system: sampler, token: "system-test-token", bridgeToken: bridge });
+    const machineServer = createServer({ port: 0, stateDir: dir, system: null });
     try {
       const answered = await fetch(`http://localhost:${open.port}/api/system`);
       expect(answered.status).toBe(200);
@@ -669,8 +671,13 @@ describe("system API", () => {
       expect((await fetch(`http://localhost:${gated.port}/api/system`)).status).toBe(401);
       const withToken = await fetch(`http://localhost:${gated.port}/api/system`, { headers: { authorization: "Bearer system-test-token" } });
       expect(withToken.status).toBe(200);
+      // another PC's app reads it through its bridge token, by GET only
+      expect((await fetch(`http://localhost:${gated.port}/api/system`, { headers: { authorization: `Bearer ${bridge}` } })).status).toBe(200);
+      expect((await fetch(`http://localhost:${gated.port}/api/system`, { method: "POST", headers: { authorization: `Bearer ${bridge}` } })).status).toBe(401);
       expect((await fetch(`http://localhost:${open.port}/api/system`, { method: "POST", headers: { origin: `http://localhost:${open.port}` } })).status).toBe(405);
-    } finally { open.stop(); gated.stop(); rmSync(dir, { recursive: true, force: true }); }
+      // a server without a load of its own to tell answers as one without the route
+      expect((await fetch(`http://localhost:${machineServer.port}/api/system`)).status).toBe(404);
+    } finally { open.stop(); gated.stop(); machineServer.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

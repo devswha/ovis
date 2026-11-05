@@ -25,7 +25,7 @@ import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
 import { herdrSocketPath, ping } from "./herdr/client.ts";
-import { coreConnection, coreSeenMarker, hcBin, NoHerdrCoreError, servingCore, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
+import { coreConnection, coreSeenMarker, hcBin, hcMachine, NoHerdrCoreError, servingCore, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { bridgePins } from "./herdr-core/pin-label.ts";
 import { herdrCoreFacts } from "./herdr-core/discovery.ts";
@@ -167,8 +167,8 @@ export function createServer(
     telemetry?: Telemetry;
     /** plan limits of the AI subscriptions signed in here; tests pass one without real sign-ins */
     usage?: UsageService;
-    /** this PC's load; tests pass one that reads nothing from the machine */
-    system?: SystemSampler;
+    /** this PC's load; tests pass one that reads nothing from the machine, or null for a server that tells none */
+    system?: SystemSampler | null;
     /** Tests supply an isolated proxy service, never a user's configured instance. */
     cliProxy?: CLIProxyService;
     /** Tests use a disposable credential home and stand-in CLI binaries. */
@@ -272,7 +272,8 @@ export function createServer(
   usageLogin.persistTo(stateDir);
   const usage = options.usage ?? new UsageService(undefined, undefined, (refresh) => cliProxy.report(refresh));
   const usageAccounts = new UsageAccountList(stateDir, usage);
-  const systemSampler = options.system ?? createSystemSampler();
+  // a herdr-core machine's server runs on this PC, so it has no load of that machine to tell (system-stats.ts)
+  const systemSampler = options.system === undefined ? (hcMachine() === null ? createSystemSampler() : null) : options.system;
   // a sign-in the browser followed ends in the server's own PTY, not a herdr pane: it says so itself
   usageLogin.onLoginEnded((account) => {
     usage.invalidate();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { cpuPercent, cpuTimesOf, createSystemSampler, diskOf, handleSystemRequest, parseMeminfo, STALE_MS, type SystemIo } from "./system-stats.ts";
+import { cpuPercent, cpuTimesOf, createSystemSampler, DISK_STALE_MS, diskOf, handleSystemRequest, parseMeminfo, STALE_MS, type SystemIo } from "./system-stats.ts";
 
 const MEMINFO = `MemTotal:       16384000 kB
 MemFree:         1000000 kB
@@ -132,17 +132,31 @@ describe("the sampler", () => {
     expect(asked).toBe(1);
   });
 
-  it("keeps the last disks while one read is late, and takes the new answer when it arrives", async () => {
+  it("stops showing the last disks once a stuck read has outlasted them", async () => {
     const disk = { path: "/", used: 5, total: 10, percent: 50 };
-    let release: (list: typeof disk[]) => void = () => {};
     let call = 0;
-    const { io, advance } = fakeIo({ disks: () => { call += 1; return call === 1 ? Promise.resolve([disk]) : new Promise((done) => { release = done; }); } });
+    const { io, advance } = fakeIo({ disks: () => { call += 1; return call === 1 ? Promise.resolve([disk]) : new Promise<never>(() => {}); } });
     const sampler = createSystemSampler(io, { diskCapMs: 20 });
     expect((await sampler.read()).disks).toEqual([disk]);
     advance(5000);
     expect((await sampler.read()).disks).toEqual([disk]);
-    release([{ ...disk, percent: 60 }]);
-    await Bun.sleep(5); // fixed wait: lets the released read settle before the next ask
+    advance(DISK_STALE_MS);
+    expect((await sampler.read()).disks).toEqual([]);
+    expect(call).toBe(2);
+  });
+
+  it("keeps the last disks while one read is late, and takes the new answer when it arrives", async () => {
+    const disk = { path: "/", used: 5, total: 10, percent: 50 };
+    const late = Promise.withResolvers<typeof disk[]>();
+    let call = 0;
+    const { io, advance } = fakeIo({ disks: () => { call += 1; return call === 1 ? Promise.resolve([disk]) : late.promise; } });
+    const sampler = createSystemSampler(io, { diskCapMs: 20 });
+    expect((await sampler.read()).disks).toEqual([disk]);
+    advance(5000);
+    expect((await sampler.read()).disks).toEqual([disk]);
+    late.resolve([{ ...disk, percent: 60 }]);
+    // the sampler's own handler on that read was attached first, so it has run once this await returns
+    await late.promise;
     advance(5000);
     expect((await sampler.read()).disks[0]?.percent).toBe(60);
   });
@@ -154,5 +168,11 @@ describe("the sampler", () => {
     expect(ok.headers.get("cache-control")).toBe("no-store");
     expect((await ok.json() as { cpu_count: number }).cpu_count).toBe(4);
     expect((await handleSystemRequest(new Request("http://x/api/system", { method: "POST" }), sampler)).status).toBe(405);
+  });
+
+  it("answers 404 where it has no load of its own to tell (a herdr-core machine's server on this PC)", async () => {
+    const answer = await handleSystemRequest(new Request("http://x/api/system"), null);
+    expect(answer.status).toBe(404);
+    expect(await answer.json()).toMatchObject({ error: { code: "system_unavailable" } });
   });
 });

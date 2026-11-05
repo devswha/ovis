@@ -33,6 +33,8 @@ export const FIRST_WINDOW_MS = 250;
 export const STALE_MS = 30_000;
 /** how long the disks may take before they are left out of a reading */
 export const DISK_CAP_MS = 1500;
+/** while a disk read is stuck, the last answer stands in for this long, then the disks are left out */
+export const DISK_STALE_MS = 60_000;
 /** a filesystem smaller than this (a boot partition, a tmpfs) is not a disk that fills up */
 const MIN_DISK_BYTES = 1024 ** 3;
 const MAX_DISKS = 4;
@@ -158,17 +160,22 @@ export function createSystemSampler(io: SystemIo = realIo, options: { diskCapMs?
   let previous: { at: number; cpu: CpuTimes; cores: number } | null = null;
   let last: SystemReport | null = null;
   let inflight: Promise<SystemReport> | null = null;
-  let lastDisks: SystemDisk[] = [];
-  let diskRead: Promise<SystemDisk[]> | null = null;
+  let lastDisks: { list: SystemDisk[]; at: number } | null = null;
+  let diskRead: Promise<void> | null = null;
 
   /**
    * The disks, within diskCapMs. A disk read that has not come back is not started again: each
-   * one holds a thread of the process's small pool, and a stuck mount would use them all up. The
-   * last answer stands in until it does.
+   * one holds a thread of the process's small pool, and a stuck mount would use them all up. Nor
+   * is it waited on again, so a read that never ends holds one handler, not one per ask. The last
+   * answer stands in until it comes back, for DISK_STALE_MS at most.
    */
   function disks(): Promise<SystemDisk[]> {
-    diskRead ??= io.disks().then((list) => { lastDisks = list; return list; }).finally(() => { diskRead = null; });
-    return within(diskRead, diskCapMs, () => lastDisks);
+    const known = (): SystemDisk[] => lastDisks !== null && io.now() - lastDisks.at <= DISK_STALE_MS ? lastDisks.list : [];
+    if (diskRead !== null) return Promise.resolve(known());
+    const read = io.disks().then((list) => { lastDisks = { list, at: io.now() }; }, () => { /* left out; the last answer stands in */ })
+      .finally(() => { diskRead = null; });
+    diskRead = read;
+    return within(read.then(known), diskCapMs, known);
   }
 
   async function take(): Promise<SystemReport> {
@@ -208,11 +215,16 @@ export function createSystemSampler(io: SystemIo = realIo, options: { diskCapMs?
   };
 }
 
-/** GET /api/system. Access is decided before this point (index.ts), as for every route. */
-export async function handleSystemRequest(request: Request, sampler: SystemSampler): Promise<Response> {
+/**
+ * GET /api/system. Access is decided before this point (index.ts), as for every route. No sampler:
+ * this server runs here for another machine (a herdr-core machine's server, machine-bridge.ts), so
+ * this PC's load is not that machine's; it answers 404 as a server without the route does.
+ */
+export async function handleSystemRequest(request: Request, sampler: SystemSampler | null): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET" } }, 405);
   }
+  if (sampler === null) return jsonResponse({ error: { code: "system_unavailable", message: "This machine's load is not read from here" } }, 404);
   const response = jsonResponse(await sampler.read());
   response.headers.set("cache-control", "no-store");
   return response;
