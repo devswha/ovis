@@ -126,6 +126,19 @@ describe("saved theme migration", () => {
     expect(loadSettings().sidebarFilter).toBe(true);
   });
 
+  it("keeps the PC load choice in its own key, out of an old tab's whole-record save, and unchosen until chosen", () => {
+    expect(loadSettings().pcLoad).toBeNull();
+    saveSettings(sanitizeSettings({ pcLoad: false }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("pcLoad");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().pcLoad).toBe(false);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), pcLoad: null });
+    expect(loadSettings().pcLoad).toBeNull();
+    records.set("ovis:pc-load", "not json");
+    expect(loadSettings().pcLoad).toBeNull();
+  });
+
   it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {
     expect(loadSettings()).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
     saveSettings(sanitizeSettings({ agentGroups: true, agentGroupSort: "name" }));

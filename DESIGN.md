@@ -1598,8 +1598,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shows nothing, and so does one that has not answered yet. A figure the PC cannot measure
   is a dash, never `0%`. The meters are drawn only; the button's label carries the numbers for a
   screen reader ("Show system details for Work PC. CPU 4%, Memory 22%, Disk 50%").
-- Nothing is read for a PC that is folded, offline or in a hidden tab. The next ask starts 5 s
-  after the last one came back or timed out, so a stuck PC never has more than one open.
+- Nothing is read for a PC that is folded, offline or in a hidden tab, nor while the sidebar, its
+  PCs list or a phone's drawer is closed. The next ask starts 5 s after the last one came back or
+  timed out, so a stuck PC never has more than one open, and a reading no ask has renewed for a
+  minute is dropped rather than shown as now. A herdr-core machine shows none: its server runs on
+  the PC that reaches it, which cannot read that machine's load.
 - Reference: no app listed in `src/AGENTS.md` shows a machine's load in its project list that I
   know of (they assume one machine); this follows the app's own plan meters and PC group header,
   and differs only in measuring a PC instead of a subscription. No code is borrowed.

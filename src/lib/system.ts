@@ -8,6 +8,8 @@ import { usePageVisible } from "./visibility.ts";
 export const SYSTEM_POLL_MS = 5000;
 /** an ask that has not come back by now is given up, so a stuck PC never has more than one open */
 export const SYSTEM_ASK_TIMEOUT_MS = 4000;
+/** a reading this old, with every ask since failing, is no longer shown as the PC's load */
+export const SYSTEM_STALE_MS = 60_000;
 /**
  * This PC cannot say, and asking again will not change that until its bridge does. A bridge from
  * before the route answers 404; one that has a browser token set refuses what its allowlist does
@@ -27,16 +29,18 @@ export interface SystemState {
 }
 
 /**
- * The load of one PC, while `enabled` and the page is on screen. The next ask starts
+ * The load of one PC, while `enabled` (its line is on screen) and the page is visible. The next ask starts
  * SYSTEM_POLL_MS after the last one came back or timed out, so a stuck PC holds one request open,
  * never a queue of them. Nothing is
  * asked for a PC that is folded, offline or in a background tab. A PC whose bridge cannot answer
- * is not asked again until `retryKey` changes (its bridge was updated, or it reconnected).
+ * is not asked again until `retryKey` changes (its bridge was updated, or it reconnected). A reading
+ * that no ask has renewed for SYSTEM_STALE_MS is dropped rather than shown as now.
  */
 export function useSystemStats(machineId: string, enabled: boolean, retryKey: string): SystemState {
   const [state, setState] = useState<SystemState>({ report: null, unavailable: false });
   const visible = usePageVisible();
   const missing = useRef<string | null>(null);
+  const answeredAt = useRef(0);
 
   useEffect(() => {
     if (!enabled || !visible || missing.current === retryKey) return;
@@ -47,6 +51,7 @@ export function useSystemStats(machineId: string, enabled: boolean, retryKey: st
         const report = await fetchSystem(machineId, AbortSignal.any([abort.signal, AbortSignal.timeout(SYSTEM_ASK_TIMEOUT_MS)]));
         if (abort.signal.aborted) return;
         missing.current = null;
+        answeredAt.current = Date.now();
         setState({ report, unavailable: false });
       } catch (error) {
         if (abort.signal.aborted) return;
@@ -55,7 +60,8 @@ export function useSystemStats(machineId: string, enabled: boolean, retryKey: st
           setState({ report: null, unavailable: true });
           return;
         }
-        // anything else (offline, restarting, a timeout): the last reading stays until the next ask
+        // anything else (offline, restarting, a timeout): the last reading stays until the next ask, while it is recent
+        if (Date.now() - answeredAt.current > SYSTEM_STALE_MS) setState((last) => last.report === null ? last : { report: null, unavailable: false });
       }
       timer = window.setTimeout(() => void load(), SYSTEM_POLL_MS);
     };

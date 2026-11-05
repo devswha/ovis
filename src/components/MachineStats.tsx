@@ -9,7 +9,8 @@ import { useSystemStats } from "../lib/system.ts";
 import { formatBytes, formatPercentValue, formatUptime, fullestDisk, SYSTEM_HIGH_PERCENT } from "../lib/systemReport.ts";
 import "./MachineStats.css";
 
-const high = (percent: number | null): string => percent !== null && percent >= SYSTEM_HIGH_PERCENT ? " is-high" : "";
+// on the figure as shown: 84.6 reads "85%", and so is red
+const high = (percent: number | null): string => percent !== null && Math.round(percent) >= SYSTEM_HIGH_PERCENT ? " is-high" : "";
 
 /** One figure with its bar. It is only drawn: the button around it carries the numbers for a screen reader. */
 function Meter({ label, percent }: { label: string; percent: number | null }) {
@@ -58,14 +59,14 @@ function spoken(t: Translate, report: SystemReport): string {
 
 /**
  * The load of a PC under its name: CPU, memory and its fullest disk as three small meters, and
- * on a tap the numbers behind them. It asks only while it is on screen (lib/system.ts), and
- * draws nothing for a PC that cannot say.
+ * on a tap the numbers behind them. It asks only while `active` (the sidebar, the PCs list and this
+ * PC are shown: lib/system.ts), and draws nothing for a PC that cannot say.
  */
-export function MachineStats({ machine }: { machine: Machine }) {
+export function MachineStats({ machine, active }: { machine: Machine; active: boolean }) {
   const t = useT();
   const id = useId();
   const [open, setOpen] = useState(() => { try { return localStorage.getItem(`ovis:pc-stats:${machine.id}`) === "1"; } catch { return false; } });
-  const { report, unavailable } = useSystemStats(machine.id, true, `${machine.state}:${machine.source_boot_id ?? ""}:${machine.herdr?.version ?? ""}`);
+  const { report, unavailable } = useSystemStats(machine.id, active, `${machine.state}:${machine.source_boot_id ?? ""}:${machine.herdr?.version ?? ""}`);
   if (unavailable || report === null) return null;
   const disk = fullestDisk(report.disks);
   const toggle = () => {
