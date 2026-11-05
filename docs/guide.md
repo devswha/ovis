@@ -111,7 +111,9 @@ a half's bar onto the left or right half of the pane area. A pick in the sidebar
 list then opens in the active half only, and the focus stays there. Both halves can show the same
 tab, and you type in whichever half is active; the other half shows that tab at the active half's size.
 To rearrange a split tab instead, drop a pane's title on another pane's title in the same tab: the
-two panes trade places.
+two panes trade places. Drop it on another pane's body to move it beside that pane, on the side
+nearest the pointer; the highlighted half shows where it goes. Within its own tab a title only
+arranges the tab: to open it in a half, drop it on the other half while that half shows another tab.
 
 A tool that starts background workers or subagents can keep them out of the way: tag each such
 pane with `herdr pane report-metadata <pane_id> --source <id> --token role=background`. The
@@ -915,7 +917,19 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   pi); without the extension a pi pane uses Terminal. Other agents whose chat reads only that
   report, OpenCode for example, use Terminal on herdr-core.
 - **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
+  scroll buttons beside it, plugins and worktrees.
+- **Other machines:** each machine the core reaches (`hc machine add vps`, or added in the Herdr
+  app) is a PC of its own in the sidebar, beside this one: its workspaces and tabs as its own
+  `herdr-app` document lays them out, its live terminals, input, status and alerts, and new
+  workspaces and tabs started there. Ovis reaches it through this PC's core: nothing of Ovis is
+  installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
+  Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
+  own), so its agents' chat history is not read here: their transcripts are on that machine.
+  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
+  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
+  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  there. Temporary machines (`hc machine add --temp`) are not shown, and
+  PCs added over SSH or through the relay keep working beside them.
 
 ## Configuration
 
