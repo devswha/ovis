@@ -96,8 +96,8 @@ export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSe
 /**
  * Whether `turn` may be the one `match` was found in after it changed since the search, so its name
  * (conversationTurnAnchor) changed too: an answer that went on, or whose first tool's output came. It
- * has the match's role and time, goes on from how the searched turn began (its first text grew, or
- * its first tool is the same call up to its output), and still holds the match after the same words
+ * has the match's role and time, goes on from how the searched turn began (its first text grew, its
+ * first tool is the same call up to its output, or its first picture was paired), and still holds the match after the same words
  * (a Markdown mark that streamed in may close: `[deploy` became a link). Two answers of one time
  * (Codex, when the user steers mid-task) can both pass: see pickedTurn.
  */
@@ -108,7 +108,10 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   if (!match.turn.startsWith(prefix)) return false;
   const began = match.turn.slice(prefix.length), now = name.slice(prefix.length);
   const output = began.startsWith("tool|") ? began.indexOf('"output":') : -1;
-  if (!now.startsWith(output < 0 ? began : began.slice(0, output))) return false;
+  // a prompt's picture may become the same picture's local path a moment later (Codex pairs a
+  // response's inline copy with its event's): a picture first is the same beginning
+  const picture = began.startsWith("image|") && now.startsWith("image|");
+  if (!picture && !now.startsWith(output < 0 ? began : began.slice(0, output))) return false;
   // the matched words find what the query found: the same words, any whitespace, case ignored
   const pattern = searchPattern(match.match);
   const snippet = pattern === null ? null : matchSnippet(searchableText(turn), pattern);
@@ -145,6 +148,22 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
     changed = index;
   }
   return named >= 0 ? named : changed ?? "none";
+}
+
+/**
+ * Whether the turns read so far (the conversation's end, earlier pages put before them) settle a
+ * pick: one has the match's name, and the turn the search found cannot be on a page not read yet. A
+ * turn that changed since loses its name only to a later turn of its time (pickedTurn), so a pick
+ * reads on until a turn before the named one is of an earlier time: turns come in time order, but for
+ * answers dated by an earlier start (Codex, when the user steers mid-task), which all follow that
+ * start. A time that cannot be read tells nothing; turns without a time go by name only.
+ */
+export function pickSettled(turns: readonly ConversationTurn[], match: ConversationSearchMatch): boolean {
+  const named = turns.findIndex((turn) => conversationTurnAnchor(turn) === match.turn);
+  if (named < 0) return false;
+  if (match.ts === null) return true;
+  const at = Date.parse(match.ts);
+  return turns.slice(0, named).some((turn) => turn.ts !== null && Date.parse(turn.ts) < at);
 }
 
 /** The turns that hold the pattern, newest first, each with its first match. */

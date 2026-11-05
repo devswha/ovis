@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationTurn } from "./protocol.ts";
 import { createCodexTranscriptParser } from "../server/codex.ts";
-import { conversationTurnAnchor, matchSnippet, pickedTurn, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
+import { parseCodexTranscript } from "../server/codex.ts";
+import { conversationTurnAnchor, matchSnippet, pickedTurn, pickSettled, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
 
 const user = (text: string, ts: string | null = "2026-10-01T00:00:00Z"): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
 
@@ -191,5 +192,46 @@ describe("pickedTurn", () => {
   it("opens none when the answer grew and a later answer of its time took its old name", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
+  });
+
+  it("finds a prompt whose inline picture was paired with its local path after it was searched", () => {
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1sAAAAASUVORK5CYII=";
+    const ts = "2026-09-27T00:00:00Z";
+    const inline = { type: "response_item", timestamp: ts, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "why does the deploy fail" }, { type: "input_image", image_url: png }] } };
+    const local = { type: "event_msg", timestamp: ts, payload: { type: "user_message", message: "why does the deploy fail", local_images: ["/tmp/shot.png"] } };
+    const searched = searchTurns(parseCodexTranscript(JSON.stringify(inline)), searchPattern("deploy")!)[0]!;
+    const paired = parseCodexTranscript(`${JSON.stringify(inline)}\n${JSON.stringify(local)}`);
+    expect(conversationTurnAnchor(paired[0]!)).not.toBe(searched.turn);
+    expect(pickedTurn(paired, searched)).toBe(0);
+  });
+});
+
+describe("pickSettled", () => {
+  const said = (text: string, ts: string): ConversationTurn => ({ role: "assistant", ts, parts: [{ kind: "text", text }] });
+
+  it("reads on past a later answer that took a grown answer's name until the grown one is read", () => {
+    // the answer was searched while it said only its first words, then went on; the user steered and
+    // the next answer, dated by the task's start (Codex) as well, began with those words
+    const task = "2026-10-01T00:01:00Z";
+    const match = searchTurns([user("check the deploy", task), said("The deploy script", task)], searchPattern("deploy script")!)[0]!;
+    const turns = [user("list the files", "2026-10-01T00:00:00Z"), said("Done.", "2026-10-01T00:00:00Z"),
+      user("check the deploy", task), said("The deploy script is ready.", task), user("run it again", "2026-10-01T00:01:03Z"), said("The deploy script", task)];
+    // pages read newest first: the steer and the later answer, the grown answer and its prompt, then the earlier task
+    expect(pickSettled(turns.slice(4), match)).toBe(false);
+    expect(pickSettled(turns.slice(2), match)).toBe(false);
+    expect(pickSettled(turns, match)).toBe(true);
+    expect(pickedTurn(turns, match)).toBe("several");
+  });
+
+  it("settles on the named turn once a turn before it is of an earlier time, or the match has no time", () => {
+    const at = (text: string, ts: string | null): ConversationTurn => ({ role: "assistant", ts, parts: [{ kind: "text", text }] });
+    const match = searchTurns([at("The deploy script", "2026-10-01T00:00:01Z")], searchPattern("deploy script")!)[0]!;
+    expect(pickSettled([user("go"), at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(true);
+    expect(pickSettled([at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    expect(pickSettled([user("go"), at("Another answer", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    // a time that cannot be read tells nothing
+    expect(pickSettled([user("go", "yesterday"), at("The deploy script", "2026-10-01T00:00:01Z")], match)).toBe(false);
+    const untimed = searchTurns([at("The deploy script", null)], searchPattern("deploy script")!)[0]!;
+    expect(pickSettled([at("The deploy script", null)], untimed)).toBe(true);
   });
 });
