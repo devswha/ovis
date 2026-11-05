@@ -43,14 +43,15 @@ export function paneAfterClose(before: Roster, after: Roster, closed: string, pr
   // a pane made in the tab after `before` was read
   const survivor = tabPane(after, pane.tab_id, viewed);
   if (survivor) return survivor;
-  const tabs = before.tabs.filter((tab) => tab.workspace_id === pane.workspace_id).sort((a, b) => a.number - b.number).map((tab) => tab.tab_id);
+  // in the roster's order, which the tab strip and sidebar show: a number stays with a tab that was moved
+  const tabs = before.tabs.filter((tab) => tab.workspace_id === pane.workspace_id).map((tab) => tab.tab_id);
   const tab = nearest(tabs, tabs.indexOf(pane.tab_id), (id) => after.tabs.some((candidate) => candidate.tab_id === id), true);
   if (tab) return tabPane(after, tab, viewed);
   // a tab made in the workspace after `before` was read keeps the selection in the workspace
-  const made = after.tabs.filter((candidate) => candidate.workspace_id === pane.workspace_id).sort((a, b) => a.number - b.number)
+  const made = after.tabs.filter((candidate) => candidate.workspace_id === pane.workspace_id)
     .map((candidate) => tabPane(after, candidate.tab_id, viewed)).find((id) => id !== null);
   if (made) return made;
-  const workspaces = [...before.workspaces].sort((a, b) => a.number - b.number).map((workspace) => workspace.workspace_id);
+  const workspaces = before.workspaces.map((workspace) => workspace.workspace_id);
   const workspace = nearest(workspaces, workspaces.indexOf(pane.workspace_id), (id) => after.workspaces.some((candidate) => candidate.workspace_id === id));
   if (!workspace) return null;
   const remembered = viewed?.("workspace", workspace);

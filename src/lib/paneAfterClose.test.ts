@@ -37,6 +37,18 @@ describe("paneAfterClose", () => {
     expect(paneAfterClose(before, roster({ w1: { t1: ["a"] }, w2: { t2: ["b"] } }), "c", null)).toBe("b");
   });
 
+  it("takes the neighbouring tab in the order the roster shows, not by tab number, after tabs were reordered", () => {
+    const reorder = (tree: ReturnType<typeof roster>) => {
+      const value = tree as unknown as { tabs: Array<{ tab_id: string; number: number }> };
+      const number: Record<string, number> = { t1: 1, t2: 2, t3: 3 };
+      for (const tab of value.tabs) tab.number = number[tab.tab_id]!;
+      return tree;
+    };
+    // made as t1, t2, t3, then moved to t3, t1, t2: the tab before t1 is t3
+    const before = reorder(roster({ w1: { t3: ["c"], t1: ["a"], t2: ["b"] } }));
+    expect(paneAfterClose(before, reorder(roster({ w1: { t3: ["c"], t2: ["b"] } })), "a", null)).toBe("c");
+  });
+
   it("keeps the selection in its workspace when a tab made there after `before` is all it has left", () => {
     const before = roster({ w1: { t1: ["a"] }, w2: { t2: ["x"] } });
     expect(paneAfterClose(before, roster({ w1: { t3: ["n"] }, w2: { t2: ["x"] } }), "a", null)).toBe("n");
