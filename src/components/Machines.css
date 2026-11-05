@@ -186,13 +186,17 @@
   }
 }
 
-@media (pointer: coarse) {
+/* a touch screen, even beside a mouse, has no hover to find it: it stays shown, as the fold and + do
+   (SidebarSections.css) */
+@media (any-pointer: coarse) {
   .machine-manage {
     width: var(--side-action);
     overflow: visible;
     opacity: 1;
   }
+}
 
+@media (pointer: coarse) {
   .machine-new {
     width: var(--touch-target);
     height: var(--touch-target);

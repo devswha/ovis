@@ -366,6 +366,8 @@ try {
         await page.mouse.move(1272, 600);
         const rest = await pcHeader(page, "Work PC");
         assert.ok(rest.toggle && rest.add, `${label}: at rest the fold and + show`);
+        const manage = await page.locator('section.machine-group[aria-label="PC Work PC"] .machine-manage').evaluate((button) => { const box = button.getBoundingClientRect(); return { width: box.width, opacity: getComputedStyle(button).opacity }; });
+        assert.ok(manage.width > 0 && manage.opacity === "1", `${label}: at rest Manage shows too: ${JSON.stringify(manage)}`);
         assert.equal(rest.count, null, `${label}: no count in view over the actions`);
         assert.equal(rest.countWords, `${await agentRowsOn(page, "work")} agents running`, `${label}: a screen reader still hears the count`);
       });
