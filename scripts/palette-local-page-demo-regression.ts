@@ -84,6 +84,18 @@ async function run(browser: Browser, origin: string, port: number, width: number
     await page.locator(".web-panel").waitFor({ state: "detached" });
   }
   assert.equal(await page.locator(".conn-live").count(), 1, `${tag}: the app stays connected`);
+
+  // over Files (a dialog or sheet, not docked) the page would open under it: the palette offers none there
+  await page.keyboard.press("ControlOrMeta+Shift+K");
+  await search.fill(">browse files");
+  await page.getByRole("option", { name: "Browse files", exact: true }).click();
+  const files = page.locator(".files-dialog");
+  await files.first().waitFor();
+  await page.keyboard.press("ControlOrMeta+Shift+K");
+  await search.fill(`localhost:${port}`);
+  await page.getByText("No matching panes or actions", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("option", { name: `Open localhost:${port}`, exact: true }).count(), 0, `${tag}: no page row over Files`);
+  await page.keyboard.press("Escape");
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
   console.log(`PASS local page from the palette ${tag}`);
