@@ -677,6 +677,15 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect(git("-C", repo, "worktree", "add", "-q", "-b", "other", join(dir, "old")).exitCode).toBe(0);
     await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
     expect([existsSync(join(dir, "new", "README.md")), existsSync(join(dir, "old", "README.md"))]).toEqual([true, true]);
+    // removed outside Ovis and added again at the same path: git reuses the name of its git folder, not the folder
+    const again = await worktreeCreate({ workspaceId: "S", branch: "first", path: join(dir, "again") }, socket);
+    expect(git("-C", repo, "worktree", "remove", join(dir, "again")).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "second", join(dir, "again")).exitCode).toBe(0);
+    await expect(worktreeRemove(again.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(existsSync(join(dir, "again", "README.md"))).toBeTrue();
+    // an existing branch is checked out as it is, whatever base was asked
+    expect(git("-C", repo, "branch", "kept").exitCode).toBe(0);
+    expect(await worktreeCreate({ workspaceId: "S", branch: "kept", base: "main", path: join(dir, "kept") }, socket)).toMatchObject({ worktree: { branch: "kept" } });
 
     // where the Herdr app arranges the core, ping offers no worktrees and the calls are refused
     const app = await living([terminal("t1", { cwd: repo })]);

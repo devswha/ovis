@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
@@ -34,10 +34,11 @@ export function worktreeOfLabels(labels: Record<string, string> | undefined): Wo
 }
 
 /**
- * The label as written: herdr's facts, and the checkout's own git folder (`.git/worktrees/<name>`),
- * which no other checkout has, even one later added where it was.
+ * The label as written: herdr's facts, and which git folder the checkout had (`.git/worktrees/<name>`)
+ * by its file identity: git reuses the name for a checkout added again at the same path, but that
+ * is a new folder.
  */
-export function labeledWorktree(labels: Record<string, string> | undefined): { facts: WorkspaceWorktreeInfo; gitDir: string | null } | null {
+export function labeledWorktree(labels: Record<string, string> | undefined): { facts: WorkspaceWorktreeInfo; gitId: string | null } | null {
   const text = labels?.[WORKTREE_LABEL];
   if (!text) return null;
   let value: unknown;
@@ -47,13 +48,23 @@ export function labeledWorktree(labels: Record<string, string> | undefined): { f
     return null;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const { repo_key, repo_name, repo_root, checkout_path, is_linked_worktree, git_dir } = value as Record<string, unknown>;
+  const { repo_key, repo_name, repo_root, checkout_path, is_linked_worktree, git_id } = value as Record<string, unknown>;
   if (typeof repo_key !== "string" || typeof repo_name !== "string" || typeof repo_root !== "string" || typeof checkout_path !== "string" || typeof is_linked_worktree !== "boolean") return null;
-  return { facts: { repo_key, repo_name, repo_root, checkout_path, is_linked_worktree }, gitDir: typeof git_dir === "string" ? git_dir : null };
+  return { facts: { repo_key, repo_name, repo_root, checkout_path, is_linked_worktree }, gitId: typeof git_id === "string" ? git_id : null };
 }
 
-/** The label for a checkout: its facts and its git folder. */
-export const worktreeLabel = (facts: WorkspaceWorktreeInfo, gitDir: string): string => JSON.stringify({ ...facts, git_dir: gitDir });
+/** A git folder's file identity: device, inode and birth time; null when it is gone. */
+export function gitDirIdentity(gitDir: string): string | null {
+  try {
+    const found = statSync(gitDir);
+    return `${found.dev}:${found.ino}:${found.birthtimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The label for a checkout: its facts and its git folder's identity. */
+export const worktreeLabel = (facts: WorkspaceWorktreeInfo, gitDir: string): string => JSON.stringify({ ...facts, git_id: gitDirIdentity(gitDir) });
 
 /** A path as the file system names it, so a pane's folder and git's checkout list compare; as given when it is gone. */
 export function realPath(path: string): string {

@@ -8,7 +8,7 @@ import { SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, leaves, neighbour, OVIS_LAYOUT_DOC, type OvisLayout, type PaneDirection, resizeLeaf, setRatio, splitLeaf, swapLeaves, type TabLayout } from "./layout-doc.ts";
 import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, keptLayout, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
-import { checkoutHolding, defaultCheckoutPath, factsOf, git, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
+import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/client.ts";
 
@@ -959,8 +959,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const path = typeof params["path"] === "string" && params["path"] !== "" ? params["path"] : defaultCheckoutPath(repository.repo_name, branch);
     // a repository with no commit has nothing to start from: newer git would make an orphan branch, herdr refuses in git's words
     if (!base && !(await git(repository.repo_root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).ok) throw new AdapterError("worktree_create_failed", "fatal: invalid reference: HEAD");
-    // an existing branch is checked out as it is; a new one starts from `base`, or from HEAD
-    const existing = !base && (await git(repository.repo_root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
+    // an existing branch is checked out as it is, whatever base was asked (as herdr and the dialog say); a new one starts from `base`, or from HEAD
+    const existing = (await git(repository.repo_root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
     const added = await git(repository.repo_root, existing ? ["worktree", "add", "--", path, branch] : ["worktree", "add", "-b", branch, "--", path, ...(base ? [base] : [])]);
     if (!added.ok) throw new AdapterError("worktree_create_failed", added.stderr || `git could not add a worktree at ${path}`);
     const checkout = realPath(path);
@@ -996,7 +996,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     const opened = await openCheckout(shown, repository, checkout.path, textOf(params, "label") ?? (checkout.branch ? worktreeFolder(checkout.branch) : basename(checkout.path)));
     return { type: "worktree_opened", ...opened, worktree: infoOf(repository, checkout, new Map([[checkout.path, opened.workspace.workspace_id]])), already_open: false };
   });
-  methods["worktree.remove"] = async (params) => {
+  methods["worktree.remove"] = (params) => oneAtATime(async () => {
     const workspaceId = paneIdOf(params, "workspace_id");
     const shown = await ownLayout();
     const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
@@ -1005,12 +1005,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
     // the folder the label names must still be a linked checkout of that repository, not one moved away or replaced by another
     const now = await repositoryOf(facts.checkout_path).catch(() => null);
-    let gitDir: string | null = null;
+    let gitId: string | null = null;
     for (const pane of shown.panes.filter((candidate) => candidate.workspace_id === workspaceId)) {
-      gitDir = labeledWorktree((await terminal(pane.pane_id)).labels)?.gitDir ?? null;
-      if (gitDir) break;
+      gitId = labeledWorktree((await terminal(pane.pane_id)).labels)?.gitId ?? null;
+      if (gitId) break;
     }
-    if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitDir !== null && now.git_dir !== gitDir)) {
+    if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitId !== null && gitDirIdentity(now.git_dir) !== gitId)) {
       throw new AdapterError("worktree_not_found", `${facts.checkout_path} is no longer a worktree of ${facts.repo_name}`);
     }
     const force = params["force"] === true;
@@ -1019,7 +1019,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     if (!removed.ok) throw new AdapterError(/contains modified or untracked files/u.test(removed.stderr) ? "dirty_worktree_requires_force" : "worktree_remove_failed", removed.stderr || `git could not remove ${facts.checkout_path}`);
     await end(shown.panes.filter((pane) => pane.workspace_id === workspaceId).map((pane) => pane.pane_id));
     return { type: "worktree_removed", workspace_id: workspaceId, path: facts.checkout_path, forced: force };
-  };
+  });
 
   return async (request) => {
     const method = methods[request.method];
