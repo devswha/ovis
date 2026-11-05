@@ -58,9 +58,9 @@ export class RepoDiffError extends Error {
   constructor(readonly code: string, message: string, readonly status: number) { super(message); }
 }
 
-interface GitRun { code: number | null; stdout: string; overflow: boolean }
+export interface GitRun { code: number | null; stdout: string; overflow: boolean }
 
-interface Context {
+export interface Context {
   git: string;
   deadlineMs: number;
   maxFiles: number;
@@ -69,7 +69,7 @@ interface Context {
   maxRefs: number;
 }
 
-function contextOf(options: RepoDiffOptions): Context {
+export function contextOf(options: RepoDiffOptions): Context {
   return {
     git: options.git ?? "git",
     deadlineMs: options.deadlineMs ?? REPO_DIFF_DEADLINE_MS,
@@ -91,7 +91,7 @@ function gitEnvironment(): Record<string, string> {
 }
 
 /** One git process in `cwd`: stdout up to `maxBytes`, killed at the deadline or once it prints more. */
-async function runGit(context: Context, cwd: string, args: string[], maxBytes: number): Promise<GitRun> {
+export async function runGit(context: Context, cwd: string, args: string[], maxBytes: number): Promise<GitRun> {
   // an empty core.fsmonitor turns the hook off in every git: before 2.36, `false` names a program to run
   const argv = [context.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "core.fsmonitor=", "-c", "color.ui=never", "-C", cwd, ...args];
   let proc: Bun.Subprocess<"ignore", "pipe", "ignore">;
@@ -133,7 +133,7 @@ async function runGit(context: Context, cwd: string, args: string[], maxBytes: n
   }
 }
 
-async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepository> {
+export async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepository> {
   const top = await runGit(context, cwd, ["rev-parse", "--show-toplevel"], 16 * 1024);
   const root = top.stdout.replace(/\r?\n$/, "");
   if (top.code !== 0 || root === "") throw new RepoDiffError("not_a_repository", "that folder is not inside a git working tree", 409);
@@ -148,10 +148,15 @@ async function repositoryOf(context: Context, cwd: string): Promise<RepoDiffRepo
 
 const REVISION = /^[A-Za-z0-9][A-Za-z0-9._/~^@{}-]{0,199}$/;
 /** A full git object id: 40 hex digits (SHA-1) or 64 (SHA-256), nothing between. */
-const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+export const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/**
+ * The tree with nothing in it, in each object format git has (SHA-1, SHA-256): what a root commit's
+ * changes are read against. git knows it in every repository of its format without storing it.
+ */
+export const EMPTY_TREE_OIDS: readonly string[] = ["4b825dc642cb6eb9a060e54bf8d69288fbee4904", "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"];
 /** A branch as the picker offers it, by its full name: one that `git check-ref-format` accepts names that ref and nothing else. */
 const FULL_REFNAME = /^refs\/(?:heads|remotes)\/[^\0-\x1f\x7f]+$/;
-const MAX_REFNAME_BYTES = 1_024;
+export const MAX_REFNAME_BYTES = 1_024;
 
 /**
  * A revision that names one commit and is no option, range or path: a short expression such as
@@ -159,18 +164,26 @@ const MAX_REFNAME_BYTES = 1_024;
  * any length up to the cap) a short expression does not allow; git's own refname rules hold it to
  * a name, so `..`, `@{`, `~`, `^`, `:` and spaces stay refused.
  */
-async function checkRevision(context: Context, root: string, name: string, value: string): Promise<void> {
+export async function checkRevision(context: Context, root: string, name: string, value: string): Promise<void> {
   if (REVISION.test(value) && !value.includes("..")) return;
   if (FULL_REFNAME.test(value) && Buffer.byteLength(value) <= MAX_REFNAME_BYTES && (await runGit(context, root, ["check-ref-format", value], 1024)).code === 0) return;
   throw new RepoDiffError("invalid_revision", `${name} must name one commit: a hash, a branch, a tag or an expression such as HEAD~1`, 400);
 }
 
-async function resolveRevision(context: Context, root: string, name: string, value: string): Promise<string> {
+export async function resolveRevision(context: Context, root: string, name: string, value: string): Promise<string> {
   await checkRevision(context, root, name, value);
   const parsed = await runGit(context, root, ["rev-parse", "--quiet", "--verify", "--end-of-options", `${value}^{commit}`], 1024);
   const oid = parsed.stdout.trim();
   if (parsed.code !== 0 || !OID.test(oid)) throw new RepoDiffError("revision_not_found", `${name} names no commit in this repository`, 404);
   return oid;
+}
+
+/** A commit scope's base: one commit, or the empty tree of this repository's format, which a root commit is read against. */
+async function resolveBase(context: Context, root: string, value: string): Promise<string> {
+  if (!EMPTY_TREE_OIDS.includes(value)) return resolveRevision(context, root, "base", value);
+  const tree = await runGit(context, root, ["rev-parse", "--quiet", "--verify", "--end-of-options", `${value}^{tree}`], 1024);
+  if (tree.code !== 0 || tree.stdout.trim() !== value) throw new RepoDiffError("revision_not_found", "base names no commit in this repository", 404);
+  return value;
 }
 
 /** The one merge base of two commits; none when their histories are unrelated. */
@@ -236,7 +249,7 @@ async function comparisonOf(context: Context, repository: RepoDiffRepository, pa
   const root = repository.root;
   if (scope === "commit") {
     if (base === null) throw new RepoDiffError("invalid_revision", "scope=commit needs a base revision", 400);
-    const [from, to] = await Promise.all([resolveRevision(context, root, "base", base), resolveRevision(context, root, "head", head ?? "HEAD")]);
+    const [from, to] = await Promise.all([resolveBase(context, root, base), resolveRevision(context, root, "head", head ?? "HEAD")]);
     return { scope, base: from, head: to, comparison: null, args: [from, to] };
   }
   if (head !== null) throw new RepoDiffError("invalid_revision", "scope=branch compares the working tree; head applies to scope=commit only", 400);
