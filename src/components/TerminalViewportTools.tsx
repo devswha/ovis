@@ -268,14 +268,12 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
   return <div ref={layer} className="terminal-viewport-tools" aria-hidden={!enabled || undefined}>
     {enabled && search && box && hits.map((hit, index) => <span key={index} className={`terminal-find-hit${hit.current ? " is-current" : ""}`} aria-hidden="true"
       style={{ left: box.left + hit.col * box.width / box.cols, top: box.top + hit.row * box.height / box.rows, width: hit.width * box.width / box.cols, height: box.height / box.rows }} />)}
-    {enabled && box && (localBack || (interactive && validScroll(scroll) && scroll.offset_from_bottom > 0)) && <button type="button" className="btn terminal-jump-bottom"
+    {enabled && interactive && box && (localBack || (validScroll(scroll) && scroll.offset_from_bottom > 0)) && <button type="button" className="btn terminal-jump-bottom"
       aria-label={t("Jump to bottom")} title={t("Jump to bottom")} style={{ left: box.anchorX, top: box.anchorY }}
-      onPointerDown={(event) => event.preventDefault()} onClick={(event) => {
-        // the browser's own history scrolls here; herdr's viewport (shared with its other clients) only when a writer moved it
+      onPointerDown={(event) => event.preventDefault()} onClick={() => {
+        // the browser's own history scrolls here; herdr's viewport (shared with its other clients) only when it is scrolled
         if (localBack) terminal?.scrollToBottom();
-        if (interactive && validScroll(scroll) && scroll.offset_from_bottom > 0) writeRef.current(0);
-        // a keyboard press leaves focus on a button about to go: the terminal takes it back (a pointer never moved it)
-        if (document.activeElement === event.currentTarget) terminal?.focus();
+        if (validScroll(scroll) && scroll.offset_from_bottom > 0) writeRef.current(0);
       }}><ArrowDown aria-hidden="true" /></button>}
   </div>;
 }

@@ -170,8 +170,12 @@ try {
             await page.mouse.wheel(0, -600);
             await jump.waitFor();
             await jump.focus();
+            const sentBefore = (await inputs(page)).length;
             await page.keyboard.press("Enter");
             await jump.waitFor({ state: "detached" });
+            // it only scrolls: focus is not handed to the program, and the key reaches nobody
+            assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false), false, "core: the press leaves the terminal unfocused");
+            assert.equal((await inputs(page)).length, sentBefore, "core: the press types nothing");
             // back to the bottom: the newest rows again
             await page.mouse.wheel(0, 20000);
             await page.waitForFunction(() => {

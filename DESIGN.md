@@ -3475,9 +3475,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--radius-pill`, `--shadow-pop`), keeps focus in the terminal, and is hidden at the bottom, in
   read-only views and while Find owns the viewport. A grown touch input line floats over it.
   On a herdr-core server (`terminal-history`) xterm keeps the history itself, so the same
-  button shows whenever xterm's own view is above its bottom, read-only views included (that
-  scroll is this browser's alone), and takes it back with xterm's scrollToBottom; pressed from
-  the keyboard it hands focus back to the terminal. This follows VS Code's integrated terminal,
+  button shows whenever xterm's own view is above its bottom, under the same conditions, and
+  takes it back with xterm's scrollToBottom. This follows VS Code's integrated terminal,
   whose history scrolls locally and returns to the bottom on demand.
 - Mod+Shift+PageUp/PageDown pages the selected pane only, preserving chat composer focus and
   selection. Chat moves instantly by its viewport minus one prose line;
