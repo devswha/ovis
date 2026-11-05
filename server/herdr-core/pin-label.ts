@@ -86,6 +86,21 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     agreed.set(agreedKey(address), pinned);
     saveAgreed();
   };
+  /**
+   * A write of ours landed: both sides held `pinned` then. Once the agent quit, its queued writes never
+   * start and the list may prune its row, so Ovis's newest choice, as the mark against the agreement
+   * last told it while the agent ran, stays pending when it differs from what landed.
+   */
+  const landed = (address: string, pinned: boolean) => {
+    const key = agreedKey(address);
+    const choice = agents.has(address) || !agreed.has(key) ? pinned : agreed.get(key) !== pending.has(key);
+    setAgreed(address, pinned);
+    if (choice === pinned) return;
+    pending.add(key);
+    // this mark is no longer one a waiting write may still settle: saved now
+    sending.delete(key);
+    saveAgreed();
+  };
   /** Ovis's list made to say `pinned`; false when it cannot hold another pin */
   const list = (address: string, pinned: boolean): boolean => {
     const pins = store.get().pins;
@@ -151,7 +166,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         // once its event came, that event and any after it (the app's) already say what the label is
         if (!echo.heard) {
           live.set(address, pinned);
-          setAgreed(address, pinned);
+          landed(address, pinned);
         }
         clearTimeout(retries.get(address)?.timer);
         retries.delete(address);
@@ -183,7 +198,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         const echo = queued.shift()!;
         echo.heard = true;
         // an answered write already agreed, and a later write of ours may have agreed past it since
-        if (!echo.answered && agents.has(address)) setAgreed(address, labelPinned);
+        if (!echo.answered && (agents.has(address) || agreed.has(agreedKey(address)))) landed(address, labelPinned);
         return;
       }
       // a label neither of our writes set: the app's, and what we sent no longer tells its order
@@ -200,7 +215,9 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     // back from a shell, Ovis's list may have pruned the row: only a pin there tells Ovis's side,
     // unless Ovis changed it itself and its label write has not landed
     const shell = shells.has(agreedKey(address)) && labelPinned === base && !pending.has(agreedKey(address));
-    const wanted = base === undefined || leftOut.has(address) || shell ? labelPinned || ovis : labelPinned !== base ? labelPinned : ovis;
+    // Ovis's change not landed yet is the other way from the agreement, even past a row the list pruned
+    const mine = pending.has(agreedKey(address)) ? !base : ovis;
+    const wanted = base === undefined || leftOut.has(address) || shell ? labelPinned || ovis : labelPinned !== base ? labelPinned : mine;
     if (ovis !== wanted && !list(address, wanted)) {
       refused.add(address);
       return;
