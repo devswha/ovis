@@ -25,6 +25,9 @@ function installGhosttyFixture(): void {
   const first = "\x1b[H\x1b[2JBEFORE-LOAD\r\n";
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
+  // a server lists its features before any pane's bytes; the demo lists them in its snapshot, after the attach
+  let featured = false;
+  let waiting: (() => void) | null = null;
   const state: GhosttyFixture = {
     inputs: [],
     print: (data) => { for (const socket of sockets) if (pane) socket.push({ type: "pty-data", fixture: "ghostty", pane_id: pane, data }); },
@@ -44,6 +47,11 @@ function installGhosttyFixture(): void {
         const { fixture: _, ...output } = frame;
         push(output);
       } else push(frame);
+      if (frame.type === "snapshot" || frame.type === "features") {
+        featured = true;
+        waiting?.();
+        waiting = null;
+      }
     };
     const send = socket.send.bind(socket);
     socket.send = (raw) => {
@@ -52,7 +60,9 @@ function installGhosttyFixture(): void {
       send(raw);
       if (frame.type === "attach" && frame.pane_id) {
         pane = frame.pane_id;
-        socket.push({ type: "pty-data", fixture: "ghostty", pane_id: pane, data: first });
+        const paint = () => socket.push({ type: "pty-data", fixture: "ghostty", pane_id: frame.pane_id, data: first });
+        if (featured) paint();
+        else waiting = paint;
       }
     };
     return socket;
