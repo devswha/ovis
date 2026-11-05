@@ -399,8 +399,9 @@ export function App() {
   const crumb = selectedPane && selectedTitle !== null
     ? headerCrumb({ machine: selectedMachine?.name ?? selectedMachineId, machineCount: machines.length, workspace: selectedWorkspace?.label ?? selectedPane.workspace_id, title: selectedTitle, cwd: selectedPane.cwd })
     : null;
-  // the selected PC's sessions as its sidebar draws them, and the tab's place in its strip
-  const rosterPanesShown = snapshot?.panes ?? [];
+  // the selected PC's sessions as its sidebar draws them, and the tab's place in its strip. A PC that
+  // is not connected has only a cached roster, which its sidebar greys out: the header counts none of it
+  const rosterPanesShown = selectedMachine?.state === "connected" ? snapshot?.panes ?? [] : [];
   const shownStatus = (pane: (typeof rosterPanesShown)[number]) => activity.status(selectedMachineId, pane);
   const sessionTally = sessionCounts(rosterPanesShown, shownStatus);
   const nextWaiting = nextWaitingPane(rosterPanesShown, shownStatus, selectedPaneId);

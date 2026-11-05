@@ -28,8 +28,8 @@ it("draws a figure per state that has any, the waiting one a button that opens t
   expect(draw({ working: 0, waiting: 0, done: 1 }, null)).not.toContain("is-working");
 });
 
-it("keeps the waiting figure a plain figure when only the selected session waits", () => {
+it("keeps the waiting button, with nothing to open, when only the selected session waits", () => {
   const markup = draw({ working: 0, waiting: 1, done: 0 }, null);
-  expect(markup).not.toContain("<button");
-  expect(markup).toContain("1 waiting for you");
+  expect(markup).toContain('aria-disabled="true"');
+  expect(markup).toContain('aria-label="1 waiting for you"');
 });

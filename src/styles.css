@@ -2139,8 +2139,13 @@ button.header-session-count {
   cursor: pointer;
 }
 
+/* with no other session waiting it stays a button for the keyboard's sake, but nothing to press */
+button.header-session-count[aria-disabled="true"] {
+  cursor: default;
+}
+
 @media (hover: hover) {
-  button.header-session-count:hover {
+  button.header-session-count:not([aria-disabled="true"]):hover {
     background: color-mix(in srgb, var(--status-blocked) 24%, transparent);
   }
 }

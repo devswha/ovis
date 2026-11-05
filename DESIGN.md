@@ -2046,9 +2046,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the sidebar). Tabular figures, so a count that changes moves nothing; nothing at all while every
   session rests. The waiting figure is the one button: tinted with its state, it opens the next
   waiting session after the selected one in the roster's order, wrapping, never the selected one
-  (then it is a plain figure). It follows Slack's "next unread" rather than a coding-agent app,
+  (then it stays a button, `aria-disabled`, so a keyboard's focus is not dropped). It follows Slack's "next unread" rather than a coding-agent app,
   because the question on a phone is the same: which conversation needs me now. On a phone its
   target reaches `--touch-target-header` through an invisible expander, as the lens buttons do.
+  A PC that is not connected counts nothing: its cached roster is greyed out in the sidebar.
   After the title, `--text-dim` and kept whole, the selected tab's place in its workspace's strip
   (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more. The title is the
   one item that shortens. At `<=480px`, while a session waits, the waiting button stands for the
