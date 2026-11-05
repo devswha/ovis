@@ -1,7 +1,8 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { PI_ASK_BRIDGE_DIRECTORY, type PiAskBridgeState } from "../shared/pi-ask-bridge.ts";
 import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
 import { processEnviron } from "./omo.ts";
@@ -86,6 +87,51 @@ function piProcessPaths(environ: readonly string[], home: string, cwd: string) {
 }
 
 /**
+ * Only a socket this user owns, in a directory only this user can enter, speaks for a pi: a
+ * PI_CODING_AGENT_DIR another user can write to must not let them show a card, read its answer
+ * or name a session.
+ */
+export function ownSocket(socket: string): boolean {
+  const uid = process.getuid?.();
+  if (uid === undefined) return false;
+  try {
+    const directory = lstatSync(dirname(socket));
+    const file = lstatSync(socket);
+    return directory.isDirectory() && directory.uid === uid && (directory.mode & 0o077) === 0 && file.isSocket() && file.uid === uid;
+  } catch { return false; }
+}
+
+const STATE_READ_MS = 1_000;
+
+/** What the web UI's pi extension (integrations/pi-ask.ts) says on its socket, or null. */
+export async function bridgeState(socket: string, signal?: AbortSignal): Promise<PiAskBridgeState | null> {
+  try {
+    const timeout = AbortSignal.timeout(STATE_READ_MS);
+    const response = await fetch("http://localhost/v1/state", { unix: socket, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    if (!response.ok) return null;
+    const state = await response.json() as PiAskBridgeState;
+    return typeof state === "object" && state !== null && state.version === 1 && Array.isArray(state.flows) ? state : null;
+  } catch {
+    return null; // no extension listening (a socket a crashed pi left), or too slow: the terminal
+  }
+}
+
+/**
+ * The session file the pane's one pi process names through the web UI's extension, or null: herdr-core
+ * runs no herdr pi integration, so its agent.get names no session (#2935). Only that process's own
+ * socket, in its own agent directory, answering for its pid, counts; the store checks still follow.
+ */
+async function extensionSessionFile(pi: VerifiedPiProcess, environ: readonly string[] | null, home: string): Promise<string | null> {
+  if (process.platform === "win32") return null;
+  const agentDir = environ === null ? piAgentDir() : piProcessPaths(environ, home, pi.cwd ?? "").agentDir;
+  if (agentDir === null) return null;
+  const socket = join(agentDir, PI_ASK_BRIDGE_DIRECTORY, `${pi.pid}.sock`);
+  if (!ownSocket(socket)) return null;
+  const state = await bridgeState(socket);
+  return state?.pid === pi.pid && typeof state.sessionFile === "string" && state.sessionFile.length > 0 ? state.sessionFile : null;
+}
+
+/**
  * Resolve only stores the pane's Pi process identifies; an unseen CLI override is unsafe. The
  * agent directory comes with it: pi reads its model catalogs from there, not from the bridge's.
  */
@@ -140,7 +186,8 @@ export async function piPaneAgentDirs(
 
 /**
  * pi's transcript for a pane, or the session it has not written yet. The agent report names
- * the active session; Linux process metadata ties a custom store to the Pi process in this pane.
+ * the active session, else (no report at all, as on herdr-core) the pane's one pi process through
+ * the web UI's extension; Linux process metadata ties a custom store to the Pi process in this pane.
  * Where the OS cannot expose that process environment, only the bridge's default store is used.
  *
  * A written session comes with the agent directory of the same process, where pi keeps the
@@ -157,8 +204,10 @@ export async function piTranscriptPath(
   options: PiTranscriptOptions = {},
 ): Promise<{ path: string; agentDir: string | null } | { unwritten: { id: string; path: string } } | null> {
   const agent = options.agent === undefined ? await agentGet(paneId).catch(() => null) : options.agent;
-  const session = agent?.agent_session;
-  if (agent?.agent !== "pi" || session?.agent !== "pi" || session.source !== "herdr:pi" || session.kind !== "path" || typeof session.value !== "string") return null;
+  if (agent?.agent !== "pi") return null;
+  const session = agent.agent_session;
+  const absent = session === undefined || session === null;
+  if (!absent && (session.agent !== "pi" || session.source !== "herdr:pi" || session.kind !== "path" || typeof session.value !== "string")) return null;
 
   const info = options.processes === undefined
     ? await paneProcessInfo(paneId).catch(() => undefined)
@@ -174,6 +223,10 @@ export async function piTranscriptPath(
       if (isPiProcess(argv)) piProcesses.push({ ...entry, pid: entry.pid, argv });
     }
   }
+  const reported = absent
+    ? piProcesses.length === 1 ? await extensionSessionFile(piProcesses[0]!, environOf(piProcesses[0]!.pid), home) : null
+    : session.value;
+  if (reported === null) return null;
 
   const processStores = new Set<string>();
   /** each process's agent directory, by its canonical path */
@@ -202,12 +255,12 @@ export async function piTranscriptPath(
   }
   // Preserve default-store behavior on platforms where process_info names only the shell or
   // process environments cannot be read. A custom store is never guessed in those cases.
-  const matches = [...canonicalStores].filter((store) => piTranscriptInStore(session.value, store) !== null || unwrittenSession(session.value, store) !== null);
+  const matches = [...canonicalStores].filter((store) => piTranscriptInStore(reported, store) !== null || unwrittenSession(reported, store) !== null);
   if (matches.length !== 1) return null;
-  const path = piTranscriptInStore(session.value, matches[0]!);
+  const path = piTranscriptInStore(reported, matches[0]!);
   const named = piProcesses.length === 0 ? UNREAD : agentDirs.size === 1 ? [...agentDirs.values()][0] ?? null : null;
   const agentDir = named === UNREAD ? bridgeAgentDirOwning(matches[0]!) : named;
   if (path !== null) return { path, agentDir };
-  const unwritten = unwrittenSession(session.value, matches[0]!);
+  const unwritten = unwrittenSession(reported, matches[0]!);
   return unwritten === null ? null : { unwritten };
 }
