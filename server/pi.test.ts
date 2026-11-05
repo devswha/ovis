@@ -699,20 +699,24 @@ it.skipIf(process.platform === "win32")("offers the commands pi's extensions reg
     { name: "team", description: "Start specialist agents", scope: "user", origin: "top-level" },
     { name: "ponytail", scope: "user", origin: "package" },
     { name: "deploy", description: "Deploy", scope: "project", origin: "top-level" },
-    // pi's own command wins when typed, and its menu leaves these out
+    // pi's own command wins when typed, and its menu leaves it out; a name only like one stays
     { name: "model", scope: "user", origin: "top-level" },
     { name: "model:2", scope: "user", origin: "top-level" },
     { name: "", scope: "user", origin: "top-level" },
     { name: "two words", scope: "user", origin: "top-level" },
   ] };
   const server = Bun.serve({ unix: join(sockets, "840.sock"), fetch: (request) => new URL(request.url).pathname === "/v1/commands" ? Response.json(answer, { status }) : new Response(null, { status: 404 }) });
-  const options = { processes: [{ pid: 840, argv: ["/usr/bin/pi"] }], environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
+  const processes = [{ pid: 840, argv: ["/usr/bin/pi"] }];
+  const options = { processes, processesAfter: async () => processes, environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
   try {
     expect(await piExtensionCommands("pane", undefined, options)).toEqual([
       { name: "team", description: "Start specialist agents", source: "user" },
       { name: "ponytail", description: "", source: "plugin" },
       { name: "deploy", description: "Deploy", source: "project" },
+      { name: "model:2", description: "", source: "user" },
     ]);
+    // a pi that left the front while its extension answered no longer speaks for the pane
+    expect(await piExtensionCommands("pane", undefined, { ...options, processesAfter: async () => [{ pid: 843, argv: ["bash"] }] })).toBeNull();
     // pi could not say, or the socket answers for another pid
     answer = { version: 1, pid: 840, commands: null };
     expect(await piExtensionCommands("pane", undefined, options)).toBeNull();
