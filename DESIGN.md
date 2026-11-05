@@ -2603,7 +2603,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not draw them as turns: an OMP pane's composer offers a **Side conversations** chip beside the
   background tasks chip, in its look (`.bg-tasks-toggle`, the messages glyph, the count; a narrow
   card keeps the glyph and the number). It is off by default (Settings → Chat → Composer → Side
-  conversations chip, the device setting `composerBtw`), and shows only once the session saved a
+  conversations chip (experimental), the device setting `composerBtw`), and shows only once the session saved a
   topic.
 - It opens one list above the card, newest topic first: each row is a disclosure (a chevron, OMP's
   title or else the first question, then a dim `when · N follow-ups · state` line, the state only
@@ -3332,7 +3332,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (panes open in, show thinking, chat width, chat font size and family; then
   **Composer**: Enter sends, send queued messages automatically, in a mouse-driven window wider than
   640px the New tab button (off by default), the Artifacts chip (off by default, the device setting
-  `composerArtifacts`), the Side conversations chip (off by default, the device setting
+  `composerArtifacts`), the Side conversations chip (experimental, off by default, the device setting
   `composerBtw`), the Paste and send button (off by default, the device setting
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
