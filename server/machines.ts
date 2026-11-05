@@ -1284,7 +1284,11 @@ export class MachineManager {
     const generation = runtime.generation;
     try {
       // a PC added through the relay has no bridge identity: its own health says what runs its terminals
-      if (runtime.tunnel && !runtime.machine.herdr) await this.readRelayHerdr(runtime, endpoint, generation);
+      if (runtime.tunnel && !runtime.machine.herdr) {
+        await this.readRelayHerdr(runtime, endpoint, generation);
+        // a reconnect while it was read: its queued load runs from the finally below, on the new endpoint
+        if (generation !== runtime.generation || this.stopped) return;
+      }
       do {
         runtime.refreshQueued = false;
         const revision = runtime.snapshotRevision;

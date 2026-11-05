@@ -241,7 +241,7 @@ export function readInstalledNotes(value: unknown): InstalledNotes {
 }
 
 /** Why a server the desktop app runs (OVIS_DESKTOP_APP) offers no update here: the app updates itself and its server with it. */
-export const DESKTOP_APP_UPDATES = "The Ovis app updates itself: it downloads a new version in the background, then Restart to Update in its tray menu installs it.";
+export const DESKTOP_APP_UPDATES = "This server is part of the Ovis app, which updates them together: updates come with the app, not from here.";
 
 export function unmanagedUpdateStatus(desktopApp = false): UpdateStatus {
   return {
