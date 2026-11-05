@@ -1,5 +1,6 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
+import { SETTINGS_COMPOSER_JA } from "./i18n/settings-composer.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
 import { CHAT_JA } from "./i18n/chat.ja.ts";
@@ -38,6 +39,12 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "{provider} でサインイン中",
   "Signing in…": "サインイン中…",
   "The sign-in did not finish. Try again.": "サインインが完了しませんでした。もう一度お試しください。",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub を開いてこのコードを入力してください。このページで自分で始めたサインインのときだけ入力してください。",
+  "Waiting for GitHub…": "GitHub の承認を待っています…",
+  "Open GitHub": "GitHub を開く",
+  "GitHub refused the sign-in.": "GitHub でサインインが拒否されました。",
+  "The code expired. Sign in again to get a new one.": "コードの有効期限が切れました。もう一度サインインして新しいコードを受け取ってください。",
+  "This account service can't sign in a browser on this PC yet.": "このアカウントサービスは、この PC のブラウザーでのサインインにまだ対応していません。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
   "Add {device}?": "{device} を追加しますか？",
@@ -233,6 +240,7 @@ const BASE: Record<string, string> = {
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
+  "Show {name}": "{name} を表示",
   "Check again": "再確認",
   "Setup guide": "セットアップガイド",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
@@ -412,12 +420,17 @@ const BASE: Record<string, string> = {
   "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "このアプリがペアリングできる PC からの応答ではありません。PC で新しいコードを表示するか、QR コードを読み取ってください。",
   "The relay could not be reached. Check this device's connection, then try again.": "リレーに接続できませんでした。このデバイスの接続を確認してから、もう一度お試しください。",
   "Reset": "リセット",
+  "Group name": "グループ名",
+  "Remove group {group}": "グループ {group} を削除",
+  "New group": "新しいグループ",
+  "Add group": "グループを追加",
+  "No group": "グループなし",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA },
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,

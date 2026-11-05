@@ -1,5 +1,6 @@
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
+import { SETTINGS_COMPOSER_KO } from "./i18n/settings-composer.ko.ts";
 import { TERMINAL_KO } from "./i18n/terminal.ko.ts";
 import { COMPOSER_KO } from "./i18n/composer.ko.ts";
 import { CHAT_KO } from "./i18n/chat.ko.ts";
@@ -36,6 +37,12 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "{provider}로 로그인함",
   "Signing in…": "로그인하는 중…",
   "The sign-in did not finish. Try again.": "로그인을 끝내지 못했습니다. 다시 시도하세요.",
+  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub를 열고 이 코드를 입력하세요. 이 페이지에서 직접 시작한 로그인일 때만 입력하세요.",
+  "Waiting for GitHub…": "GitHub 승인을 기다리는 중…",
+  "Open GitHub": "GitHub 열기",
+  "GitHub refused the sign-in.": "GitHub에서 로그인을 거절했습니다.",
+  "The code expired. Sign in again to get a new one.": "코드가 만료되었습니다. 다시 로그인해 새 코드를 받으세요.",
+  "This account service can't sign in a browser on this PC yet.": "이 계정 서비스는 아직 이 PC의 브라우저 로그인을 지원하지 않습니다.",
   "Your sign-in ended. Sign in again to see every PC of your account.": "로그인이 끝났습니다. 계정의 PC를 모두 보려면 다시 로그인하세요.",
   "The account service could not be reached. The PCs this device is paired with still work.": "계정 서비스에 연결할 수 없습니다. 이 기기와 연결된 PC는 그대로 쓸 수 있습니다.",
   "Add {device}?": "{device} 추가할까요?",
@@ -231,6 +238,7 @@ const BASE: Record<string, string> = {
   "Submit": "제출",
   "Recommended": "추천",
   "Agents": "에이전트",
+  "Show {name}": "{name} 표시",
   "Check again": "다시 확인",
   "Setup guide": "설정 안내",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
@@ -410,12 +418,17 @@ const BASE: Record<string, string> = {
   "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "이 앱이 페어링할 수 있는 PC의 응답이 아닙니다. PC에서 새 코드를 띄우거나 QR 코드를 스캔하세요.",
   "The relay could not be reached. Check this device's connection, then try again.": "릴레이에 연결할 수 없습니다. 이 기기의 연결을 확인한 뒤 다시 시도하세요.",
   "Reset": "재설정",
+  "Group name": "그룹 이름",
+  "Remove group {group}": "{group} 그룹 삭제",
+  "New group": "새 그룹",
+  "Add group": "그룹 추가",
+  "No group": "그룹 없음",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const KO_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO },
+  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO },
   terminal: TERMINAL_KO,
   composer: COMPOSER_KO,
   chat: CHAT_KO,

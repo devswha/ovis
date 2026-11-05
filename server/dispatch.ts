@@ -20,6 +20,9 @@ import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
 import { handlePlanRequest } from "./plan-routes.ts";
 import { handleArtifactsRequest } from "./claude-artifacts.ts";
+import { handleBtwRequest } from "./omp-btw.ts";
+import { paneTranscript } from "./conversation.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 import type { ShellAgentLocator } from "./shell-agent.ts";
 import { handleAgentsRequest } from "./agents-routes.ts";
 import type { AgentDetector } from "./agent-catalog-detect.ts";
@@ -44,6 +47,7 @@ import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
 import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
+import { handleSystemRequest, type SystemSampler } from "./system-stats.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
@@ -92,6 +96,7 @@ export interface RequestServices {
   readonly usageLogin: UsageLoginService;
   readonly usage: UsageService;
   readonly usageAccounts: UsageAccountList;
+  readonly systemSampler: SystemSampler | null;
   readonly voice: VoiceService;
   readonly browserSnapshot: <S extends SessionSnapshot>(snapshot: S) => S;
   readonly core: ReturnType<typeof createCore>;
@@ -140,7 +145,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // custom header (update-api.ts), and whoever holds the token already drives every pane here. Only those two
   // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
   const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
-  const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
+  const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || (pathname === "/api/system" && request.method === "GET") || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
   const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
   const loopback = ip !== null && isLoopbackAddress(ip.address);
   const forwarded = relayPeer === undefined && cameThroughProxy(request.headers);
@@ -461,6 +466,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // the finishes read in some browser of this server; a watching device reads them and cannot add to them (above)
   if (pathname === "/api/seen") { setRequestRoute(pathname); return handleSeenRequest(request, seen); }
 
+  if (pathname === "/api/system") { setRequestRoute(pathname); return handleSystemRequest(request, ctx.services.systemSampler); }
   if (pathname === "/api/usage") { setRequestRoute(pathname); return handleUsageRequest(request, url, ctx.services.usageAccounts); }
   if (pathname === "/api/usage/accounts") { setRequestRoute(pathname); return ctx.services.usageAccounts.handle(request); }
   // on or off only: the server decides what is installed and where (server/statusline-install.ts)
@@ -622,6 +628,15 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   const artifactsResponse = await handleArtifactsRequest(request, url, pathname, { claudeAgents });
   if (artifactsResponse) return artifactsResponse;
+
+  // the pane's transcript as its conversation finds it: a pane that runs no OMP session, or one not written yet, has none
+  const btwResponse = await handleBtwRequest(request, url, pathname, {
+    transcript: (paneId) => paneTranscript(paneId, options.codexHome, undefined, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData).then(
+      (found) => found.source === "omp-transcript" ? found.path : null,
+      (error: unknown) => { if (error instanceof ConversationUnavailable) return null; throw error; },
+    ),
+  });
+  if (btwResponse) return btwResponse;
 
   if (pathname === SESSION_HISTORY_PATH) {
     setRequestRoute(SESSION_HISTORY_PATH);

@@ -12,7 +12,7 @@ import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, saveSettings } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, saveSettings } from "./settings.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
 
@@ -126,6 +126,19 @@ describe("saved theme migration", () => {
     expect(loadSettings().sidebarFilter).toBe(true);
   });
 
+  it("keeps the PC load choice in its own key, out of an old tab's whole-record save, and unchosen until chosen", () => {
+    expect(loadSettings().pcLoad).toBeNull();
+    saveSettings(sanitizeSettings({ pcLoad: false }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("pcLoad");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().pcLoad).toBe(false);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), pcLoad: null });
+    expect(loadSettings().pcLoad).toBeNull();
+    records.set("ovis:pc-load", "not json");
+    expect(loadSettings().pcLoad).toBeNull();
+  });
+
   it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {
     expect(loadSettings()).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
     saveSettings(sanitizeSettings({ agentGroups: true, agentGroupSort: "name" }));
@@ -199,19 +212,6 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalImages).toBe(false);
   });
 
-  it("keeps Draw with libghostty in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().terminalGhostty).toBe(true);
-    saveSettings(sanitizeSettings({ terminalGhostty: false }));
-    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalGhostty");
-    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
-    expect(loadSettings().terminalGhostty).toBe(false);
-    expect(loadSettings().terminalFontSize).toBe(18);
-    saveSettings({ ...loadSettings(), terminalGhostty: true });
-    expect(loadSettings().terminalGhostty).toBe(true);
-    records.set("ovis:terminal-ghostty", "\"false\"");
-    expect(loadSettings().terminalGhostty).toBe(true);
-  });
-
   it("keeps the terminal's Attach files button in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().terminalAttachButton).toBe(false);
     saveSettings(sanitizeSettings({ terminalAttachButton: true }));
@@ -222,6 +222,18 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalAttachButton).toBe(false);
     records.set("ovis:terminal-attach-button", "\"true\"");
     expect(loadSettings().terminalAttachButton).toBe(false);
+  });
+
+  it("keeps Fold the key bar in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    saveSettings(sanitizeSettings({ terminalFoldKeyBar: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalFoldKeyBar");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalFoldKeyBar).toBe(true);
+    saveSettings({ ...loadSettings(), terminalFoldKeyBar: false });
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
+    records.set("ovis:terminal-fold-key-bar", "\"true\"");
+    expect(loadSettings().terminalFoldKeyBar).toBe(false);
   });
 
   it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
@@ -260,8 +272,8 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerPasteSend).toBe(false);
   });
 
-  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
-    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+  it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["filesPanel", "ovis:files-panel"]] as const) {
       expect(loadSettings()[key]).toBe(false);
       saveSettings(sanitizeSettings({ [key]: true }));
       expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
@@ -433,6 +445,21 @@ it("keeps the composer's New tab button off until this device turns it on, and k
   expect(sanitizeSettings({ composerNewTabButton: true }).composerNewTabButton).toBe(true);
   expect(sanitizeSettings({ composerNewTabButton: "true" }).composerNewTabButton).toBe(false);
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("composerNewTabButton");
+});
+
+it("shows each PC's load while two or more PCs are connected, until this device chooses", () => {
+  const pc = (state: string) => ({ state });
+  expect(sanitizeSettings({}).pcLoad).toBeNull();
+  for (const pcLoad of ["true", 1, null]) expect(sanitizeSettings({ pcLoad }).pcLoad).toBeNull();
+  expect(sanitizeSettings({ pcLoad: false }).pcLoad).toBe(false);
+  // unchosen: a second PC that is not connected does not count
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(false);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("disconnected")])).toBe(false);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(true);
+  // a choice holds whatever the roster says
+  expect(pcLoadOn({ pcLoad: true }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: false }, [pc("connected"), pc("connected")])).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("pcLoad");
 });
 
 it("keeps the composer's Artifacts chip off until this device turns it on, and keeps that choice its own", () => {
@@ -691,18 +718,18 @@ it("draws no terminal pictures until this device turns them on", () => {
   expect(SETTING_SCOPE.terminalImages).toBe("device");
 });
 
-it("draws with libghostty until this device turns it off", () => {
-  expect(sanitizeSettings({}).terminalGhostty).toBe(true);
-  expect(sanitizeSettings({ terminalGhostty: "false" }).terminalGhostty).toBe(true);
-  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: false })))).terminalGhostty).toBe(false);
-  expect(SETTING_SCOPE.terminalGhostty).toBe("device");
-});
-
 it("raises the terminal's keyboard on every tap until this device asks for it only from the key bar", () => {
   expect(sanitizeSettings({}).terminalKeyboardOnRequest).toBe(false);
   expect(sanitizeSettings({ terminalKeyboardOnRequest: "true" }).terminalKeyboardOnRequest).toBe(false);
   expect(sanitizeSettings({ terminalKeyboardOnRequest: true }).terminalKeyboardOnRequest).toBe(true);
   expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
+});
+
+it("keeps the key bar under the input line until this device folds it", () => {
+  expect(sanitizeSettings({}).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: "true" }).terminalFoldKeyBar).toBe(false);
+  expect(sanitizeSettings({ terminalFoldKeyBar: true }).terminalFoldKeyBar).toBe(true);
+  expect(SETTING_SCOPE.terminalFoldKeyBar).toBe("device");
 });
 
 it("draws no Attach files control in the terminal until this device turns it on", () => {
@@ -1328,6 +1355,10 @@ it("keeps where web links open to a tab or the panel, a tab by default", () => {
   expect(DEFAULT_SETTINGS.webLinks).toBe("tab");
   expect(DEFAULT_SETTINGS.reuseExternalLinkTab).toBe(false);
   expect(DEFAULT_SETTINGS.fileOpen).toBe("popup");
+  // Files beside the pane is opt-in: the dialog stays the default
+  expect(DEFAULT_SETTINGS.filesPanel).toBe(false);
+  expect(sanitizeSettings({ filesPanel: true }).filesPanel).toBe(true);
+  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ filesPanel: bad }).filesPanel).toBe(false);
   expect(sanitizeSettings({ fileOpen: "panel" }).fileOpen).toBe("panel");
   for (const bad of ["tab", "", null, true]) expect(sanitizeSettings({ fileOpen: bad }).fileOpen).toBe("popup");
   expect(sanitizeSettings({ webLinks: "panel" }).webLinks).toBe("panel");
@@ -1358,6 +1389,13 @@ describe("shared settings", () => {
     expect(SETTING_SCOPE.lockedAgents).toBe("shared");
     expect(sanitizeSettings({ lockedAgents: ["local:p1", 3, "", "local:p1", "pc:w1:p2"] }).lockedAgents).toEqual(["local:p1", "pc:w1:p2"]);
     expect(sanitizeSettings({ lockedAgents: "local:p1" }).lockedAgents).toEqual([]);
+  });
+
+  it("draws no named agent group until one is turned on, shared by every browser (#2431)", () => {
+    expect(DEFAULT_SETTINGS.agentNamedGroups).toBe(false);
+    for (const key of ["agentNamedGroups", "agentGroupNames", "agentGroupOf"] as const) expect(SETTING_SCOPE[key]).toBe("shared");
+    const kept = sanitizeSettings({ agentNamedGroups: true, agentGroupNames: ["Tasks", "", "Tasks"], agentGroupOf: { "local:p1": "Tasks", "local:p2": 1 } });
+    expect([kept.agentNamedGroups, kept.agentGroupNames, kept.agentGroupOf]).toEqual([true, ["Tasks"], { "local:p1": "Tasks" }]);
   });
 });
 

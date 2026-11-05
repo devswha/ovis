@@ -256,6 +256,7 @@ bun scripts/settings-pages-demo-regression.ts # every Settings page on a 390px a
 bun scripts/agent-entry-points-demo-regression.ts # Add another agent… in New workspace and New worktree, Settings' agent list (installed, the tiles to install) and Open setup guide, and none of it on a watching device, at 1280 and 390
 bun scripts/interface-font-demo-regression.ts # Interface font at 390 and 1440: System and a typed list lead --font-ui, a reload keeps it, Default restores it; the message box takes the Chat font
 bun scripts/file-text-size-demo-regression.ts # Settings → File text size at 390 and 1280, light and dark: a Markdown preview follows the chat and a source the interface until a size is chosen, then both take it while the chat and the viewer's header stay; Reset drops it
+bun scripts/files-panel-demo-regression.ts # Settings → Chat → Files beside the pane at 1280 and 390, light and dark: off, Files is the dialog; on, a wide window shows it right of the pane with the pane live, a docked file takes its place and closing it brings the list back; a phone keeps the sheet
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
 bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
 bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513), and again with each lookbehind handed to RegExp as text refused, as Safari before 16.4 refuses it; the build turns every regular expression with one into such a call (#2534)
@@ -271,7 +272,7 @@ bun scripts/pane-input-focus-demo-regression.ts # the input focus shortcut again
 bun scripts/mirror-scroll-demo-regression.ts # fixed mirror wheel/touch, native history, no guessed program input, observe guards
 bun scripts/terminal-images-demo-regression.ts # Settings -> Pictures in the terminal: a picture is drawn, goes while off, and on again the next one is drawn only where it was printed
 bun scripts/core-history-scroll-demo-regression.ts # a herdr-core server's history kept in xterm: wheel and swipe scroll it, a replay erases the last one, nothing typed; herdr's own keeps none (#2663)
-bun scripts/terminal-ghostty-demo-regression.ts # Settings -> Draw with libghostty: a herdr-core pane drawn from its first byte, a Kitty picture placed and deleted, typing still through xterm; herdr's own and off stay xterm without fetching the module
+bun scripts/terminal-ghostty-demo-regression.ts # libghostty draws every pane: a herdr-core pane from its first byte, a Kitty picture placed and deleted, typing still through xterm, herdr's own panes too; xterm draws an iTerm2 picture by itself
 bun scripts/mirror-fold-demo-regression.ts # a mirror, or an attached pane a phone watches at a wider grid, folded whole (portrait, landscape), Original width from the pane menu, driving phones and desktops unfolded
 bun scripts/shortcut-exact-modifiers-demo-regression.ts # recording exact-modifier chords: confirm, refusals, dispatch
 bun scripts/output-browser-qa.ts # terminal output flow control end to end
@@ -303,7 +304,7 @@ bun scripts/file-viewer-mobile-regression.ts  # 8 viewport cases × tall/wide im
 bun scripts/keyboard-viewport-regression.ts   # keyboard, rotation and measured standalone status inset
 bun scripts/keyboard-viewport-demo-regression.ts # original real-app viewport suite on disposable demo fixtures
 bun scripts/unconfirmed-input-demo-regression.ts # typing the socket took but the server never read, then a dropped connection: held for review, not lost and not sent after the reconnect (#2587)
-bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keyboard control: current-mode focus, measured state, Keyboard only from the key bar (inputmode=none until Show), composition refusal, observe/held/offline/ended; `--serve-ios` only serves the build on loopback for a Simulator
+bun scripts/terminal-keyboard-demo-regression.ts # the key bar's Show/Hide keyboard control: current-mode focus, measured state, Keyboard only from the key bar (inputmode=none until Show), Fold the key bar (the row folded under the line, Terminal keys, held modifiers let go on a fold), composition refusal, observe/held/offline/ended; `--serve-ios` only serves the build on loopback for a Simulator
 bun scripts/droplet-demo-regression.ts        # real-app alerts below the header, keyboard and landscape
 bun scripts/chat-greeting-demo-regression.ts  # an empty chat's greeting: centred on a desktop, docked on a phone
 bun scripts/reply-comments-demo-regression.ts # comments on a reply (#511): the floating Comment moves nothing, one chip, the next message carries them for an agent alone, a slash command leaves them; 1280 and 390, Codex palette in UI_EVIDENCE_DIR
@@ -319,10 +320,12 @@ bun scripts/sidebar-split-demo-regression.ts # PCs/Agents height split at 390 an
 bun scripts/sidebar-split-access-demo-regression.ts # divider review regressions: filter context and focus return, forced-colors focus, short folded phone windows, click-to-focus, live drag percentage, pointer ownership and cancellation, held-snap regrouping and two-line Agents minimums in both densities/orders; synthetic demo only
 bun scripts/sidebar-heads-demo-regression.ts # PCs and Agents heads count and always show their carets, open and folded, in both orders and for a lone Host; a PC header's agent count traded for its actions on hover and keyboard focus, actions always under a finger, a press on the name folding it; folded PCs one row each; each list fading only at an edge with rows past it, none in forced colors; synthetic screenshots at 390 and 1280 in UI_EVIDENCE_DIR
 bun scripts/sidebar-activity-demo-regression.ts # Agents order Activity and pins: blocked pinned, recency, Pin agent / Unpin agent and Pin workspace / Unpin workspace from a right-click and the context-menu key, the ⋯ on a phone, and a finish opened here drawn as ready until the next one
-bun scripts/hide-pc-demo-regression.ts       # Remote PCs → Show in sidebar at 390 and 1440 on two demo PCs: a hidden PC leaves the sidebar, Agents and palette, the selection moves, the last PC stays, a reload keeps it, its link still opens, the sidebar's note shows it again
+bun scripts/hide-pc-demo-regression.ts       # Remote PCs → Show in sidebar at 390 and 1440 on two demo PCs: a hidden PC leaves the sidebar, Agents and palette, the selection moves, the last PC stays, a reload keeps it, its link still opens, the PCs head's hidden count shows it again; on three PCs at 390 and 1280, light and dark, that count's menu by keyboard and touch, Show one and the last (focus kept in the PCs head, also when the roster or another tab takes the last while the menu is open), its Settings route with the last PC kept on, and a stored list hiding every PC
+bun scripts/pc-load-demo-regression.ts       # Remote PCs → PC load in the sidebar on three demo PCs at 390 and 1280: on by default, red from 85%, none for a herdr-core machine, no ask while the drawer or list is out of view, off in its own key; the meters fit a 240px sidebar; screenshots light and dark in UI_EVIDENCE_DIR
 bun scripts/sidebar-filter-demo-regression.ts # the roster's label filter on two demo PCs: fuzzy matches with their ancestors, the selection kept as context, pins and folds untouched, a live and an offline roster, the drawer and a reload clearing it; screenshots at 390 and 1440 in UI_EVIDENCE_DIR
 bun scripts/sidebar-branch-line-demo-regression.ts # herdr's branch line: a repository and an unmarked git folder say their branch under the name, worktrees and folders outside git stay one line, desktop and phone, dark and light
 bun scripts/agent-lock-demo-regression.ts # Lock agent on a pinned Agents row (#2432): only a pinned row locks, a locked one keeps its pin, draws a lock and its tab offers no Close tab; Unlock brings Unpin back; 390 and 1280, light and dark
+bun scripts/agent-groups-demo-regression.ts # Named agent groups (#2431): a row's menu moves it into a group, drawn under its own heading with its count, which folds it; New workspace offers the groups; 390 and 1280, light and dark
 bun scripts/sidebar-tokens-demo-regression.ts # herdr plugin tokens on agent rows: a dim line of their own on One line and Two lines, cut with the whole text in the tooltip and a phone's sheet, as text, following herdr's `$name` rows, and changing live
 bun scripts/sidebar-selection-contrast-demo-regression.ts # the selected workspace and agent rows in every theme entry, selected, hovered and focused: the fill alone with no leading stroke (its contrast recorded), every text at 4.5:1, a Highlight bar at 3:1 in forced colors; the table and the Codex shots at 1280 and 390 in UI_EVIDENCE_DIR
 bun scripts/pane-mute-demo-regression.ts    # Mute alerts from an agent's row menu: one shared list for push, droplet, chime and tab notification, two tabs of one server, a second PC's same-named pane, an older server and a watching device
@@ -549,6 +552,29 @@ timer. Terminal-only and hidden clients do not keep a conversation monitor alive
 resolves through existing provider/process evidence, checks file identity, size and timestamps
 without parsing turns, and rechecks session resolution every 5 s (2 s while a transcript is
 missing). The last interested client, failed/ended attachment and server stop release it.
+
+A client that shows a pane's chat and no terminal follows it without attaching it: bridges that
+advertise `"conversation-watch-detached"` take `conversation-watch {pane_id, enabled, detached:true}`.
+That interest survives the same connection attaching and detaching the pane, and ends with a
+`detached:true` disable or the connection; at most 32 per connection
+(`too_many_conversation_watches`). The browser does not send it.
+
+Prompts an idle agent opens (Codex's or Claude's folder-trust menu) change no agent status.
+Bridges that advertise `"prompt-watch"` take `prompt-watch {pane_id, enabled}` and send
+`prompt-changed {pane_id, signature}` with the watch's first read and whenever the prompt on the
+pane's screen opens, closes or becomes another one; GET `/api/pane/prompt` stays authoritative.
+One 500 ms loop for the whole server reads each watched pane once however many clients watch it,
+at most four at a time, blocked panes included: a form of several steps moves to its next one while
+the pane stays blocked, with no pane-status to say so. A working pane is read: Codex asks the
+questions in its queue while it works. A pi pane is not read at all, as its pi-ask card keeps the
+answers to earlier steps in a draft a late read of an older form would replace. The prompt is compared by its text alone, and OpenCode's forms and omp's session lookups are read into a state of the
+watches' own, so a watch's reads start or end no asking and never move the ids, drafts or call
+bindings `/api/pane/prompt` hands out. A blocked screen no reader knows is told by the fallback card
+GET offers for it, and an OpenCode form with the route's draft (read only), so an answer that moves
+its card to the next question is told too. A closed pane, or 10 failed reads of it in a row, ends the watch with
+an error `prompt_watch_ended`; a snapshot herdr does not answer (a restart) ends none. At most 32
+per connection (`too_many_prompt_watches`); a second watcher of a pane already read gets the
+current `prompt-changed` at once. The browser does not send it.
 
 Newest-page refreshes are single-flight. Push-triggered reads start at least 1 s apart using
 monotonic elapsed time, with one trailing refresh at a fixed deadline: continuous writes cannot

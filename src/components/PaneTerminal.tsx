@@ -34,7 +34,7 @@ import { appendQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
 import { paneStorageId } from "../../shared/machines.ts";
-import { KeyBar } from "./KeyBar.tsx";
+import { KeyBar, LineKeysButton } from "./KeyBar.tsx";
 import { TerminalInput, type TerminalInputHandle } from "./TerminalInput.tsx";
 import { FindBar } from "./FindBar.tsx";
 import { TerminalViewportTools, type TerminalSearchState } from "./TerminalViewportTools.tsx";
@@ -458,9 +458,6 @@ export function PaneTerminal({
   const osc52AllowedRef = useRef(settings.paneClipboard);
   osc52AllowedRef.current = settings.paneClipboard;
   useTerminalImages(terminal, settings.terminalImages, coarse);
-  /** read once per terminal, as it mounts (lib/ghostty/capture.ts): a pane opened after the change follows it */
-  const ghosttyRef = useRef(settings.terminalGhostty);
-  ghosttyRef.current = settings.terminalGhostty;
   // a wide mirror folds on a narrow screen until the pane menu's Wrap to screen / Original width says otherwise
   const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
   const mirrorWrap = settings.terminalMirrorWrap ?? narrowScreen;
@@ -729,7 +726,7 @@ export function PaneTerminal({
     }, 2500);
   }, []);
 
-  useTerminalMount({ activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, ghosttyRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef });
+  useTerminalMount({ activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef });
 
   useTerminalRefits({ activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme });
 
@@ -1091,6 +1088,30 @@ export function PaneTerminal({
     observer.observe(surface);
     return () => observer.disconnect();
   }, [inputSlot]);
+  // Settings > Terminal > Fold the key bar (#1531): in Input line mode on a touch screen the key bar is
+  // folded until the line's Terminal keys button opens it. Folded,
+  // the line is the pane's last row: where that is the screen's bottom it keeps clear of the home
+  // indicator, as the key bar does there (KeyBar.tsx)
+  const [keysOpen, setKeysOpen] = useState(false);
+  const foldKeys = coarse && settings.terminalFoldKeyBar && lineSlot && !secretActive;
+  const lineLast = foldKeys && !keysOpen;
+  // the row opens for the time it is wanted: leaving the line (direct typing, the setting off) folds it
+  // again. And a folded row shows no modifier, so it holds none: the next Enter is a plain one
+  useLayoutEffect(() => {
+    if (!foldKeys) setKeysOpen(false);
+    else if (!keysOpen) clearModifiers();
+  }, [foldKeys, keysOpen, clearModifiers]);
+  const [lineAtScreenBottom, setLineAtScreenBottom] = useState(false);
+  useLayoutEffect(() => {
+    if (!inputSlot || !lineLast) { setLineAtScreenBottom(false); return; }
+    const place = (): void => setLineAtScreenBottom(inputSlot.getBoundingClientRect().bottom >= window.innerHeight - 1);
+    place();
+    // the pane's own frame and what holds it change size on a split or zoom with the page unchanged
+    const observer = new ResizeObserver(place);
+    for (let node: HTMLElement | null = inputSlot.parentElement; node; node = node.parentElement) observer.observe(node);
+    window.addEventListener("resize", place);
+    return () => { observer.disconnect(); window.removeEventListener("resize", place); };
+  }, [inputSlot, lineLast]);
 
   // the wait for input is a live region in the banner column from the stack's first render, clipped while
   // empty (never display: none); its words land a frame after it (lib/useAnnouncedText.ts). Only a
@@ -1449,10 +1470,11 @@ export function PaneTerminal({
           grid, and each change of its height resizes the shared pty. The masked input sits in this
           slot in the chat lens too (a box-less slot there, TerminalInput.css), so switching lenses
           keeps it mounted: a remount would drop what was typed and a send still on its way */}
-      {((!chatView && lineSlot) || secretInput) && <div ref={setInputSlot} className={`terminal-input-slot${!chatView && lineSlot ? "" : " is-empty"}`}>
-        {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} ref={lineRef} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onInsert={insertTerminalText} pasteTarget={pasteTarget} onPasting={setLinePasting} uploadFile={uploadImage} attach={settings.terminalAttachButton} onFocus={reassertGrid} keyboardHeld={keyboardHeld} />)}
+      {((!chatView && lineSlot) || secretInput) && <div ref={setInputSlot} className={`terminal-input-slot${!chatView && lineSlot ? "" : " is-empty"}${lineLast && lineAtScreenBottom ? " is-at-screen-bottom" : ""}`}>
+        {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} ref={lineRef} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onInsert={insertTerminalText} pasteTarget={pasteTarget} onPasting={setLinePasting} uploadFile={uploadImage} attach={settings.terminalAttachButton} onFocus={reassertGrid} keyboardHeld={keyboardHeld}
+          {...(foldKeys ? { keyControls: <LineKeysButton open={keysOpen} onToggle={() => setKeysOpen((open) => !open)} /> } : {})} />)}
       </div>}
-      {presented && paneId !== null && !secretActive && !observing && !chatView && <KeyBar disabled={composing || !connected || !inputReady || held || ended} onKey={pressKey}
+      {presented && paneId !== null && !secretActive && !observing && !chatView && (!foldKeys || keysOpen) && <KeyBar disabled={composing || !connected || !inputReady || held || ended} onKey={pressKey}
         holdScope={`${paneStorageId(machineId, paneId)}:${view}`}
         onKeyHoldEnd={consumeModifiers}
         modifiers={modifiers} lockedModifiers={lockedModifiers} onToggleModifier={toggleModifier} items={settings.keyBarItems}
