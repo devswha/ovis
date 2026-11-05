@@ -173,7 +173,8 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
  * that still says it, else the one of the name that changed since; by name only for a match of an
  * older server, which has no digest. A match with a store row (Hermes) opens the turn with a text
  * part read from it, whatever either was named from: a page boundary may split one answer at
- * another row. Turns of a page read without rows (an older server) go by name.
+ * another row. Turns of a page read without rows (an older server) go by name, and so does every
+ * turn when the row is newer than any shown (the search read a row the chat has not yet).
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
   if (match.row !== undefined) {
@@ -181,7 +182,8 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
     const index = turns.findIndex((turn) => turn?.text_rows?.includes(row) === true);
     if (index >= 0) return index;
     const { row: _, ...named } = match;
-    return pickedTurn(turns.map((turn) => turn?.text_rows === undefined ? turn : null), named);
+    const ahead = !turns.some((turn) => turn?.text_rows?.some((read) => read >= row) === true);
+    return pickedTurn(ahead ? turns : turns.map((turn) => turn?.text_rows === undefined ? turn : null), named);
   }
   const names = turns.flatMap((turn, index) => turn != null && conversationTurnAnchor(turn) === match.turn ? [index] : []);
   if (match.ts === null) {
@@ -223,13 +225,15 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
  * match's time after an earlier one, so when none does the pick reads to the beginning. Turns
  * without a time go by name and searched text alone (by name for an older server's match). A match
  * with a store row settles once the turns read go back to it (rows come in id order, so the row is
- * read if it is still there), or by name on turns of a page read without rows.
+ * read if it is still there), or by name on turns of a page read without rows; by name on every turn
+ * when the row is newer than any read (the search read a row the chat has not yet).
  */
 export function pickSettled(turns: readonly ConversationTurn[], match: ConversationSearchMatch): boolean {
   if (match.row !== undefined) {
-    const row = match.row;
-    if (turns.some((turn) => turn.text_rows?.some((read) => read <= row) === true)) return true;
+    const row = match.row, read = turns.flatMap((turn) => turn.text_rows ?? []);
     const { row: _, ...named } = match;
+    if (!read.some((each) => each >= row)) return pickSettled(turns, named);
+    if (read.some((each) => each <= row)) return true;
     return pickSettled(turns.filter((turn) => turn.text_rows === undefined), named);
   }
   const named = turns.findIndex((turn) => conversationTurnAnchor(turn) === match.turn);

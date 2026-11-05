@@ -278,6 +278,12 @@ describe("pickedTurn", () => {
     expect(pickSettled(shown, match)).toBe(true);
     expect(pickedTurn(shown, match)).toBe(0);
     expect(pickedTurn(parseHermesRows(rows), match)).toBe(1);
+    // the search read a row the chat has not yet (the answer went on): by name, as before
+    const growing = [row(100, "user", "deploy it"), row(101, "assistant", "The deploy script is ready."), row(102, "assistant", "Running the deploy script now.")];
+    const ahead = searchTurns(parseHermesRows(growing.slice(2)), searchPattern("deploy script")!)[0]!;
+    const behind = parseHermesRows([growing[0]!, { ...growing[2]!, id: 101 }]);
+    expect(pickSettled(behind, ahead)).toBe(true);
+    expect(pickedTurn(behind, ahead)).toBe(1);
     // a page that does not hold the row reads on, and opens none
     expect(pickSettled(shown.slice(1), match)).toBe(false);
     expect(pickedTurn(shown.slice(1), match)).toBe("none");
@@ -302,7 +308,7 @@ describe("pickedTurn", () => {
     // a turn of a tool alone is no older server's: a row gone since opens none, not another call of its name
     const call = JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]);
     const called = searchTurns(parseHermesRows([row(9, "user", "go"), { ...row(10, "assistant", "needle"), tool_calls: call }]), searchPattern("needle")!)[0]!;
-    const recalled = parseHermesRows([row(9, "user", "go"), { ...row(11, "assistant", ""), content: null, tool_calls: call, timestamp: 1_700_000_010 }]);
+    const recalled = parseHermesRows([row(9, "user", "go"), { ...row(11, "assistant", ""), content: null, tool_calls: call, timestamp: 1_700_000_010 }, row(12, "user", "next")]);
     expect(pickSettled(recalled, called)).toBe(true);
     expect(pickedTurn(recalled, called)).toBe("none");
     // turns a page from an older server brought, without rows, go by name
