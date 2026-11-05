@@ -34,7 +34,8 @@ export interface RelayShellProps {
   /** the front page's sign-in: off to the provider's pages */
   onSignIn?: (provider: AccountProvider) => void;
   /** a PC of the account this device is not paired with: compare digits with it */
-  onJoin?: (pc: MyPc) => void;
+  /** `typed`: added from the new-PC card, so this device types the number that PC shows */
+  onJoin?: (pc: MyPc, options?: { typed?: boolean }) => void;
   onSignOut?: () => void;
   onLeave?: () => void;
   /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
@@ -62,6 +63,7 @@ function TypedDigits({ pc, onSubmit, cancel }: { pc: string; onSubmit: (digits: 
     <>
       <h1 className="relay-shell-title">{t("Type the number {name} shows", { name: pc })}</h1>
       <p className="relay-shell-copy">{t("{name} shows six digits on its own screen now. Type them here, then approve on {name}.", { name: pc })}</p>
+      <p className="relay-shell-detail">{t("No number on {name}? Cancel, then tap {name} in your list.", { name: pc })}</p>
       <form className="relay-shell-code-form" onSubmit={submit}>
         <input name="digits" className="relay-shell-code-input" aria-label={t("Number on {name}", { name: pc })} inputMode="numeric" pattern="[0-9 ]{6,7}" maxLength={7} autoComplete="one-time-code" required autoFocus />
         <div className="relay-shell-actions"><button type="submit" className="btn btn-primary">{t("Add this PC")}</button>{cancel}</div>

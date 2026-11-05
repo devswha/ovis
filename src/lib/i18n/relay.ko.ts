@@ -94,4 +94,5 @@ export const RELAY_KO: Record<string, string> = {
   "Type the number {name} shows": "{name}에 나온 숫자를 입력하세요",
   "You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.": "{name} 화면에 나온 숫자를 입력하고 그 PC에서 승인하세요. 그러면 계정의 모든 기기가 쓸 수 있습니다.",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "지금 {name} 화면에 여섯 자리 숫자가 나옵니다. 여기에 입력한 뒤 {name}에서 승인하세요.",
+  "No number on {name}? Cancel, then tap {name} in your list.": "{name}에 숫자가 없나요? 취소한 뒤 목록에서 {name}을(를) 누르세요.",
 };

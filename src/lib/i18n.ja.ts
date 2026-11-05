@@ -432,7 +432,7 @@ const BASE: Record<string, string> = {
   "Add this PC to my account": "このPCをアカウントに追加",
   "Add this PC to your account, so every device of your account can use it with one approval.": "このPCをアカウントに追加すると、一度の承認でアカウントのすべてのデバイスから使えます。",
   "Every device of your account can use this PC after that.": "その後は、アカウントのすべてのデバイスからこのPCを使えます。",
-  "On a phone or PC already in your account, open Ovis and tap Add on {name}. Then approve it here.": "すでにアカウントにあるスマホやPCでOvisを開き、{name} の「追加」をタップしてください。そのあとここで承認します。",
+  "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "すでにアカウントにあるスマホでOvisアプリを開き、{name} の「追加」をタップしてください。そのあとここで承認します。",
   "This PC could not be listed in your account. Try again.": "このPCをアカウントに登録できませんでした。もう一度お試しください。",
   "Turn on remote access through the Ovis relay above first.": "まず上でOvisリレー経由のリモートアクセスをオンにしてください。",
 };

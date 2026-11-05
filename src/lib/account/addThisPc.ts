@@ -19,16 +19,14 @@ export async function thisPcInNoAccount(): Promise<boolean> {
 
 /**
  * Lists this PC in the account's directory and opens its approve-here pairing window; its name as
- * listed. `start`: the person just asked, so an entry older than the card's ten minutes is listed
- * anew, which shows the card again and rings the account's devices.
+ * listed. An entry the card would stop showing before the next relist (`RELIST_MS`) is listed anew,
+ * which shows the card again and rings the account's devices, so the card lasts as long as this screen waits.
  */
-export async function listThisPc(service: AccountService, options: { start?: boolean } = {}): Promise<string> {
+export async function listThisPc(service: AccountService, options: { relistMs: number }): Promise<string> {
   const offer = decodeOffer((await requestRelayLink({ localOnly: true })).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
-  if (options.start) {
-    const listed = (await service.listPcs()).find((pc) => pc.server_id === offer.server_id);
-    if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS) await service.deletePc(offer.server_id);
-  }
+  const listed = (await service.listPcs()).find((pc) => pc.server_id === offer.server_id);
+  if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS - options.relistMs) await service.deletePc(offer.server_id);
   const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
   await service.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });

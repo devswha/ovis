@@ -235,12 +235,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await showFront();
   };
 
-  /** A PC of the account this device is not paired with: compare digits with it, as a link without a code does. */
-  const joinPc = (pc: MyPc): void => {
+  /**
+   * A PC of the account this device is not paired with: compare digits with it, as a link without a
+   * code does. `typed`: from the new-PC card, whose PC shows its digits on its own screen (docs/account.md, "Adding a PC").
+   */
+  const joinPc = (pc: MyPc, options: { typed?: boolean } = {}): void => {
     const join = pc.join;
     if (join === undefined) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
-    setTypedJoin(pc.server_id);
+    setTypedJoin(options.typed ? pc.server_id : null);
     navigate(link.pathname + link.hash);
   };
 

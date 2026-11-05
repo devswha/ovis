@@ -41,7 +41,7 @@ function AddThisPc() {
   /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
   const relist = useCallback(async () => {
     if (!await thisPcInNoAccount()) { setState({ kind: "hidden" }); return; }
-    await listThisPc(new AccountService({ store: indexedAccountStore }));
+    await listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS });
   }, []);
   useEffect(() => {
     let live = true;
@@ -56,7 +56,7 @@ function AddThisPc() {
     return () => clearInterval(timer);
   }, [waiting, relist]);
   const add = (): void => {
-    listThisPc(new AccountService({ store: indexedAccountStore }), { start: true }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
+    listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
       setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
         ? t("Turn on remote access through the Ovis relay above first.") : t("This PC could not be listed in your account. Try again.") });
@@ -67,7 +67,7 @@ function AddThisPc() {
     <div className="settings-item account-add-pc">
       {state.kind === "waiting" ? (
         <>
-          <p className="settings-description" role="status">{t("On a phone or PC already in your account, open Ovis and tap Add on {name}. Then approve it here.", { name: state.name })}</p>
+          <p className="settings-description" role="status">{t("On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.", { name: state.name })}</p>
           <p className="settings-description">{t("Every device of your account can use this PC after that.")}</p>
         </>
       ) : (

@@ -94,4 +94,5 @@ export const RELAY_ZH: Record<string, string> = {
   "Type the number {name} shows": "输入 {name} 显示的数字",
   "You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.": "输入 {name} 自己屏幕上显示的数字，然后在那台电脑上批准。之后账号的所有设备都能使用它。",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "{name} 的屏幕上现在显示六位数字。请在此输入，然后在 {name} 上批准。",
+  "No number on {name}? Cancel, then tap {name} in your list.": "{name} 上没有数字？请取消，然后在列表中点按 {name}。",
 };

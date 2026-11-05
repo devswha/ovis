@@ -94,4 +94,5 @@ export const RELAY_JA: Record<string, string> = {
   "Type the number {name} shows": "{name} に表示された番号を入力してください",
   "You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.": "{name} 自身の画面に出ている番号を入力し、そのPCで承認します。その後はアカウントのすべてのデバイスから使えます。",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "{name} の画面に6桁の番号が表示されています。ここに入力してから {name} で承認してください。",
+  "No number on {name}? Cancel, then tap {name} in your list.": "{name} に番号が出ていませんか？キャンセルして、一覧の {name} をタップしてください。",
 };

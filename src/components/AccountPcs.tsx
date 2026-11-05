@@ -87,7 +87,7 @@ export function AccountPcList({ pcs, onJoin }: { pcs: readonly MyPc[]; onJoin?: 
 
 /** The front page once signed in: the account's PCs, then how another one joins. */
 export function AccountPcs({ view, onJoin, onSignOut, onLeave }: {
-  view: Extract<AccountView, { kind: "signed-in" }>; onJoin?: (pc: MyPc) => void;
+  view: Extract<AccountView, { kind: "signed-in" }>; onJoin?: (pc: MyPc, options?: { typed?: boolean }) => void;
   /** ends the sign-in; every pairing stays */
   onSignOut?: () => void;
   /** removes this device from every PC of the account, then signs out */
@@ -103,7 +103,7 @@ export function AccountPcs({ view, onJoin, onSignOut, onLeave }: {
         <section key={pc.server_id} className="account-new-pc" aria-label={t("New PC")}>
           <p className="account-new-pc-title">{t("Add {name} to your account?", { name: pc.name })}</p>
           <p className="account-fineprint">{t("You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.", { name: pc.name })}</p>
-          <button type="button" className="btn btn-primary" onClick={() => onJoin(pc)}>{t("Add this PC")}</button>
+          <button type="button" className="btn btn-primary" onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button>
         </section>
       ))}
       {view.pcs === null
