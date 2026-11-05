@@ -20,7 +20,8 @@ The Mac (`app/mac`) and Windows (`app/windows`) shells stay as they are; this ap
    the bundled one (left by a newer app before a rollback) is kept, since hc does not go back.
 2. Starts the Ovis server on the bundled Bun with `OVIS_RUNTIME=herdr-core`, `OVIS_HC_BIN` set to
    that hc, `HOST=127.0.0.1` and its own state folder (`<user data>/server`, or
-   `OVIS_STATE_DIR`). The server is the same code the installer runs; the app only starts it.
+   `OVIS_STATE_DIR`), and `OVIS_DESKTOP_APP=1`, so Settings → About says updates come with the app. The
+   server is the same code the installer runs; the app only starts it.
 3. Opens a window on the server's address. It keeps the port it had last time while that port is
    free, so the page keeps its storage (drafts, settings); otherwise it takes a free one.
 
@@ -28,10 +29,17 @@ Until the server answers, or when it stops, the window shows the connection scre
 (`renderer/connect.html`): which step failed, the end of its output, **Try again** and
 **Show logs**. The logs are in `<user data>/logs/ovis.log` (the run before in `ovis.log.1`).
 
-- **Tray**: Open Ovis, Open in Browser, Restart Ovis Server, Restart to Update (once an update is
-  downloaded), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
+- **Tray**: Open Ovis, Open in Browser, Keep Computer Awake, Restart Ovis Server, Restart to Update
+  (once an update is downloaded), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
   On a Linux desktop without a tray (GNOME without an AppIndicator extension), starting the app
   again shows the window: only one copy runs.
+- **Keep Computer Awake** (tray, off by default): **While an Agent Is Working** holds off system sleep
+  while any of this PC's agents works, so phones and browsers keep reaching it; the display may still
+  turn off (`powerSaveBlocker` with `prevent-app-suspension`). On battery only with **Also on
+  Battery**. While it holds, the tray's menu and tooltip say so and how many agents work; it lets go
+  within a few seconds of the last one stopping. The server says how many work in
+  `desktop-activity.json` in its state folder (`server/desktop-activity.ts`); the choice is kept in
+  `<user data>/awake.json`.
 - **Links**: the server's own pages may open more Ovis windows; any other address opens in the
   default browser. A blank window a page opens for a sign-in sends its address to the default
   browser and closes. Only the microphone (dictation, never the camera), the clipboard,
@@ -74,7 +82,7 @@ when it has a feed:
 | Setting | When | Effect |
 | --- | --- | --- |
 | `OVIS_UPDATE_FEED=https://…` | build | electron-builder writes the feed into the app (`app-update.yml`) and `latest*.yml` beside the installers, to upload there |
-| `OVIS_UPDATE_URL=https://…` | run | checks that feed instead |
+| `OVIS_UPDATE_URL=https://…` | run | checks that feed instead of the built-in one (a build without a feed stays off) |
 | `OVIS_UPDATES=0` | run | no checks |
 
 A development run never checks. The app checks after it starts and every 6 hours, downloads in the
@@ -127,6 +135,34 @@ $env:HC_SESSION = 'ovis-try'
 # afterwards
 & "$d\app\bin\herdr-core.exe" server stop
 ```
+
+## End-to-end checks
+
+`scripts/e2e.ts` checks a built app the way a new user meets it. The app runs in a temporary HOME
+with its own PATH (no herdr, no hc), hc session and user data folder, on Linux on an Xvfb display
+of its own (install `xvfb`), so the PC's own herdr, hc core and Ovis state are never touched:
+
+```sh
+bun scripts/e2e.ts dist/Ovis-*.AppImage       # Linux
+bun scripts/e2e.ts dist/mac-arm64/Ovis.app    # macOS, from a logged-in desktop session
+bun scripts/e2e.ts --update                   # Linux: packages 0.0.1 and 0.0.2 from stage/ and out/,
+                                              # then updates the first from a local https feed
+```
+
+It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
+stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
+stays), the tray's items, a killed app (the next start ends the server left behind) and, with
+`--update`, Restart to Update. The app's main process is driven through its inspector. Terminals
+are made and typed into through the server's API, and the window is checked to list them. Tray
+items are pressed through their menu (enabled, with their handlers); whether the desktop draws the
+tray icon is not checked. The update feed uses a certificate made for the run, which the app is
+told to accept, and `--update` packages with electron-builder's usual caches.
+
+Screenshots, the app's output and `results.json` go to `--out` (by default a new temporary
+folder, kept); the exit code is 0 when every check passed. A check that fails for a filed bug says
+KNOWN with the issue and does not fail the run. Without `libfuse.so.2` the AppImage runs unpacked
+(`APPIMAGE_EXTRACT_AND_RUN=1`). Every process the run starts carries its id in its environment;
+cleanup ends those and nothing else.
 
 ## Licenses
 
