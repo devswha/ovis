@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "bun --bun vite",
-    "build": "bun --bun vite build",
+    "build": "bun scripts/build-cache.ts",
     "build:shell": "bun --bun vite build --mode shell",
     "server": "bun run server/index.ts",
     "start": "bun run build && bun run server/managed.ts",
@@ -68,7 +68,8 @@
   },
   "patchedDependencies": {
     "@legendapp/list@3.3.5": "patches/@legendapp%2Flist@3.3.5.patch",
-    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch"
+    "@xterm/xterm@6.0.0": "patches/@xterm%2Fxterm@6.0.0.patch",
+    "@tanstack/highlight@1.0.0": "patches/@tanstack%2Fhighlight@1.0.0.patch"
   },
   "packageManager": "bun@1.4.2",
   "overrides": {
