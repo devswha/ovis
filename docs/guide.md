@@ -861,10 +861,16 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
 - **Chat:** while a line the terminal wrapped is on screen, its colors cannot be matched to the
   screen's text, so a grey suggestion Claude Code or Hermes leaves in an empty input box then reads
   as typed text, and a send waits for you to confirm it.
-- **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
-  splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
-  those actions on such a PC. Search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees are not available either. Remote PCs keep running herdr's TUI server.
+- **Layout:** on a herdr-core no Herdr app arranges (the desktop app's own core, or one where the
+  app never ran), Ovis keeps the layout itself: renaming, reordering and moving workspaces and
+  tabs, and splitting, resizing, swapping, zooming and naming panes work as on herdr. Names and
+  places are terminal labels and the order and splits one document of Ovis's own
+  ([its format](herdr-core-layout.md)). Where the Herdr app arranges the core, the layout is the
+  app's window's: Ovis shows it and hides those actions. A Herdr app started later on a core
+  Ovis arranged takes in its terminals, grouped and named as they were, but not their split
+  ratios or order; from then on the app arranges them.
+- **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
+  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 
@@ -887,6 +893,7 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_OPENAI_API_KEY` | unset | OpenAI API key for [voice input](#voice-input). Set here, it cannot be changed from the app |
 | `OVIS_OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API root for voice input |
 | `OVIS_AUTO_UPDATE` | `0` | `1` installs new releases without asking |
+| `OVIS_UPDATE_CHANNEL` | unset (`stable`) | `beta` also offers the [beta builds](#beta-builds) made from main; `stable` turns them off whatever the state dir's `update-channel` file says |
 | `OVIS_TELEMETRY` | unset (on) | `0` sends no [anonymous usage counts](#anonymous-usage-counts), whatever the switch in Settings says. `DO_NOT_TRACK=1` does the same |
 | `OVIS_PUSH_SUBJECT` | this repository's URL | VAPID contact URL or `mailto:` address |
 | `OVIS_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
@@ -917,6 +924,18 @@ herdr plugin action invoke devswha.ovis.start-windows
 From a checkout, stop `bun run start` and run it again.
 
 Updates need a clean checkout: `main` for a source install, or herdr's plugin checkout. Local changes block an update, and they are never overwritten. More in [app updates](app-updates.md).
+
+### Beta builds
+
+A PC can also take the beta builds made from `main`: each commit whose checks pass is tagged
+`beta/vX.Y.Z-beta.N`, where X.Y.Z is the next release. They are off unless you opt in, and a PC that
+did not is never offered one. To opt in, write `beta` to the `update-channel` file in the state dir
+(`~/.config/ovis/update-channel`, or `OVIS_STATE_DIR`'s), or set `OVIS_UPDATE_CHANNEL=beta`. The
+next check, within 5 minutes, offers the newest beta, and it installs like a release. To leave,
+remove the file or write `stable`: nothing is downgraded, and the PC waits for the next release.
+
+The desktop app reads the same setting from its own state dir (`server/update-channel` in the app's
+data folder) when it starts, and then updates from the beta builds of the app.
 
 ### Updating herdr
 

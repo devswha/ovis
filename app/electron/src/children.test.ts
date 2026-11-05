@@ -81,7 +81,10 @@ describe("layout", () => {
   });
 });
 
-describe("startServer", () => {
+// the stand-ins below are POSIX shell scripts, which Windows cannot run
+const posix = process.platform !== "win32";
+
+describe.skipIf(!posix)("startServer", () => {
   it("resolves with the address the server says it listens on, and stops it", async () => {
     const programs = fakeServer(`console.log("Ovis listening on http://127.0.0.1:" + process.env.PORT); process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);`);
     const log = openLog(join(tempDir(), "logs", "ovis.log"));
@@ -161,7 +164,7 @@ describe("installCore", () => {
     await new Promise<void>((resolve) => log.end(resolve));
   });
 
-  it("swaps a different copy the way hc's installer does, with hc update --from", async () => {
+  it.skipIf(!posix)("swaps a different copy the way hc's installer does, with hc update --from", async () => {
     const root = tempDir();
     const bundled = fakeHc(join(root, "bundle"), "0.1.18");
     const installed = fakeHc(join(root, "data", "bin"), "0.1.17");
@@ -173,7 +176,7 @@ describe("installCore", () => {
 });
 
 describe("installCore after a rollback", () => {
-  it("keeps a newer hc in the data folder instead of asking it to go back", async () => {
+  it.skipIf(!posix)("keeps a newer hc in the data folder instead of asking it to go back", async () => {
     const root = tempDir();
     const write = (dir: string, version: string) => {
       mkdirSync(dir, { recursive: true });
@@ -243,7 +246,7 @@ describe("saved settings", () => {
 });
 
 describe("endLeftover", () => {
-  it("ends only the same process: this app's Bun on its server, started at the recorded time", async () => {
+  it.skipIf(!posix)("ends only the same process: this app's Bun on its server, started at the recorded time", async () => {
     const programs = fakeServer(`process.on("SIGTERM", () => process.exit(0)); console.log("Ovis listening on http://127.0.0.1:1"); setInterval(() => {}, 1000);`);
     const log = openLog(join(tempDir(), "ovis.log"));
     let spawned = 0;
@@ -263,7 +266,7 @@ describe("endLeftover", () => {
     log.end();
   });
 
-  it("ends only the same process when it is found unquoted too", async () => {
+  it.skipIf(!posix)("ends only the same process when it is found unquoted too", async () => {
     const programs = fakeServer(`process.on("SIGTERM", () => process.exit(0)); console.log("Ovis listening on http://127.0.0.1:1"); setInterval(() => {}, 1000);`);
     const log = openLog(join(tempDir(), "ovis.log"));
     const server = await startServer(programs, process.env, log, 20_000);
@@ -282,5 +285,6 @@ describe("endLeftover", () => {
     const gone = Bun.spawn(process.platform === "win32" ? ["cmd.exe", "/c", "exit"] : ["true"]);
     await gone.exited;
     expect(await processStart(gone.pid)).toBeNull();
-  });
+    // each lookup on Windows starts PowerShell for its CIM query: over 5 s for the four on a cold runner
+  }, 30_000);
 });

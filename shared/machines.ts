@@ -19,8 +19,10 @@ export interface Machine {
   herdr_profile_id?: string;
   id: string;
   name: string;
-  kind: "local" | "ssh";
+  kind: "local" | "ssh" | "relay";
   target?: SshTarget;
+  /** a PC added through the Ovis relay (no SSH): its relay ID and the relay it is reached through */
+  relay?: { server_id: string; relay: string };
   enabled: boolean;
   state: MachineState;
   error: string | null;
@@ -84,11 +86,28 @@ export interface HerdrIdentity {
   /** without attach, the terminal lens shows the pane's screen repainted a few times a second (server/mirror.ts) */
   terminal_mirror?: boolean;
   /**
-   * `herdr-core`: the PC's terminals are herdr-core's (OVIS_RUNTIME=herdr-core), whose workspaces,
-   * tabs and splits belong to the Herdr app's window; renaming, moving, splitting and resizing
-   * them is not offered. Absent: herdr's TUI server.
+   * `herdr-core`: the PC's terminals are herdr-core's (OVIS_RUNTIME=herdr-core), which has no
+   * workspaces, tabs or splits of its own: worktrees are never offered there, and the layout calls
+   * only as `layout` says. Absent: herdr's TUI server.
    */
   runtime?: "herdr-core";
+  /** herdr-core only: which layout calls it answers (HerdrCoreLayout); absent, none */
+  layout?: HerdrCoreLayout;
+}
+
+/**
+ * What a herdr-core PC lets Ovis do with its workspaces, tabs and splits. On a core no Herdr app
+ * arranges (its `herdr-app` document was never written, as on the desktop app's own core) Ovis keeps
+ * names and places in terminal labels (`rename`, `move` a one-pane tab to another workspace) and
+ * splits, ratios, zoom, swap and order in its own `ovis-layout` document (`split`, `arrange`: only
+ * where the core writes documents). Where the Herdr app arranges them, they are the app's, and none
+ * is offered.
+ */
+export interface HerdrCoreLayout {
+  rename: boolean;
+  split: boolean;
+  move: boolean;
+  arrange: boolean;
 }
 /** where this server's runtime came from: OVIS_RUNTIME, the choice saved from Settings, or what the PC has */
 export type RuntimeSource = "env" | "saved" | "detected";
