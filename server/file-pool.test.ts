@@ -198,18 +198,21 @@ describe("file threads", () => {
     await Promise.all([...running, ...waiting]);
   });
 
-  it("counts a Markdown listing as a scan, so listings never take the threads file tasks keep", async () => {
+  it("runs one Markdown listing at a time, and a stuck one leaves commands scans both their threads", async () => {
     setUp({ workers: 4, waiting: 4, deadlineMs: 30_000, longDeadlineMs: 30_000, scanDeadlineMs: 30_000, scans: 2, taskScans: 1 });
     const hold = gate();
     const listing = (): FileTask => ({ op: "documents", cwd: root, paths: null });
-    const running = [fileTask(held(listing(), hold.buffer)), fileTask(held(listing(), hold.buffer))];
-    // two listings hold both scan threads: a third waits, as a commands scan would
-    const waiting = [fileTask(listing()), fileTask(scan())];
-    expect(filePoolSize()).toEqual({ threads: 2, idle: 0, waiting: 2 });
+    const stuck = fileTask(held(listing(), hold.buffer));
+    const second = fileTask(listing());
+    expect(filePoolSize()).toEqual({ threads: 1, idle: 0, waiting: 1 });
+    // both commands scans take their threads at once, beside the stuck listing
+    const commands = [fileTask(held(scan(), hold.buffer)), fileTask(held(scan(), hold.buffer))];
+    expect(filePoolSize()).toEqual({ threads: 3, idle: 0, waiting: 1 });
+    // and a file task still takes the last thread
     await fileTask({ op: "info", path: file });
-    expect(filePoolSize()).toEqual({ threads: 3, idle: 1, waiting: 2 });
+    expect(filePoolSize()).toEqual({ threads: 4, idle: 1, waiting: 1 });
     hold.release();
-    await Promise.all([...running, ...waiting]);
+    await Promise.all([stuck, second, ...commands]);
   });
 
   it("gives a commands scan a deadline of its own, longer than a folder walk's", async () => {

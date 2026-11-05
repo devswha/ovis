@@ -46,8 +46,8 @@ interface PoolOptions {
   longDeadlineMs: number;
   scanDeadlineMs: number;
   /**
-   * At most this many threads run a scan at once, a commands scan, a Claude task list's
-   * (`claude-tasks`) or a Markdown listing's (`documents`) alike: a scan can hold its thread for many seconds, and the file routes keep
+   * At most this many threads run a scan at once, a commands scan or a Claude task list's
+   * (`claude-tasks`) alike: a scan can hold its thread for many seconds, and the file routes keep
    * the others. A scan past that waits, and the tasks behind it still take a free thread.
    */
   scans: number;
@@ -181,15 +181,18 @@ export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: Abor
 /**
  * A scan only while fewer than `scans` threads run a scan of either kind, and a task list's only
  * while fewer than `taskScans` run one of its own kind (a scan past its deadline keeps its thread,
- * and counts, until it returns); any other task always.
+ * and counts, until it returns); a Markdown listing only while no thread runs another; any other
+ * task always.
  */
 function mayRun(task: FileTask): boolean {
-  if (task.op !== "commands" && task.op !== "claude-tasks" && task.op !== "documents") return true;
+  // a Markdown listing (GET /api/pane/docs) has one thread of its own: a stuck one never holds a commands scan's
+  if (task.op === "documents") return ![...threads].some((thread) => thread.pending?.task.op === "documents");
+  if (task.op !== "commands" && task.op !== "claude-tasks") return true;
   let scanning = 0;
   let taskScanning = 0;
   for (const thread of threads) {
     const op = thread.pending?.task.op;
-    if (op === "commands" || op === "claude-tasks" || op === "documents") scanning += 1;
+    if (op === "commands" || op === "claude-tasks") scanning += 1;
     if (op === "claude-tasks") taskScanning += 1;
   }
   return scanning < options.scans && (task.op !== "claude-tasks" || taskScanning < options.taskScans);
