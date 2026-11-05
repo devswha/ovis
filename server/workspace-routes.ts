@@ -157,7 +157,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         await mergePullRequest(cwd, merge);
         return jsonResponse({ ok: true });
       }
-      const body = pathname.endsWith("/log") ? await pullRequestLog(cwd, url.searchParams.get("job_id") ?? "") : await pullRequestView(cwd);
+      const body = pathname.endsWith("/log") ? await pullRequestLog(cwd, url.searchParams.get("job_id") ?? "", url.searchParams.get("host") ?? "github.com") : await pullRequestView(cwd);
       return jsonResponse(body, 200, { "cache-control": "private, no-store" });
     } catch (error) {
       if (error instanceof PullRequestError) return jsonResponse({ error: { code: error.code, message: error.message } }, error.status);

@@ -26,6 +26,8 @@ const LOG_KEEP_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 16 * 1024;
 const OID = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9]{1,20}$/;
+/** a host name as a pull request's address carries it, with an optional port */
+const HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?$/;
 const MERGEABLE_STATES = new Set(["clean", "unstable", "has_hooks"]);
 const MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$base:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$base){id}}}";
 const PR_FIELDS = "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,statusCheckRollup";
@@ -219,11 +221,13 @@ const ESCAPES = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
 
 /** GET /api/workspace/pr/log: the last lines of an Actions job's log, from the workspace's repository. */
-export async function pullRequestLog(cwd: string, jobId: string, options: PullRequestOptions = {}): Promise<PullRequestCheckLog> {
+export async function pullRequestLog(cwd: string, jobId: string, host: string, options: PullRequestOptions = {}): Promise<PullRequestCheckLog> {
   if (!JOB_ID.test(jobId)) throw new PullRequestError("invalid_job", "job_id must be an Actions job's number", 400);
-  const run = await runGh(cwd, ["api", `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`], options, true);
+  if (!HOST.test(host)) throw new PullRequestError("invalid_host", "host must be the pull request's GitHub host", 400);
+  // gh api goes to github.com unless told: an Enterprise repository's path and the github.com token must not
+  const run = await runGh(cwd, ["api", ...(host === "github.com" ? [] : ["--hostname", host]), `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`], options, true);
   if (run.code !== 0) throw failure(run.stderr, "gh could not read that job's log");
-  const lines = run.stdout.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ESCAPES, "").replace(CONTROLS, ""));
+  const lines = run.stdout.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(TIMESTAMP, "").replace(ESCAPES, "").replace(CONTROLS, ""));
   // the first line of a tail that was cut is a part of one
   if (run.overflow) lines.shift();
   while (lines.length > 0 && lines.at(-1)!.trim() === "") lines.pop();

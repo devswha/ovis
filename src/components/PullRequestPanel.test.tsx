@@ -82,7 +82,7 @@ test("puts a failing check's name and the end of its log into the pane's draft, 
   expect(draft).toContain("The check \"CI / test\" failed on pull request #12 (https://github.com/acme/widgets/actions/runs/1/job/103).");
   expect(draft).toContain("```\nexpected 2, got 3\nerror: 1 test failed\n```");
   expect(requests.map((request) => request.method)).toEqual(["GET", "GET"]);
-  expect(requests[1]!.url).toContain("/workspace/pr/log?pane_id=fixture&directory=%2Frepo&job_id=103");
+  expect(requests[1]!.url).toContain("/workspace/pr/log?pane_id=fixture&directory=%2Frepo&job_id=103&host=github.com");
 });
 
 test("keeps Merge off, with GitHub's reason, until GitHub would merge", async () => {

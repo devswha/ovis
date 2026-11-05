@@ -1185,9 +1185,10 @@ export async function fetchPullRequest(target: PullRequestTarget, machineId = "l
 }
 
 /** GET /api/workspace/pr/log: the last lines of a check's Actions job log. */
-export async function fetchPullRequestLog(target: PullRequestTarget, jobId: string, machineId = "local"): Promise<PullRequestCheckLog> {
+export async function fetchPullRequestLog(target: PullRequestTarget, jobId: string, host: string, machineId = "local"): Promise<PullRequestCheckLog> {
   const params = pullRequestParams(target);
   params.set("job_id", jobId);
+  params.set("host", host);
   return getJson<PullRequestCheckLog>(machinePath(machineId, `workspace/pr/log?${params.toString()}`));
 }
 

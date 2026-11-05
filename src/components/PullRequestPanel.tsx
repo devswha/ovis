@@ -65,7 +65,7 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
     mark(key, "sending");
     let log = null;
     // a log that cannot be read still leaves the check's name and page to send
-    if (check.job_id !== null) log = await fetchPullRequestLog(target, check.job_id).catch(() => null);
+    if (check.job_id !== null) log = await fetchPullRequestLog(target, check.job_id, new URL(view.url).host).catch(() => null);
     const added = blockIntoComposer(paneKey, checkDraft(view, check, log));
     mark(key, !added ? "too_long" : check.job_id !== null && log === null ? "added_without_log" : "added");
   };

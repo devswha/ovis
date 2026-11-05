@@ -125,8 +125,8 @@ describe("reading a branch's pull request through gh", () => {
 describe("a failing check's log", () => {
   it("keeps the last lines without GitHub's timestamps or colour codes", async () => {
     const lines = Array.from({ length: 200 }, (_, index) => `2026-11-05T08:52:40.${String(index).padStart(7, "0")}Z \u001b[31mline \u001b]8;;https://e.example\u0007${index}\u001b]8;;\u0007\u001b(B\u001b[0m`);
-    const fake = fakeGh({ log: { stdout: `${lines.join("\n")}\n` } });
-    const log = await pullRequestLog(scratch, "103", { gh: fake.gh });
+    const fake = fakeGh({ log: { stdout: `\uFEFF${lines.join("\n")}\n` } });
+    const log = await pullRequestLog(scratch, "103", "github.com", { gh: fake.gh });
     expect(log.job_id).toBe("103");
     expect(log.truncated).toBe(true);
     const shown = log.text.split("\n");
@@ -136,9 +136,17 @@ describe("a failing check's log", () => {
     expect(fake.calls()[0]).toEqual(["api", "repos/{owner}/{repo}/actions/jobs/103/logs"]);
   });
 
+  it("asks an Enterprise pull request's own host, never github.com", async () => {
+    const fake = fakeGh({ log: { stdout: "first\n" } });
+    await pullRequestLog(scratch, "7", "ghe.example.test", { gh: fake.gh });
+    expect(fake.calls()[0]).toEqual(["api", "--hostname", "ghe.example.test", "repos/{owner}/{repo}/actions/jobs/7/logs"]);
+    const refused = await pullRequestLog(scratch, "7", "-x", { gh: fake.gh }).catch((caught: unknown) => caught);
+    expect((refused as PullRequestError).code).toBe("invalid_host");
+  });
+
   it("refuses a job id that is not a number before running gh", async () => {
     const fake = fakeGh({});
-    const error = await pullRequestLog(scratch, "1/../../user", { gh: fake.gh }).catch((caught: unknown) => caught);
+    const error = await pullRequestLog(scratch, "1/../../user", "github.com", { gh: fake.gh }).catch((caught: unknown) => caught);
     expect([(error as PullRequestError).code, (error as PullRequestError).status]).toEqual(["invalid_job", 400]);
     expect(fake.calls()).toEqual([]);
   });

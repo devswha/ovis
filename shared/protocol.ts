@@ -361,8 +361,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         the unresolved review threads, whether GitHub would merge now and with which default
  *         method. 409 gh_missing / gh_signed_out / no_github_remote / not_a_repository, 404
  *         no_pull_request, 502 gh_failed, 504 gh_timeout. A watching device is refused, as for diffs)
- *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id= -> PullRequestCheckLog (the last
- *         lines of that Actions job's log, timestamps and colour codes removed; 400 invalid_job)
+ *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id=&host= -> PullRequestCheckLog (the last
+ *         lines of that Actions job's log, timestamps and colour codes removed, asked of the pull
+ *         request's host: github.com when absent; 400 invalid_job / invalid_host)
  *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, base_ref, method } -> { ok: true }
  *         (`gh pr merge --<method> --match-head-commit <head_oid>`: only the head the view showed is
  *         merged, into the base it showed (read again first: 409 pull_request_changed), the branch
