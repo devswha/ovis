@@ -58,9 +58,10 @@ export interface MovePaneRequest {
 }
 
 /**
- * `changed` false names why: same_pane, or cross_tab for a target in another tab. `changed` true with
- * a reason: the pane moved but stayed right of or below its target, herdr having refused the swap
- * that puts it left or above.
+ * `changed` false names why nothing moved: same_pane, or cross_tab for a target in another tab.
+ * `changed` true with a reason: the pane moved but stayed right of or below its target, herdr having
+ * refused, or failed, the swap that puts it left or above. An error means the pane is not beside its
+ * target: its message says it went back into its tab, or where it waits.
  */
 export interface PaneMoved {
   ok: true;

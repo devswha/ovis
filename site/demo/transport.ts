@@ -27,7 +27,7 @@ import { firstMessageFault } from "../../shared/launch-rules.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { neighborPane } from "../../src/lib/layoutMap.ts";
-import { closeLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
+import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
@@ -1794,12 +1794,11 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       const reason = other.pane_id === pane.pane_id ? "same_pane" : other.tab_id !== pane.tab_id ? "cross_tab" : null;
       if (reason) return json({ ok: true, changed: false, reason } satisfies PaneMoved);
       const split = side === "left" || side === "right" ? "right" : "down";
-      const room = layout.panes.find((candidate) => candidate.pane_id === target)!.rect;
-      if ((split === "right" ? room.width : room.height) < 2) return error("split_failed", "The demo pane is too small to split.", 400);
-      closeLayoutPane(layout, pane.pane_id);
-      splitLayout(layout, target, cell, split);
+      if (!moveLayoutPane(layout, pane.pane_id, target, split)) return error("split_failed", "The demo pane is too small to split.", 400);
       // herdr puts a moved pane right of or below its target: a swap puts it before
       if (side === "left" || side === "up") swapLayoutPanes(layout, pane.pane_id, target);
+      // a zoomed tab shows every pane again, as herdr-core's move makes it, so the moved one is in view
+      layout.zoomed = false;
       structureChanged();
       return json({ ok: true, changed: true, reason: null } satisfies PaneMoved);
     }

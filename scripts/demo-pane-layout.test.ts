@@ -57,8 +57,11 @@ it("the demo preserves native split paths, explicit swaps, moves beside a pane a
     const moveTab = (await snapshot()).panes.find((pane) => pane.pane_id === moving)!.tab_id;
     const target = await split(moving, "right");
     for (const side of ["down", "up", "right", "left"] as const) {
+      // a zoomed tab shows every pane again, as herdr-core's move makes it, so the moved one is in view
+      await post("pane/zoom", { pane_id: target, mode: "on" });
       expect(await (await post("pane/move", { pane_id: moving, target_pane_id: target, side })).json()).toEqual({ ok: true, changed: true, reason: null });
       const tab = (await snapshot()).layouts.find((candidate) => candidate.tab_id === moveTab)!;
+      expect(tab.zoomed).toBe(false);
       const [pane, beside] = [rect(tab, moving), rect(tab, target)];
       expect({ left: pane.x < beside.x, right: pane.x > beside.x, up: pane.y < beside.y, down: pane.y > beside.y }[side]).toBe(true);
       expect(tab.panes.map((candidate) => candidate.pane_id).sort()).toEqual([moving, target].sort());

@@ -103,7 +103,7 @@ import { alertsBell } from "./lib/alertsBell.ts";
 import { Droplet } from "./components/Droplet.tsx";
 import { MarkdownLinkMenu } from "./components/MarkdownLinkMenu.tsx";
 import { paneDragData, PANE_DRAG_TYPE, slotSide, type SplitSlot, type SplitTarget } from "./lib/split.ts";
-import { useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
+import { paneMoveNotice, useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
 import { PaneFollowContext, PanePressContext } from "./lib/paneSubmitContext.ts";
 import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 import { CrashProbe, RegionCrash } from "./components/AppCrash.tsx";
@@ -335,13 +335,8 @@ export function App() {
   // a pane's title dropped on another pane's body in its tab: it goes to that side of it (#1819)
   const movePanes = (dragged: SplitTarget, targetPaneId: string, side: PaneDirection): void => {
     void movePaneBeside(dragged.paneId, targetPaneId, side, dragged.machineId).then((move) => {
-      // refused, or moved only right of or below the target (herdr refused the swap that puts it first)
-      if (move.reason !== null) {
-        const reason = move.reason === "cross_tab" ? t("The panes are in different tabs.")
-          : move.reason === "same_pane" ? t("Choose two different panes.")
-          : t("Something went wrong. Try again.");
-        setLayoutNotice(t("Move failed: {reason}", { reason }));
-      }
+      const notice = paneMoveNotice(move, side, t);
+      if (notice !== null) setLayoutNotice(notice);
       void load();
     }).catch((err: unknown) => { moveRefused(err); void load(); });
   };
