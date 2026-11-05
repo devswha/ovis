@@ -1044,8 +1044,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   own items and a divider it carries what the missing row's menu would: a split tab's panes first,
   then the pane's actions, then New terminal (the row's `+`), New tab with agent… (as Chrome for
   iPhone keeps New Tab in its overflow menu) and Rename tab, in a dialog in place of the row's inline
-  field, which the palette's Rename tab and its shortcut open too. Closing the lone tab closes its workspace, which Close pane (a one-pane tab) and the
-  sidebar's Close workspace already do. Extending the compact-height state to the Duo follows
+  field, which the palette's Rename tab and its shortcut open too. Move to workspace… (a one-pane
+  tab) lists the other workspaces in a second menu, where the row's menu lists them in place, and
+  Close tab asks first, as the row's does for a workspace's last tab: it closes the workspace too,
+  and is the one way to close a split tab whole there. Extending the compact-height state to the Duo follows
   Apple's outer-display guidance to put chrome at the edge and preserve vertical room for content.
   Wherever a lone pane's ellipsis shows to a finger, the pane's banners (View only and the rest)
   start below it, so none covers it; with no row they start below the glass header.
@@ -1468,6 +1470,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   so a footer row kept showing in every browser tab and in browsers that never prompt. Settings →
   Phone & devices → Install offers it when the browser can install, and the steps otherwise,
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
+- Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
+  relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
+  Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
+  tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
+  sidebar foot names whose account it is and switches it in one tap. Settings → Phone & devices
+  keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
 
 ### Plan meters (`.usage*`)
 - Right of the Settings gear, one button holding as many chips as the row has room for (judged
