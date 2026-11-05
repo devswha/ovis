@@ -39,9 +39,13 @@ const FILES_SCRIPT = `<script>(${(() => {
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
-  await context.addInitScript((value) => {
-    if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value);
-  }, JSON.stringify({ language: "en", ...settings }));
+  // Files beside the pane is kept in a key of its own (lib/settings.ts), not in ovis:settings
+  const { filesPanel, ...main } = settings;
+  await context.addInitScript(([value, panel]) => {
+    if (localStorage.getItem("ovis:settings") !== null) return;
+    localStorage.setItem("ovis:settings", value!);
+    if (panel !== "") localStorage.setItem("ovis:files-panel", panel!);
+  }, [JSON.stringify({ language: "en", ...main }), filesPanel === undefined ? "" : JSON.stringify(filesPanel)]);
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
