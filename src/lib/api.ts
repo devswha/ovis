@@ -267,6 +267,18 @@ export function requestRelayOffer(): Promise<RelayOffer> {
   return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
+/** POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC. */
+export function requestRelayLink(): Promise<{ readonly url: string }> {
+  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } });
+}
+
+/** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
+export async function decideRelayPairing(id: string, decision: "approve" | "decline"): Promise<void> {
+  const url = "/api/relay/pairing";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** Anonymous install and update counts; null from a server that sends none (404). */
 /** What every browser of this server shares (shared/preferences.ts); null where the server predates it. */
 export async function fetchPreferences(): Promise<SharedPreferences | null> {
@@ -746,7 +758,8 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
     return body;
   }
   const etag = response.headers.get("etag");
-  if (!polled) return body;
+  // a wait for the reader's proof keeps the conversation it would return to
+  if (!polled || body.recovery === "waiting") return body;
   conversationAnswers.delete(url);
   if (etag !== null) {
     const bytes = conversationAnswerBytes(body, response.headers.get("content-length"), response.headers.get("content-encoding"));
@@ -1398,6 +1411,8 @@ export async function machineRequest<T>(path: string, method = "GET", body?: unk
   if (!response.ok) throw await errorFrom("/api/machines", response);
   return response.json();
 }
+/** POST /api/machines/relay: pairs with the PC whose relay pairing link this is and adds it (server/relay-pc.ts). */
+export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { link });
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);

@@ -683,6 +683,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   `diffStyle`: `unified` (default) or `split` for a repository diff (a phone draws one column
   whatever it says, and the viewer says so).
   These layout choices stay on this device, like chat width.
+- Web links from every agent's chat and terminal open in a new tab by default. The device setting `reuseExternalLinkTab` follows the Codex app's reusable-tab choice: one Ovis page keeps one external tab and replaces its address on later clicks. A browser lets a page steer a tab of another site only as its opener, so that tab keeps Ovis as its opener: the site in it can see and navigate the Ovis tab, which is why the setting is off by default and says so (Ovis's `Referrer-Policy: no-referrer` still sends no address). A new tab has no opener. If the browser refuses to steer the tab, the link opens in a new tab. Reuse is best effort: a site that sets Cross-Origin-Opener-Policy cuts the link, and the next click opens a new tab. Ctrl, Cmd and Alt clicks still open a new tab, and the iOS, Android, Mac and desktop apps, which hand links to the system browser, neither show the setting nor reuse a tab. The Web links panel choice and Shift-click behavior stay independent.
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
@@ -1044,8 +1045,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   own items and a divider it carries what the missing row's menu would: a split tab's panes first,
   then the pane's actions, then New terminal (the row's `+`), New tab with agent… (as Chrome for
   iPhone keeps New Tab in its overflow menu) and Rename tab, in a dialog in place of the row's inline
-  field, which the palette's Rename tab and its shortcut open too. Closing the lone tab closes its workspace, which Close pane (a one-pane tab) and the
-  sidebar's Close workspace already do. Extending the compact-height state to the Duo follows
+  field, which the palette's Rename tab and its shortcut open too. Move to workspace… (a one-pane
+  tab) lists the other workspaces in a second menu, where the row's menu lists them in place, and
+  Close tab asks first, as the row's does for a workspace's last tab: it closes the workspace too,
+  and is the one way to close a split tab whole there. Extending the compact-height state to the Duo follows
   Apple's outer-display guidance to put chrome at the edge and preserve vertical room for content.
   Wherever a lone pane's ellipsis shows to a finger, the pane's banners (View only and the rest)
   start below it, so none covers it; with no row they start below the glass header.
@@ -1281,6 +1284,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
+  filter is) moves the Agents list above the workspaces and splits its unpinned rows into
+  groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)
+  and **Idle** (ready, a finish already read, an unknown state, or a PC that is away). Each
+  group has a quiet caps heading with its count in the trailing cell, as Slack's sidebar
+  sections do; the Needs you heading takes `--status-blocked`. An empty group is left out, and
+  the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
+  default; the oldest `state_change_seq` first, as herdr's agent view sorts with
+  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name**. herdr's
+  counters only compare within one PC, so Longest wait and Recent order each PC's rows in the
+  PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
+  group of the one of them that needs the reader most. The shared Agents order applies while
+  grouping is off.
+- An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
+  from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
+  `-number`, `-type`, `-variable`, `-meta`), which every theme sets in both modes and keeps
+  readable on `--bg-elevated`, the disc's fill. It is the same on every device, and two unknown
+  kinds tell apart. Agent logos → Mono leaves the mark quiet.
 - A DONE opened here draws as ready in the Agents list and its workspace roll-up, as herdr's
   own client does. This follows the Codex app's [unread completion dot](https://github.com/openai/codex/issues/50856).
   A finish read in one browser is read in every browser of the server (a phone and
@@ -1468,6 +1489,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   so a footer row kept showing in every browser tab and in browsers that never prompt. Settings →
   Phone & devices → Install offers it when the browser can install, and the steps otherwise,
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
+- Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
+  relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
+  Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
+  tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
+  sidebar foot names whose account it is and switches it in one tap. Settings → Phone & devices
+  keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
 
 ### Plan meters (`.usage*`)
 - Right of the Settings gear, one button holding as many chips as the row has room for (judged
@@ -2016,6 +2043,40 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the PC and split half the header shows, by the half that reported it: a recovery on one PC or half
   is not said once another is shown, and a pane's first connection is not a reconnect. A stalled
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
+- Beside the chip, always shown, one quiet mark says how this device reaches Ovis (`.conn-route`,
+  `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
+  `--text-dim` word, **relay** (the hosted shell, or a request Portal vouched for, whatever signed it in), **Tailscale** (a tailnet address, or a
+  request the server saw come through serve; a MagicDNS name alone says "Via Tailscale, or Funnel
+  from the internet", since the name serves both), **LAN** (a private address or a local-only name), **direct** (any other
+  address, a bare machine name and a request the server saw come through Funnel included) or
+  **local** (loopback: this PC, or a tunnel to another, which nothing can tell apart). The route,
+  not the connection's state, is its title and accessible text ("Via Tailscale"); the chip tells the
+  state. It is read from what the page owns and the server's own word on the request
+  (`observed_ingress`), never guessed. It is not a button and never wraps. At `<=480px` only the
+  relay keeps its word (the one most asked for) and the rest keep the glyph; below `360px` the
+  relay's word goes too, so the pane title keeps its room. The phone app's demo shows none. It
+  follows Paseo's app, which says beside a host whether it is reached directly or through its relay.
+- Beside the route mark, the PC's sessions by state (`.header-sessions`,
+  `components/HeaderSessions.tsx`, `lib/headerSessions.ts`): one figure per state that has any,
+  in the sidebar's colours and marks, `--status-working` dot for running (a turn waiting on its own
+  background work counts), `--status-blocked` question mark for waiting for an answer,
+  `--status-done` dot for finished and not looked at yet (a finish looked at reads as ready, as in
+  the sidebar). Tabular figures, so a count that changes moves nothing; nothing at all while every
+  session rests, and nothing for a PC that is not connected (its cached roster is greyed out in the
+  sidebar). The waiting figure is the one button: tinted with its state, it opens the next waiting
+  session after the selected one in the roster's order, wrapping, never the selected one and never
+  one a zoomed tab hides (a pick of it lands on the zoomed pane); with none to open it stays a
+  button, `aria-disabled`, so a keyboard's focus is not dropped. It follows Slack's "next unread"
+  rather than a coding-agent app, because the question on a phone is the same: which conversation
+  needs me now. After the title, `--text-dim` and kept whole, the selected tab's place in its
+  workspace's strip (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more.
+  At `<=480px` the header's line is the title's, as wide as without these: the figures become one
+  pill (waiting, else running, else done, tinted with its state) at the end of the tab row under the
+  header (`.tab-strip-sessions`), a full `--touch-target-header` target. Where that row is not drawn
+  (a lone tab on a cramped phone) More carries the jump: **Open the next session waiting for you** is
+  its first item, and its button wears a `--status-blocked` dot (`.header-more-dot.is-waiting`, in
+  place of the alerts-off dot) and says the count in its name. Below `420px` the tab's place leaves
+  the header: the tab row shows it.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
@@ -2926,7 +2987,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - On a touch screen, picking a pane (drawer, palette, notification) or switching its lens never
   raises the keyboard: the user reads first, and a tap on the message box or the grid raises it.
   A desktop's picked pane takes typing at once.
-- With a mouse, Enter sends and Shift+Enter breaks by default; with **Enter sends** off, Mod+Enter sends. On touch screens the same device setting is shown inverted as **Return inserts a new line**, with Send and hardware Mod+Enter explained below it, and is on until the device chooses, as in the ChatGPT and Claude phone apps: a soft keyboard's Return breaks the line and the Send button sends. The choice is kept in its own key (`ovis:enter-sends`); an older record's `enterSends: false` counts as chosen, its `true` (written by any save) does not. On a touch screen the text scrolls inside under a third of the visible height, so a long draft never pushes the row with Send under the keyboard. IME Enter is ignored. Stop sends Escape. While the agent works and a draft shows Send in Stop's place, Escape in the box is Stop; an open completion menu takes the first Escape, and its X in the top corner (`.composer-menu-close`, Close suggestions, sticky over the rows it scrolls; the first row leaves it room) does the same for a pointer or a phone, which has no Escape, keeping the text and the focus in the box. T3 Code's command menu closes on Escape alone. Working Send schedules a pending message; its Send now action submits that same message now.
+- With a mouse, Enter sends and Shift+Enter breaks by default; with **Enter sends** off, Mod+Enter sends. While Enter sends, Ctrl+Enter (not Cmd on a Mac, Claude Code's own key for this during a turn) sends now: the message is queued or held as Enter would, then that row goes by the same steer as its **Send now**, and a refused steer leaves the row with its reason; at rest it sends like Enter (#2596). On touch screens the same device setting is shown inverted as **Return inserts a new line**, with Send and hardware Mod+Enter explained below it, and is on until the device chooses, as in the ChatGPT and Claude phone apps: a soft keyboard's Return breaks the line and the Send button sends. The choice is kept in its own key (`ovis:enter-sends`); an older record's `enterSends: false` counts as chosen, its `true` (written by any save) does not. On a touch screen the text scrolls inside under a third of the visible height, so a long draft never pushes the row with Send under the keyboard. IME Enter is ignored. Stop sends Escape. While the agent works and a draft shows Send in Stop's place, Escape in the box is Stop; an open completion menu takes the first Escape, and its X in the top corner (`.composer-menu-close`, Close suggestions, sticky over the rows it scrolls; the first row leaves it room) does the same for a pointer or a phone, which has no Escape, keeping the text and the focus in the box. T3 Code's command menu closes on Escape alone. Working Send schedules a pending message; its Send now action submits that same message now.
 
 ### Comments on a reply (`.reply-comment*`, `.reply-comments*`)
 - Selecting text inside the words of one agent reply offers **Quote** first (lucide `Quote`, labelled)
@@ -2981,6 +3042,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a phone (the composer's `(max-width: 640px), (pointer: coarse)`), and leaves it out where dictation
   cannot work (no HTTPS, or no key and no browser recognition). On shows it in both inputs and on a
   phone, disabled with its reason where it cannot work.
+- Under the mic setting, per device: **Dictation language** (Auto, or one from the list) and
+  **Speech recognition** (`voiceEngine`: `auto`, `browser` or `server`, a Segmented of Auto, Browser,
+  API key; default `auto`). Auto uses the server's API key when one is saved, else the browser's
+  recognition; Browser and API key never fall back to the other, so a mic that cannot record says
+  why (API key without a saved key: "Save an API key to use the mic"). Browser hides Tidy dictated
+  text, which only the key's path does. The choice has its own storage key (`ovis:voice-engine`),
+  so an older tab's save keeps it, and open tabs follow it at once. Two rows, no new composer
+  control: macOS's Dictation settings likewise keep the language and the source beside the switch,
+  not on the input.
 - A mouse holds the mic to talk (release finishes) or taps it to toggle. A touch on the browser's
   speech recognition (no key) taps to start and taps to finish, from the click: iOS starts it only
   from a user activation, which a touch's pointerdown is not (#2343). With a key, a touch holds too.
@@ -3453,6 +3523,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the chat lens' round button form (`--control-h`, `--touch-target` on coarse pointers,
   `--radius-pill`, `--shadow-pop`), keeps focus in the terminal, and is hidden at the bottom, in
   read-only views and while Find owns the viewport. A grown touch input line floats over it.
+  On a herdr-core server (`terminal-history`) xterm keeps the history itself, so the same
+  button shows whenever xterm's own view is above its bottom, under the same conditions, and
+  takes it back with xterm's scrollToBottom. This follows VS Code's integrated terminal,
+  whose history scrolls locally and returns to the bottom on demand.
 - Mod+Shift+PageUp/PageDown pages the selected pane only, preserving chat composer focus and
   selection. Chat moves instantly by its viewport minus one prose line;
   Terminal uses native viewport rows minus one. A page still
