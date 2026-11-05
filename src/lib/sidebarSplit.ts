@@ -15,17 +15,19 @@ const MAX_STORED = 10_000;
 
 /**
  * What the line may do in this sidebar, measured at the drag's start: `topHead` and `bottomHead` are
- * the upper and lower section's height folded (its head), `room` the height both sections share, `row` one row.
+ * the upper and lower section's height folded (its head), `room` the height both sections share,
+ * `topRow`/`bottomRow` their minimum list rows, and `row` the keyboard step and snap distance.
  */
-export interface SplitRoom { topHead: number; bottomHead: number; room: number; row: number }
+export interface SplitRoom { topHead: number; bottomHead: number; room: number; row: number; topRow: number; bottomRow: number }
 
 /** Each section keeps its head and a row when they fit; a short window shares what it has instead. */
-export function splitBounds({ topHead, bottomHead, room, row }: SplitRoom): { min: number; max: number } {
+export function splitBounds({ topHead, bottomHead, room, topRow, bottomRow }: SplitRoom): { min: number; max: number } {
   const available = Math.max(0, room);
   const heads = topHead + bottomHead;
   const scale = heads > 0 ? Math.min(1, available / heads) : 1;
-  const keptRow = Math.min(row, Math.max(0, available - heads) / 2);
-  return { min: topHead * scale + keptRow, max: available - bottomHead * scale - keptRow };
+  const rows = topRow + bottomRow;
+  const rowScale = rows > 0 ? Math.min(1, Math.max(0, available - heads) / rows) : 0;
+  return { min: topHead * scale + topRow * rowScale, max: available - bottomHead * scale - bottomRow * rowScale };
 }
 
 export function clampSplit(height: number, room: SplitRoom): number {
@@ -50,9 +52,10 @@ export function sectionAt(side: SplitSide, order: SplitOrder): SplitFold {
  */
 export function splitSnap(height: number, { topHead, bottomHead, room, row }: SplitRoom): SplitSide | null {
   const slack = row * 0.6;
-  if (height < topHead + slack) return "top";
-  if (height > room - bottomHead - slack) return "bottom";
-  return null;
+  const top = height < topHead + slack;
+  const bottom = height > room - bottomHead - slack;
+  if (top && bottom) return Math.abs(height - topHead) <= Math.abs(room - bottomHead - height) ? "top" : "bottom";
+  return top ? "top" : bottom ? "bottom" : null;
 }
 
 /** What a key does on the focused line: move it a row, fold a section, or go back to the shared height. */

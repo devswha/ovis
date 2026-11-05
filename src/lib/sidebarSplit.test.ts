@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { clampSplit, keyedSplit, parseSidebarSplit, sectionAt, splitBounds, splitSnap, type SplitRoom } from "./sidebarSplit.ts";
 
 // a 600px column: each head 42px, rows 34px
-const ROOM: SplitRoom = { topHead: 42, bottomHead: 42, room: 600, row: 34 };
+const ROOM: SplitRoom = { topHead: 42, bottomHead: 42, room: 600, row: 34, topRow: 34, bottomRow: 34 };
 
 describe("splitBounds and clampSplit", () => {
   it("keeps a head and a row of each section in view", () => {
@@ -25,6 +25,13 @@ describe("splitBounds and clampSplit", () => {
 });
 
 describe("splitSnap", () => {
+  it("chooses the nearer heading where a short window's snap zones overlap", () => {
+    const short = { ...ROOM, room: 100 };
+    expect(splitSnap(47, short)).toBe("top");
+    expect(splitSnap(53, short)).toBe("bottom");
+    expect(splitSnap(50, short)).toBe("top");
+  });
+
   it("folds the section dragged under about a row, and neither in between", () => {
     expect(splitSnap(50, ROOM)).toBe("top");
     expect(splitSnap(70, ROOM)).toBeNull();

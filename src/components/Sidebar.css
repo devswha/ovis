@@ -759,7 +759,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   max-height: var(--section-max, max-content);
 }
 .sidebar-shell > .pcs-sidebar.is-collapsed,
-.sidebar-shell > .agents-sidebar:is(.is-collapsed, .is-empty) { flex: 0 0 auto; min-height: 0; }
+.sidebar-shell > .agents-sidebar:is(.is-collapsed, .is-empty) { flex: 0 1 auto; min-height: 0; }
 
 /* When neither list fills its allocation, keep Agents docked to the footer as before. Grouped
    Agents stays on top, and the footer still stays at the foot of the sidebar. */

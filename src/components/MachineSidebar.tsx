@@ -119,7 +119,8 @@ export function MachineSidebar(props: Props) {
       const active = document.activeElement;
       if (active !== null && active !== document.body) return;
       const rows = sidebar?.querySelectorAll<HTMLElement>('.machine-list :is(button:not([disabled]), [role="button"][tabindex="0"])') ?? [];
-      for (const back of [opener, ...rows]) {
+      const pcsToggle = sidebar?.querySelector<HTMLElement>(".sidebar-section-toggle") ?? null;
+      for (const back of [opener, ...rows, pcsToggle]) {
         if (back === null || !back.isConnected || back.closest(".sidebar-filter, [inert]") !== null || back.getClientRects().length === 0) continue;
         back.focus({ preventScroll: true });
         if (document.activeElement === back) return;
@@ -184,9 +185,11 @@ export function MachineSidebar(props: Props) {
   const [pcsCollapsed, setPcsCollapsed] = useState(() => { try { return localStorage.getItem(PCS_FOLD_KEY) === "1"; } catch { return false; } });
   const [pcsFilterFold, setPcsFilterFold] = useState<boolean | null>(null);
   useEffect(() => { if (!filter.active) setPcsFilterFold(null); }, [filter.active]);
-  const pcsFolded = filter.active ? pcsFilterFold ?? (pcsCollapsed && filter.matches === 0) : pcsCollapsed;
+  const pcsKept = [...filter.machines.values()].some((machine) => machine.matched || machine.workspaces.size > 0 || machine.panes.size > 0);
+  const pcsFolded = filter.active ? pcsFilterFold ?? (pcsCollapsed && !pcsKept) : pcsCollapsed;
+  // A drag can open both and then restore folds before React renders. Each request must queue;
+  // a render-time equality check would drop the restore.
   const setPcsFold = (fold: boolean) => {
-    if (fold === pcsFolded) return;
     if (filter.active) { setPcsFilterFold(fold); return; }
     setPcsCollapsed(fold);
     try { localStorage.setItem(PCS_FOLD_KEY, fold ? "1" : "0"); } catch { /* private mode: this page keeps it */ }
@@ -201,9 +204,9 @@ export function MachineSidebar(props: Props) {
   const [agentsFold, setAgentsFold] = useState<{ folded: boolean; seq: number } | null>(null);
   const agentsListId = useId();
   const changeSplit = useCallback((height: number | null) => { setSplits((last) => ({ ...last, [order]: height })); storeSidebarSplit(order, height); }, [order]);
-  const foldSection = (section: SplitFold | null) => {
-    setPcsFold(section === "pcs");
-    setAgentsFold((last) => ({ folded: section === "agents", seq: (last?.seq ?? 0) + 1 }));
+  const foldSections = (sections: readonly SplitFold[]) => {
+    setPcsFold(sections.includes("pcs"));
+    setAgentsFold((last) => ({ folded: sections.includes("agents"), seq: (last?.seq ?? 0) + 1 }));
   };
   useEffect(() => { if (!drawerOpen) { setQuery(""); setFilterAsked(false); } }, [drawerOpen]);
   // the roster's wait is a live region that is in the list from its first render, clipped while empty (never
@@ -226,7 +229,7 @@ export function MachineSidebar(props: Props) {
     </div>}
     {/* Settings → Group agents by state: the agents come first on this device, the PCs under them */}
     {settings.agentGroups && agentList}
-    {settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSection} />}
+    {settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
     <section className={`pcs-sidebar${pcsFolded ? " is-collapsed" : ""}`} aria-label={t("PCs")}>
       {/* a fold target for the resize line, including when the only PC is the Host */}
       <div className="sidebar-section-head">
@@ -244,7 +247,7 @@ export function MachineSidebar(props: Props) {
         {hiddenCount > 0 && <button type="button" className="machine-hidden-note" title={t("Choose the PCs this device shows")} onClick={() => { requestSettingsPage({ page: "remote", section: "sidebar-pcs" }); props.actions.openSettings(); }}>{hiddenCount === 1 ? t("1 PC hidden on this device") : t("{n} PCs hidden on this device", { n: hiddenCount })}</button>}
       </div>
     </section>
-    {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSection} />}
+    {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">
       {/* one PC of the phone's several: which one, and back to the list in one tap, as a team switcher at a

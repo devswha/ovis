@@ -128,8 +128,11 @@ try {
           for (const selector of [".machine-list", ".agent-list-contents"]) {
             const scrolling = await page.locator(selector).evaluate((list) => {
               list.scrollTop = list.scrollHeight;
-              return { max: list.scrollHeight - list.clientHeight, top: list.scrollTop, overflow: getComputedStyle(list).overflowY };
+              const bounds = list.getBoundingClientRect();
+              const section = list.closest(".pcs-sidebar, .agents-sidebar")!.getBoundingClientRect();
+              return { max: list.scrollHeight - list.clientHeight, top: list.scrollTop, overflow: getComputedStyle(list).overflowY, fits: bounds.top >= section.top - 1 && bounds.bottom <= section.bottom + 1 };
             });
+            assert.ok(scrolling.fits, `${label} ${selector} fits inside its section instead of being clipped`);
             assert.equal(scrolling.overflow, "auto", `${label} ${selector} owns its scroll`);
             if (scrolling.max > 1) assert.ok(scrolling.top > 0, `${label} ${selector} still scrolls after resizing`);
           }
@@ -181,13 +184,28 @@ try {
           await page.waitForFunction(() => document.querySelector(".agents-sidebar")!.classList.contains("is-collapsed"));
           await page.locator(".agent-section-toggle").click();
           assert.equal(await page.locator(".agent-section-toggle").getAttribute("aria-expanded"), "true");
-          for (const expected of [!grouped, grouped]) {
+          await line.focus(); await page.keyboard.press("ArrowDown");
+          const saved: Record<string, { stored: string; height: number }> = {
+            [key]: { stored: (await page.evaluate((key) => localStorage.getItem(key), key))!, height: (await metrics(page)).top.height },
+          };
+          for (const expected of [!grouped, grouped, !grouped, grouped]) {
             await page.locator(".sidebar-footer-settings").click();
             await openSettingsPage(page, "Appearance");
             await page.getByRole("switch", { name: "Group agents by state", exact: true }).click();
             await page.keyboard.press("Escape"); await open();
             assert.equal(await page.locator(".sidebar-shell").evaluate((shell) => shell.classList.contains("is-agents-first")), expected);
             assert.equal(await page.locator(".agent-section-toggle").getAttribute("aria-expanded"), "true", `${label} changing order preserves the caret's newer fold choice`);
+            const activeKey = expected ? "ovis:sidebar-split-agents-first" : "ovis:sidebar-split";
+            if (!saved[activeKey]) {
+              await line.focus();
+              for (let step = 0; step < 3; step++) await page.keyboard.press("ArrowUp");
+              saved[activeKey] = { stored: (await page.evaluate((key) => localStorage.getItem(key), activeKey))!, height: (await metrics(page)).top.height };
+              assert.notEqual(saved[activeKey].stored, saved[key]!.stored, `${label} the two orders have distinct allocations`);
+            }
+            assert.ok(Math.abs((await metrics(page)).top.height - saved[activeKey]!.height) <= 1, `${label} changing order restores its own height`);
+            for (const [savedKey, value] of Object.entries(saved)) {
+              assert.equal(await page.evaluate((key) => localStorage.getItem(key), savedKey), value.stored, `${label} ${savedKey} keeps its independent value`);
+            }
           }
           // A stored tall allocation is clamped to a short window, not written back at the smaller size.
           await page.evaluate((key) => localStorage.setItem(key, "2000"), key);

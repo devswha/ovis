@@ -22,6 +22,13 @@
 
 .sidebar-split:focus-visible { outline: none; }
 
+@media (forced-colors: active) {
+  .sidebar-split:focus-visible {
+    outline: var(--hairline) solid Highlight;
+    outline-offset: calc(var(--hairline) * -1);
+  }
+}
+
 @media (hover: hover) {
   .sidebar-split:hover::before { background: var(--border-strong); }
 }

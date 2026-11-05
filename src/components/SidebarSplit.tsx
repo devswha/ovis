@@ -15,8 +15,8 @@ export interface SidebarSplitProps {
   /** the upper list, the one the line sizes, for `aria-controls` */
   controls: string;
   onSplit(height: number | null): void;
-  /** fold one section and open the other, or (null) open both: the same folds as the sections' carets */
-  onFold(section: SplitFold | null): void;
+  /** Fold these sections and open the rest, using the same folds as the sections' carets. */
+  onFold(sections: readonly SplitFold[]): void;
 }
 
 interface Parts { top: HTMLElement; bottom: HTMLElement; footer: HTMLElement }
@@ -40,7 +40,7 @@ function allocation({ top }: Parts, line: HTMLElement): number {
   return Math.round(line.getBoundingClientRect().top - top.getBoundingClientRect().top);
 }
 
-/** what the line may do now: each section's head, the height the two share, and a row (a PCs head's) */
+/** Each section's head and minimum row, their shared room, and the PCs-row keyboard/snap distance. */
 function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: SplitOrder): SplitRoom {
   const head = (section: HTMLElement, side: SplitSide) => {
     const box = section.querySelector(HEAD[sectionAt(side, order)].head)?.getBoundingClientRect();
@@ -51,12 +51,19 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
   const under = head(bottom, "bottom");
   const foot = footer.getBoundingClientRect();
   const end = footer.parentElement?.getBoundingClientRect().bottom ?? foot.bottom;
+  const row = Math.round(order === "pcs" ? above.row : under.row) || 1;
+  const rowHeight = (section: HTMLElement, side: SplitSide) => {
+    const agent = sectionAt(side, order) === "agents" ? section.querySelector(".agent-row") : null;
+    return agent ? parseFloat(getComputedStyle(agent).minHeight) || row : row;
+  };
   return {
     topHead: above.height,
     bottomHead: under.height,
     // Measure available room, not the footer's current top: an oversized saved split may have pushed it down.
     room: Math.max(0, Math.round(end - foot.height - top.getBoundingClientRect().top - line.getBoundingClientRect().height)),
-    row: Math.round(order === "pcs" ? above.row : under.row) || 1,
+    row,
+    topRow: rowHeight(top, "top"),
+    bottomRow: rowHeight(bottom, "bottom"),
   };
 }
 
@@ -71,7 +78,7 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
 export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }: SidebarSplitProps) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ startY: number; startHeight: number; room: SplitRoom; height: number; snap: SplitSide | null; moved: boolean } | null>(null);
+  const drag = useRef<{ pointerId: number; startY: number; startHeight: number; room: SplitRoom; height: number; snap: SplitSide | null; moved: boolean; folds: SplitFold[] } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [snap, setSnap] = useState<SplitSide | null>(null);
   const [percent, setPercent] = useState(50);
@@ -83,6 +90,11 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     const line = ref.current;
     const found = parts(box, order);
     if (!box || !line || !found || drag.current?.moved) return;
+    // A reorder can unmount the held divider before release; do not leave its section dimmed.
+    // Only write when present, since these sections' class mutations call apply() again.
+    for (const section of [found.top, found.bottom]) {
+      if (section.classList.contains("will-fold")) section.classList.remove("will-fold");
+    }
     const room = measure(found, line, order);
     const { min, max } = splitBounds(room);
     box.style.setProperty("--split-pcs-min", `${order === "pcs" ? min : room.room - max}px`);
@@ -116,12 +128,14 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     return () => { observer.disconnect(); folds?.disconnect(); };
   }, [shell, order]);
 
-  const show = (height: number, next: SplitSide | null): void => {
+  const show = (height: number, room: number, next: SplitSide | null): void => {
     const box = shell.current;
     const found = parts(box, order);
     if (!box || !found) return;
     box.classList.add("has-split", "is-splitting");
     box.style.setProperty("--split-top", `${height}px`);
+    // apply() waits out the drag, so the line reports the height it draws as it moves
+    setPercent(room > 0 ? Math.round(height / room * 100) : 0);
     found.top.classList.toggle("will-fold", next === "top");
     found.bottom.classList.toggle("will-fold", next === "bottom");
   };
@@ -131,54 +145,62 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     found?.top.classList.remove("will-fold");
     found?.bottom.classList.remove("will-fold");
   };
-  const fold = (side: SplitSide): void => onFold(sectionAt(side, order));
+  const fold = (side: SplitSide): void => onFold([sectionAt(side, order)]);
 
   const onPointerDown = (event: PointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || drag.current) return;
     const found = parts(shell.current, order);
     if (!found) return;
     // no text selection in the lists while the line moves
     event.preventDefault();
+    event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
     const room = measure(found, event.currentTarget, order);
     const startHeight = allocation(found, event.currentTarget);
-    drag.current = { startY: event.clientY, startHeight, room, height: startHeight, snap: null, moved: false };
+    const folds = (["top", "bottom"] as const).filter((side) => found[side].classList.contains("is-collapsed")).map((side) => sectionAt(side, order));
+    drag.current = { pointerId: event.pointerId, startY: event.clientY, startHeight, room, height: startHeight, snap: null, moved: false, folds };
     setDragging(true);
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     const state = drag.current;
-    if (!state) return;
+    if (!state || state.pointerId !== event.pointerId) return;
     const dy = event.clientY - state.startY;
     // a press that has not moved yet is a click (or the first of a double-click), not a drag
     if (!state.moved && Math.abs(dy) < 3) return;
     if (!state.moved) {
       state.moved = true;
       // a drag sizes both: a folded section opens under it, as a sash drag opens a collapsed view
-      onFold(null);
+      onFold([]);
     }
     const { topHead, bottomHead, room } = state.room;
     const raw = state.startHeight + dy;
     state.snap = splitSnap(raw, state.room);
     state.height = clampSplit(raw, state.room);
-    show(state.snap === "top" ? topHead : state.snap === "bottom" ? room - bottomHead : Math.max(topHead, Math.min(room - bottomHead, raw)), state.snap);
+    show(state.snap === "top" ? topHead : state.snap === "bottom" ? room - bottomHead : Math.max(topHead, Math.min(room - bottomHead, raw)), room, state.snap);
     setSnap(state.snap);
   };
   const endDrag = (event: PointerEvent<HTMLDivElement>): void => {
     const state = drag.current;
-    if (!state) return;
+    if (!state || state.pointerId !== event.pointerId) return;
     drag.current = null;
     setDragging(false);
     setSnap(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     settle();
     if (!state.moved) return;
+    if (event.type !== "pointerup") {
+      // Cancellation (including lost capture) is not a release: undo the temporary opening and preview.
+      onFold(state.folds);
+      apply();
+      return;
+    }
     // a fold keeps the split it had: opening the section again gives it back
     if (state.snap !== null) { fold(state.snap); apply(); return; }
     onSplit(state.height);
   };
   const reset = (): void => {
     onSplit(null);
-    onFold(null);
+    onFold([]);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     const found = parts(shell.current, order);
@@ -189,7 +211,7 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
     event.preventDefault();
     if ("reset" in action) reset();
     else if ("fold" in action) fold(action.fold);
-    else { onFold(null); onSplit(action.split); }
+    else { onFold([]); onSplit(action.split); }
   };
 
   return (
@@ -209,6 +231,7 @@ export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }:
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       onDoubleClick={reset}
       onKeyDown={onKeyDown}
     >
