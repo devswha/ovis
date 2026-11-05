@@ -36,3 +36,5 @@ nsis:
   # per user, no administrator prompt: the core and the server run as the user anyway
   oneClick: true
   perMachine: false
+  # takes the old one-file Windows setup app's sign-in start and copy off the PC (README.md)
+  include: windows/installer.nsh
