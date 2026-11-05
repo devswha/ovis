@@ -28,10 +28,10 @@ export interface ConversationSearchMatch {
    */
   text_digest?: string;
   /**
-   * the store rows the searched turn was read from (ConversationTurn.rows), for an agent whose turns
-   * have them: the pick opens a turn shown from those rows, whatever either was named from
+   * the store row the match begins in (ConversationTurn.text_rows), for an agent whose turns have
+   * them: the pick opens the turn shown with that row, whatever either was named from
    */
-  rows?: [first: number, last: number];
+  row?: number;
   /** the text before the match, the match and the text after it, each with whitespace runs as one space */
   before: string;
   match: string;
@@ -167,19 +167,17 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
  * read as an answer still go on from the match's). None when that is not exactly one. Turns
  * without a time (Kimi's prompts) go by name and their whole searched text: the first of the name
  * that still says it, else the one of the name that changed since; by name only for a match of an
- * older server, which has no digest. A match with store rows (Hermes) opens the first turn of its
- * role read from any of them that still has the matched words, whatever either was named from: a
- * page boundary may split one answer at another row, and the first part holding the words is where
- * the match was. Turns of a page read without rows (an older server) go by name.
+ * older server, which has no digest. A match with a store row (Hermes) opens the turn with a text
+ * part read from it, whatever either was named from: a page boundary may split one answer at
+ * another row. Turns of a page read without rows (an older server) go by name.
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
-  if (match.rows !== undefined) {
-    const [first, last] = match.rows, pattern = searchPattern(match.match);
-    const index = turns.findIndex((turn) => turn?.rows !== undefined && turn.role === match.role
-      && turn.rows[0] <= last && first <= turn.rows[1] && pattern !== null && pattern.test(allText(turn)));
+  if (match.row !== undefined) {
+    const row = match.row;
+    const index = turns.findIndex((turn) => turn?.text_rows?.includes(row) === true);
     if (index >= 0) return index;
-    const { rows: _, ...named } = match;
-    return pickedTurn(turns.map((turn) => turn?.rows === undefined ? turn : null), named);
+    const { row: _, ...named } = match;
+    return pickedTurn(turns.map((turn) => turn?.text_rows === undefined ? turn : null), named);
   }
   const names = turns.flatMap((turn, index) => turn != null && conversationTurnAnchor(turn) === match.turn ? [index] : []);
   if (match.ts === null) {
@@ -221,15 +219,15 @@ export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: C
  * says what was searched: a clock that went back (Hermes orders by its own ids) puts a turn of the
  * match's time after an earlier one, so when none does the pick reads to the beginning. Turns
  * without a time go by name and searched text alone (by name for an older server's match). A match
- * with store rows settles once the turns read go back to its first row (rows come in id order, so
- * every row of it still there is read), or by name on turns of a page read without rows.
+ * with a store row settles once the turns read go back to it (rows come in id order, so the row is
+ * read if it is still there), or by name on turns of a page read without rows.
  */
 export function pickSettled(turns: readonly ConversationTurn[], match: ConversationSearchMatch): boolean {
-  if (match.rows !== undefined) {
-    const first = match.rows[0];
-    if (turns.some((turn) => turn.rows !== undefined && turn.rows[0] <= first)) return true;
-    const { rows: _, ...named } = match;
-    return pickSettled(turns.filter((turn) => turn.rows === undefined), named);
+  if (match.row !== undefined) {
+    const row = match.row;
+    if (turns.some((turn) => turn.text_rows?.some((read) => read <= row) === true)) return true;
+    const { row: _, ...named } = match;
+    return pickSettled(turns.filter((turn) => turn.text_rows === undefined), named);
   }
   const named = turns.findIndex((turn) => conversationTurnAnchor(turn) === match.turn);
   if (named < 0) return false;
@@ -239,15 +237,33 @@ export function pickSettled(turns: readonly ConversationTurn[], match: Conversat
   return turns.slice(0, named).some((turn) => turn.ts !== null && Date.parse(turn.ts) < at);
 }
 
+/**
+ * The store row (ConversationTurn.text_rows) of the part searchableText's first match of `pattern`
+ * begins in: its parts are joined by a blank line, which no match begins in.
+ */
+function matchRow(turn: ConversationTurn, pattern: RegExp): number | undefined {
+  const rows = turn.text_rows, found = pattern.exec(searchableText(turn));
+  if (rows === undefined || found === null) return undefined;
+  let end = 0, part = -1;
+  for (const each of turn.parts) {
+    if (each.kind !== "text") continue;
+    part++;
+    if (turn.role !== "user" && each.phase === "commentary") continue;
+    end += plainText(each.text).length + 2;
+    if (found.index < end) return rows[part];
+  }
+  return undefined;
+}
+
 /** The turns that hold the pattern, newest first, each with its first match. */
 export function searchTurns(turns: readonly ConversationTurn[], pattern: RegExp): ConversationSearchMatch[] {
   const matches: ConversationSearchMatch[] = [];
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index]!;
     const snippet = matchSnippet(searchableText(turn), pattern);
-    if (snippet !== null) {
-      matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...(turn.rows === undefined ? {} : { rows: turn.rows }), ...snippet });
-    }
+    if (snippet === null) continue;
+    const row = matchRow(turn, pattern);
+    matches.push({ turn: conversationTurnAnchor(turn), role: turn.role, ts: turn.ts, text_digest: textDigest(turn), ...(row === undefined ? {} : { row }), ...snippet });
   }
   return matches;
 }

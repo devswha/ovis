@@ -550,10 +550,10 @@ export interface ConversationTurn {
   /** Last recorded assistant activity, never the next user's timestamp. */
   end_ts?: string;
   /**
-   * The ids of the first and last store row the turn was read from (Hermes's message ids): a turn a
-   * page boundary split is still known by them, from whichever row its page began.
+   * The store row each text part was read from, in the parts' order (Hermes's message ids): a search
+   * match is found by the row its words are in, wherever a page boundary split the turn.
    */
-  rows?: [first: number, last: number];
+  text_rows?: number[];
   parts: ConversationPart[];
 }
 

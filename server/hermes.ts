@@ -672,10 +672,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
   const turns: ConversationTurn[] = [];
   const pendingTools = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
   const makeRef = (callId: string) => identity ? hermesOutputRef(identity, callId) : callId;
-  /** the turn each call went into: its result row is read into that turn while it is still the last one */
-  const callTurns = new Map<Extract<ConversationPart, { kind: "tool" }>, ConversationTurn>();
   for (const row of rows) {
-    let owner: ConversationTurn | undefined;
     try {
       const ts = parseTimestamp(row.timestamp);
 
@@ -688,6 +685,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           role: "user",
           ts,
           parts: [{ kind: "text", text: pictures === null ? invocation?.request ?? text : `${pictures.images}\n\n${invocation?.request ?? pictures.caption}` }, ...(invocation?.skills ?? []).map((skill) => ({ kind: "skill" as const, skill }))],
+          text_rows: [row.id],
         });
       } else if (row.role === "assistant") {
         let turn = turns[turns.length - 1];
@@ -722,7 +720,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
                   output: "",
                 };
                 turn.parts.push(toolPart);
-                if (callId) { pendingTools.set(callId, toolPart); callTurns.set(toolPart, turn); }
+                if (callId) pendingTools.set(callId, toolPart);
               }
             }
           } catch { /* malformed tool_calls json */ }
@@ -732,6 +730,7 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
 
         if (typeof row.content === "string" && row.content.trim().length > 0) {
           turn.parts.push({ kind: "text", text: row.content });
+          (turn.text_rows ??= []).push(row.id);
         }
       } else if (row.role === "tool") {
         const callId = row.tool_call_id ?? "";
@@ -746,7 +745,6 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           trimOutput(toolPart, output, makeRef(callId), row.output_size ?? undefined);
           if (isFailed) toolPart.error = true;
           pendingTools.delete(callId);
-          owner = callTurns.get(toolPart);
         } else {
           let turn = turns[turns.length - 1];
           if (!turn || turn.role !== "assistant") {
@@ -765,10 +763,6 @@ export function parseHermesRows(rows: readonly HermesMessageRow[], identity?: st
           turn.parts.push(orphan);
         }
       }
-      // a pick finds the turn by its rows wherever a page began (rows come in id order); a result
-      // that came after another turn is left out, so no turn's rows reach over another's
-      const last = turns[turns.length - 1];
-      if (last !== undefined && (owner === undefined || owner === last)) last.rows = [last.rows?.[0] ?? row.id, row.id];
     } catch { /* ignore individual malformed row */ }
   }
 

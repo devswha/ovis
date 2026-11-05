@@ -251,7 +251,7 @@ describe("pickedTurn", () => {
     expect(pickedTurn(turns, old)).toBe("several");
   });
 
-  it("opens a Hermes answer by its store rows when the chat's page and the search's begin at different rows", () => {
+  it("opens a Hermes answer by the store row its words are in, wherever a page split it", () => {
     const row = (id: number, role: "user" | "assistant", content: string): HermesMessageRow =>
       ({ id, role, content, tool_call_id: null, tool_calls: null, tool_name: null, reasoning: null, timestamp: 1_700_000_000 + id });
     const rows = [row(100, "user", "deploy it"), row(101, "assistant", "Checking the deploy."), row(102, "assistant", "The deploy script is ready."), row(103, "user", "thanks")];
@@ -264,31 +264,33 @@ describe("pickedTurn", () => {
     // a page that does not hold the row reads on, and opens none
     expect(pickSettled(shown.slice(1), match)).toBe(false);
     expect(pickedTurn(shown.slice(1), match)).toBe("none");
-    // the answer split the other way: the part holding the words is opened, once its first row is read
+    // the answer split the other way: the part with the words is opened
     const whole = searchTurns(parseHermesRows(rows), searchPattern("deploy script")!)[0]!;
     const split = [...parseHermesRows(rows.slice(0, 2)), ...parseHermesRows(rows.slice(2))];
-    expect(pickSettled(split.slice(2), whole)).toBe(false);
+    expect(pickSettled(split.slice(2), whole)).toBe(true);
     expect(pickedTurn(split, whole)).toBe(2);
-    // a row gone since joins the turns around it: the user's row a match was in is no answer
+    // the words a part before the searched rows also has are not the match
+    const said = [row(100, "assistant", "needle earlier"), row(101, "assistant", "filler"), row(102, "assistant", "more filler"), row(103, "assistant", "needle target")];
+    const target = searchTurns(parseHermesRows(said.slice(2)), searchPattern("needle")!)[0]!;
+    expect(pickedTurn([...parseHermesRows(said.slice(0, 3)), ...parseHermesRows(said.slice(3))], target)).toBe(1);
+    // words found across two rows open the part they begin in
+    const across = [row(101, "assistant", "deploy"), row(102, "assistant", "script")];
+    const spanned = searchTurns(parseHermesRows(across), searchPattern("deploy script")!)[0]!;
+    expect(pickedTurn([...parseHermesRows(across.slice(0, 1)), ...parseHermesRows(across.slice(1))], spanned)).toBe(0);
+    // a row gone since joins the turns around it: the row a match was in is in neither
     const prompt = searchTurns(parseHermesRows(rows), searchPattern("deploy it")!)[0]!;
     const joined = parseHermesRows([row(99, "assistant", "deploy it, you said"), row(101, "assistant", "Checking.")]);
     expect(pickSettled(joined, prompt)).toBe(true);
     expect(pickedTurn(joined, prompt)).toBe("none");
     // turns a page from an older server brought, without rows, go by name
-    const older = parseHermesRows(rows).map(({ rows: _, ...turn }) => turn);
+    const older = parseHermesRows(rows).map(({ text_rows: _, ...turn }) => turn);
     expect(pickSettled(older, whole)).toBe(true);
     expect(pickedTurn(older, whole)).toBe(1);
   });
 
-  it("keeps a Hermes tool result that came after other turns out of every turn's rows", () => {
+  it("opens the Hermes answer searched though an earlier answer's tool result came after it", () => {
     const at = (id: number, fields: Partial<HermesMessageRow>): HermesMessageRow =>
       ({ id, role: "assistant", content: null, tool_call_id: null, tool_calls: null, tool_name: null, reasoning: null, timestamp: 1_700_000_000 + id, ...fields });
-    const turns = parseHermesRows([
-      at(1, { tool_calls: JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]) }),
-      at(2, { role: "user", content: "stop" }), at(3, { role: "tool", content: "done", tool_call_id: "c1", tool_name: "bash" }),
-    ]);
-    expect(turns.map((turn) => turn.rows)).toEqual([[1, 1], [2, 2]]);
-    // the result of an earlier answer's call came after a later answer: the later one is opened
     const rows = [at(51, { content: "needle old", tool_calls: JSON.stringify([{ id: "c1", function: { name: "bash", arguments: "{}" } }]) }),
       at(52, { role: "user", content: "again" }), at(53, { content: "needle target" }), at(54, { role: "tool", content: "done", tool_call_id: "c1", tool_name: "bash" })];
     const match = searchTurns(parseHermesRows(rows.slice(2)), searchPattern("needle")!)[0]!;
