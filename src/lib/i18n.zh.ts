@@ -1,4 +1,5 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
+import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
 import { COMPOSER_ZH } from "./i18n/composer.zh.ts";
 import { CHAT_ZH } from "./i18n/chat.zh.ts";
@@ -268,6 +269,9 @@ const BASE: Record<string, string> = {
   // ---- devices ----
   "Loading…": "正在加载…",
   "Done": "完成",
+  "Name": "名称",
+  "Recent": "最近",
+  "Needs you": "需要你回应",
 
   // ---- phone ----
   "Copy": "复制",
@@ -370,7 +374,7 @@ const BASE: Record<string, string> = {
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: SETTINGS_ZH,
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,

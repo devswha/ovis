@@ -1,4 +1,5 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
+import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
 import { CHAT_JA } from "./i18n/chat.ja.ts";
@@ -266,6 +267,9 @@ const BASE: Record<string, string> = {
   // ---- devices ----
   "Loading…": "読み込んでいます…",
   "Done": "完了",
+  "Name": "名前",
+  "Recent": "最近",
+  "Needs you": "応答が必要",
 
   // ---- phone ----
   "Copy": "コピー",
@@ -368,7 +372,7 @@ const BASE: Record<string, string> = {
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: SETTINGS_JA,
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,
