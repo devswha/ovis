@@ -21,10 +21,11 @@ if ($value -ieq ('"' + $exe + '" --start')) {
 
 $present = Test-Path -LiteralPath $exe -PathType Leaf
 if ($present) {
-    # its build names itself so (app/windows/Ovis.csproj): another program at that path is not touched
+    # its build names itself so (app/windows/Ovis.csproj; the 0.4.22 release reads Ovis, Ovis, Ovis
+    # contributors, Ovis.exe): another program at that path is not touched
     $info = (Get-Item -LiteralPath $exe).VersionInfo
-    if ($info.CompanyName -ne 'Ovis' -or $info.FileDescription -ne 'Ovis for Windows') {
-        Write-Output "left $exe alone: it is not Ovis for Windows ($($info.CompanyName) / $($info.FileDescription))"
+    if ($info.CompanyName -ne 'Ovis' -or $info.ProductName -ne 'Ovis' -or $info.LegalCopyright -ne 'Ovis contributors' -or $info.OriginalFilename -ne 'Ovis.exe') {
+        Write-Output "left $exe alone: it is not Ovis for Windows ($($info.CompanyName) / $($info.ProductName) / $($info.LegalCopyright))"
         exit 0
     }
 }
