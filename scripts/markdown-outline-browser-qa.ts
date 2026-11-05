@@ -211,6 +211,43 @@ try {
     await drawer.waitFor();
     await page.touchscreen.tap(40, 500);
     await drawer.waitFor({ state: "detached" });
+
+    // a dialog in front of the viewer (Settings opened over it) keeps its own Escape; the drawer stays
+    await toggle.tap();
+    await drawer.waitFor();
+    await page.evaluate(() => {
+      window.outlineQA.keyboard(false);
+      const front = document.createElement("div");
+      front.id = "front";
+      front.setAttribute("role", "dialog");
+      front.setAttribute("aria-modal", "true");
+      front.append(Object.assign(document.createElement("button"), { textContent: "Front" }));
+      document.body.append(front);
+      front.querySelector("button")!.focus();
+      window.addEventListener("keydown", (event) => { if (event.key === "Escape") front.dataset["escaped"] = "yes"; });
+    });
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#front").getAttribute("data-escaped"), "yes", "Escape reaches the dialog in front");
+    assert.equal(await drawer.count(), 1, "the drawer behind it stays open");
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Front", "the focus stays in the dialog in front");
+    await page.evaluate(() => {
+      document.getElementById("front")!.remove();
+      window.outlineQA.keyboard(true);
+    });
+
+    // a downward stroke on the drawer at its top scrolls nothing and leaves the viewer in place: the
+    // sheet is not dragged from it
+    await drawer.evaluate((element) => { element.scrollTop = 0; });
+    const start = (await drawer.boundingBox())!;
+    const cdp = await page.context().newCDPSession(page);
+    const x = start.x + start.width / 2, y = start.y + 40;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (const step of [20, 60, 120, 240]) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + step }] });
+    assert.equal(await page.locator(".file-viewer").evaluate((element) => (element as HTMLElement).style.transform), "", "the sheet is not dragged from the drawer");
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    assert.equal(await page.getByRole("dialog", { name: "guide.md" }).count(), 1, "the viewer stays open");
+    await toggle.tap();
+    await drawer.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
     await close();
     console.log(`PASS narrow ${theme}: drawer on request, full-width document, centered on open, Escape/choice/outside close it`);

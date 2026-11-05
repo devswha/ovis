@@ -108,6 +108,10 @@ export function MarkdownOutline({ id, entries, scroller, drawer, toggle, onClose
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.isComposing) return;
+      // only while the keyboard is in this viewer: a dialog in front of it (Settings), or the pane
+      // beside a docked panel, keeps its own Escape
+      const viewer = list.current?.closest("[role=dialog], .file-panel, .file-reader");
+      if (!viewer?.contains(document.activeElement)) return;
       event.stopPropagation();
       onClose(true);
     };
@@ -130,7 +134,8 @@ export function MarkdownOutline({ id, entries, scroller, drawer, toggle, onClose
     if (drawer) onClose(true);
   };
 
-  return <nav ref={list} id={id} className={drawer ? "markdown-outline is-drawer" : "markdown-outline"} aria-label={t("Outline")}>
+  // the list scrolls on its own: a stroke down it at its top never drags the viewer's sheet (lib/sheets.ts)
+  return <nav ref={list} id={id} className={drawer ? "markdown-outline is-drawer" : "markdown-outline"} aria-label={t("Outline")} data-sheet-stroke="own">
     <ol>
       {entries.map((entry, index) => <li key={entry.at}>
         <button type="button" className={`markdown-outline-item is-depth-${entry.level - shallowest}`} aria-current={index === active ? "location" : undefined} title={entry.text} onClick={() => choose(entry, index)}>{entry.text}</button>
