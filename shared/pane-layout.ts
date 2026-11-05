@@ -57,7 +57,11 @@ export interface MovePaneRequest {
   side: PaneDirection;
 }
 
-/** `changed` false names why: same_pane, or cross_tab for a target in another tab. */
+/**
+ * `changed` false names why: same_pane, or cross_tab for a target in another tab. `changed` true with
+ * a reason: the pane moved but stayed right of or below its target, herdr having refused the swap
+ * that puts it left or above.
+ */
 export interface PaneMoved {
   ok: true;
   changed: boolean;

@@ -1731,8 +1731,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`same_tab`) and places a moved pane only right of or below its target, so the bridge moves the
   pane to a new tab of its workspace, back beside the target, and swaps the two for left or up; the
   pane keeps its ID and terminal, and herdr closes the passing tab. A herdr that moves within a tab,
-  and herdr-core (one edit of Ovis's layout document), take the first call. herdr's focus goes back
-  where it was, as after a swap. This follows VS Code's editor-group drop overlay (the half a dragged
+  and herdr-core (one edit of Ovis's layout document), take the first call. A pane herdr will not
+  bring back beside its target goes back into its tab beside another pane, and a refused swap leaves
+  it right of or below; the layout notice says so. herdr's focus goes back where it was, as after a
+  swap: only from the pane herdr picked when the focused pane left, or from the swap's source. This follows VS Code's editor-group drop overlay (the half a dragged
   editor would take, by the nearest edge) without its centre target: a pane joins no other pane, and
   its title is the swap target.
   A close confirms when

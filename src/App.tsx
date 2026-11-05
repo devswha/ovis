@@ -333,7 +333,8 @@ export function App() {
   // a pane's title dropped on another pane's body in its tab: it goes to that side of it (#1819)
   const movePanes = (dragged: SplitTarget, targetPaneId: string, side: PaneDirection): void => {
     void movePaneBeside(dragged.paneId, targetPaneId, side, dragged.machineId).then((move) => {
-      if (!move.changed) {
+      // refused, or moved only right of or below the target (herdr refused the swap that puts it first)
+      if (move.reason !== null) {
         const reason = move.reason === "cross_tab" ? t("The panes are in different tabs.")
           : move.reason === "same_pane" ? t("Choose two different panes.")
           : t("Something went wrong. Try again.");

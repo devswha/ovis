@@ -238,12 +238,13 @@ it("releases the swap queue after a native swap fails without restoring focus", 
 /**
  * herdr's pane.move as measured on 0.9.5: into the pane's own tab it answers same_tab (`withinTab`
  * models a herdr that moves there); a pane moved out to a new tab keeps its ID and leaves herdr's
- * focus on a pane of the tab it left; an explicit swap focuses its source.
+ * focus on a pane of the tab it left, which its answer names; an explicit swap focuses its source.
+ * `failInto` and `refuseInto` count the moves into a tab that fail or answer changed:false.
  */
 async function movePeer({ withinTab = false } = {}) {
   const state = {
     tabs: new Map([["source", "tab"], ["target", "tab"], ["sibling", "tab"], ["other", "tab-2"]]),
-    focus: "elsewhere", failInto: false,
+    focus: "elsewhere", failInto: 0, refuseInto: 0, refuseSwap: false,
     onInto: () => {},
   };
   const fixture = await peer((request, { socket }) => {
@@ -260,15 +261,25 @@ async function movePeer({ withinTab = false } = {}) {
       }
       if (destination.type === "tab") {
         state.onInto();
-        if (state.failInto) {
+        if (state.failInto > 0) {
+          state.failInto--;
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "target pane not found" } })}\n`);
+          return;
+        }
+        if (state.refuseInto > 0) {
+          state.refuseInto--;
+          answer({ move_result: { changed: false, reason: "no_room", pane: info(pane) } });
           return;
         }
       }
       if (destination.type === "new_tab" && state.focus === pane) state.focus = "sibling";
       state.tabs.set(pane, destination.type === "new_tab" ? "passing" : destination.tab_id);
-      answer({ move_result: { changed: true, pane: info(pane), closed_tab_id: destination.type === "tab" && withinTab ? null : "passing" } });
+      answer({ move_result: { changed: true, pane: info(pane), closed_tab_id: destination.type === "tab" && withinTab ? null : "passing", source_layout: { focused_pane_id: state.focus } } });
     } else if (request.method === "pane.swap") {
+      if (state.refuseSwap) {
+        answer({ swap: { changed: false, reason: "cross_tab", focused_pane_id: state.focus, target_pane_id: params.target_pane_id } });
+        return;
+      }
       state.focus = params.source_pane_id;
       answer({ swap: { changed: true, reason: null, focused_pane_id: state.focus, target_pane_id: params.target_pane_id } });
     } else if (request.method === "pane.focus") {
@@ -308,12 +319,19 @@ it("takes one pane.move where herdr moves a pane within its tab", async () => {
 
 it("gives herdr's focus back to the moved pane, but not over a focus the user moved meanwhile", async () => {
   const { path, state } = await movePeer();
-  state.focus = "source";
-  await paneMoveBeside("source", "target", "right", path);
-  expect(state.focus).toBe("source");
-  state.onInto = () => { state.focus = "other"; };
-  await paneMoveBeside("source", "target", "down", path);
-  expect(state.focus).toBe("other");
+  for (const side of ["right", "up"] as const) {
+    state.focus = "source";
+    state.onInto = () => {};
+    await paneMoveBeside("source", "target", side, path);
+    expect(state.focus).toBe("source");
+    // the user picks another pane while the move runs, even one of the same tab: that pick stays
+    for (const pick of ["target", "other"]) {
+      state.focus = "source";
+      state.onInto = () => { state.focus = pick; };
+      await paneMoveBeside("source", "target", side, path);
+      expect(state.focus).toBe(pick);
+    }
+  }
 });
 
 it("refuses a pane beside itself or beside a pane of another tab, moving nothing", async () => {
@@ -324,13 +342,30 @@ it("refuses a pane beside itself or beside a pane of another tab, moving nothing
   expect(changes(requests)).toEqual([]);
 });
 
-it("says where the pane waits when herdr will not bring it back beside its target", async () => {
+it("brings a pane herdr will not put beside its target back into its tab, and says where it waits when it cannot", async () => {
   const { path, state } = await movePeer();
-  state.failInto = true;
-  const error = await rejection(paneMoveBeside("source", "target", "right", path));
-  expect(error.code).toBe("pane_not_found");
-  expect(error.message).toContain("a tab of its own");
+  state.focus = "source";
+  state.failInto = 1;
+  const failed = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(failed.code).toBe("pane_not_found");
+  expect(failed.message).not.toContain("a tab of its own");
+  expect(state.tabs.get("source")).toBe("tab");
+  expect(state.focus).toBe("source");
+  state.refuseInto = 1;
+  expect(await paneMoveBeside("source", "target", "down", path)).toEqual({ changed: false, reason: "no_room" });
+  expect(state.tabs.get("source")).toBe("tab");
+  state.failInto = 2;
+  const stranded = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(stranded.code).toBe("pane_not_found");
+  expect(stranded.message).toContain("a tab of its own");
   expect(state.tabs.get("source")).toBe("passing");
+});
+
+it("says a pane moved right of its target stays there when herdr refuses the swap that puts it left", async () => {
+  const { path, state } = await movePeer();
+  state.refuseSwap = true;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "cross_tab" });
+  expect(state.tabs.get("source")).toBe("tab");
 });
 
 /** `promise`, or a rejection naming `what` once `ms` pass: an awaited event, never a fixed wait. */

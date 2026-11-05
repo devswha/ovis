@@ -301,7 +301,9 @@ export type { DevicePairedEvent, RelayPairingRequest, RelayPairingsEvent, Machin
  *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
  *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
  *         it left of or above the target; herdr's focus stays where it was; changed false names
- *         same_pane or cross_tab, an unknown pane answers pane_not_found)
+ *         same_pane or cross_tab, an unknown pane answers pane_not_found; a pane herdr will not
+ *         bring back beside its target goes back beside another pane of its tab, else the error
+ *         says it waits in a tab of its own; changed true with a reason: the swap was refused)
  *  POST   /api/pane/resize { pane_id, direction: left|right|up|down, amount? } -> PaneResized { ok: true, changed, reason }
  *         (pane.resize, herdr's resize mode: the border the pane shares with a neighbour moves that way
  *         by `amount` of the split the border belongs to, not of the tab (0 < amount <= 0.5, herdr's
