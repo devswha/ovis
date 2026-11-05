@@ -20,6 +20,8 @@ describe("paneAfterClose", () => {
     // a previous selection in another tab is not this tab's previous focus
     expect(paneAfterClose(before, after, "b", "x")).toBe("c");
     expect(paneAfterClose(before, roster({ w1: { t1: ["a", "b"] }, w2: { t2: ["x"] } }), "c", null)).toBe("b");
+    // a pane made in the tab after `before` was read keeps the selection in the tab
+    expect(paneAfterClose(roster({ w1: { t1: ["a"], t2: ["y"] } }), roster({ w1: { t1: ["n"], t2: ["y"] } }), "a", null)).toBe("n");
   });
 
   it("with its tab gone, opens the tab before it, else the one after, at that tab's focused pane", () => {

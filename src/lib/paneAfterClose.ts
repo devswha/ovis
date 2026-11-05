@@ -21,11 +21,11 @@ function tabPane(roster: Roster, tabId: string): string | null {
  * Where the selection goes when its pane closes, by the rules herdr's TUI follows when its focused
  * pane closes (herdr 0.9.5: `close_focused` in src/layout.rs, `close_tab` in src/workspace.rs,
  * `close_workspaces` in src/app/actions.rs). This browser's selection is its focus: `previous`, the
- * pane selected before, is the TUI's previous focus. In the closed pane's tab: `previous`, else
- * the next pane in layout order, else the one before. With its tab gone: the tab before it, else
- * the one after, and the pane it shows. With its workspace gone: the workspace after it, else
- * the one before, and the pane its row opens. Null when `before` does not hold the pane, or
- * nothing is left.
+ * pane selected before, is the TUI's previous focus. In the closed pane's tab: `previous`, else the
+ * next pane in layout order, else the one before, else any pane the tab still has. With its tab
+ * gone: the tab before it, else the one after, and the pane it shows. With its workspace gone: the
+ * workspace after it, else the one before, and the pane its row opens. Null when `before` does not
+ * hold the pane, or nothing is left.
  */
 export function paneAfterClose(before: Roster, after: Roster, closed: string, previous: string | null): string | null {
   const pane = before.panes.find((candidate) => candidate.pane_id === closed);
@@ -36,6 +36,9 @@ export function paneAfterClose(before: Roster, after: Roster, closed: string, pr
     ?? before.panes.filter((candidate) => candidate.tab_id === pane.tab_id).map((candidate) => candidate.pane_id);
   const sibling = nearest(order, order.indexOf(closed), inTab);
   if (sibling) return sibling;
+  // a pane made in the tab after `before` was read
+  const survivor = tabPane(after, pane.tab_id);
+  if (survivor) return survivor;
   const tabs = before.tabs.filter((tab) => tab.workspace_id === pane.workspace_id).sort((a, b) => a.number - b.number).map((tab) => tab.tab_id);
   const tab = nearest(tabs, tabs.indexOf(pane.tab_id), (id) => after.tabs.some((candidate) => candidate.tab_id === id), true);
   if (tab) return tabPane(after, tab);
