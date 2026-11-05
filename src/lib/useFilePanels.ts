@@ -52,6 +52,13 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   }, [filesDocked, viewing, fileDocked, closeFile, webPage, closeWebPage]);
   // no dialog, so no trap gives the focus back when it closes: what opened it gets it, as for the docked file
   useFocusReturn(filesOpen && filesDocked);
+  // A window narrowing under a docked web page over Files turns the page into a popup: Files, a dialog there,
+  // would come back under it and hold the focus and Escape, so it closes with the dock it lived in
+  const wasDocked = useRef(filesDocked);
+  useEffect(() => {
+    if (wasDocked.current && !filesDocked && webPage !== null) setFilesOpen(false);
+    wasDocked.current = filesDocked;
+  }, [filesDocked, webPage]);
   // the panel is no dialog, so no trap gives the focus back when it closes: what opened the file
   // (a link in the chat, a row of Files) gets it, as it does from the popup
   useFocusReturn(viewing !== null && fileDocked);

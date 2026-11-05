@@ -63,6 +63,26 @@ it("closes the Files dialog under a docked file when Files is not set beside the
   expect(panels.filesOpen).toBe(false);
 });
 
+it("closes Files beside the pane when the window narrows under a web page that covers it", async () => {
+  let wide = true;
+  const settings = { ...DEFAULT_SETTINGS, filesPanel: true, webLinks: "panel" as const };
+  function Probe() {
+    panels = useFilePanels({ settings, filePanelAvailable: wide, selectedPaneId: "p1", selectedMachineId: "local" });
+    return null;
+  }
+  await act(async () => { renderer = create(createElement(Probe)); });
+  await act(async () => { panels.setFilesOpen(true); });
+  await act(async () => { expect(panels.openWebPage("http://localhost:3000/report", false, "local")).toBe(true); });
+  expect(panels.filesCovered).toBe(true);
+
+  // narrower than the dock: the page turns popup, and Files would come back as a dialog under it
+  wide = false;
+  await act(async () => { renderer!.update(createElement(Probe)); });
+
+  expect(panels.webPage).not.toBeNull();
+  expect(panels.filesOpen).toBe(false);
+});
+
 it("keeps Files a dialog on a narrow window even when set beside the pane", async () => {
   await mount({ filesPanel: true }, false);
   expect(panels.filesDocked).toBe(false);
