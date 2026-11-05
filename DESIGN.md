@@ -691,8 +691,20 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 - File viewer: `wrapCode` (wrap long lines instead of scrolling sideways; default off),
   `markdownWidth`: `readable` (the chat lane, `--chat-w`, centered; default) or `full`, and
   `diffStyle`: `unified` (default) or `split` for a repository diff (a phone draws one column
-  whatever it says, and the viewer says so).
+  whatever it says, and the viewer says so), and `markdownOutline` (off by default, below).
   These layout choices stay on this device, like chat width.
+- Markdown outline (`markdownOutline`, #636): a Preview with two headings or more lists the
+  document's own headings (not ones inside a quote), levels stepped in, a repeated title one entry
+  per heading. It follows Zed's outline panel: the heading being read (the last past a line 32 px
+  under the body's top; at the document's end the last in view) is marked with the accent on a
+  `--bg-hover` tint and kept in the middle of the list by scrolling the list alone, so the
+  document's position and the focus never move with it. A chosen entry brings its heading to 8 px
+  under the top and stays marked while the document rests there. From 760 px of body width it is
+  a 240 px column after the document; narrower (a phone, the docked panel) it waits for the
+  header's (docked: the toolbar's) Outline button and opens as a drawer over the document's end
+  edge on `--bg-elevated`, the text keeping its width, as GitHub's file outline does. The drawer
+  takes the focus on the marked entry, centered; a choice, Escape or a press outside closes it and
+  the focus goes back to the button.
 - Web links from every agent's chat and terminal open in a new tab by default. The device setting `reuseExternalLinkTab` follows the Codex app's reusable-tab choice: one Ovis page keeps one external tab and replaces its address on later clicks. A browser lets a page steer a tab of another site only as its opener, so that tab keeps Ovis as its opener: the site in it can see and navigate the Ovis tab, which is why the setting is off by default and says so (Ovis's `Referrer-Policy: no-referrer` still sends no address). A new tab has no opener. If the browser refuses to steer the tab, the link opens in a new tab. Reuse is best effort: a site that sets Cross-Origin-Opener-Policy cuts the link, and the next click opens a new tab. Ctrl, Cmd and Alt clicks still open a new tab, and the iOS, Android, Mac and desktop apps, which hand links to the system browser, neither show the setting nor reuse a tab. The Web links panel choice and Shift-click behavior stay independent.
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
@@ -1912,6 +1924,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
+- The browser's own split view (`lib/split.ts`, part of #1158) takes more than two panes with
+  Settings → Terminal → Split into rows and columns (`splitGrid`, per device, off by default:
+  off, it keeps the two halves of #861 and #1176). The layout is a tree of row and column splits
+  whose leaves are slots, at most four (each slot but `a` is one more set of connections, and a
+  laptop's screen leaves a quarter of it per terminal). Every slot keeps a one-letter id and is
+  drawn in one container at the rectangle the tree gives it (`position: absolute`), so a slot
+  keeps its element and its terminals when the layout around it changes. A drop in a slot's edge
+  band (a quarter of its width or height) opens the pane in a new slot beside, above or below it;
+  its middle opens the pane in the slot's place; a single pane keeps the halves' midpoint with its
+  12px band and adds a band along its top and bottom. A full area takes no new slot. The guide
+  outlines every slot and moves one `--accent` highlight to the place the pane would take. Each
+  boundary is a `role="separator"` band (8px to the pointer), dragged or moved with the arrow
+  keys in 5% steps between 15% and 85%. A pane may show in several slots: the active slot sizes
+  its pty when it shows the tab, else the first slot in reading order, and the others follow
+  (PaneFollowContext). Closing the active slot gives its place and the selection to the slot it
+  shared a split with. Two slots side by side are the two halves again (`data-side`, Close this
+  half); the split is kept in `ovis:split` for a reload, and a split saved by the two-half
+  version opens as before. Turned off, the setting leaves two halves: the active slot and the
+  first other one in reading order, each keeping its terminals, at half each. This follows VS Code's editor groups (split right or down into a
+  grid, draggable boundaries, the drop overlay by edge or centre), with the grid's tree model
+  from bricks-8's fork; moving a pane to a window of its own and stepping slots from the
+  keyboard are left for later.
 - Up to 768px a split has no room: the canvas shows the selected pane alone, full size and
   borderless as a zoomed one, with no split boundary, and the tab's menu picks another. The
   other panes stay mounted and hidden at the same full size. This is only what the browser draws:
@@ -3453,7 +3487,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerArtifacts`), the Side conversations chip (experimental, off by default, the device setting
   `composerBtw`), the Paste and send button (off by default, the device setting
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
-  **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
+  **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Markdown outline (off by default, the device setting `markdownOutline`), Diff layout), **Terminal** (font size, font family, wheel
   speed, input mode, Key bar, Keyboard only from the key bar (off by default, the device setting
   `terminalKeyboardOnRequest`), Fold the key bar (touch screens, off by default, the device setting
   `terminalFoldKeyBar`), Clipboard from a pane, Pictures in the terminal (off by default, the
