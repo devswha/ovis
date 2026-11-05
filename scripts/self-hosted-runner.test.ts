@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -55,6 +55,8 @@ function runRunner(options: {
   args?: string[];
   /** XDG_CACHE_HOME for the launcher, kept after the run; a fresh one inside the run's temp dir otherwise */
   cacheHome?: string;
+  /** XDG_STATE_HOME for the launcher (the build cache's outboxes), kept after the run; fresh otherwise */
+  stateHome?: string;
   gitFetchExitCode?: number;
   /** exit status of the container that builds the Bun cache */
   cacheBuildExitCode?: number;
@@ -287,6 +289,7 @@ exit 0
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
+      XDG_STATE_HOME: options.stateHome ?? join(tempDir, "state"),
       GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
       DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
       GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
@@ -317,6 +320,14 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(dockerRun).toContain("--shm-size 2g");
   });
 
+  it("turns core dumps off in every runner container, so a crash leaves no file in the checkout", () => {
+    const { result, calls } = runRunner({ count: 2 });
+    expect(result.status).toBe(0);
+    const runs = calls.split("\n").filter((call) => runnerRun.test(call));
+    expect(runs).toHaveLength(2);
+    for (const run of runs) expect(run).toContain("--ulimit core=0");
+  });
+
   it("hands a host env file to every runner container, never to the network namespace one", () => {
     const { result, calls, envFile } = runRunner({ count: 2, envFile: "present" });
     expect(result.status).toBe(0);
@@ -327,6 +338,47 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     for (const call of runners) expect(call).toContain(`--env-file ${envFile} herdr-ci-runner:local`);
     expect(lines.filter((call) => call.startsWith("docker run -d ")).every((call) => !call.includes("--env-file"))).toBe(true);
     expect(runRunner().calls).not.toContain("--env-file");
+  });
+
+  it("mounts the build cache read-only in every runner container, with only its own outbox to write", () => {
+    const home = mkdtempSync(join(tmpdir(), "herdr-runner-build-cache-test-"));
+    try {
+      const stateHome = join(home, "state");
+      const { result, calls } = runRunner({ count: 2, stateHome, args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "devswha"] });
+      expect(result.status).toBe(0);
+      const root = join(home, "shm/owner/repo");
+      const outboxes = join(stateHome, "ovis-ci-runner/build-outbox/owner/repo");
+      const lines = calls.split("\n");
+      const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
+      const locks = `herdr-ci-${host}-build-cache-locks`;
+      expect(lines).toContain(`docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=16m,mode=1777 ${locks}`);
+      const runners = lines.filter((call) => runnerRun.test(call));
+      expect(runners).toHaveLength(2);
+      for (const call of runners) {
+        const name = /--name (\S+)/.exec(call)![1]!;
+        expect(call).toContain(`-v ${root}/entries:/build-cache:ro -v ${locks}:/build-cache-locks -v ${outboxes}/${name}:/build-cache-outbox `);
+        expect(call).toContain("-e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox -e OVIS_BUILD_CACHE_WRITER=devswha ");
+        // the cache itself is never mounted writable, nor anything under it
+        expect(call).not.toMatch(/entries:\/build-cache(?!:ro)/);
+        expect(call).not.toContain(`-v ${root}/used`);
+      }
+      expect(lines.filter((call) => call.startsWith("docker run -d ")).every((call) => !call.includes("build-cache"))).toBe(true);
+      const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
+      const first = join(outboxes, `herdr-ci-${host}-1`);
+      expect([mode(join(root, "entries")), mode(join(root, "used")), mode(first)]).toEqual(["755", "755", "1777"]);
+      expect(runRunner().calls).not.toContain("build-cache");
+      // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
+      mkdirSync(join(first, "junk"), { recursive: true });
+      writeFileSync(join(first, "junk/blob"), "x");
+      mkdirSync(join(outboxes, ".taken", "left"), { recursive: true });
+      const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
+      expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
+      expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
+      for (const mb of ["0", "00", "0000"]) expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", mb] }).result.status).toBe(2);
+      expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("refuses a host env file it cannot read before starting anything", () => {
@@ -737,6 +789,227 @@ describe.skipIf(process.platform !== "linux")("self-hosted runner job-started ho
       // a closed output takes the refusal with it: the kill alone is the evidence there
       if (!("closedOutput" in event)) expect(result.stdout).toContain("::error::");
       expect(result.stdout).not.toContain("next step ran");
+    }
+  });
+});
+
+describe.skipIf(process.platform === "win32")("build cache promotion", () => {
+  const promoteScript = fileURLToPath(new URL("./self-hosted-runner/build-cache-promote.sh", import.meta.url));
+  const key = "a".repeat(64);
+  const slot = "herdr-ci-host-3";
+
+  /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
+    try {
+      const bin = join(dir, "bin");
+      const root = join(dir, "root");
+      const outboxes = join(dir, "outboxes");
+      const outbox = join(outboxes, slot);
+      for (const path of [bin, join(root, "entries"), outbox]) mkdirSync(path, { recursive: true });
+      const dist = join(dir, "dist");
+      mkdirSync(join(dist, "assets"), { recursive: true });
+      writeFileSync(join(dist, "index.html"), "<p>");
+      writeFileSync(join(dist, "assets/a.js"), "a");
+      if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
+      if (ownManifest) writeFileSync(join(dist, ".manifest"), "the app's own");
+      spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
+      writeFileSync(join(outbox, `${key}.claim`), claim);
+      // more claims in the same outbox: a job flooding the launcher's GitHub quota
+      for (let i = 0; i < extraClaims; i++) {
+        const other = String(i).padStart(64, "e");
+        spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
+        writeFileSync(join(outbox, `${other}.claim`), "7 1\n");
+      }
+      // an earlier slot whose job left a directory named like a claim
+      if (junkSlot === "claim") mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
+      // or a "tar" that is a directory this user cannot delete, as one of the runners' user is
+      if (junkSlot === "tar") {
+        const junk = join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.tar`);
+        mkdirSync(join(junk, "x"), { recursive: true });
+        writeFileSync(join(junk, "x", "f"), "");
+        chmodSync(join(junk, "x"), 0o000);
+        writeFileSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), "7 1\n");
+      }
+      // a restore's use of an entry another run left, and a used marker that is a link
+      if (used) {
+        mkdirSync(join(root, "entries", "c".repeat(64)));
+        writeFileSync(join(outbox, `used-${"c".repeat(64)}`), "");
+        symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
+      }
+      const sha = "5".repeat(40);
+      const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
+      if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
+      const answers: Record<string, unknown> = {
+        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
+        run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
+        pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
+      };
+      for (const [name, value] of Object.entries(answers)) writeFileSync(join(dir, `${name}.json`), JSON.stringify(value));
+      };
+      answer(github);
+      writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$2" >> "\${0%/bin/gh}/gh.log"
+# GitHub failing for a moment
+[ -e "\${0%/bin/gh}/fail" ] && exit 1
+case "$2" in
+  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
+  repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
+  repos/owner/repo) echo main ;;
+  # as GitHub answers for a run or pull request that does not exist
+  *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+esac
+`);
+      chmodSync(join(bin, "gh"), 0o755);
+      const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const result = pass();
+      // later passes, each after the job claimed again (the claim's run and attempt), each for another build
+      const callsBefore: number[] = [];
+      later.forEach((again, i) => {
+        const other = String(i).padStart(64, "f");
+        spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
+        writeFileSync(join(outbox, `${other}.claim`), again);
+        callsBefore.push(existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean).length : 0);
+        if (thenGithub) answer(thenGithub);
+        // the slot's ten minutes are over
+        if (slotHeldOffUntilNow) {
+          const old = new Date(Date.now() - 20 * 60_000);
+          for (const name of readdirSync(join(outboxes, ".refused")).filter((name) => name.startsWith("slot-"))) utimesSync(join(outboxes, ".refused", name), old, old);
+        }
+        pass();
+      });
+      const entry = join(root, "entries", key);
+      return {
+        status: result.status,
+        stderr: result.stderr,
+        outbox: readdirSync(outbox),
+        entries: readdirSync(join(root, "entries")),
+        manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
+        used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
+        ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
+        callsBefore,
+      };
+    } finally {
+      spawnSync("chmod", ["-R", "u+rwX", dir]);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+
+  it("takes in the build of a pull request the writer opened and pushed, with the manifest readers check", () => {
+    const run = promote();
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
+    expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
+    expect(run.outbox).toEqual([`judged-${key}`]);
+  });
+
+  it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
+    const run = promote({}, "files", "devswha", "claim");
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
+  });
+
+  it("goes on taking in trusted builds past a tar this user cannot delete", () => {
+    const run = promote({}, "files", "devswha", "tar");
+    expect(run.status).toBe(0);
+    expect(run.entries).toEqual([key]);
+  });
+
+  it("stamps an entry's use from a restore's marker in the host's own directory, and drops the marker", () => {
+    const run = promote({}, "files", "devswha", false, true);
+    expect(run.used).toEqual(["c".repeat(64)]);
+    expect(run.outbox).toEqual([`judged-${key}`]);
+  });
+
+  it("judges one claim per outbox per pass, and deletes the rest unread", () => {
+    const run = promote({}, "files", "devswha", false, false, "7 1\n", 5);
+    expect(run.entries).toHaveLength(1);
+    expect(run.ghCalls.filter((call) => call.includes("/jobs"))).toHaveLength(1);
+    expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
+    expect(run.outbox).toHaveLength(6);
+  });
+
+  it("asks GitHub about a refused run once: its claims after that are refused without a call", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n", "7 1\n", "7 1\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.callsBefore[0]).toBeGreaterThan(0);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+    expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
+  });
+
+  it("holds off a slot whose claim was refused, whatever run its next claims name", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n", "9 1\n", "7 2\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+  });
+
+  it("remembers a refused run for longer than it holds off its slot", () => {
+    const same = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true);
+    expect(same.ghCalls).toHaveLength(same.callsBefore[0]!);
+    const other = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"], true);
+    expect(other.ghCalls.length).toBeGreaterThan(other.callsBefore[0]!);
+  });
+
+  it("never lets a claim from another slot refuse a trusted run's own claims", () => {
+    // another slot's job names run 7, whose job runs on this slot only once GitHub says so below
+    const run = promote({ runner: "herdr-ci-host-9" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true, { runner: slot });
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("holds off a slot whose claims name runs that do not exist", () => {
+    const run = promote({}, "files", "devswha", false, false, "99999991 1\n", 0, false, ["99999992 1\n", "99999993 1\n", "99999994 1\n"]);
+    expect(run.callsBefore[0]).toBe(1);
+    expect(run.ghCalls).toHaveLength(1);
+  });
+
+  it("refuses a stale run of the writer's pull request without holding off its slot", () => {
+    // the pull request moved on to another head while run 7's job was still running
+    const run = promote({ prSha: "6".repeat(40) }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 2\n"], false, {});
+    // its re-run on the same slot, at the pull request's head, is taken in
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("remembers no refusal when GitHub failed to answer", () => {
+    const run = promote({ fail: true }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("goes on asking about trusted runs: only refusals are remembered", () => {
+    const run = promote({}, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"]);
+    expect(run.entries).toHaveLength(2);
+    expect(run.ghCalls.length).toBeGreaterThan(run.callsBefore[0]!);
+  });
+
+  it("refuses a build holding a file named like the manifest", () => {
+    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).entries).toEqual([]);
+  });
+
+  it("takes in the build of a push to the default branch", () => {
+    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([key]);
+  });
+
+  it("never takes in a build from a job it cannot trust, and deletes it", () => {
+    const refused = [
+      promote({ author: "someone" }),
+      promote({ actor: "someone" }),
+      promote({ prSha: "6".repeat(40) }),
+      promote({ headRepo: "fork/repo" }),
+      promote({ runner: "herdr-ci-host-4" }),
+      promote({ status: "completed" }),
+      promote({ event: "push", branch: "other" }),
+      promote({ event: "workflow_dispatch" }),
+      promote({}, "files", ""),
+      promote({}, "link"),
+      // a claim too big to be one: never read
+      promote({}, "files", "devswha", false, false, `7 1${" ".repeat(100)}\n`),
+    ];
+    for (const run of refused) {
+      expect(run.status).toBe(0);
+      expect(run.entries).toEqual([]);
+      expect(run.outbox).toEqual([`judged-${key}`]);
     }
   });
 });

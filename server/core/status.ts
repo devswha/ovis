@@ -3,6 +3,7 @@
  * own status, background waits, plans, the machine roster and the one collector that feeds them.
  */
 import { join } from "node:path";
+import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { alertStatus, paneAlertsMuted, paneTitle } from "../../shared/notify-policy.ts";
 import { BackgroundWait } from "../background-wait.ts";
@@ -48,6 +49,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     codexHome?: string;
     telemetry?: Telemetry;
     machines?: boolean;
+    /** how PCs added through the relay reach it; tests point it at a local relay */
+    relayPcSocket?: (url: string) => RelaySocket;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     alertTiming?: Partial<AlertTiming>;
     pushLoopbackHttp?: boolean;
@@ -88,8 +91,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     inUse: () => present.size > 0,
     // the persisted list, read as each alert is scheduled and again as it goes out
     muted: (machineId, paneId) => paneAlertsMuted(preferences.get().muted_panes, machineId, paneId),
-    lookupTitle: async (paneId) => {
-      return paneTitle(await paneGet(paneId));
+    // on herdr-core the pane carries what a blocked agent waits for (server/herdr-core/snapshot.ts reportedFacts)
+    lookupPane: async (paneId) => {
+      const pane: Pick<HerdrPane, "agent_kind"> & Parameters<typeof paneTitle>[0] = await paneGet(paneId);
+      return { title: paneTitle(pane), ...(pane.agent_kind ? { agent_kind: pane.agent_kind } : {}) };
     },
     // each pane alert that reached a device, for the daily active message's usage
     onAlertDelivered: () => options.telemetry?.tally("alerts_delivered"),
@@ -330,7 +335,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** A pane's status frame: every one says whether the pane waits on its turn's background work. */
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null } = {}): ServerMessage =>
     ({ type: "pane-status", pane_id: paneId, agent_status: status, ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
-  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch });
+  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
 
   function broadcastAll(message: ServerMessage): void {
@@ -363,6 +368,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (turn) waits.status(paneId, status);
     broadcastAll(paneStatus(paneId, status, { background_tasks: background }));
     if (turn || waits.waiting(paneId) !== held) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+    // after the status: its change calls off what was waiting, and this error is what the rest says
+    if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
   }
 
   /**
@@ -376,6 +383,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     broadcastAll(paneStatus(paneId, status));
     if (turn) push.onStatus(paneId, status).catch(logPushError);
+    if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
   }
 
   /**
