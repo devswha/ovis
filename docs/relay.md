@@ -284,7 +284,8 @@ it, and the identity reset is refused.
 4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`; the
    PC sends `WELCOME` with 32 fresh random bytes, its version and its limits as soon as its side of
    the handshake is done, without waiting for `HELLO`, so it reaches the phone one round trip
-   sooner. That `WELCOME` is marked `provisional`: it offers version 1 with no features, it doesn't
+   sooner, unless a pairing window is open (then it answers `HELLO`, as older phones expect when they
+   compare digits). That `WELCOME` is marked `provisional`: it offers version 1 with no features, it doesn't
    say the phone's `HELLO` was accepted, and the PC still checks that `HELLO` (version 1 offered, no
    required feature it can't select) and requires it before `PAIR` or `AUTH`. A `HELLO` that offers
    pairing by comparing digits gets a second, final `WELCOME` with what the PC selects, and a phone

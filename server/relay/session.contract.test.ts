@@ -438,6 +438,20 @@ it("sends WELCOME behind the protected handshake, before HELLO, and still requir
   expect(await bounded(twice.serverError)).toBe("protocol_error");
 });
 
+it("sends no WELCOME before HELLO while a pairing window is open, so a phone from before provisional WELCOMEs can compare digits", async () => {
+  const f = fixture();
+  f.app.context.services.relay.approvals.openWindow();
+  const link = await relayConnection(f);
+  await link.flush();
+  expect(link.frames).toEqual([]);
+  let provisional = false;
+  link.onFrame = (frame) => { if (frame.type === FrameType.WELCOME && frame.payload.provisional) provisional = true; };
+  expect((await link.auth(await relayDevice(f))).device_id).toMatch(/^[0-9a-f]{16}$/);
+  // HELLO was answered by one WELCOME, as before provisional ones
+  expect(link.frames.filter((frame) => frame.type === FrameType.WELCOME)).toHaveLength(1);
+  expect(provisional).toBe(false);
+});
+
 it("enforces the ten second setup deadline without a wall-clock sleep", async () => {
   const f = fixture();
   const clock = new TestClock();

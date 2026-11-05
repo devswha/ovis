@@ -72,6 +72,8 @@ export class RelaySession {
   private readonly nonce = randomBytes(32);
   /** This session's channel binding, when the phone offered pairing by comparing digits and this PC selected it. */
   private sasBinding: Uint8Array | undefined;
+  /** A WELCOME went out: the provisional one before HELLO, or the answer to it. */
+  private welcomed = false;
   /** A pairing by comparing digits under way; `ended` once it made a device or counted as a failure. */
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
@@ -149,11 +151,13 @@ export class RelaySession {
     options.channel.onClose(() => this.mux.carrierLost());
     // A WELCOME with no feature rides right behind the protected handshake's answer, so a phone signing in
     // gets its nonce one round trip sooner. It is provisional: HELLO is still required, and checked, before
-    // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME (welcome()).
-    this.welcome([], true);
+    // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME. Only while no
+    // comparison can be under way: a phone from before `provisional` reads the first WELCOME as the answer.
+    if (!options.services.relay.approvals.windowOpen()) this.welcome([], true);
   }
 
   private welcome(features: readonly string[], provisional: boolean): void {
+    this.welcomed = true;
     this.mux.sendSession({
       type: FrameType.WELCOME, flags: 0, stream_id: 0,
       payload: {
@@ -216,8 +220,8 @@ export class RelaySession {
         // a feature the phone requires has to be one this PC selects on this channel
         if (frame.payload.required_features.some((feature) => feature !== PAIR_SAS_FEATURE || !this.sasBinding)) { this.close("unsupported_extension"); return; }
         this.state = "auth";
-        // the provisional WELCOME selected no feature: one that offered comparing digits hears what this PC selects
-        if (frame.payload.features.includes(PAIR_SAS_FEATURE)) this.welcome(this.sasBinding ? [PAIR_SAS_FEATURE] : [], false);
+        // after a provisional WELCOME (no feature selected), only a phone that offered comparing digits needs another
+        if (!this.welcomed || frame.payload.features.includes(PAIR_SAS_FEATURE)) this.welcome(this.sasBinding ? [PAIR_SAS_FEATURE] : [], false);
         return;
       case FrameType.AUTH: case FrameType.PAIR: {
         if (this.state !== "auth") { this.close("protocol_error"); return; }

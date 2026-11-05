@@ -101,12 +101,8 @@ async function phone(transport: Transport, serverKey: string) {
     binding: () => { const binding = channelBinding(channel); if (!binding) throw new Error("No binding"); return binding; },
     async hello(features = [PAIR_SAS_FEATURE]) {
       await send({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features, required_features: [] } });
-      // the PC's provisional WELCOME left before it read HELLO; one offering comparison hears the answer to it
-      const provisional = await inbox.next();
-      if (provisional.type !== FrameType.WELCOME || !provisional.payload.provisional) throw new Error(`Expected a provisional WELCOME, got ${provisional.type}`);
-      if (!features.includes(PAIR_SAS_FEATURE)) return provisional.payload;
       const welcome = await inbox.next();
-      if (welcome.type !== FrameType.WELCOME || welcome.payload.provisional) throw new Error(`Expected the final WELCOME, got ${welcome.type}`);
+      if (welcome.type !== FrameType.WELCOME) throw new Error(`Expected WELCOME, got ${welcome.type}`);
       return welcome.payload;
     },
   };
@@ -219,8 +215,6 @@ test("a phone that requires the feature is given it where this PC can bind the d
   const { p } = await direct(f);
   await p.send({ type: FrameType.HELLO, flags: 0, stream_id: 0,
     payload: { protocol: "ovis-mux", versions: [1], features: [PAIR_SAS_FEATURE], required_features: [PAIR_SAS_FEATURE] } });
-  const provisional = await p.inbox.next();
-  expect(provisional.type === FrameType.WELCOME && provisional.payload.provisional).toBe(true);
   const welcome = await p.inbox.next();
   expect(welcome.type === FrameType.WELCOME && welcome.payload.features).toEqual([PAIR_SAS_FEATURE]);
 });
@@ -496,12 +490,8 @@ async function intercepted(f: Fixture, rewrite: boolean) {
       await back.send(encodeFrame({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(relayPhoneNonce) } }).slice().buffer);
     } else {
       await back.send(data);
-      // a HELLO offering comparison is answered by the final WELCOME, after the provisional one
-      for (;;) {
-        const answer = await fromPc.next();
-        await toPhone!.send(encodeFrame(answer).slice().buffer);
-        if (!(frame.type === FrameType.HELLO && answer.type === FrameType.WELCOME && answer.payload.provisional && frame.payload.features.includes(PAIR_SAS_FEATURE))) break;
-      }
+      const answer = await fromPc.next();
+      await toPhone!.send(encodeFrame(answer).slice().buffer);
     }
   };
   const p = await phone(phoneSide, exportPublicKey(relayKeys.publicKey));
