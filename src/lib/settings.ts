@@ -43,6 +43,10 @@ export const CHAT_WIDTHS: readonly ChatWidth[] = ["narrow", "default", "wide", "
  *  on: there, on a phone and in the terminal input line, disabled with its reason where it cannot work; off: nowhere */
 export type VoiceButton = "auto" | "on" | "off";
 export const VOICE_BUTTONS: readonly VoiceButton[] = ["auto", "on", "off"];
+/** what turns speech into text. auto: the server's API key when one is saved, else the browser's
+ *  speech recognition; browser and server hold to the one chosen, and the mic says why when it cannot */
+export type VoiceEngineChoice = "auto" | "browser" | "server";
+export const VOICE_ENGINES: readonly VoiceEngineChoice[] = ["auto", "browser", "server"];
 /**
  * The languages dictation can be set to, as BCP 47 tags (SpeechRecognition.lang; the transcribe
  * route takes the first subtag). Auto can also use a browser language outside this list when
@@ -184,6 +188,7 @@ export interface Settings {
   voiceInput: VoiceButton;
   /** the language dictation listens for; auto: the UI language's, or the browser's the UI lacks (src/lib/voice.ts dictationLocale) */
   voiceLanguage: DictationLanguage;
+  voiceEngine: VoiceEngineChoice;
   voicePolishChat: boolean;
   /** off by default: a terminal line is usually a command, kept as spoken */
   voicePolishTerminal: boolean;
@@ -210,14 +215,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * fileOpen, webLinks, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, terminalMirrorWrap, sidebarFilter, the
+ * fileOpen, webLinks, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, terminalMirrorWrap, sidebarFilter, voiceEngine, the
  * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames">;
+  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -309,7 +314,7 @@ export const SETTING_SCOPE = {
   sidebarFilter: "device",
   keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertInApp: "device", alertSound: "device",
   paletteLight: "device", paletteDark: "device", statusIndicators: "device",
-  voiceInput: "device", voiceLanguage: "device", voicePolishChat: "device", voicePolishTerminal: "device",
+  voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device",
   // Viewer layout follows this screen, as chatWidth does.
   wrapCode: "device", markdownWidth: "device", diffStyle: "device", fileOpen: "device", webLinks: "device",
   // a new agent starts the same way whichever device opened it
@@ -377,6 +382,7 @@ export const DEFAULT_SETTINGS: Settings = {
   usageHidden: [],
   voiceInput: "auto",
   voiceLanguage: "auto",
+  voiceEngine: "auto",
   voicePolishChat: true,
   voicePolishTerminal: false,
   wrapCode: false,
@@ -568,6 +574,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     usageHidden: usageKeys(record["usageHidden"]),
     voiceInput: voiceButton(record["voiceInput"]),
     voiceLanguage: DICTATION_LANGUAGES.includes(record["voiceLanguage"] as (typeof DICTATION_LANGUAGES)[number]) ? record["voiceLanguage"] as DictationLanguage : DEFAULT_SETTINGS.voiceLanguage,
+    voiceEngine: VOICE_ENGINES.includes(record["voiceEngine"] as VoiceEngineChoice) ? record["voiceEngine"] as VoiceEngineChoice : DEFAULT_SETTINGS.voiceEngine,
     voicePolishChat: typeof record["voicePolishChat"] === "boolean" ? record["voicePolishChat"] : DEFAULT_SETTINGS.voicePolishChat,
     voicePolishTerminal: typeof record["voicePolishTerminal"] === "boolean" ? record["voicePolishTerminal"] : DEFAULT_SETTINGS.voicePolishTerminal,
     wrapCode: typeof record["wrapCode"] === "boolean" ? record["wrapCode"] : DEFAULT_SETTINGS.wrapCode,
