@@ -1014,7 +1014,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   app offers no way to close it: no Close pane in the pane's menu, no Close tab (menu item,
   Delete key or middle click) for the tab it is in, and no Close workspace, Close group or Delete
   worktree checkout for a workspace whose close would take it; a confirmation already open when a
-  lock lands goes. A watching device sees the item disabled, as Mute alerts is. The locks are the shared `lockedAgents`
+  lock lands goes, and a workspace or group close also goes unsent when the workspaces or panes it
+  would take differ from those it was opened over. A tab is checked by every pane in it, by id,
+  whatever the strip lists. A watching device sees the item disabled, as Mute alerts is. The locks are the shared `lockedAgents`
   setting, pin keys that hold only while the row is pinned, so every browser and phone honours
   them; a lock moves with its pin when herdr moves the pane. Closing from herdr, the Herdr app or a
   script is untouched. Browsers' pinned tabs keep their place but still close; this adds the

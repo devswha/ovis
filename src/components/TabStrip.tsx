@@ -323,7 +323,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (latest.current.tabId === tab.tab_id && pane) onSelectPane(pane.pane_id);
     if (strip.current?.contains(document.activeElement) || document.activeElement === document.body) focusTab(beside.tab_id);
   };
-  const tabLocked = (tab: HerdrTab): boolean => panesOf(tab).some((pane) => paneLocked(pane.pane_id));
+  // every pane of the tab by id, the ones the strip leaves out of its list (a DAG viewer's) included
+  const tabLocked = (tab: HerdrTab): boolean => snapshot.panes.some((pane) => pane.tab_id === tab.tab_id && paneLocked(pane.pane_id));
   // a lock that lands while the confirmation is open (from another browser) takes the confirmation with it
   if (confirm && tabLocked(confirm.tab)) setConfirm(null);
   const requestClose = (tab: HerdrTab): void => {
