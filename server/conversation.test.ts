@@ -22,6 +22,7 @@ import { DevinHistoryChanged } from "./devin.ts";
 import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
 import * as gjcRuntime from "./gjc-runtime.ts";
+import * as runtime from "./herdr-core/runtime.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { agyTranscriptPage, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
@@ -3344,6 +3345,104 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
     table.mockRestore(); rpc.mockRestore();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+/**
+ * Real stand-ins for Claude under one shell (#3009): `count` processes whose argv[0] is `claude`, each
+ * printing its pid once it runs under that name, and waiting on the test's stdin. Linux only: Claude's
+ * PID record is checked against the process's start in /proc.
+ */
+async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
+  // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
+  const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
+  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const reader = job.stdout.getReader();
+  let text = "";
+  while (text.split("\n").length <= count) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`the stand-ins ended early: ${text}`);
+    text += new TextDecoder().decode(value);
+  }
+  const pids = text.trim().split("\n").map(Number);
+  const start = (pid: number) => { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]!; };
+  return { leader: job.pid, pids, start, stop: () => { for (const pid of [...pids, job.pid]) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } } };
+}
+
+/** A Claude store in a temp home with one session's transcript, and the PID record of `pid` naming it. */
+function claudeHome(pid: number, procStart: string): { home: string; cwd: string; transcript: string; restore: () => void } {
+  const home = mkdtempSync(join(tmpdir(), "claude-job-"));
+  const session = "6d1f2e3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
+  const cwd = join(home, "work");
+  const transcript = join(home, ".claude", "projects", claudeProjectDir(cwd), `${session}.jsonl`);
+  mkdirSync(join(home, ".claude", "projects", claudeProjectDir(cwd)), { recursive: true });
+  writeFileSync(transcript, "");
+  mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+  writeFileSync(join(home, ".claude", "sessions", `${pid}.json`), JSON.stringify({ pid, kind: "interactive", sessionId: session, procStart }));
+  const previousHome = process.env["HOME"];
+  const previousDir = process.env["CLAUDE_CONFIG_DIR"];
+  process.env["HOME"] = home;
+  delete process.env["CLAUDE_CONFIG_DIR"];
+  return {
+    home, cwd, transcript, restore: () => {
+      if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+      if (previousDir !== undefined) process.env["CLAUDE_CONFIG_DIR"] = previousDir;
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+// herdr-core names only the first process of the foreground job: a launcher in front of Claude hid it (#3009)
+describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name in front (#3009)", () => {
+  const launcher = (leader: number) => ({ process_info: { pane_id: "t1", shell_pid: 1, foreground_processes: [{ pid: leader, name: "bun", argv: ["bun", "launch.ts"] }] } });
+
+  it("finds the one Claude a launcher runs, and its session by the PID record", async () => {
+    const job = await claudeStandIns(1);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
+    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    try {
+      const found = await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
+      expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
+
+  it("binds none when two Claudes run below the foreground: which one the pane shows cannot be told", async () => {
+    const job = await claudeStandIns(2);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
+    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    try {
+      expect(await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
+
+  /** herdr-core's answers for a tab running `hc attach <word>` (t3), and for the terminal hc resolves that word to */
+  const viewer = (word: string, resolved: string, claudePid: number) => (async (method: string, params: { pane_id?: string }) => {
+    if (method === "agent.get") return { agent: {} };
+    if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: 1, foreground_processes: [{ pid: 2, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
+    return { process_info: { pane_id: resolved, shell_pid: 1, foreground_processes: [{ pid: claudePid, name: "claude", argv: ["claude"] }] } };
+  }) as unknown as typeof herdr.herdrRpc;
+
+  it("shows the conversation of the local terminal an `hc attach <t>` tab views", async () => {
+    const job = await claudeStandIns(1);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(viewer("t2", "t2", job.pids[0]!));
+    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    try {
+      const found = await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
+      expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
+
+  it("follows no `hc attach` word hc resolves to another terminal's address, as a name", async () => {
+    const job = await claudeStandIns(1);
+    const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(viewer("review", "t2", job.pids[0]!));
+    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    try {
+      expect(await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
+    } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
+  });
 });
 
 // any client snapshot starts the Claude subagent refresh that reads this, also the one a pending message is checked against (#1545)
