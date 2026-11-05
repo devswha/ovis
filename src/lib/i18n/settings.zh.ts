@@ -222,6 +222,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Show above the message box": "显示在输入框上方",
   "Restore defaults": "恢复默认值",
   "Ovis sends anonymous usage counts to improve it.": "Ovis 会匿名发送使用统计以改进产品。",
+  "Couldn't turn the counts off. Open Settings to use the switch.": "无法关闭统计。请在设置中使用开关。",
   "Turn off": "关闭",
   "What each field means": "各字段的含义",
   "What is sent": "发送的内容",

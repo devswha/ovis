@@ -222,6 +222,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Show above the message box": "入力欄の上に表示",
   "Restore defaults": "デフォルトに戻す",
   "Ovis sends anonymous usage counts to improve it.": "Ovis は改善のために匿名の利用集計を送信します。",
+  "Couldn't turn the counts off. Open Settings to use the switch.": "集計をオフにできませんでした。設定のスイッチを使ってください。",
   "Turn off": "オフにする",
   "What each field means": "各項目の説明",
   "What is sent": "送信内容",

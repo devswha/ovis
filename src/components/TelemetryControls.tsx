@@ -20,6 +20,10 @@ export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen:
   const [shown, setShown] = useState(false);
   const [closed, setClosed] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
+  const [offFailed, setOffFailed] = useState(false);
+  // set from the tap on Turn off: an answer to an earlier request that still says on is not taken,
+  // so it cannot tell the snapshot again behind the off
+  const turnedOff = useRef(false);
   // The server keeps this browser's latest safe settings snapshot for its next count. The snapshot
   // contains no raw user-entered values or account identifiers.
   const { settings } = useSettings();
@@ -36,7 +40,7 @@ export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen:
   useEffect(() => {
     if (!enabled || !allowed || submittedSettingsSignature.current === settingsSignature) return;
     submittedSettingsSignature.current = settingsSignature;
-    changeTelemetry({ settings: settingsSnapshot }).then(setStatus, (error: unknown) => {
+    changeTelemetry({ settings: settingsSnapshot }).then((next) => { if (!turnedOff.current) setStatus(next); }, (error: unknown) => {
       if (!(error instanceof ApiError && error.status === 404)) console.error("telemetry settings", error);
     });
   }, [enabled, allowed, settingsSignature, settingsSnapshot]);
@@ -67,7 +71,7 @@ export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen:
         notice_seen: true,
         notice_version: NOTICE_VERSION,
         settings: snapshot,
-      }).then((next) => { submittedSettingsSignature.current = JSON.stringify(snapshot); setStatus(next); },
+      }).then((next) => { submittedSettingsSignature.current = JSON.stringify(snapshot); if (!turnedOff.current) setStatus(next); },
         (error: unknown) => console.error("telemetry notice", error));
     };
     const onVisibility = () => { if (document.visibilityState === "visible") afterPaint(); };
@@ -77,17 +81,21 @@ export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen:
   }, [shown]);
   if (!shown || closed) return null;
   const turnOff = () => {
+    turnedOff.current = true;
     setTurningOff(true);
-    // a refusal leaves the line up and opens the switch, so the off is never taken for granted
+    setOffFailed(false);
+    // a refusal brings the line back, even after a close, and says so: the off is never taken for granted
     changeTelemetry({ enabled: false }).then((next) => { setStatus(next); setClosed(true); }, (error: unknown) => {
       console.error("telemetry off", error);
+      turnedOff.current = false;
       setTurningOff(false);
-      onOpen();
+      setOffFailed(true);
+      setClosed(false);
     });
   };
-  const text = t("Ovis sends anonymous usage counts to improve it.");
-  return <div className="update-notice is-line is-telemetry" role="status">
-    <button type="button" className="update-notice-text" title={text} onClick={() => { setClosed(true); onOpen(); }}>{text}</button>
+  const text = offFailed ? t("Couldn't turn the counts off. Open Settings to use the switch.") : t("Ovis sends anonymous usage counts to improve it.");
+  return <div className="update-notice is-line is-telemetry" role={offFailed ? "alert" : "status"}>
+    <button type="button" className="update-notice-text" title={text} aria-haspopup="dialog" onClick={() => { setClosed(true); onOpen(); }}>{text}</button>
     <button type="button" className="btn btn-ghost" disabled={turningOff} onClick={turnOff}>{t("Turn off")}</button>
     <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => setClosed(true)}><X /></button>
   </div>;
