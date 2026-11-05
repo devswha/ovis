@@ -572,15 +572,9 @@ export class MachineManager {
    * disk pays for the write and its fsync.
    */
   private persist(): void {
+    this.persistRelayPcs();
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine }) => machine);
     const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
-    const relayPcs: StoredMachine[] = owned.filter((m) => m.kind === "relay").map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
-    const relayText = JSON.stringify(relayPcs);
-    if (relayText !== this.relayWritten || !holdsDocument(this.relayStatePath, relayText)) {
-      // never an empty file where none was: an install without relay PCs keeps none
-      if (relayPcs.length > 0 || this.relayWritten !== undefined || existsSync(this.relayStatePath)) writePrivateState(this.relayStatePath, relayPcs);
-      this.relayWritten = relayText;
-    }
     const text = JSON.stringify(data);
     // the PCs' registrations are written last: a save that fails before them leaves them as they were on disk, so a
     // PC moved to another address (setup) is saved there only when nothing else of its save can still fail (#2075)
@@ -588,6 +582,17 @@ export class MachineManager {
     this.profileState.flush();
     // the file on disk may have been deleted or replaced since this manager wrote it
     if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
+  }
+  /** relay-pcs.json, which persist writes before the rest: an add whose save fails after it writes it again (addRelay) */
+  private persistRelayPcs(): void {
+    const relayPcs: StoredMachine[] = [...this.machines.values()].map(({ machine }) => machine).filter((m) => !m.herdr_profile_id && m.kind === "relay")
+      .map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
+    const relayText = JSON.stringify(relayPcs);
+    if (relayText !== this.relayWritten || !holdsDocument(this.relayStatePath, relayText)) {
+      // never an empty file where none was: an install without relay PCs keeps none
+      if (relayPcs.length > 0 || this.relayWritten !== undefined || existsSync(this.relayStatePath)) writePrivateState(this.relayStatePath, relayPcs);
+      this.relayWritten = relayText;
+    }
   }
   job(id: string): SetupJob | undefined { return this.jobs.get(id)?.public; }
   settings(): MachineSettings { return { ...this.preferences, ...(this.setAside.length > 0 ? { set_aside: [...this.setAside] } : {}) }; }
@@ -1624,6 +1629,8 @@ export class MachineManager {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);
       removeRelayPcKey(keyPath);
+      // relay-pcs.json may already list the PC: left there, a restart would bring it back without its key (#2833)
+      try { this.persistRelayPcs(); } catch (e) { console.error("relay-pcs.json could not be restored:", e instanceof Error ? e.message : "write failed"); }
       throw new Error(`This PC could not be saved (${error instanceof Error ? error.message : String(error)}). That PC already lists it under Phone & devices as ${relayPcLabel()}: revoke it there.`, { cause: error });
     }
     this.emit();
