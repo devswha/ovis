@@ -96,6 +96,30 @@ test("only lines a program writes are announced: not a scroll back through histo
     expect(frame("resize")).toBe("DURING");
     term.write("AGAIN\r\n");
     expect(frame("render")).toBe("AGAIN");
+
+    // a line written while the view is scrolled back is told once the view is back at the bottom
+    buffer.baseY = 25;
+    buffer.viewportY = 22;
+    expect(frame("scroll")).toBe("AGAIN");
+    term.write("BACKGROUND\r\n");
+    buffer.baseY = 26;
+    expect(frame("render")).toBe("AGAIN");
+    buffer.viewportY = 26;
+    expect(frame("scroll")).toBe("BACKGROUND");
+
+    // a write and a scroll back in one frame tell no history; the write waits for the bottom
+    term.write("BUSY\r\n");
+    buffer.baseY = 27;
+    buffer.viewportY = 24;
+    expect(frame("scroll")).toBe("BACKGROUND");
+    buffer.viewportY = 27;
+    expect(frame("scroll")).toBe("BUSY");
+
+    // a write as the pane gets shorter tells the new line alone
+    term.write("SHORTER\r\n");
+    term.rows = 4;
+    screen.box = { width: COLS * 8, height: 4 * 16 };
+    expect(frame("resize")).toBe("SHORTER");
   } finally {
     overlay?.dispose();
   }

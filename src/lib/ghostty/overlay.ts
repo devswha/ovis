@@ -105,6 +105,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   let primed = false;
   // bytes reached libghostty since the last frame: a frame without any only scrolled the view, which announces nothing
   let written = false;
+  // the screen at the bottom as the last frame there drew it
+  let bottomText: string[] = [];
   // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
   let rowHtml: string[] = [];
   let cellW = 0;
@@ -262,7 +264,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
     const buffer = term.buffer.active;
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
-    const before = rowText.slice(0, term.rows);
     const changed = vt.frame((y, runs) => {
       const row = rowEls[y];
       if (!row) return;
@@ -274,9 +275,17 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       rowHtml[y] = html;
       rowText[y] = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
     });
-    if (primed && written) announce(newLines(before, rowText.slice(0, term.rows)));
-    primed = true;
-    written = false;
+    // lines are told from the screen at the bottom, the one a program writes to: a view scrolled back holds a
+    // write until it is back there, and a frame that only moved the view tells nothing (#2963)
+    if (buffer.viewportY === buffer.baseY) {
+      const screenText = rowText.slice(0, term.rows);
+      // a grid that changed height keeps its bottom rows, as xterm does: the baseline lines up with them
+      const before = Array.from({ length: term.rows }, (_, y) => bottomText[bottomText.length - term.rows + y] ?? "");
+      if (primed && written) announce(newLines(before, screenText));
+      primed = true;
+      written = false;
+      bottomText = screenText;
+    }
     if (changed) {
       const c = vt.cursor();
       Object.assign(cursor.style, c.visible
