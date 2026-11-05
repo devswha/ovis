@@ -27,6 +27,8 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
+  "Attach files": "ファイルを添付",
   "Sign out": "サインアウト",
 
   "Only for {pc}": "{pc} のみ",
@@ -345,6 +347,8 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "ペインの入れ替えが拒否されました: {reason}",
   "The panes are in different tabs.": "ペインが別々のタブにあります。",
   "Choose two different panes.": "異なる2つのペインを選んでください。",
+  "The pane moved to the right instead.": "ペインは代わりに右側へ移動しました。",
+  "The pane moved below instead.": "ペインは代わりに下側へ移動しました。",
   "A pane is no longer available.": "ペインは利用できなくなりました。",
   "There is no pane on that side.": "その方向にペインはありません。",
   "Split pane right": "ペインを右に分割",
@@ -406,6 +410,7 @@ const BASE: Record<string, string> = {
   "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "別のデバイスがこのコードを試しているか、試行が多すぎます。少し待つか、PC で新しいコードを表示してください。",
   "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "このアプリがペアリングできる PC からの応答ではありません。PC で新しいコードを表示するか、QR コードを読み取ってください。",
   "The relay could not be reached. Check this device's connection, then try again.": "リレーに接続できませんでした。このデバイスの接続を確認してから、もう一度お試しください。",
+  "Reset": "リセット",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

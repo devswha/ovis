@@ -115,6 +115,9 @@ export interface ServerContext {
   readonly relayBodyBudget?: EventStreamBudget;
 }
 
+/** The routes that read or write files and folders on this disk (or run git and gh in them) for a pane, a workspace or a picker. */
+const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|image)$|workspace\/(?:diff\/|directories$|pr(?:$|\/)))/;
+
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
   const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
@@ -289,6 +292,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // request gets it: the routes open without sign-in (health, auth, pairing) keep the default,
   // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
+
+  // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs
+  if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
+    setRequestRoute(pathname);
+    return jsonResponse({ error: { code: "unsupported", message: "Files on another machine of herdr-core are not reachable from Ovis yet" } }, 501);
+  }
 
   if (pathname === "/api/bridge") {
     setRequestRoute(pathname);
@@ -493,8 +502,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       ? { host: hostname } : undefined;
     // what protects this server, for a client that got in (a watching one too) and nobody else;
     // per request, so never stored. The ingress is this request's, proven or `unknown`.
-    // Portal's proof says how the request came even when the token or a paired device signed it in
-    const ingress = relayPeer !== undefined ? "relay" : portalProven ? "portal" : observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+    // Portal's proof says how the request came even when the token or a paired device signed it in.
+    // A Portal with no sign-in has no proof to send: a request from this PC in the shape it forwards
+    // (X-Forwarded-Proto https) to an address it serves is all there is. Another program here could
+    // send the same and would only mislabel its own answer; nothing here lets anyone in
+    const portalForwarded = portalProven || (loopback && request.headers.get("x-forwarded-proto") === "https" && (options.portal?.serves(requestHost) ?? false));
+    const ingress = relayPeer !== undefined ? "relay" : portalForwarded ? "portal" : observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
     const security: SecuritySummary | undefined = access.level === "full" ? {
       token_configured: token !== "",
       pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",
@@ -580,7 +593,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const receipt = orderSequence.moved();
     void machines?.refreshLocal();
     return receipt;
-  }, shellAgents);
+  }, shellAgents, options.localFiles !== false);
   if (workspaceResponse) return workspaceResponse;
 
   const pluginResponse = await handlePluginRequest(request, url, pathname, options);

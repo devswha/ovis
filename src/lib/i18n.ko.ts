@@ -25,6 +25,8 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
+  "Attach files": "파일 첨부",
   "Sign out": "로그아웃",
 
   "Only for {pc}": "{pc}에만",
@@ -343,6 +345,8 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "패널 교환이 거부되었습니다: {reason}",
   "The panes are in different tabs.": "패널이 서로 다른 탭에 있습니다.",
   "Choose two different panes.": "서로 다른 두 패널을 선택하세요.",
+  "The pane moved to the right instead.": "패널이 대신 오른쪽으로 옮겨졌습니다.",
+  "The pane moved below instead.": "패널이 대신 아래쪽으로 옮겨졌습니다.",
   "A pane is no longer available.": "패널을 더 이상 사용할 수 없습니다.",
   "There is no pane on that side.": "해당 방향에 패널이 없습니다.",
   "Split pane right": "패널을 오른쪽으로 분할",
@@ -404,6 +408,7 @@ const BASE: Record<string, string> = {
   "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "다른 기기가 이 코드를 시도 중이거나 너무 많이 시도됐습니다. 잠시 기다리거나 PC에서 새 코드를 띄우세요.",
   "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "이 앱이 페어링할 수 있는 PC의 응답이 아닙니다. PC에서 새 코드를 띄우거나 QR 코드를 스캔하세요.",
   "The relay could not be reached. Check this device's connection, then try again.": "릴레이에 연결할 수 없습니다. 이 기기의 연결을 확인한 뒤 다시 시도하세요.",
+  "Reset": "재설정",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

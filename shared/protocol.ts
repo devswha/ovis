@@ -298,6 +298,14 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         -> PaneSwapped { ok: true, changed, reason, target_pane_id } (pane.swap with the neighbour
  *         on that side, prefix+shift+hjkl, or an explicit pane; exactly one destination is required;
  *         changed false names no_neighbor, same_pane, cross_tab or not_found)
+ *  POST   /api/pane/move   { pane_id, target_pane_id, side: left|right|up|down } -> PaneMoved { ok: true, changed, reason }
+ *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
+ *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
+ *         it left of or above the target; herdr's focus stays where it was; changed false names
+ *         same_pane or cross_tab, an unknown pane answers pane_not_found; a pane herdr will not
+ *         bring back beside its target goes back into its tab, beside the target or another pane,
+ *         and the error says so, or says it waits in a tab of its own; changed true with a reason:
+ *         the swap was refused or failed, so the pane stays right of or below its target)
  *  POST   /api/pane/resize { pane_id, direction: left|right|up|down, amount? } -> PaneResized { ok: true, changed, reason }
  *         (pane.resize, herdr's resize mode: the border the pane shares with a neighbour moves that way
  *         by `amount` of the split the border belongs to, not of the tab (0 < amount <= 0.5, herdr's
@@ -646,7 +654,7 @@ export interface ConversationResponse {
   /**
    * The PC's clock as it answered, which the turns' times are on (ISO time): the browser's clock runs
    * ahead of it by no more than the time the answer was in hand less this. Absent on a scrollback
-   * fallback and from older bridges.
+   * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
    */
   server_time?: string;
   source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
@@ -714,7 +722,7 @@ export interface AgentRenameRequest {
   name: string | null;
 }
 
-export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
+export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, MovePaneRequest, PaneMoved, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
 
 /** GET /api/pane/commands: one slash command the pane's agent understands. */
 export interface SlashCommand {
@@ -974,6 +982,9 @@ export interface PendingMessage {
   text: string;
   state: "queued" | "sending" | "held" | "uncertain";
   created_at: string;
+  /** The PC's clock as this try went out (`sending`), before anything was typed: its turn is written after
+   * it. Kept while uncertain; gone once it is queued or held again, and from older bridges. */
+  sending_at?: string;
   error?: { code: string; message: string };
   /** its submit was `agent_only`: a resend of a saved copy says so again */
   agent_only?: true;

@@ -1008,6 +1008,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Discord's per-channel mute, a checkbox item in the row's own menu, not a per-channel switch
   (Codex's and Claude's apps have no mute of their own); agent-of-empires has a per-channel
   override, which the shared, PC-keyed list replaces.
+  While Settings -> Appearance -> Lock pinned agents (experimental) is on (shared, off by default;
+  off, no item shows and no lock holds), a pinned agent row's menu also offers Lock agent (#2432): a locked row has no Unpin agent until
+  Unlock agent, draws a lock beside its state (drawn as the muted bell is, named Locked), and this
+  app offers no way to close it: no Close pane in the pane's menu, no Close tab (menu item,
+  Delete key or middle click) for the tab it is in, and no Close workspace, Close group or Delete
+  worktree checkout for a workspace whose close would take it; a confirmation already open when a
+  lock lands goes, and a workspace or group close also goes unsent when the workspaces or panes it
+  would take differ from those it was opened over. A tab is checked by every pane in it, by id,
+  whatever the strip lists. A watching device sees the item disabled, as Mute alerts is. The locks are the shared `lockedAgents`
+  setting, pin keys that hold only while the row is pinned, so every browser and phone honours
+  them; a lock moves with its pin when herdr moves the pane. Closing from herdr, the Herdr app or a
+  script is untouched. Browsers' pinned tabs keep their place but still close; this adds the
+  missing lock to the pin, as an item in the row's own menu, off until chosen. It follows VS
+  Code's Lock Group (a locked place that ordinary actions leave alone) rather than the coding-agent
+  apps (the Codex and Claude apps, Paseo, T3 Code), whose session lists we follow for pin and
+  archive but which give a session no lock: their sessions are not the pane a user drives the
+  others from, which is what this guards.
   A desktop (`pointer: fine` wider than 768px, the tab strip's rule) draws no row `⋯`: a
   right-click or the context-menu key opens the menu, at the pointer or at the row, and dismissal
   returns the focus where it was.
@@ -1711,8 +1728,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane with the previously selected pane and retains the browser's selection. On a desktop,
   dragging a pane's title onto another pane's title in the same tab on the same PC exchanges
   their positions too. The eligible title is highlighted instead of offering a split-view
-  half. Sidebar drags, drops outside an eligible title, and drops across tabs or PCs keep
-  their existing docking behavior. This follows tmux's explicit `swap-pane` operation,
+  half. Sidebar drags and drops across tabs or PCs keep their existing docking behavior; a
+  title dropped on another pane's body of its tab moves it (below). This follows tmux's explicit `swap-pane` operation,
   exposed through a title drop like VS Code's editor-group drag targets rather than a new
   layout setting. Explicit swaps leave herdr's focused pane, tab and workspace where they
   were: the bridge serializes Ovis focus-changing calls (focus, swaps, split, zoom and close)
@@ -1730,6 +1747,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   caused by restoration. No sequence fields, pane-name tokens, or held/replayed events are
   added. The root fix needs native `pane.swap focus:false` or correlated event identifiers.
   A refused title swap shows a layout notice with a localized reason.
+- Dropping a pane's title on another pane's body in the same tab moves it to the side of that pane
+  nearest the pointer (#1819). While it is over that body, the half the dragged pane would take is
+  outlined in `--accent` over `--accent-tint`, from the nearest edge, each edge's distance counted
+  as a share of the pane's width or height so each side takes a quarter of a pane of any shape; the
+  side shown stays where two shares meet. The split view guide stays hidden over the tab, and over
+  the dragged pane itself nothing is offered (the pointer shows no drop). A title over the other half
+  showing another tab, over a canvas drawing one pane, and a sidebar row, a tab or a half's bar
+  anywhere still open a half: a drag within the tab arranges it, a drag that brings a pane in opens
+  split view. `POST /api/pane/move` runs it. herdr 0.9.5 refuses `pane.move` within the tab
+  (`same_tab`) and places a moved pane only right of or below its target, so the bridge moves the
+  pane to a new tab of its workspace, back beside the target, and swaps the two for left or up; the
+  pane keeps its ID and terminal, and herdr closes the passing tab. A herdr that moves within a tab,
+  and herdr-core (one edit of Ovis's layout document), take the first call. A pane herdr will not
+  bring back beside its target goes back into its tab beside another pane, and a refused swap leaves
+  it right of or below; the layout notice says so. herdr's focus goes back where it was, as after a
+  swap: only from the pane herdr picked when the focused pane left, or from the swap's source. This follows VS Code's editor-group drop overlay (the half a dragged
+  editor would take, by the nearest edge) without its centre target: a pane joins no other pane, and
+  its title is the swap target.
   A close confirms when
   the pane is busy or is the last pane of the workspace. Rename is herdr's label; clearing it
   returns to its automatic title. Herdr owns every resulting layout and name.
@@ -3213,7 +3248,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `composerArtifacts`), the Paste and send button (off by default, the device setting
   `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
   **Quick replies**; then **File viewer**: wrap long lines, Markdown width, Diff layout), **Terminal** (font size, font family, wheel
-  speed, input mode, Key bar, Clipboard from a pane, Pictures in the terminal (off by default, the
+  speed, input mode, Key bar, Keyboard only from the key bar (off by default, the device setting
+  `terminalKeyboardOnRequest`), Clipboard from a pane, Pictures in the terminal (off by default, the
   device setting `terminalImages`), Draw with libghostty (off by default, the device setting
   `terminalGhostty`), Use alongside herdr's own window, Follow
   herdr's focus), **Alerts**, **Voice input**, **Agents**,
@@ -3516,8 +3552,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Terminal host, key bar and drawer
 - **Draw with libghostty** (Settings > Terminal, off by default, herdr-core only): libghostty-vt draws the
   pane's text, cursor and Kitty graphics pictures in a layer over xterm's screen, at xterm's cell size;
-  xterm's own text and cursor are hidden under it and xterm keeps input, selection, links, search and
-  scrolling. It follows Ghostty's own split of a terminal core (libghostty-vt) from the renderer an app
+  xterm's own text and cursor are hidden under it, and not redrawn, and xterm keeps input, selection,
+  links, search and scrolling. Screen readers read the libghostty rows, and a polite live log announces
+  the lines a program writes (not the screen a pane opens on). It follows Ghostty's own split of a terminal core (libghostty-vt) from the renderer an app
   draws with, rather than a second terminal widget: everything built on xterm keeps working while the
   drawing moves. The layer takes no pointer events; pictures keep the layer Kitty gave them (below
   the text, or above it).
@@ -3743,6 +3780,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the terminal; only the focus-preserving tap AoE's button relies on is shared, and the key bar
   already had it. Disabled keys (`.key:disabled`, and the refusing control) draw their glyph in
   `--text-dim`, so a bar with nothing to send to reads as such.
+- **Keyboard only from the key bar** (Settings > Terminal, off by default, the device setting
+  `terminalKeyboardOnRequest`, #1635): on a touch screen the control above becomes the only way the
+  terminal raises the soft keyboard. Until the control's Show asks for it, the input line and
+  xterm's field carry `inputmode="none"`, so a tap on the grid, the line, Send or a key still
+  focuses them and raises nothing (a browser shows no keyboard for that mode, and a switch to it
+  hides one). Show removes the attribute from the field it focuses inside the same tap. The request
+  is the tap's own, not the measurement's, which is blind to a floating keyboard or a zoomed page
+  (its settle window would otherwise take an unmeasured keyboard back): it ends at Hide, at a
+  keyboard measured going down (Android's back gesture), or when the focus leaves the pane's
+  fields, and the attribute comes back. Nothing is held while the control cannot be pressed
+  (offline, held, ended, view only): the line still takes a draft there, so a tap raises the
+  keyboard as with the setting off. The
+  mode switch stays its own key beside the control. The model is Termux's KEYBOARD extra key, the
+  keyboard toggle of a phone terminal app: reading is the rest state, typing is asked for.
 - When the row outgrows the viewport it scrolls sideways, and the edge that hides more keys fades
   out: `KeyBar` sets `data-overflow-start` / `data-overflow-end` on `.key-bar` (measured before
   first paint, on scroll and on resize, once a frame) and `KeyBar.css` masks that edge with a
@@ -3788,6 +3839,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   draft with a separate no-Enter insert; agent-of-empires' compose sheet has Insert beside Send but
   clears its draft on a synchronous boolean, which this design rejects: the draft is cleared on the
   bridge's acknowledgement, as Send's is, and nothing typed is queued across a disconnect.
+- **Attach files** in the terminal lens (#1633; Settings > Terminal > **Attach files button**, the
+  device setting `terminalAttachButton`, off by default and offered on a touch screen only, so the
+  input line and the key bar stay as they were). On, the input line gets **Attach**
+  (`.terminal-input-attach`, lucide paperclip, caption "Attach") before Insert, outlined as Insert
+  is, and direct typing gets a key (`[data-key="attach"]`, "Attach files") right after the
+  keyboard control; both live in rows that already exist, so no height is added. Each opens the
+  system picker (`<input type="file" multiple>`); the picked files take the paths a paste or a drop
+  already takes: into the line at its caret under the paste's staleness rule with "Uploading
+  file…" meanwhile, or pasted into the grid as a drop is, never with Enter. It follows the
+  attach action mobile SSH clients put beside their terminal input and the composer's own Attach
+  files; the composer's `+` glyph is not used, since a `+` on a key bar reads as the character.
 
 ### In-app alert
 - While the app is on screen, a pane that needs input, finishes a turn (by the device's Finished

@@ -74,6 +74,8 @@ import type {
   SplitPaneDirection,
   SplitPaneRequest,
   SwapPaneRequest,
+  MovePaneRequest,
+  PaneMoved,
   TabCreated,
   UpdateInstallRequest,
   StatuslineState, UsageReport,
@@ -97,6 +99,7 @@ import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
 import { movingHerdrFocus } from "./followFocus.ts";
+import { observeWaitingClock, waitingKey } from "./sentWaiting.ts";
 import type { UsageAccountRemoval, UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
@@ -744,9 +747,16 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
   const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
   const { response, body } = await withChatReadDeadline(async (signal) => {
     const response = await apiFetch(requestUrl, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
-    if (response.status === 304 && known) return { response, body: known.body };
+    // as it arrived, whatever becomes of its body: its time bounds this browser's clock against the PC's
+    const received = performance.now(), receivedWall = Date.now();
+    if (response.status === 304 && known) {
+      observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time"), received, receivedWall);
+      return { response, body: known.body };
+    }
     if (!response.ok) throw await errorFrom(url, response);
-    return { response, body: (await response.json()) as ConversationResponse };
+    const body = (await response.json()) as ConversationResponse;
+    observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time") ?? body.server_time, received, receivedWall);
+    return { response, body };
   }, chatReadDeadlineMs(machineId), page.signal).catch((cause: unknown) => {
     // a failed read gives up what it held of the pages' order: a later read is the newest again
     if (polled && lastNewestRead.get(url) === read) lastNewestRead.delete(url);
@@ -1034,6 +1044,13 @@ export async function swapPane(paneId: string, direction: PaneDirection, machine
 export async function swapPaneWith(paneId: string, targetPaneId: string, machineId = "local"): Promise<PaneSwapped> {
   const request = sendJson(machinePath(machineId, "pane/swap"), "POST", { pane_id: paneId, target_pane_id: targetPaneId } satisfies SwapPaneRequest)
     .then(async (response) => (await response.json()) as PaneSwapped);
+  return movingHerdrFocus(machineId, request);
+}
+
+/** POST /api/pane/move: the pane goes to that side of another pane of its tab; herdr's focus moves on the way and back, so its events wait as a swap's do. */
+export async function movePaneBeside(paneId: string, targetPaneId: string, side: PaneDirection, machineId = "local"): Promise<PaneMoved> {
+  const request = sendJson(machinePath(machineId, "pane/move"), "POST", { pane_id: paneId, target_pane_id: targetPaneId, side } satisfies MovePaneRequest)
+    .then(async (response) => (await response.json()) as PaneMoved);
   return movingHerdrFocus(machineId, request);
 }
 

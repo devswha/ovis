@@ -22,6 +22,7 @@ import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { KeyBarSettings } from "./KeyBarSettings.tsx";
+import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Stepper, Toggle } from "./SettingsControls.tsx";
 import { FONT_FAMILY_MAX_CHARS, sanitizeFontFamily } from "../lib/fontFamily.ts";
@@ -404,6 +405,9 @@ function AppearancePage() {
       <SettingsRow label={t("Group agents by state")} description={t("On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.")}>
         <Toggle label={t("Group agents by state")} checked={settings.agentGroups} onChange={(agentGroups) => update({ agentGroups })} />
       </SettingsRow>
+      <SettingsRow label={t("Lock pinned agents (experimental)")} description={t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")}>
+        <Toggle label={t("Lock pinned agents (experimental)")} checked={settings.agentLocks} onChange={(agentLocks) => update({ agentLocks })} />
+      </SettingsRow>
       {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
         <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
       </SettingsRow>}
@@ -420,6 +424,7 @@ function AppearancePage() {
         <Stepper label={t("Interface font size")} value={uiFontSize(settings)} text={`${uiFontSize(settings)}px`} min={UI_FONT_MIN} max={UI_FONT_MAX} decreaseLabel={t("Decrease interface font size")} increaseLabel={t("Increase interface font size")} onChange={(size) => update({ uiFontSize: size })} />
       </SettingsRow>
       <InterfaceFontRows />
+      <FileTextSizeRow />
     </SettingsGroup>
     </>
   );
@@ -554,6 +559,7 @@ function ChatPage() {
 function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefObject<HTMLButtonElement | null>; onEditKeyBar: () => void }) {
   const { settings, update } = useSettings();
   const t = useT();
+  const touch = useMediaQuery("(pointer: coarse)");
   return (
     <SettingsGroup>
       <SettingsRow label={t("Terminal font size")} description={t("Applied to every terminal pane")}>
@@ -574,6 +580,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Key bar")} description={t("Keys, order and custom combinations for the terminal.")}>
         <button type="button" ref={keyBarButtonRef} className="btn" onClick={onEditKeyBar}>{t("Edit key bar")}</button>
       </SettingsRow>
+      <SettingsRow label={t("Keyboard only from the key bar")} description={t("On a touch screen, a tap on the terminal, the input line or a key no longer brings up the keyboard. The key bar's keyboard key shows and hides it.")}>
+        <Toggle label={t("Keyboard only from the key bar")} checked={settings.terminalKeyboardOnRequest} onChange={(terminalKeyboardOnRequest) => update({ terminalKeyboardOnRequest })} />
+      </SettingsRow>
       <SettingsRow label={t("Clipboard from a pane")} description={t("A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.")}>
         <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
       </SettingsRow>
@@ -583,6 +592,12 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Draw with libghostty")} description={t("Draws a pane with libghostty, the terminal engine of Ghostty, on this device, with the pictures a program sends with the Kitty graphics protocol (kitty icat, timg, chafa). Only on a PC that runs herdr-core, as the desktop app does, and from the next time a pane is opened. A preview: typing, selection, links and search still go through xterm.js underneath.")}>
         <Toggle label={t("Draw with libghostty")} checked={settings.terminalGhostty} onChange={(terminalGhostty) => update({ terminalGhostty })} />
       </SettingsRow>
+      {/* the button and the key are drawn on a touch screen only (TerminalInput.tsx, KeyBar.tsx), so it is offered only there */}
+      {touch && (
+        <SettingsRow label={t("Attach files button")} description={t("On a touch screen, a button in the input line and a key in the key bar while typing straight into the terminal pick files from this device. Each file is saved beside the pane, and its path goes into the line or the terminal, without Enter.")}>
+          <Toggle label={t("Attach files button")} checked={settings.terminalAttachButton} onChange={(terminalAttachButton) => update({ terminalAttachButton })} />
+        </SettingsRow>
+      )}
       <SettingsRow label={t("Use alongside herdr's own window")} description={t("Turn this on if herdr is also open in a terminal window, on this PC or another. A second after you switch to another window, or after 10 seconds without typing or clicking in a terminal you type straight into, this tab only watches the pane, so herdr's window keeps the pane at its own size instead of this window's. Type or click in the terminal to type again: what you type goes in once it is back. While it watches, the pane is drawn at herdr's size and may not fill this window.")}>
         <Toggle label={t("Use alongside herdr's own window")} checked={settings.releasePaneAway} onChange={(releasePaneAway) => update({ releasePaneAway })} />
       </SettingsRow>
