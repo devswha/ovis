@@ -167,7 +167,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       echoes.set(address, queued);
       try {
         await hc.call("terminal.label", { terminal: address, labels: { [PINNED_LABEL]: pinned ? "1" : "" } });
-        sending.delete(key);
+        // a newer change still marked is Ovis's, no longer one this write may settle: saved now
+        if (sending.delete(key) && pending.has(key)) saveAgreed();
         echo.answered = true;
         // once its event came, that event and any after it (the app's) already say what the label is
         if (!echo.heard) {
@@ -192,8 +193,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
     void run.then(() => { if (writes.get(address) === run) writes.delete(address); });
   };
 
-  /** A terminal's label heard: settled against what both sides last agreed on. */
-  const heard = (address: string, labelPinned: boolean) => {
+  /** A terminal's label heard (`told` by a labels event): settled against what both sides last agreed on. */
+  const heard = (address: string, labelPinned: boolean, told = false) => {
     const before = live.get(address);
     live.set(address, labelPinned);
     // the event of a write of ours, early or late: no change of the app's
@@ -207,8 +208,8 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
         if (!echo.answered && (agents.has(address) || agreed.has(agreedKey(address)))) landed(address, labelPinned);
         return;
       }
-      // another label changed, not the pin: our write's event is still to come
-      if (before === labelPinned) return;
+      // a labels event that changed another label, not the pin: our write's event is still to come
+      if (told && before === labelPinned) return;
       // a label neither of our writes set: the app's, and what we sent no longer tells its order
       queued.length = 0;
     }
@@ -321,7 +322,7 @@ export function bridgePins(hc: Hc, store: PinStore, machineId: string, stateDir:
       const data = isRecord(params["data"]) ? params["data"] : {};
       switch (params["type"]) {
         case "created": record(data); return;
-        case "labels": if (live.has(params["terminal"])) heard(params["terminal"], pinnedIn(data["labels"])); return;
+        case "labels": if (live.has(params["terminal"])) heard(params["terminal"], pinnedIn(data["labels"]), true); return;
         case "status": if (live.has(params["terminal"])) agentIs(params["terminal"], data["status"]); return;
         case "finished":
         case "removed": gone(params["terminal"]); return;
