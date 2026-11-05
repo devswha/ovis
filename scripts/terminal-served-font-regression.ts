@@ -118,7 +118,7 @@ setInterval(() => {}, 1 << 30);
         cell: (bars.at(-1)! - bars[0]!) / 15,
         cols: Math.round(Number.parseFloat(document.querySelector<HTMLElement>(".pane-terminal .xterm-screen")!.style.width) / glyph),
         gridRows: rows.children.length,
-        kept: await (await caches.open("ovis-user-fonts")).keys().then((keys) => keys.map((key) => decodeURIComponent(new URL(key.url).pathname))),
+        kept: await (await caches.open("ovis-files-v1")).keys().then((keys) => keys.map((key) => decodeURIComponent(new URL(key.url).pathname)).filter((path) => path.startsWith("/api/fonts/"))),
       };
     }, [FAMILY, shownRows()] as const);
     const attach = frames.find((frame) => frame.type === "attach");
@@ -134,6 +134,33 @@ setInterval(() => {}, 1 << 30);
     assert.deepEqual([attach.cols, attach.rows], [drawn.cols, drawn.gridRows], "the pane is attached at the served face's grid");
     assert.deepEqual(resizes, [], "the served face resizes no pty");
     assert.deepEqual(errors, []);
+    await context.close();
+  }
+
+  // When: the app runs under its service worker and is opened again: the kept file is not fetched again,
+  // though the worker retires every cache but its own on each open (public/sw.js keepShell).
+  {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    await context.addInitScript((family) => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false, terminalFontFamily: family }));
+    }, FAMILY);
+    const page = await context.newPage();
+    page.setDefaultTimeout(WAIT_MS);
+    const asked = fontRequests(page);
+    const loaded = () => page.waitForFunction((family) => [...document.fonts].some((face) => face.family.replaceAll('"', "") === family && face.status === "loaded"), FAMILY);
+    await open(page, pane);
+    await loaded();
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+    // the worker keeps the shell of a navigation it answered, and retires the other caches then
+    await page.reload();
+    await page.locator(".conn-live").waitFor();
+    await loaded();
+    await page.waitForFunction(async () => (await caches.keys()).some((name) => name.startsWith("ovis-v4-")));
+    await page.reload();
+    await page.locator(".conn-live").waitFor();
+    await loaded();
+    console.log(JSON.stringify({ serviceWorker: true, asked, caches: await page.evaluate(() => caches.keys()) }));
+    assert.deepEqual(asked.filter((path) => path !== "/api/fonts"), [`/api/fonts/${FAMILY}.woff2`], "the file is fetched once across reloads under the service worker");
     await context.close();
   }
 

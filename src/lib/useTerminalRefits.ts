@@ -91,6 +91,8 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     // A face slower than the load's timeout is set when it arrives, however late. A family this PC serves from its
     // fonts/ folder is on the page first (lib/userFonts.ts), so the cell is measured from it
     void addServedFonts(terminalFontFamily).then(() => loadFontStack(fontFamily, terminalFontSize)).then(() => {
+      // a newer font's effect settles the first font once its own faces are in
+      if (superseded) return;
       apply();
       // the first fit and the pty's first size waited for this font (usePaneAttach.ts)
       fontSettledRef.current.settle();

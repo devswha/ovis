@@ -5,7 +5,8 @@
  * may read) with a font's extension, a plain name and at most USER_FONT_MAX_BYTES.
  */
 
-import { lstat, readdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { USER_FONTS_PATH, type UserFont, type UserFontList } from "../shared/user-fonts.ts";
@@ -73,11 +74,24 @@ export async function handleUserFontsRequest(request: Request, pathname: string,
     const fonts = await listUserFonts(dir);
     if (file === null) return jsonResponse({ fonts } satisfies UserFontList, 200, { "cache-control": "no-store" });
     const font = fonts.find((candidate) => candidate.file === file);
-    if (!font) return jsonResponse({ error: { code: "not_found", message: "no such font" } }, 404);
-    // the client asks with the font's version in the address, so a changed file is a new address
-    return new Response(Bun.file(join(dir, font.file)), {
-      headers: { "content-type": FONT_TYPES[extname(font.file).toLowerCase()]!, "cache-control": "private, max-age=31536000, immutable" },
+    const missing = () => jsonResponse({ error: { code: "not_found", message: "no such font" } }, 404);
+    if (!font) return missing();
+    // opened without following a link and checked again as opened: a link swapped in after the listing is refused
+    const handle = await open(join(dir, font.file), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ELOOP" || error.code === "ENOENT") return null;
+      throw error;
     });
+    if (!handle) return missing();
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > USER_FONT_MAX_BYTES) return missing();
+      // the client asks with the font's version in the address, so a changed file is a new address
+      return new Response(await handle.readFile(), {
+        headers: { "content-type": FONT_TYPES[extname(font.file).toLowerCase()]!, "cache-control": "private, max-age=31536000, immutable" },
+      });
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     return errorResponse(error);
   }

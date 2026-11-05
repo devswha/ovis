@@ -9,9 +9,11 @@
 import { USER_FONTS_PATH, type UserFont, type UserFontList } from "../../shared/user-fonts.ts";
 import { apiFetch } from "./api-request-id.ts";
 import { sanitizeFontFamily } from "./fontFamily.ts";
+import { serverIdOfPath, serverScopePath } from "./shellMode.ts";
 
-// public/sw.js clears caches of other names when a new build takes over: a font is fetched again once per update
-const CACHE = "ovis-user-fonts";
+// public/sw.js's FILES, the one cache its keepShell never retires: a cache of another name is deleted on the next open
+const CACHE = "ovis-files-v1";
+const LIST_TIMEOUT_MS = 10_000;
 const FILE_TIMEOUT_MS = 120_000;
 
 /** The list, once per set of names: a family typed anew asks again, so a file added since is found. */
@@ -23,7 +25,8 @@ function namesIn(family: string): string[] {
 }
 
 async function fetchList(): Promise<readonly UserFont[]> {
-  const response = await apiFetch(USER_FONTS_PATH);
+  // bounded: the terminal's font waits for it
+  const response = await apiFetch(USER_FONTS_PATH, { signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
   // a server from before this route serves none
   if (response.status === 404) return [];
   if (!response.ok) throw new Error(`${USER_FONTS_PATH} answered ${response.status}`);
@@ -33,16 +36,25 @@ async function fetchList(): Promise<readonly UserFont[]> {
 async function bytesOf(font: UserFont): Promise<ArrayBuffer> {
   const path = `${USER_FONTS_PATH}/${encodeURIComponent(font.file)}`;
   const url = `${path}?v=${encodeURIComponent(font.version)}`;
+  // every PC's app shares the hosted shell's origin: its files are kept under its own scope
+  const serverId = typeof location === "undefined" ? null : serverIdOfPath(location.pathname);
+  const keptPath = serverId === null ? path : `${serverScopePath(serverId).slice(0, -1)}${path}`;
+  const keptUrl = `${keptPath}?v=${encodeURIComponent(font.version)}`;
   const cache = typeof caches === "undefined" ? null : await caches.open(CACHE).catch(() => null);
-  const kept = await cache?.match(url);
+  const kept = await cache?.match(keptUrl).catch(() => undefined);
   if (kept) return kept.arrayBuffer();
   const response = await apiFetch(url, { signal: AbortSignal.timeout(FILE_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`${path} answered ${response.status}`);
   const bytes = await response.arrayBuffer();
   if (cache) {
-    // the file's older versions go, so a replaced font does not stay on the phone
-    for (const old of await cache.keys()) if (new URL(old.url).pathname === path) await cache.delete(old);
-    await cache.put(url, new Response(bytes));
+    try {
+      // the file's older versions go, so a replaced font does not stay on the phone
+      for (const old of await cache.keys()) if (new URL(old.url).pathname === keptPath) await cache.delete(old);
+      await cache.put(keptUrl, new Response(bytes));
+    } catch (error) {
+      // a full store keeps nothing, and the font is drawn all the same
+      console.warn(`The font ${font.file} could not be kept for the next load`, error);
+    }
   }
   return bytes;
 }
