@@ -1337,8 +1337,11 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
  * makes, or null when none shows; undefined when the read raced a change. Unlike GET /api/pane/prompt it starts and
  * ends no asking, so these reads never move the ids the route hands out. `openCodeState` is the watch's own, never
  * the route's: a watch's read, late or from an older snapshot, must not replace the entry or draft an answer uses.
+ * A pi pane is not read at all (undefined): its pi-ask card keeps the answers to earlier steps in a draft of the
+ * route's (pi-ask-bridge.ts), which a late read of an older form would replace.
  */
 export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState }): Promise<string | null | undefined> {
+  if (pane.agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, pane.agent ?? "", options.codexHome, panes, options.openCodeStateDir, options.openCodeState);
   return known.stale ? undefined : contentId(known.prompt) ?? null;
 }
