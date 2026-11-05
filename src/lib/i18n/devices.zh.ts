@@ -204,4 +204,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "{name} was revoked on this PC at {time}.": "{time} 已在此 PC 上撤销 {name}。",
   "{name} was removed from this PC at {time}, by {by}.": "{time} {by} 已将 {name} 从此 PC 移除。",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "尚未移除的 PC：{pcs}。请用在那台 PC 上属于该账户的设备断开它。",
+  "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "已发送到 {pcs}：每台 PC 下次上线时会移除它。如果之后仍然显示，请用账户中的另一台设备断开它。",
 };

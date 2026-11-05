@@ -204,4 +204,5 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} was revoked on this PC at {time}.": "{time}에 이 PC에서 {name}을(를) 취소했습니다.",
   "{name} was removed from this PC at {time}, by {by}.": "{time}에 {by}에서 {name}을(를) 이 PC에서 뺐습니다.",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "아직 빠지지 않은 PC: {pcs}. 그 PC에서 계정에 들어 있는 기기로 끊으세요.",
+  "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "{pcs}에 보냈습니다. 각 PC가 다음에 켜질 때 뺍니다. 그 뒤에도 남아 있으면 계정에 들어 있는 다른 기기로 끊으세요.",
 };

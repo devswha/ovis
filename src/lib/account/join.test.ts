@@ -228,7 +228,9 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-  await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
+  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
+  expect(result.queued).toEqual([y.identity.server_id]);
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
   expect(y.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(true);
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();

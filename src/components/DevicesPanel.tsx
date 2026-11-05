@@ -153,13 +153,17 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
     const transport = getTransport();
     try {
       const service = new AccountService({ store: indexedAccountStore });
-      const { unconfirmed } = await removeFromAccount({ service, accountStore: indexedAccountStore, relayStore: indexedDeviceStore, key, account,
+      const { unconfirmed, queued = [] } = await removeFromAccount({ service, accountStore: indexedAccountStore, relayStore: indexedDeviceStore, key, account,
         here: (path, init) => transport.fetch(path, init), ...(serverIdOfPath(window.location.pathname) ? { hereId: serverIdOfPath(window.location.pathname)! } : {}) });
       await load();
-      if (unconfirmed.length > 0) {
-        // this device is not a member there, so its removal would be refused: name them, rather than claim every PC
+      if (unconfirmed.length > 0 || queued.length > 0) {
+        // only this PC answered: the others are named, rather than claimed (one may have revoked this device and refuse it)
         const names = new Map((await service.listPcs()).map((pc) => [pc.server_id, pc.label]));
-        setError(t("Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.", { pcs: unconfirmed.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ") }));
+        const named = (ids: readonly string[]) => ids.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ");
+        setError([
+          unconfirmed.length > 0 ? t("Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.", { pcs: named(unconfirmed) }) : "",
+          queued.length > 0 ? t("Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.", { pcs: named(queued) }) : "",
+        ].filter(Boolean).join(" "));
       }
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };

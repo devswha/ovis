@@ -16,6 +16,8 @@ export interface LeaveResult {
   readonly remove: RemoveRecord;
   /** PCs this device signs in to with the account key that the account does not list: no remove reached them, so their pairing is kept */
   readonly unconfirmed: readonly string[];
+  /** PCs the remove only went to by mailbox: each applies it when it next reads its mail, or refuses it there if this device was revoked meanwhile, so none is confirmed here */
+  readonly queued?: readonly string[];
 }
 
 export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; now?: () => number }): Promise<LeaveResult> {
@@ -76,5 +78,5 @@ export async function removeFromAccount(options: {
     const outcome = answer.results?.[0];
     if (outcome?.outcome === "refused") throw new Error(`This PC refused the removal (${outcome.code ?? "refused"})`);
   }
-  return { remove, unconfirmed: listed.filter((id) => !linked.has(id) && id !== options.hereId) };
+  return { remove, unconfirmed: listed.filter((id) => !linked.has(id) && id !== options.hereId), queued: reached.filter((id) => !(options.here && id === options.hereId)) };
 }

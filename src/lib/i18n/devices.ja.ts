@@ -204,4 +204,5 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} was revoked on this PC at {time}.": "{time} にこの PC で {name} を取り消しました。",
   "{name} was removed from this PC at {time}, by {by}.": "{time} に {by} が {name} をこの PC から外しました。",
   "Not removed yet on: {pcs}. Disconnect it from a device that is in the account there.": "まだ外れていない PC: {pcs}。その PC でアカウントに入っているデバイスから切断してください。",
+  "Sent to {pcs}: each removes it when it next comes online. If it still shows there, disconnect it from another device in the account.": "{pcs} に送りました。各 PC は次にオンラインになったときに外します。まだ残っていたら、アカウントに入っている別のデバイスから切断してください。",
 };
