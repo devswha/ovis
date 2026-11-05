@@ -269,6 +269,22 @@ function layOutRoster(): void {
 layOutRoster();
 for (const pane of snapshot().panes) if (keyOfPane.get(pane.pane_id) === "api") Object.assign(pane, { plan: { done: 1, total: planSteps.length, current: "Adding the replay metric" } });
 
+// The demo's already-blocked Codex reports why it waits, so Inbox can show its real no-extra-read
+// decision preview. `?demo_inbox=1` on demo/app/ stages a second kind for screenshot review.
+const inboxDecisions = new Map([
+  ["web", { agent_kind: "permission", agent_message: "Run the browser regression suite before opening the pull request?" }],
+  ...(new URLSearchParams(location.search).get("demo_inbox") === "1"
+    ? [["flaky", { agent_kind: "question", agent_message: "Keep the jitter fix minimal, or also add the replay metric while this branch is open?" }]] as const
+    : []),
+]);
+for (const pane of snapshot().panes) {
+  const decision = inboxDecisions.get(keyOfPane.get(pane.pane_id) ?? "");
+  if (!decision) continue;
+  Object.assign(pane, { agent_status: "blocked", ...decision });
+  const agent = snapshot().agents.find((candidate) => candidate.pane_id === pane.pane_id);
+  if (agent) agent.agent_status = "blocked";
+}
+
 /**
  * The flaky-retry pane's background work (GET /api/pane/omo-tasks): a Claude subagent still
  * reviewing, a background command, and a subagent that ended. The subagent's own transcript

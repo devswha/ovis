@@ -92,6 +92,7 @@ import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionC
 import { useHeaderConnection } from "./lib/headerConnection.ts";
 import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { HeaderSessions } from "./components/HeaderSessions.tsx";
+import { AgentInboxLauncher } from "./components/AgentInbox.tsx";
 import { nextWaitingPane, sessionCounts, tabPosition } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
@@ -792,6 +793,7 @@ export function App() {
           </>
         )}
         <div className="header-meta">
+          <AgentInboxLauncher machines={machines} source={activity} loaded={machineRosterLoaded} onOpen={(machineId, paneId, targetView) => selectTarget(machineId, paneId, targetView)} />
           {!sessionsInStrip && !sessionsInMore && sessionsPill}
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
           <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />

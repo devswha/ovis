@@ -1301,6 +1301,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- **Inbox** is a mobile-first sheet opened from the header at every width, with a live red count.
+  Its primary **Needs you** list projects the same all-PC Agents roster and shown status as the
+  sidebar: connected PCs only, agent panes whose authoritative state is `blocked`, in PC roster
+  order and each PC's Activity order. It never scans transcript text or fans out prompt reads;
+  selecting a row closes the sheet and opens that exact PC and pane in Chat, where the existing
+  prompt card reads and answers the current prompt. Each row gives the waiting kind and the agent's
+  own reported message as a two-line decision preview, then names the PC, workspace, tab, pane ID and
+  agent kind/name beside an explicit **Open chat** route. It does not poll prompts or send anything
+  to the agent merely to fill the Inbox. Pending rosters, no blocked agents and offline PCs have
+  explicit states, and live roster/status updates remove resolved rows while the sheet is open.
+  The design combines the Codex app's focused agent threads, Linear Inbox's priority queue and
+  close-to-work actions, and AlphaAgent Inbox's context-before-navigation. Agent Cockpit's descriptive
+  approval cards informed the waiting-kind/message split; Ovis deliberately omits risk labels because
+  no authoritative risk value exists, and omits read/snooze state because this is a live-state
+  projection rather than a stored notification queue.
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)

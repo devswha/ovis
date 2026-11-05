@@ -128,8 +128,8 @@ export interface AgentSidebarProps {
   onSelect(machineId: string, paneId: string): void;
 }
 
-/** what a row is called: the pane's label, else its agent's title, else the pane's own */
-function rowTitle({ pane, agent }: AgentRow["entry"]): string {
+/** what an Agents or Inbox row is called: the pane's label, else its agent's title, else the pane's own */
+export function agentRowTitle({ pane, agent }: AgentRow["entry"]): string {
   return pane.label?.trim() || agent?.title?.trim() || pane.title?.trim() || displayPaneTitle(pane);
 }
 
@@ -219,7 +219,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const groups = useMemo(() => !settings.agentGroups ? null : groupAgentRows(parts.people, {
     sort: settings.agentGroupSort,
     status: ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined,
-    name: ({ entry }) => rowTitle(entry),
+    name: ({ entry }) => agentRowTitle(entry),
     seqs: activity.seqs,
   }), [settings.agentGroups, settings.agentGroupSort, parts, activity]);
   // a folded list (a phone's starts so) opens while the filter keeps rows in it, so a match or the selection is
@@ -276,7 +276,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const describe = ({ machine, entry }: AgentRow) => {
     const { pane, workspace, tab, agent, agentLabel } = entry;
     const online = machine.state === "connected";
-    const title = rowTitle(entry);
+    const title = agentRowTitle(entry);
     const name = agent?.name?.trim() || null;
     // the name has its own place on the line: the label beside it says the kind instead
     const kindLabel = name !== null && agentLabel === name ? entry.canonicalAgent ?? agent?.title?.trim() ?? null : agentLabel;
