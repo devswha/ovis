@@ -94,6 +94,40 @@ it("reconnects linearly from one to thirty seconds with twenty percent jitter an
   expect(clock.tasks.size).toBe(0);
 });
 
+for (const warm of [false, true]) {
+  it(`opens a warm socket only when the relay's sync says it takes one (${warm ? "it does" : "an older relay"})`, async () => {
+    const fixture = relayFixture();
+    fixtures.push(fixture);
+    const identity = loadRelayIdentity(fixture.stateDir);
+    const online = deferred<void>();
+    const urls: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request, server) { return server.upgrade(request) ? undefined : new Response(null, { status: 400 }); },
+      websocket: {
+        open(socket) {
+          socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame);
+        },
+        message(socket) { socket.send(JSON.stringify({ type: "sync", connection_ids: [], ...(warm ? { warm: "ab".repeat(16) } : {}) })); },
+      },
+    });
+    const link = new RelayLink({
+      relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port,
+      clock: new TestClock(), random: () => 0.5, connect: (url) => { urls.push(url); return new WebSocket(url); },
+      onState: (phase) => { if (phase === "online") online.resolve(); },
+    });
+    try {
+      link.start();
+      await bounded(online.promise);
+      // the warm socket, if any, is opened in the same turn that read the sync
+      expect(urls.map((url) => new URL(url).searchParams.get("warm"))).toEqual(warm ? [null, "ab".repeat(16)] : [null]);
+    } finally {
+      await link.stop();
+      await server.stop(true);
+    }
+  });
+}
+
 it("drops and reconnects a control socket that sends an oversized message after the proof", async () => {
   const fixture = relayFixture();
   fixtures.push(fixture);

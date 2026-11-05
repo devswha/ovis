@@ -137,6 +137,16 @@ export class RelaySession {
       },
     });
     options.channel.onClose(() => this.mux.carrierLost());
+    // WELCOME does not depend on HELLO, so it rides right behind the protected handshake's answer: the phone
+    // gets its nonce one round trip sooner. HELLO is still required, and checked, before AUTH or PAIR.
+    this.mux.sendSession({
+      type: FrameType.WELCOME, flags: 0, stream_id: 0,
+      payload: {
+        protocol: "ovis-mux", version: 1, features: [], limits: LIMITS_V1,
+        nonce: this.nonce.toString("base64url"), server_version: options.serverVersion,
+        relay_protocol: RELAY_PROTOCOL, min_supported_client: options.minSupportedClient,
+      },
+    });
   }
 
   /** A sign-in or pairing is being checked, or its AUTH_OK waits to be sent. */
@@ -183,14 +193,6 @@ export class RelaySession {
         if (!frame.payload.versions.includes(1)) { this.close("unsupported_version"); return; }
         if (frame.payload.required_features.length) { this.close("unsupported_extension"); return; }
         this.state = "auth";
-        this.mux.sendSession({
-          type: FrameType.WELCOME, flags: 0, stream_id: 0,
-          payload: {
-            protocol: "ovis-mux", version: 1, features: [], limits: LIMITS_V1,
-            nonce: this.nonce.toString("base64url"), server_version: this.options.serverVersion,
-            relay_protocol: RELAY_PROTOCOL, min_supported_client: this.options.minSupportedClient,
-          },
-        });
         return;
       case FrameType.AUTH: case FrameType.PAIR: {
         if (this.state !== "auth") { this.close("protocol_error"); return; }

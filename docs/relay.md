@@ -200,13 +200,20 @@ it, and the identity reset is refused.
    the answer is `{"type":"server_proof","answer":"<HMAC-SHA256 hex>"}`. The MAC key is the raw
    X25519 shared secret, and the message is
    `nonce || UTF8(server_id + NUL + role + NUL + connection_id + NUL + "ovis-relay-server-proof-v1")`,
-   with role `control` or `data` and an empty control connection ID. The relay rejects an all-zero
+   with role `control`, `data` or `warm` and an empty connection ID for `control` (the generation for `warm`). The relay rejects an all-zero
    shared secret and compares the MAC in constant time. This proves the PC's secret possession to
    the relay; it does not authenticate the relay to the PC or replace the phone's Noise handshake.
 2. **The phone connects.** The app opens the same address with `role=client`. The relay gives the
    connection a random ID and tells the PC, which opens a data WebSocket for it, and from then on the
    relay passes frames between the two sockets byte for byte
-   ([what it answers](../relay/README.md#what-it-answers)).
+   ([what it answers](../relay/README.md#what-it-answers)). So that a phone does not wait for that
+   socket to open and prove itself, a PC whose relay says it takes one (`"warm":"<generation>"` in
+   `sync`, new for each control socket) keeps one data socket proven in advance
+   (`role=server&warm=<generation>`), which goes with that control socket. The next phone takes it at once:
+   the relay tells it `{"type":"bound","connection_id":"…"}` before the phone's first frame, tells
+   the control socket nothing, and the PC opens the next one. A warm socket proves itself like any
+   other and only carries what the phone and the PC encrypt end to end, so it changes nothing the
+   relay can see or do.
    A phone takes one of eight answered-client slots only when the PC's data socket sends its first
    non-keepalive frame. Up to four unanswered phones may wait; a fifth displaces the oldest with
    `1013`. A waiting phone closes `1013` after 15 seconds in which the PC could answer, reset when
@@ -218,8 +225,13 @@ it, and the identity reset is refused.
    attaches or the phone sends again.
 3. **Handshake.** The phone and the PC run the Noise NK handshake over those sockets, with the PC's
    public key from the QR code.
-4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`, the
-   PC answers `WELCOME` with 32 fresh random bytes, its version and its limits, the phone sends `PAIR`
+4. **Admission.** Inside the encrypted channel they speak Ovis Mux v1. The phone sends `HELLO`; the
+   PC sends `WELCOME` with 32 fresh random bytes, its version and its limits as soon as its side of
+   the handshake is done, without waiting for `HELLO`, so it reaches the phone one round trip
+   sooner. `WELCOME` offers version 1 with no features; it doesn't say the phone's `HELLO` was
+   accepted, and the PC still checks that `HELLO` (version 1 offered, no required feature) and
+   requires it before `PAIR` or `AUTH`. A phone that offers anything else checks `WELCOME` against
+   its own offer before it sends a credential. The phone sends `PAIR`
    (the first time, with the code) or `AUTH` (later, with its signature), and the PC answers
    `AUTH_OK`. Nothing else is accepted before that. The phone saves a new PC's key only on
    `AUTH_OK`, so a link whose PC never admits it takes no PC's place on the phone. The PC closes a
