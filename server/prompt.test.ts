@@ -6812,6 +6812,19 @@ describe("Claude Code 2.1.29x approvals and questions", () => {
     expect(answerKeys(prompt, { option_index: 0 }).flatMap((step) => step.keys ?? [])).toEqual(["up", "enter"]);
   });
 
+  test("an older approval's command is never taken as whole: an alert offers no buttons for it (#2916)", () => {
+    // the command over the marker, its lines apart: the body keeps only the last few of them
+    const screen = [
+      " Bash command", "", "   rm -rf production", "", "   echo one", "", "   echo two", "", "   echo three", "", "   echo four", "",
+      " This command requires approval", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", "", " Esc to cancel", "",
+    ].join("\n");
+    const prompt = parseInteractivePrompt("claude", screen)!;
+    expect(prompt).toMatchObject({ kind: "approval", question: "Do you want to proceed?" });
+    expect(prompt.options.map((option) => option.label)).toEqual(["Yes", "No"]);
+    expect(prompt.body).not.toContain("rm -rf production");
+    expect(parsedByPublicPrompt.get(prompt)?.cutOff).toBe(true);
+  });
+
   test("a long command pushes the panel's title off the screen: still an approval", () => {
     const screen = [
       ...Array.from({ length: 24 }, (_, index) => ` │ echo line ${index}`),

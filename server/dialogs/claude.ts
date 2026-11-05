@@ -505,6 +505,8 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
   if (approvalIndex >= 0 && approvalIndex < questionIndex) {
     title = nearestQuestion(lines, approvalIndex) ?? own("Command approval");
     const bodyEnd = dangerousRmIndex > requiredIndex ? questionIndex : approvalIndex;
+    // the body is the few lines over the marker, not the command's whole panel: never all of it for sure
+    cutOff = true;
     body = lines.slice(Math.max(0, approvalIndex - 8), bodyEnd).map(cleanLine).filter((line) => line && !isDivider(line)).join("\n");
   } else {
     // Claude Code 2.1 has neither marker: the panel under a solid rule opens with the
