@@ -160,6 +160,8 @@ esac
 printf 'docker %s\\n' "$(printf '%s' "$*" | tr '\\n' ' ')" >> "$RUNNER_TEST_LOG"
 case "$1" in
   image) exit 0 ;;
+  # a slot's container an earlier launcher left running, while this file exists
+  container) [ "$2" = inspect ] && [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && exit 0; exit 1 ;;
   run)
     # the shared network namespace container is detached and reads no token
     [ "$2" = -d ] && exit 0
@@ -380,6 +382,38 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it("pins every container it starts to --cpuset-cpus, and none without it", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-95"] });
+    expect(result.status).toBe(0);
+    const runs = calls.split("\n").filter((call) => call.startsWith("docker run "));
+    expect(runs.length).toBeGreaterThanOrEqual(3);
+    for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 ");
+    expect(runRunner().calls).not.toContain("--cpuset-cpus");
+  });
+
+  it("starts a slot's runner only once the container an earlier launcher left in that slot has ended", async () => {
+    const { tempDir, args, env, logPath } = prepareRunner({});
+    const held = join(tempDir, "slot-held");
+    writeFileSync(held, "");
+    const child = Bun.spawn(["bash", ...args], { env: { ...env, RUNNER_TEST_SLOT_HELD: held }, stdout: "ignore", stderr: "ignore" });
+    try {
+      const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+      // it asks about the slot's container before anything else of the slot
+      const deadline = Date.now() + LOADED_BOUND_MS;
+      while (!/docker container inspect herdr-ci-\S+-1/.test(calls()) && Date.now() < deadline) await Bun.sleep(25);
+      expect(calls()).toMatch(/docker container inspect herdr-ci-\S+-1/);
+      expect(calls()).not.toContain("registration-token");
+      expect(calls().split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      rmSync(held);
+      expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(0);
+      expect(calls().split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, HUNG_RUN_MS);
 
   it("refuses a host env file it cannot read before starting anything", () => {
     const { result, calls } = runRunner({ envFile: "missing" });
