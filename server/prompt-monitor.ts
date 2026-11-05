@@ -4,6 +4,8 @@ import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 const READ_INTERVAL_MS = 500;
 /** reads in a row that fail before a watch ends (`prompt_watch_ended`) */
 const FAILED_READS_END = 10;
+/** panes read at the same time in one tick, however many are watched */
+const READS_AT_ONCE = 4;
 
 export interface PromptReader {
   snapshot(): Promise<SessionSnapshot>;
@@ -11,14 +13,18 @@ export interface PromptReader {
   read(pane: HerdrPane, panes: HerdrPane[]): Promise<string | null | undefined>;
 }
 
-/** `shown`: what the last read found ("" for no prompt), undefined until a read after the watch began or the agent's last work */
-interface WatchedPrompt { shown?: string; failures: number }
+/**
+ * `shown`: what the last read found ("" for no prompt), undefined until a read after the watch began or the pane's
+ * last blocked spell; `signature` is what the watchers were told of it
+ */
+interface WatchedPrompt { shown?: string; signature?: string; failures: number }
 
 /**
  * One read loop for the server's prompt watches (server/core/prompt-watch.ts): every watched pane is read every
  * 500 ms, however many connections watch it, and the watchers are told when what its prompt says changes. A pane
- * herdr reports working or blocked is not read: its status says as much (pane-status), and its first read after
- * that is told again.
+ * herdr reports blocked is not read: its status says it waits on the user (pane-status), and its first read after
+ * that is told again. A working pane is read: Codex asks the questions in its queue while it works. A snapshot herdr
+ * does not answer (a restart) skips the tick and ends no watch; only reads of the pane itself count.
  */
 export class PromptMonitor {
   private readonly panes = new Map<string, WatchedPrompt>();
@@ -36,6 +42,12 @@ export class PromptMonitor {
   ) {}
 
   get size(): number { return this.panes.size; }
+
+  /** what the watchers of the pane were last told, while it still stands: a newcomer is told the same */
+  current(paneId: string): string | undefined {
+    const state = this.panes.get(paneId);
+    return state?.shown === undefined ? undefined : state.signature;
+  }
 
   watch(paneId: string): void {
     if (this.stopped || this.panes.has(paneId)) return;
@@ -75,40 +87,48 @@ export class PromptMonitor {
     try {
       snapshot = await this.reader.snapshot();
     } catch {
-      for (const [paneId, state] of watched) this.failed(paneId, state);
       return;
     }
-    await Promise.all(watched.map(async ([paneId, state]) => {
-      if (this.panes.get(paneId) !== state) return;
-      const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
-      if (!pane) {
-        this.end(paneId);
-        return;
-      }
-      if (pane.agent_status === "working" || pane.agent_status === "blocked") {
-        state.shown = undefined;
-        return;
-      }
-      let shown: string | null | undefined;
-      try {
-        shown = await this.reader.read(pane, snapshot.panes);
-      } catch {
-        if (this.panes.get(paneId) === state) this.failed(paneId, state);
-        return;
-      }
-      if (this.panes.get(paneId) !== state) return;
-      state.failures = 0;
-      if (shown !== undefined) this.publish(paneId, state, shown ?? "");
-    }));
+    const queue = [...watched];
+    const worker = async (): Promise<void> => {
+      for (let next = queue.shift(); next; next = queue.shift()) await this.readOne(next[0], next[1], snapshot);
+    };
+    await Promise.all(Array.from({ length: Math.min(READS_AT_ONCE, queue.length) }, worker));
+  }
+
+  private async readOne(paneId: string, state: WatchedPrompt, snapshot: SessionSnapshot): Promise<void> {
+    if (this.panes.get(paneId) !== state) return;
+    const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
+    if (!pane) {
+      this.end(paneId);
+      return;
+    }
+    if (pane.agent_status === "blocked") {
+      state.shown = undefined;
+      return;
+    }
+    let shown: string | null | undefined;
+    try {
+      shown = await this.reader.read(pane, snapshot.panes);
+    } catch {
+      this.failed(paneId, state);
+      return;
+    }
+    if (this.panes.get(paneId) !== state) return;
+    state.failures = 0;
+    if (shown !== undefined) this.publish(paneId, state, shown ?? "");
   }
 
   private publish(paneId: string, state: WatchedPrompt, shown: string): void {
     if (shown === state.shown) return;
     state.shown = shown;
-    this.changed(paneId, createHash("sha256").update(`${this.salt}\0${paneId}\0${shown}`).digest("base64url").slice(0, 22));
+    state.signature = createHash("sha256").update(`${this.salt}\0${paneId}\0${shown}`).digest("base64url").slice(0, 22);
+    this.changed(paneId, state.signature);
   }
 
+  /** a read of a watch since ended, or replaced by a new watch of the pane, counts for nothing */
   private failed(paneId: string, state: WatchedPrompt): void {
+    if (this.panes.get(paneId) !== state) return;
     state.failures += 1;
     if (state.failures >= FAILED_READS_END) this.end(paneId);
   }

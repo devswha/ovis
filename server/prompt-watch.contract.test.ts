@@ -109,6 +109,10 @@ describe("prompt watches", () => {
     const opened = await socket.changed(pane);
     const id = await cardId(pane);
     expect(id).toBeString();
+    // a second watcher of a pane already read is told what the first was, as its own first read
+    const later = await connect();
+    later.send({ type: "prompt-watch", pane_id: pane, enabled: true });
+    expect(await later.changed(pane)).toBe(opened);
 
     let after = socket.frames.length;
     await herdrRpc("pane.send_text", { pane_id: pane, text: "c" });

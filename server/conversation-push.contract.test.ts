@@ -258,6 +258,7 @@ describe("native conversation invalidation", () => {
     follow(socket, false);
     await barrier(socket);
     expect(monitor.size).toBe(0);
+    after = socket.frames.length;
     follow(socket, true);
     await socket.changed(paneId, after);
     socket.ws.close();

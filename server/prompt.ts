@@ -1335,10 +1335,11 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
 /**
  * What the prompt on the pane's screen says, for a prompt watch (server/prompt-monitor.ts): the id its text alone
  * makes, or null when none shows; undefined when the read raced a change. Unlike GET /api/pane/prompt it starts and
- * ends no asking, so these reads never move the ids the route hands out.
+ * ends no asking, so these reads never move the ids the route hands out. `openCodeState` is the watch's own, never
+ * the route's: a watch's read, late or from an older snapshot, must not replace the entry or draft an answer uses.
  */
-export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState?: OpenCodePromptState }): Promise<string | null | undefined> {
-  const known = await readKnownPrompt(pane.pane_id, pane, pane.agent ?? "", options.codexHome, panes, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState);
+export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState }): Promise<string | null | undefined> {
+  const known = await readKnownPrompt(pane.pane_id, pane, pane.agent ?? "", options.codexHome, panes, options.openCodeStateDir, options.openCodeState);
   return known.stale ? undefined : contentId(known.prompt) ?? null;
 }
 

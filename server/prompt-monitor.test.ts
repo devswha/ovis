@@ -11,7 +11,11 @@ class FakeHerdr {
   readonly screens = new Map<string, string | null | Error>();
   snapshots = 0;
   reads = 0;
+  readsUnderWay = 0;
+  mostReadsAtOnce = 0;
   snapshotFails = false;
+  /** a read that waits for the test to let it answer */
+  held: ReturnType<typeof Promise.withResolvers<void>> | null = null;
 
   reader() {
     return {
@@ -23,7 +27,11 @@ class FakeHerdr {
       },
       read: async (pane: HerdrPane): Promise<string | null> => {
         this.reads += 1;
+        this.readsUnderWay += 1;
+        this.mostReadsAtOnce = Math.max(this.mostReadsAtOnce, this.readsUnderWay);
         const screen = this.screens.get(pane.pane_id) ?? null;
+        await (this.held?.promise ?? Promise.resolve());
+        this.readsUnderWay -= 1;
         if (screen instanceof Error) throw screen;
         return screen;
       },
@@ -59,21 +67,30 @@ describe("PromptMonitor", () => {
     const [opened, closed, reopened] = changes.map(([, signature]) => signature);
     expect(closed).not.toBe(opened);
     expect(reopened).toBe(opened);
+    expect(monitor.current("p1")).toBe(reopened);
   });
 
-  it("reads no pane herdr reports working or blocked, and tells the first read after it again", async () => {
+  it("reads a working pane, as Codex asks its queued questions while it works", async () => {
+    const { herdr, changes, monitor } = setup();
+    herdr.panes.set("p1", "working");
+    herdr.screens.set("p1", "queued question");
+    monitor.watch("p1");
+    await monitor.tick();
+    expect(changes).toHaveLength(1);
+  });
+
+  it("reads no pane herdr reports blocked, and tells the first read after it again", async () => {
     const { herdr, changes, monitor } = setup();
     herdr.panes.set("p1", "idle");
-    herdr.screens.set("p1", null);
     monitor.watch("p1");
     await monitor.tick();
     const readsBefore = herdr.reads;
-    for (const status of ["working", "blocked"]) {
-      herdr.panes.set("p1", status);
-      await monitor.tick();
-    }
+    herdr.panes.set("p1", "blocked");
+    await monitor.tick();
     expect(herdr.reads).toBe(readsBefore);
-    herdr.panes.set("p1", "idle");
+    // a newcomer meanwhile is told nothing yet: the next read tells every watcher
+    expect(monitor.current("p1")).toBeUndefined();
+    herdr.panes.set("p1", "done");
     await monitor.tick();
     expect(changes).toHaveLength(2);
     expect(changes[1]![1]).toBe(changes[0]![1]);
@@ -92,6 +109,18 @@ describe("PromptMonitor", () => {
     expect(changes.map(([paneId]) => paneId).sort()).toEqual(["p1", "p2"]);
   });
 
+  it("reads at most four panes at once, however many are watched", async () => {
+    const { herdr, changes, monitor } = setup();
+    for (let i = 0; i < 10; i++) {
+      herdr.panes.set(`p${i}`, "idle");
+      monitor.watch(`p${i}`);
+    }
+    await monitor.tick();
+    await monitor.tick();
+    expect(changes).toHaveLength(10);
+    expect(herdr.mostReadsAtOnce).toBe(4);
+  });
+
   it("ends the watch of a pane that closed", async () => {
     const { herdr, ended, monitor } = setup();
     herdr.panes.set("p1", "idle");
@@ -103,7 +132,7 @@ describe("PromptMonitor", () => {
     expect(monitor.size).toBe(0);
   });
 
-  it("ends a watch after 10 failed reads in a row, a read that answers starting the count again", async () => {
+  it("ends a watch after 10 failed reads in a row, a read that answers starting the count again, and a missed snapshot ending none", async () => {
     const { herdr, ended, monitor } = setup();
     herdr.panes.set("p1", "idle");
     herdr.screens.set("p1", new Error("pane.read failed"));
@@ -113,11 +142,35 @@ describe("PromptMonitor", () => {
     await monitor.tick();
     herdr.screens.set("p1", new Error("pane.read failed"));
     for (let i = 0; i < 9; i++) await monitor.tick();
-    expect(ended).toEqual([]);
-    // a snapshot herdr did not answer counts as a failed read too
     herdr.snapshotFails = true;
+    for (let i = 0; i < 20; i++) await monitor.tick();
+    expect(ended).toEqual([]);
+    herdr.snapshotFails = false;
     await monitor.tick();
     expect(ended).toEqual(["p1"]);
     expect(monitor.size).toBe(0);
   });
+
+  it("counts no failed read of a watch that ended against the pane's new watch", async () => {
+    const { herdr, ended, monitor } = setup();
+    herdr.panes.set("p1", "idle");
+    herdr.screens.set("p1", new Error("pane.read failed"));
+    monitor.watch("p1");
+    for (let i = 0; i < 9; i++) await monitor.tick();
+    herdr.held = Promise.withResolvers<void>();
+    const late = monitor.tick();
+    await until(() => herdr.readsUnderWay === 1);
+    monitor.unwatch("p1");
+    monitor.watch("p1");
+    herdr.held.resolve();
+    await late;
+    expect(ended).toEqual([]);
+    expect(monitor.size).toBe(1);
+  });
 });
+
+/** settles once the fake's state holds: its reads resolve on the microtask queue, so a few turns of it are enough */
+async function until(check: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 100 && !check(); turn++) await Promise.resolve();
+  expect(check()).toBe(true);
+}

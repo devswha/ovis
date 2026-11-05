@@ -47,7 +47,10 @@ export function createPromptWatch({ clients, read }: { clients: Set<Client>; rea
           return;
         }
         watches.add(message.pane_id);
-        monitor.watch(message.pane_id);
+        // a pane others already watch was read before: this watcher is told what they were, as its first read
+        const current = monitor.current(message.pane_id);
+        if (current !== undefined) send(client, { type: "prompt-changed", pane_id: message.pane_id, signature: current });
+        else monitor.watch(message.pane_id);
       },
     },
     drop(client: Client): void {

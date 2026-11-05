@@ -562,11 +562,14 @@ Bridges that advertise `"prompt-watch"` take `prompt-watch {pane_id, enabled}` a
 `prompt-changed {pane_id, signature}` with the watch's first read and whenever the prompt on the
 pane's screen opens, closes or becomes another one; GET `/api/pane/prompt` stays authoritative.
 One 500 ms loop for the whole server reads each watched pane once however many clients watch it,
-and reads none herdr reports working or blocked (pane-status says so; the first read after it is
-sent again). The prompt is compared by its text alone, so a watch's reads start or end no asking
-and never move the ids `/api/pane/prompt` hands out. A closed pane, or 10 failed reads in a row,
-ends the watch with an error `prompt_watch_ended`; at most 32 per connection
-(`too_many_prompt_watches`). The browser does not send it.
+at most four at a time, and reads none herdr reports blocked (pane-status says so; the first read
+after it is sent again). A working pane is read: Codex asks the questions in its queue while it
+works. The prompt is compared by its text alone, and OpenCode's forms are read into a state of the
+watches' own, so a watch's reads start or end no asking and never move the ids or drafts
+`/api/pane/prompt` hands out. A closed pane, or 10 failed reads of it in a row, ends the watch with
+an error `prompt_watch_ended`; a snapshot herdr does not answer (a restart) ends none. At most 32
+per connection (`too_many_prompt_watches`); a second watcher of a pane already read gets the
+current `prompt-changed` at once. The browser does not send it.
 
 Newest-page refreshes are single-flight. Push-triggered reads start at least 1 s apart using
 monotonic elapsed time, with one trailing refresh at a fixed deadline: continuous writes cannot
