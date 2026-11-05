@@ -520,5 +520,18 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   // the same live records, read through their grid and held state only: the server outside reaches a
   // pane's terminal through `sight`, `poke` and the frames
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  /** a copy the pane's terminal stream did not carry (server/tmux-clipboard.ts): the panes a client shows, and telling them */
+  const paneClipboard = {
+    shownPanes: (): string[] => [...attachments].flatMap(([paneId, attachment]) => attachment.clients.size > 0 ? [paneId] : []),
+    /** the clients each pane has now: a copy made now goes to these alone, and only while they still show it */
+    capture: (): ((paneId: string, text: string) => void) => {
+      const held = new Map([...attachments].map(([paneId, attachment]) => [paneId, { attachment, clients: new Set(attachment.clients) }]));
+      return (paneId, text) => {
+        const then = held.get(paneId);
+        if (!then || attachments.get(paneId) !== then.attachment) return;
+        for (const client of then.clients) if (then.attachment.clients.has(client)) send(client, { type: "pane-clipboard", pane_id: paneId, text });
+      };
+    },
+  };
+  return { attachments: views, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames, paneClipboard };
 }

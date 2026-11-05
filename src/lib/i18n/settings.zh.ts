@@ -171,6 +171,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "A button in the empty message box sends the text copied on this device as a message.": "空输入框中的按钮会把在此设备上复制的文本作为消息发送。",
   "A button in the message box opens New tab with an agent… on the pane's workspace. The tab menu offers it either way.": "输入框中的按钮可在该面板的工作区打开“带代理的新标签页…”。标签页菜单中始终可用。",
   "Clipboard from a pane": "从窗格写入剪贴板",
+  "Copies in tmux": "tmux 中的复制",
+  "While a pane that runs tmux is shown, this PC adds a hook to that tmux, so a copy made in it reaches the clipboard (herdr does not pass it on). Your tmux config is not changed, and the hook is removed when this is off or no one shows the pane. Applies to every device of this PC; each also needs Clipboard from a pane.": "显示运行 tmux 的窗格时，此 PC 会为该 tmux 添加一个钩子，使在其中的复制到达剪贴板（herdr 不会传递它）。不会更改你的 tmux 配置，关闭此项或没有人显示该窗格时会移除钩子。适用于此 PC 的所有设备；每台设备还需开启“从窗格写入剪贴板”。",
   "A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.": "窗格中执行复制的程序（vim、tmux、Claude Code）会像你自己复制一样把文本写入此设备的剪贴板。如果窗格运行你不信任的输出，请关闭它：它可能替换你下次粘贴的内容。",
   "Pictures in the terminal": "终端中的图片",
   "Shows the pictures a program draws in a pane (imgcat, img2sixel, chafa) as sixel or iTerm2 images, on this device. Only on a PC that runs herdr-core, as the desktop app does: herdr does not pass pictures on. A picture is gone once the pane is drawn again.": "在此设备上以 sixel 或 iTerm2 图像显示窗格中程序绘制的图片(imgcat、img2sixel、chafa)。仅适用于运行 herdr-core 的电脑(如桌面应用):herdr 不会传递图片。窗格重新绘制后图片会消失。",

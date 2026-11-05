@@ -147,6 +147,7 @@ describe("demo transport", () => {
     "/api/pane/image": "pasting an image: the demo stores no files (listed when this guard was added)",
     "/api/pane/read": "the scrollback read behind a chat with no transcript: the demo answers /api/pane/conversation instead (listed when this guard was added)",
     "/api/pane/selection": "copying a selection across screens: not part of the demo (listed when this guard was added)",
+    "/api/tmux/copied": "a tmux hook on the PC posts it (server/tmux-clipboard.ts), never the browser",
     "/api/updates/check": "the demo's /api/updates says managed: false, so Settings offers no check",
     "/api/updates/install": "the demo's /api/updates says managed: false, so Settings offers no install",
   };

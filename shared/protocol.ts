@@ -1157,6 +1157,12 @@ export type ServerMessage =
    */
   | { type: "pty-data"; pane_id: string; data: string; flow?: { stream_id: string; offset: number }; replay?: true }
   | { type: "pty-exit"; pane_id: string; code: number | null }
+  /**
+   * A copy the pane's program made that its terminal stream does not carry (a tmux copy, server/tmux-clipboard.ts),
+   * for the clipboard as an OSC 52 write would set it. Never replayed: only clients showing the pane when it was
+   * made are told. Older bridges never send it.
+   */
+  | { type: "pane-clipboard"; pane_id: string; text: string }
   /** a pane that waited for another web bridge to let go of its terminal (error `attach_held`) is attached again */
   | { type: "attach-resumed"; pane_id: string }
   /** Attachment readiness (omitted ready means true); false revokes it during retry. Never a typed-text acknowledgement. */

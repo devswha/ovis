@@ -184,3 +184,21 @@ it("refuses pairing without a code to an open LAN window, which never hears of a
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("answers a tmux copy's post before sign-in, and refuses one without this server's secret as an unknown route", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-tmux-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "secret-token", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    const at = (address: string): ServerContext => ({ ...app.context, requestIP: () => ({ address }), timeout: () => {}, upgrade: () => false });
+    const copied = (headers: Record<string, string>) => new Request(`http://127.0.0.1:${app.port}/api/tmux/copied`, {
+      method: "POST", headers: { host: `127.0.0.1:${app.port}`, ...headers }, body: new URLSearchParams({ socket: "/tmp/sock", pane: "%0" }),
+    });
+    for (const [headers, address] of [[{}, "127.0.0.1"], [{ "x-ovis-tmux-hook": "1" }, "127.0.0.1"], [{ "x-ovis-tmux-hook": "1" }, "192.168.1.50"]] as const) {
+      const response = await handleRequest(copied(headers), at(address));
+      expect(response?.status).toBe(404);
+    }
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

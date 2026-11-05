@@ -10,7 +10,7 @@ import { EMPTY_DRAFT, applyToDraft, draftIsEmpty, holdBefore, type InputDraft } 
 import { pendingMessages } from "./pendingMessages.ts";
 import { FrameGate } from "./inputRow.ts";
 import { AttachmentTooLargeError, assertAttachable, fetchPaneConversation, fetchPaneScroll, fetchPaneSelection, scrollPane } from "./api.ts";
-import { parseOsc52 } from "./osc52.ts";
+import { MAX_OSC52_BYTES, parseOsc52 } from "./osc52.ts";
 import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
@@ -1050,6 +1050,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // On unless turned off in Settings -> Terminal -> Clipboard from a pane: vim, tmux and Claude Code
       // copy this way, but any process in the pane, an agent's tool calls included, can plant text the
       // user then pastes somewhere else.
+      const copyFromPane = (text: string, origin: number): void => {
+        // a reserved write that fails is not tried again later: that would be a write outside the click
+        const reserved = takeCopy(origin);
+        const written = reserved ? reserved.fulfil(text) : navigator.clipboard?.writeText(text).then(() => true, () => false);
+        void written?.then((copied) => noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser"));
+      };
       const osc52 = term.parser.registerOscHandler(52, (payload) => {
         const replayed = parsingReplay || replayOscOpen;
         // OSCs do not nest: the replayed one the flag waited for ends here
@@ -1059,12 +1065,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // a recent tab watched off-screen draws its output but does not set the clipboard unseen
         if (!replayed && parsingOwner === outputOwner && osc52AllowedRef.current && presentedRef.current && shownRef.current) {
           const text = parseOsc52(payload);
-          if (text !== null) {
-            // a reserved write that fails is not tried again later: that would be a write outside the click
-            const reserved = takeCopy(origin);
-            const written = reserved ? reserved.fulfil(text) : navigator.clipboard?.writeText(text).then(() => true, () => false);
-            void written?.then((copied) => noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser"));
-          }
+          if (text !== null) copyFromPane(text, origin);
         }
         return true;
       });
@@ -1372,6 +1373,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // held input stays: the server also says pty-exit when herdr restarts or an attach fails,
           // and the same pane comes back; only the user sends or discards it
           if (message.pane_id === paneRef.current) { setEnded(true); term.options.disableStdin = true; }
+        } else if (message.type === "pane-clipboard") {
+          // a tmux copy herdr's stream did not carry (server/tmux-clipboard.ts), taken as its OSC 52 would be;
+          // it came after every frame received so far, so a click before it may be what it answers
+          if (message.pane_id === paneRef.current && osc52AllowedRef.current && presentedRef.current && shownRef.current
+            && new TextEncoder().encode(message.text).byteLength <= MAX_OSC52_BYTES) copyFromPane(message.text, framesReceived + 1);
         } else if (message.type === "role-ack") {
           // the server is the authority on the role; only after this ack may an
           // interact client reclaim the shared grid it stopped owning (a tab out of use

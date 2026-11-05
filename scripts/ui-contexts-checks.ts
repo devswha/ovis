@@ -11,6 +11,7 @@ import { checkWakeLock } from "./wake-lock-regression.ts";
 import { checkSecretInput } from "./secret-input-regression.ts";
 import { checkTerminalCopy } from "./terminal-copy-regression.ts";
 import { checkTerminalCopyOff } from "./terminal-copy-off-regression.ts";
+import { checkTmuxCopy } from "./tmux-copy-regression.ts";
 import { checkPaneFind } from "./pane-find-regression.ts";
 import { checkUsageMeters, checkUsageSignInAgain } from "./usage-regression.ts";
 import { checkNotificationStartup } from "./notification-startup-regression.ts";
@@ -98,6 +99,7 @@ export async function runUiContextChecks(): Promise<void> {
     await timed("checkSecretInput", () => checkSecretInput(browser!, origin));
     await timed("checkTerminalCopy", () => checkTerminalCopy(browser!, origin));
     await timed("checkTerminalCopyOff", () => checkTerminalCopyOff(browser!));
+    await timed("checkTmuxCopy", () => checkTmuxCopy(browser!));
     await timed("checkPaneFind", () => checkPaneFind(browser!, origin));
     await timed("checkUsageMeters", () => checkUsageMeters(browser!, origin));
     await timed("checkUsageSignInAgain", () => checkUsageSignInAgain(browser!, origin));

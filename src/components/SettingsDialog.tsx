@@ -586,6 +586,9 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
       <SettingsRow label={t("Clipboard from a pane")} description={t("A program in a pane that copies (vim, tmux, Claude Code) puts its text on this device's clipboard, as a copy you made yourself would. Turn it off if a pane runs output you do not trust: it could replace what you paste next.")}>
         <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
       </SettingsRow>
+      <SettingsRow label={t("Copies in tmux")} description={t("While a pane that runs tmux is shown, this PC adds a hook to that tmux, so a copy made in it reaches the clipboard (herdr does not pass it on). Your tmux config is not changed, and the hook is removed when this is off or no one shows the pane. Applies to every device of this PC; each also needs Clipboard from a pane.")}>
+        <Toggle label={t("Copies in tmux")} checked={settings.tmuxCopy} onChange={(tmuxCopy) => update({ tmuxCopy })} />
+      </SettingsRow>
       <SettingsRow label={t("Pictures in the terminal")} description={t("Shows the pictures a program draws in a pane (imgcat, img2sixel, chafa) as sixel or iTerm2 images, on this device. Only on a PC that runs herdr-core, as the desktop app does: herdr does not pass pictures on. A picture is gone once the pane is drawn again.")}>
         <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages} onChange={(terminalImages) => update({ terminalImages })} />
       </SettingsRow>

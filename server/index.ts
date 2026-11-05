@@ -24,7 +24,8 @@ import { agentCatalogFor } from "./agent-catalog-routes.ts";
 import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
 import { AgentInstaller } from "./agent-catalog-install.ts";
 import { type BackgroundAgentDeps } from "./background-agent.ts";
-import { herdrSocketPath, ping } from "./herdr/client.ts";
+import { herdrSocketPath, paneProcessInfo, ping } from "./herdr/client.ts";
+import { TmuxCopyHooks } from "./tmux-clipboard.ts";
 import { coreConnection, coreSeenMarker, hcBin, NoHerdrCoreError, servingCore, setRuntime, startRuntime } from "./herdr-core/runtime.ts";
 import { chooseRuntime, runtimeService, type RuntimeChoice, type RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { bridgePins } from "./herdr-core/pin-label.ts";
@@ -398,13 +399,18 @@ export function createServer(
   }
 
   const requestLog = new RequestLog(stateDir);
+  const tmuxCopy = new TmuxCopyHooks({
+    stateDir, port: () => server.port, enabled: () => preferences.get().settings.tmuxCopy === true, subscribe: (listener) => preferences.subscribe(listener),
+    shownPanes: core.paneClipboard.shownPanes, capture: core.paneClipboard.capture,
+    foreground: async (paneId) => (await paneProcessInfo(paneId))?.foreground_processes ?? [],
+  });
   const accountMailbox = new AccountMailbox({
     pendingPath: join(stateDir, "account-pending.json"),
     devices, identity: () => ovisRelay.currentIdentity(),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
   const services: RequestServices = {
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(), preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(), preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, voice, browserSnapshot, core, tmuxCopy, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup,
     get portalStartupResult() { return portalStartupResult; },
   };
   ovisRelay.resume(services, server.port ?? DEFAULT_PORT);
@@ -456,6 +462,7 @@ export function createServer(
     },
     stop: () => {
       accountMailbox.stop();
+      void tmuxCopy.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
       core.stop(() => {

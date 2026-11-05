@@ -4,6 +4,7 @@ import { connectionData, type createCore, type SocketData } from "./core/index.t
 import type { ClientConnectionLog } from "./client-connection-log.ts";
 import type { RequestLog } from "./request-log.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
+import { TMUX_COPIED_PATH, type TmuxCopyHooks } from "./tmux-clipboard.ts";
 import { handleIntegrationsRequest } from "./integrations-routes.ts";
 import type { OrderSequence } from "./order-sequence.ts";
 import type { DevicePairedEvent, DeviceRemovedEvent, HealthAuth, RelayPairingsEvent, RemotePairingsEvent, SecuritySummary, SessionSnapshot } from "../shared/protocol.ts";
@@ -95,6 +96,7 @@ export interface RequestServices {
   readonly voice: VoiceService;
   readonly browserSnapshot: <S extends SessionSnapshot>(snapshot: S) => S;
   readonly core: ReturnType<typeof createCore>;
+  readonly tmuxCopy: TmuxCopyHooks;
   readonly seen: SeenStore;
   readonly piReader: PiSessionReader;
   readonly orderSequence: OrderSequence;
@@ -144,6 +146,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
   const loopback = ip !== null && isLoopbackAddress(ip.address);
   const forwarded = relayPeer === undefined && cameThroughProxy(request.headers);
+  // a tmux copy's hook on this PC (server/tmux-clipboard.ts) states no token: it is let in only by its own secret
+  if (pathname === TMUX_COPIED_PATH) {
+    setRequestRoute(pathname);
+    return relayPeer !== undefined ? jsonResponse({ error: { code: "not_found", message: "not found" } }, 404) : ctx.services.tmuxCopy.handle(request, ip?.address ?? null);
+  }
   const funnel = relayPeer === undefined && request.headers.has("tailscale-funnel-request");
   const tailscaleLogin = relayPeer === undefined ? request.headers.get("tailscale-user-login") : null;
   const forwardedFor = relayPeer === undefined ? request.headers.get("x-forwarded-for") : null;

@@ -120,6 +120,9 @@ export interface Settings {
    *  Stored under this key, not 0.4.1's `terminalOsc52`: settings are saved whole, so a `false` there
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
+  /** this PC's server sets a hook on the tmux a shown pane runs, for the time it is shown, so a copy in that tmux
+   *  reaches the clipboard (server/tmux-clipboard.ts); shared, as it is the PC's; off until chosen */
+  tmuxCopy: boolean;
   /** draw the pictures a pane program prints as sixel or iTerm2 inline images (lib/terminalImages.ts); off by
    *  default. Only herdr-core passes them on: herdr redraws a pane from its own grid, which keeps no pictures. */
   terminalImages: boolean;
@@ -255,14 +258,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, agentLocks, lockedAgents, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, sidebarFilter, voiceEngine, the agent groups, the
+ * keyBarExpanded, agentLocks, lockedAgents, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, tmuxCopy, composerNewTabButton, composerArtifacts, composerPasteSend, terminalMirrorWrap, terminalImages, terminalGhostty, terminalAttachButton, terminalKeyboardOnRequest, sidebarFilter, voiceEngine, the agent groups, the
  * interface font, the file text size, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "composerPasteSend" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "terminalAttachButton"
+  | "expandThinking" | "foldWork" | "autoTabNames" | "tmuxCopy" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalGhostty" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "fileFontSize" | "fileFontBase">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
@@ -334,7 +337,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  */
 export const SETTING_SCOPE = {
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", autoSendQueued: "shared", autoTabNames: "shared", tmuxCopy: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
@@ -404,6 +407,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
   paneClipboard: true,
+  tmuxCopy: false,
   terminalImages: false,
   // on by default; it only takes over on a herdr-core server (terminal-history), elsewhere xterm draws
   terminalGhostty: true,
@@ -622,6 +626,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     uiFontSize: sanitizeUiFontSize(record["uiFontSize"]),
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
+    tmuxCopy: record["tmuxCopy"] === true,
     terminalImages: record["terminalImages"] === true,
     terminalGhostty: record["terminalGhostty"] !== false,
     terminalAttachButton: record["terminalAttachButton"] === true,

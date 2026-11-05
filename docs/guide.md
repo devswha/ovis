@@ -355,6 +355,25 @@ or **Discard**. A message is never pasted over text typed in Claude Code's own i
 that box holds a draft the message stays in the list with the reason, and **Send now** delivers it
 once the draft is sent or cleared in the terminal.
 
+### Copying from tmux
+
+A program's copy in a pane (vim's `"+y`, Claude Code's copy) reaches this device's clipboard through
+OSC 52 (Settings → Terminal → **Clipboard from a pane**). Inside tmux it does not: herdr's terminal
+stream does not pass tmux's clipboard writes on (herdrdev/herdr#4612). Until it does, turn on
+Settings → Terminal → **Copies in tmux** (off by default; it is the PC's setting, shared by its
+devices). While a browser shows a pane that runs tmux, Ovis then adds one hook of its own to that
+running tmux (`pane-set-clipboard[<port>]`, beside any hook of yours) and removes it when the setting
+goes off, no browser shows the pane any more, or Ovis stops. It never writes `~/.tmux.conf` or any
+other file of yours.
+
+Each copy in tmux then tells Ovis which pane copied (never the text); Ovis reads the copy from tmux
+itself and puts it on the clipboard of the browsers showing a pane whose tmux shows that window, as a
+terminal holding that tmux would. Ovis takes this only from `127.0.0.1` or `::1` with a secret of its
+own, which curl reads from a file only your user can read, and only for a tmux it hooked. Copy mode
+copies with tmux's default settings; for a program's own copy inside tmux, tmux also needs
+`set -g set-clipboard on` in your config. A copy over 100 KB is dropped, as an OSC 52 write that big
+is. It needs `curl` on the PC and Ovis listening on `127.0.0.1` (the default).
+
 ## Subscription usage
 
 On a local desktop pane, the composer shows a compact read-only limit for the agent's provider:
