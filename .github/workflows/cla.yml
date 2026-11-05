@@ -14,7 +14,6 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
-  statuses: write
 jobs:
   cla:
     name: CLA
@@ -27,17 +26,31 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # Without a linked account the action falls back to the free-text git author name, which the
-      # allowlist would accept (`devswha`, `x[bot]`), and it reads only the first 100 commits.
+      # The action checks only commit authors, which anyone can set to another account's email, so
+      # the account that opened the PR must also author one of its commits and sign. Without a
+      # linked account the action falls back to the free-text git author name, which the allowlist
+      # would accept (`devswha`, `x[bot]`), and it reads only the first 100 commits.
       - name: Require a GitHub account on every commit
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
-          unlinked=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[] | select(.author == null) | .sha[0:10]' | tr '\n' ' ')
+          meta=$(gh api "repos/$REPO/pulls/$PR" --jq '"\(.user.login) \(.commits)"')
+          read -r opener count <<<"$meta"
+          if [ "$count" -gt 100 ]; then
+            echo "::error title=CLA::This pull request has $count commits; the CLA check reads only the first 100. Squash it to 100 commits or fewer and push again."
+            exit 1
+          fi
+          commits=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[] | "\(.sha[0:10]) \(.author.login // "")"')
+          unlinked=$(awk '$2 == "" { printf "%s ", $1 }' <<<"$commits")
           if [ -n "$unlinked" ]; then
             echo "::error title=CLA::Commits $unlinked have no GitHub account as their author, so the CLA cannot be checked. Commit with an email linked to your GitHub account (git commit --amend --reset-author) and push again."
+            exit 1
+          fi
+          if [ "$opener" != devswha ] && [[ "$opener" != *"[bot]" ]] && ! awk -v o="$opener" '$2 == o { found = 1 } END { exit !found }' <<<"$commits"; then
+            echo "::error title=CLA::No commit in this pull request is authored by @$opener, who opened it, so @$opener cannot sign the CLA here. Add a commit made with an email linked to @$opener's GitHub account and push again."
             exit 1
           fi
       - name: Check and record CLA signatures

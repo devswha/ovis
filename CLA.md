@@ -99,7 +99,9 @@ were contributed under.
 ## How to sign
 
 When You open a pull request, the CLA Assistant bot checks whether every author of its commits
-has signed. If You have not, it asks You to sign by commenting on the pull request with exactly:
+has signed. At least one of its commits must be authored by Your own GitHub account (an email
+linked to it), so that You sign too. If You have not signed, it asks You to sign by commenting on
+the pull request with exactly:
 
 ```
 I have read the CLA Document and I hereby sign the CLA
