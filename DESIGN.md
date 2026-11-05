@@ -894,8 +894,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   than an edge strip: a mouse resting `150ms` on the toggle of a collapsed sidebar shows it as `.sidebar.is-peek`, fixed
   under the header at its open width with `--shadow-drawer` at `--z-drawer` and no scrim, so the pane keeps its width and
   no pty resizes. Nothing takes the focus. The trip into it keeps it; `300ms` after the pointer left both it goes, later
-  while a row menu it opened is up or a field in it (the filter, a rename) has the focus. Escape puts it away and still
-  reaches the pane, unless that field or menu, or a modal dialog, takes it first; a click on the toggle
+  while a menu or popover it opened is up, a field in it (the filter, a rename) has the focus, or a row is dragged in it
+  (and after a drop on it, until the pointer moves). Escape puts it away and still reaches what has the focus, unless a modal
+  dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
+  words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
   from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
@@ -1437,6 +1439,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   agent is blocked; a pinned one stays in the pinned card; under the filter the part opens. Alt+arrows
   and drags move a row only among the rows of its own part, and not while it is folded. An untagged workspace stays where it is.
   It follows the Codex app's bottom box for background work, as the Agents list does (#770).
+- Settings > Appearance > **Fold helpers under their agent** (the device setting `foldHelpers`,
+  off by default, #772) puts one line under each agent row that has helpers in the same list
+  (`.agent-helpers`): it hangs from the agent as a helper does, a helper's height, with a caret
+  where a helper's mark stands, **Helpers**, a dot for each state among them that asks for a look
+  (as a named group's heading) and their count in the trailing cell. Folded, the helpers leave
+  sight but stay in the list, so a row that comes back keeps its focus; a helper that needs the
+  reader and the selected one stay in sight under the line, so automation that starts many
+  workers never folds a question away. The fold is per top-level family: a helper's own helpers
+  fold under the same line, and a kept one is drawn at its depth. Every agent starts folded; the
+  ones opened are kept per device by pin key, read anew on each change so two tabs keep each
+  other's, and pruned as the pins are (never a PC still loading or hidden). A helper with the focus
+  that folds away hands it to the line, and the line's name says whose helpers they are. The
+  filter folds nothing, as it opens the other folds. It follows the
+  disclosure rows of Zed's and VS Code's tree views (a parent row whose children fold under it,
+  with a count). It does not virtualize the list: #772 leaves that until a measured roster
+  (`scripts/roster-bench.ts`) shows drawing the rows is what costs.
 - An agent kind with no mark of its own draws its initial and its disc's ring in a color picked
   from the kind's name: one of the theme's syntax colors (`--syntax-keyword`, `-string`,
   `-number`, `-type`, `-variable`, `-meta`), which every theme sets in both modes and keeps
@@ -1658,6 +1676,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   footer and scrolling when it outgrows the sidebar: per account its mark, name and plan pill with
   the email or login right-aligned and ellipsized, then one row per limit (label, reset time, right-aligned percent) over a 4px bar. A problem
   note is dim, red for an expired sign-in or a failed request.
+- Under the limits, only when the provider reports them: **Usage credits** (Claude's extra usage,
+  spent against its monthly cap in the provider's currency, over a bar counted like the limits) or
+  **Credits** (Codex's balance, in whole credits), then **Limit resets** (how many are left, and
+  when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
+  Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
 - Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
