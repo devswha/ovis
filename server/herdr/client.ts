@@ -962,9 +962,13 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
     const id = moved.pane.pane_id;
     if (side === "left" || side === "up") {
       // the focus just before the swap is the one kept, the move's own taken back to the moved pane;
-      // without it the swap would take herdr's focus with nothing to give back, so the pane stays put
+      // without it the swap would take herdr's focus with nothing to give back, so the pane stays put,
+      // its focus given back as after a move right or down
       const focused = await sessionSnapshot(socket).then((now) => now.focused_pane_id ?? null, (error: unknown) => failed(error));
-      if (focused instanceof HerdrError) return { changed: true, reason: focused.code };
+      if (focused instanceof HerdrError) {
+        if (left !== null) await restore(id, (at) => at === left);
+        return { changed: true, reason: focused.code };
+      }
       const kept = left !== null && focused === left ? id : focused;
       // the move is committed whatever the swap does: a swap that fails leaves the pane right of or
       // below its target, and one whose answer is lost is read from the layout

@@ -479,6 +479,11 @@ it("reads the layout when a swap's answer is lost, and leaves herdr's focus alon
   expect(changes(requests).some(([method]) => method === "pane.swap")).toBe(false);
   expect(state.order.indexOf("source")).toBeGreaterThan(state.order.indexOf("target"));
   expect(state.focus).toBe("elsewhere");
+  // a focused pane gets herdr's focus back from the sibling it went to on the way
+  state.focus = "source";
+  state.reads = 0;
+  expect(await paneMoveBeside("source", "target", "left", path)).toEqual({ changed: true, reason: "internal_error" });
+  expect(state.focus).toBe("source");
 });
 
 /** `promise`, or a rejection naming `what` once `ms` pass: an awaited event, never a fixed wait. */
