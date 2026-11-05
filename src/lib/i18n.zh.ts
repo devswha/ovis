@@ -29,6 +29,7 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Attach files": "附加文件",
   "Sign out": "退出登录",
 
   "Only for {pc}": "仅限 {pc}",

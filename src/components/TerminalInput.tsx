@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent, type Ref } from "react";
-import { CornerDownLeft, SendHorizontal, TextCursorInput } from "lucide-react";
+import { CornerDownLeft, Paperclip, SendHorizontal, TextCursorInput } from "lucide-react";
 
 import "./TerminalInput.css";
 import { readTerminalDraft, writeTerminalDraft, TERMINAL_LINE_LIMIT, subscribeTerminalDraft, terminalDraftSending, setTerminalDraftSending, acknowledgeTerminalDraft, terminalDraftVersion } from "../lib/terminalDraft.ts";
@@ -30,6 +30,8 @@ export interface TerminalInputProps {
   onPasting?: (active: boolean) => void;
   /** stores a pasted file beside this line's pane (POST /api/pane/image) and resolves to its path */
   uploadFile?: (file: Blob) => Promise<string>;
+  /** an Attach files button before Insert picks files to upload as a paste does (Settings > Terminal, off by default) */
+  attach?: boolean;
   /** the line took the focus */
   onFocus?: () => void;
   ref?: Ref<TerminalInputHandle>;
@@ -65,7 +67,7 @@ interface SendAttempt {
  * keyboard's own editing and goes to the pane whole, then Enter. Autocorrect and spell-check stay
  * off, as in the composer: they would swap a flag, path or branch name for a dictionary word.
  */
-export function TerminalInput({ owner, active = true, connected, onSend, onEnter, onInsert, pasteTarget, onPasting, uploadFile, onComposing, onFocus, ref }: TerminalInputProps) {
+export function TerminalInput({ owner, active = true, connected, onSend, onEnter, onInsert, pasteTarget, onPasting, uploadFile, attach = false, onComposing, onFocus, ref }: TerminalInputProps) {
   const t = useT();
   const text = useSyncExternalStore(subscribeTerminalDraft, () => readTerminalDraft(owner));
   const setText = useCallback((value: string | ((previous: string) => string)) => {
@@ -339,12 +341,8 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [uploadFile]);
   const uploadFailed = useCallback((error: unknown): string => error instanceof AttachmentTooLargeError ? error.message : plainError(error), []);
 
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
-    // text, a copied path included, is the browser's own paste
-    if (event.clipboardData.getData("text/plain")) return;
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0 || uploadFile === undefined) return;
-    event.preventDefault();
+  /** Files for the line at its selection, from a paste (`native`: the keyboard's own) or the picker. */
+  const pasteFiles = (element: HTMLTextAreaElement, files: File[], native: boolean): void => {
     if (pasting.current) { setNote(t("Wait for the paste on its way, then paste again.")); return; }
     if (composing.current) { setNote(t("Finish the word, then paste.")); return; }
     try {
@@ -353,10 +351,20 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       setNote(uploadFailed(error));
       return;
     }
-    const waiting = beginPaste(event.currentTarget, t("Uploading file…"), true);
+    const waiting = beginPaste(element, t("Uploading file…"), native);
     if (waiting === null) return;
     uploadPaths(files).then((paths) => waiting.place(paths, true), (error: unknown) => waiting.fail(uploadFailed(error))).finally(waiting.finish);
   };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    // text, a copied path included, is the browser's own paste
+    if (event.clipboardData.getData("text/plain")) return;
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0 || uploadFile === undefined) return;
+    event.preventDefault();
+    pasteFiles(event.currentTarget, files, true);
+  };
+  const picker = useRef<HTMLInputElement>(null);
 
   /**
    * The key bar's Paste: the clipboard is read from the user's tap and for this line alone, at the
@@ -495,6 +503,32 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       />
       {dictation.shown && <MicButton dictation={dictation} className="terminal-input-mic" />}
       <span className="terminal-input-actions">
+        {attach && uploadFile !== undefined && <>
+          {/* the system picker; the paths go in where the caret was when it opened, as a paste's do */}
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(event) => {
+              const picked = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              if (picked.length > 0 && box.current !== null) pasteFiles(box.current, picked, false);
+            }}
+          />
+          <button
+            type="button"
+            className="terminal-input-action terminal-input-attach"
+            aria-label={t("Attach files")}
+            title={t("Attach files")}
+            disabled={!connected || sending || pending !== null}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => picker.current?.click()}
+          >
+            <span className="terminal-input-caption" aria-hidden="true">{t("Attach")}</span>
+            <span className="terminal-input-face"><Paperclip aria-hidden="true" /></span>
+          </button>
+        </>}
         {/* Insert, apart from Send by its words, its outline and its name: the text goes to the
             prompt and stays there to edit. Each says what it does above its round target */}
         <button

@@ -25,6 +25,7 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Attach files": "파일 첨부",
   "Sign out": "로그아웃",
 
   "Only for {pc}": "{pc}에만",

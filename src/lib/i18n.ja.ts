@@ -27,6 +27,7 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Attach files": "ファイルを添付",
   "Sign out": "サインアウト",
 
   "Only for {pc}": "{pc} のみ",
