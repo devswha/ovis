@@ -74,6 +74,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Expand thinking": "展开思考过程",
   "Reasoning starts open instead of folded. One you open or fold stays that way for its message": "推理默认展开，而不是折叠。你手动展开或折叠的推理在该条消息中保持不变",
   "Collapse work": "折叠工作过程",
+  "Compaction and failed requests": "压缩与失败的请求",
+  "On this device, a compaction names the token counts the agent recorded with it, and a turn's failed requests show as one row that opens to their errors. OmO, omp and pi record them.": "在此设备上，对话压缩会显示代理随之记录的 token 数，一轮中失败的请求合并为一行，展开可查看错误。OmO、omp 和 pi 会记录这些信息。",
   "A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message": "每轮的工作过程默认折叠为一行，Agent 工作时也是如此，需要你回应时除外。你手动展开或折叠的工作过程在该条消息中保持不变",
   "Chat width": "聊天宽度",
   "How wide the conversation and the message box run on a large screen": "大屏幕上对话和输入框的宽度",
