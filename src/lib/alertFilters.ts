@@ -6,8 +6,9 @@
  *
  * Kept in a key of its own, as the hidden PCs are (lib/hiddenMachines.ts), never in ovis:settings: a
  * tab still on an older version rewrites that record whole and would erase a field it does not know.
- * A PC is named by its name, not its roster id: every PC calls itself `local`, and the phone app
- * subscribes to each PC on its own.
+ * A PC is named by its relay ID where it has one, else its name, never its roster id (shared/machines.ts
+ * pcAlertKey): every PC calls itself `local`, and the phone app subscribes to each PC on its own, so
+ * the key has to be one the PC's own server knows as well as every roster that lists it.
  */
 
 import { useSyncExternalStore } from "react";
@@ -20,7 +21,7 @@ export interface AlertFilters {
   permission?: boolean;
   /** absent: off */
   error?: boolean;
-  /** the PCs, by name, this device hears nothing of */
+  /** the PCs this device hears nothing of, by relay ID or name (shared/machines.ts pcAlertKey) */
   pcsOff: string[];
 }
 

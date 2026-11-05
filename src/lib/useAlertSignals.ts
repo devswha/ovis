@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { AgentStatus, HerdrPane, ServerMessage } from "../../shared/protocol.ts";
 import type { AlertPrefs } from "../../shared/notify-policy.ts";
-import { paneStorageId, type Machine } from "../../shared/machines.ts";
+import { paneStorageId, pcAlertKey, type Machine } from "../../shared/machines.ts";
 import { alertPaneTitle } from "../components/Sidebar.tsx";
 import type { Settings } from "./settings.ts";
 import type { SelectionMark } from "./selectionMark.ts";
@@ -105,7 +105,7 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     const worked = trackTurn(turnStartRef.current, key, previous, status, Date.now());
     if (worked !== null) lastTurnRef.current.set(key, worked);
     // a muted pane (lib/paneMutes.ts), or one on a PC this device turned off, is tracked as every other, and told on no channel
-    const muted = paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) || !alertPcAllowed(alertsRef.current, machine.name);
+    const muted = paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) || !alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name);
     if (pane && !muted && shouldNotifyStatus(previous, status) && dropletAllows(alertsRef.current, status, worked, pane.agent_kind)) {
       const kind = status === "blocked" ? "blocked" : "done";
       dropIn(machine, pane, kind);
@@ -116,7 +116,7 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
   const onPaneExited = useCallback((machine: Machine, message: PaneExitedMessage, takeNotificationTargetRef: TakeNotificationTargetRef) => {
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
     const worked = endedTurn(turnStartRef.current, lastTurnRef.current, paneStorageId(machine.id, message.pane_id), Date.now());
-    if (!alertPcAllowed(alertsRef.current, machine.name)) return;
+    if (!alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name)) return;
     if (pane && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) && dropletAllows(alertsRef.current, "done", worked)) {
       dropIn(machine, pane, "ended");
       chime(machine, pane, "done");
