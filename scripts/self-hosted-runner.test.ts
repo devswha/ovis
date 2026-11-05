@@ -789,7 +789,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false, used = false) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false, used = false, claim = "7 1\n") {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -803,7 +803,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       writeFileSync(join(dist, "assets/a.js"), "a");
       if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
-      writeFileSync(join(outbox, `${key}.claim`), "7 1\n");
+      writeFileSync(join(outbox, `${key}.claim`), claim);
       // an earlier slot whose job left a directory named like a claim
       if (junkSlot) mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
       // a restore's use of an entry another run left, and a used marker that is a link
@@ -882,6 +882,8 @@ esac
       promote({ event: "workflow_dispatch" }),
       promote({}, "files", ""),
       promote({}, "link"),
+      // a claim too big to be one: never read
+      promote({}, "files", "devswha", false, false, `7 1${" ".repeat(100)}\n`),
     ];
     for (const run of refused) {
       expect(run.status).toBe(0);

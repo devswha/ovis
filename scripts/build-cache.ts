@@ -45,9 +45,10 @@ export function cacheKey(root: string, env: Record<string, string | undefined>, 
   if (status === null) return { bypass: "git status failed" };
   if (status !== "") return { bypass: "the checkout has uncommitted changes" };
   // files git ignores where Vite reads (public/ is copied whole): not the commit's either
-  const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "index.html", "public", "src", "shared"]);
+  const ignored = git(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--", "index.html", "vite.config.ts", "public", "scripts", "src", "shared"]);
   if (ignored === null) return { bypass: "git ls-files failed" };
-  if (ignored !== "") return { bypass: "ignored files where the build reads" };
+  // the type declarations typecheck emits (shared/vendor/paseo-e2ee/dist) are never bundled
+  if (ignored.split("\n").some((path) => path !== "" && !/\.d\.ts(?:\.map)?$|\.tsbuildinfo$/.test(path))) return { bypass: "ignored files where the build reads" };
   const hash = createHash("sha256");
   const part = (label: string, value: string | Buffer): void => { hash.update(`${label}\0${value.length}\0`).update(value); };
   part("format", FORMAT);
@@ -191,7 +192,10 @@ export function evict(cacheDir: string, maxBytes: number): void {
  * Takes the build of `key` for this job (a directory made atomically), so the jobs of one commit that
  * start together do not all build it. A lock older than `staleMs` was left by a job that died: taken over.
  */
-export function takeLock(lockDir: string, key: string, staleMs = 900_000): boolean {
+/** Longer than a build under load takes, shorter than a waiter's default wait (300 s). */
+export const STALE_LOCK_MS = 240_000;
+
+export function takeLock(lockDir: string, key: string, staleMs = STALE_LOCK_MS): boolean {
   const lock = join(lockDir, `.lock-${key}`);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -209,11 +213,18 @@ export function takeLock(lockDir: string, key: string, staleMs = 900_000): boole
   return false;
 }
 
-export const releaseLock = (lockDir: string, key: string): void => rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true });
+/** Never fails: another job can put something it cannot remove in the lock, which must not fail this build. */
+export function releaseLock(lockDir: string, key: string): void {
+  try { rmSync(join(lockDir, `.lock-${key}`), { recursive: true, force: true }); } catch (error) {
+    console.log(`build cache: could not release the lock of ${key.slice(0, 12)} (${(error as Error).message})`);
+  }
+}
 
 /** Waits until the entry for `key` is in the cache, or `pending` (its lock, or a claim the launcher has not judged yet) is gone, or `ms` pass. */
-export async function awaitBuild(cacheDir: string, key: string, ms: number, pending = join(cacheDir, `.lock-${key}`)): Promise<void> {
-  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || !existsSync(pending);
+export async function awaitBuild(cacheDir: string, key: string, ms: number, pending = join(cacheDir, `.lock-${key}`), staleMs = STALE_LOCK_MS): Promise<void> {
+  // a lock left by a job that was killed goes stale long before the wait ends: takeLock takes it over
+  const stale = (): boolean => { try { return Date.now() - statSync(pending).mtimeMs > staleMs; } catch { return true; } };
+  const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || !existsSync(pending) || stale();
   const deadline = Date.now() + ms;
   while (!settled() && Date.now() < deadline) await Bun.sleep(200);
 }

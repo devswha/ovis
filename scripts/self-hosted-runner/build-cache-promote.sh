@@ -51,10 +51,10 @@ trusted() {
 # readers check every file against. Fails, leaving nothing, on anything else.
 admit() {
   local tar="$1" key="$2" staging types
-  types="$(tar -tvf "$tar" | cut -c1 | sort -u | tr -d '\n')" || return 1
+  types="$(timeout 60 tar -tvf "$tar" | cut -c1 | sort -u | tr -d '\n')" || return 1
   case "$types" in ''|*[!d-]*) log "refused $key: the build holds something other than files and directories"; return 1 ;; esac
   staging="$(mktemp -d "$ENTRIES/.new-XXXXXX")" || return 1
-  if tar -xf "$tar" -C "$staging" --no-same-owner --no-same-permissions &&
+  if timeout 60 tar -xf "$tar" -C "$staging" --no-same-owner --no-same-permissions &&
     [ -z "$(find "$staging" -mindepth 1 ! -type f ! -type d -print -quit)" ] &&
     (cd "$staging" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$ENTRIES/.manifest-$key" &&
     mv "$ENTRIES/.manifest-$key" "$staging/.manifest" &&
@@ -83,6 +83,12 @@ evict() {
   done | sort -rn)
 }
 
+# The outboxes' files are moved into this host user's own directory before anything reads them, so
+# the job cannot change them between a check and a read (a FIFO swapped in, say).
+TAKEN="$OUTBOXES/.taken"
+mkdir -p "$TAKEN" && chmod 0700 "$TAKEN"
+take() { rm -rf "$2" && mv -T "$1" "$2" 2>/dev/null && [ -f "$2" ] && [ ! -L "$2" ]; }
+
 promoted=0
 for name in "$@"; do
   outbox="$OUTBOXES/$name"
@@ -97,16 +103,17 @@ for name in "$@"; do
     [ -e "$claim" ] || [ -L "$claim" ] || continue
     file="${claim##*/}" key="${file%.claim}" tar="$outbox/${file%.claim}.tar"
     run="" attempt=""
-    # only plain files: a link could make this host user read or keep a file of its own
-    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && [ -f "$claim" ] && [ ! -L "$claim" ] && [ -f "$tar" ] && [ ! -L "$tar" ]; then
-      read -r run attempt < "$claim" || true
+    # only plain files, and small claims: a link could make this host user read or keep a file of its own
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$TAKEN/build.tar" && take "$claim" "$TAKEN/claim" &&
+      [ "$(stat -c %s "$TAKEN/claim")" -le 64 ]; then
+      read -r run attempt < "$TAKEN/claim" || true
     fi
     if [[ "$run" =~ ^[0-9]{1,20}$ && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$key" ] &&
-      [ "$(stat -c %s "$tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
-      if admit "$tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
+      [ "$(stat -c %s "$TAKEN/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ] && trusted "$name" "$run" "$attempt"; then
+      if admit "$TAKEN/build.tar" "$key"; then log "cached $key from $name (run $run)"; promoted=1; fi
     fi
     # whatever it is (a directory named like a claim included): it must not stop the other slots
-    rm -rf "$claim" "$tar" 2>/dev/null || true
+    rm -rf "$claim" "$tar" "$TAKEN/claim" "$TAKEN/build.tar" 2>/dev/null || true
   done
 done
 if [ "$promoted" = 1 ]; then evict; fi

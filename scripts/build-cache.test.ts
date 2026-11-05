@@ -101,6 +101,15 @@ describe("cacheKey", () => {
     rmSync(join(root, "public/extra.log"));
     writeFileSync(join(root, "top.log"), "not read by the build");
     expect("key" in cacheKey(root, {}, [])).toBe(true);
+    // what typecheck emits for shared/vendor/paseo-e2ee, which Vite never bundles
+    mkdirSync(join(root, "shared/lib/dist"), { recursive: true });
+    writeFileSync(join(root, "shared/lib/a.ts"), "export {};\n");
+    git(root, "add", "shared/lib/a.ts");
+    git(root, "commit", "-q", "-m", "vendor");
+    for (const name of ["a.d.ts", "a.d.ts.map", "tsconfig.tsbuildinfo"]) writeFileSync(join(root, "shared/lib/dist", name), "");
+    expect("key" in cacheKey(root, {}, [])).toBe(true);
+    writeFileSync(join(root, "shared/lib/dist/a.js"), "");
+    expect(cacheKey(root, {}, [])).toEqual({ bypass: "ignored files where the build reads" });
   });
 
   it("does not use the cache outside a git checkout", () => {
@@ -241,6 +250,30 @@ describe("mayWrite", () => {
 });
 
 describe("one build per key", () => {
+  it("releases a lock without failing, even one another job put something unremovable in", () => {
+    const dir = temp("ovis-build-cache-release-");
+    takeLock(dir, "k");
+    mkdirSync(join(dir, ".lock-k", "sub"));
+    writeFileSync(join(dir, ".lock-k", "sub", "f"), "");
+    chmodSync(join(dir, ".lock-k", "sub"), 0o000);
+    try {
+      expect(() => releaseLock(dir, "k")).not.toThrow();
+    } finally {
+      chmodSync(join(dir, ".lock-k", "sub"), 0o755);
+    }
+  });
+
+  it("stops waiting on a lock left stale by a job that died", async () => {
+    const dir = temp("ovis-build-cache-stale-");
+    takeLock(dir, "k");
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(join(dir, ".lock-k"), old, old);
+    const started = Date.now();
+    await awaitBuild(dir, "k", 30_000, join(dir, ".lock-k"), 30_000);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(takeLock(dir, "k", 30_000)).toBe(true);
+  });
+
   it("tells a lock it could not make from one another job holds", () => {
     const dir = temp("ovis-build-cache-lockerr-");
     writeFileSync(join(dir, "not-a-directory"), "");
