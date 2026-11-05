@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { awaitBuild, cacheKey, deliver, evict, releaseLock, restore, store, takeLock } from "./build-cache.ts";
+import { awaitBuild, cacheKey, deliver, evict, mayWrite, releaseLock, restore, store, takeLock } from "./build-cache.ts";
 
 const made: string[] = [];
 afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -218,7 +218,35 @@ describe("store and restore", () => {
   });
 });
 
+describe("mayWrite", () => {
+  const event = (pull: unknown): string => {
+    const path = join(temp("ovis-build-cache-event-"), "event.json");
+    writeFileSync(path, JSON.stringify({ pull_request: pull }));
+    return path;
+  };
+  const actions = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "owner/repo" };
+  const pr = (author: string, actor: string, head = "owner/repo") => ({ ...actions, GITHUB_EVENT_NAME: "pull_request", GITHUB_TRIGGERING_ACTOR: actor, GITHUB_EVENT_PATH: event({ user: { login: author }, head: { repo: { full_name: head } } }) });
+
+  it("expects a build to be taken in only from a run the launcher trusts", () => {
+    expect(mayWrite({}, undefined)).toBe(true);
+    expect(mayWrite({ ...actions, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" }, undefined)).toBe(true);
+    expect(mayWrite({ ...actions, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/other" }, "w")).toBe(false);
+    expect(mayWrite(pr("w", "w"), "w")).toBe(true);
+    expect(mayWrite(pr("w", "w"), undefined)).toBe(false);
+    expect(mayWrite(pr("other", "w"), "w")).toBe(false);
+    expect(mayWrite(pr("w", "other"), "w")).toBe(false);
+    expect(mayWrite(pr("w", "w", "fork/repo"), "w")).toBe(false);
+    expect(mayWrite({ ...pr("w", "w"), GITHUB_EVENT_PATH: "/nonexistent" }, "w")).toBe(false);
+  });
+});
+
 describe("one build per key", () => {
+  it("tells a lock it could not make from one another job holds", () => {
+    const dir = temp("ovis-build-cache-lockerr-");
+    writeFileSync(join(dir, "not-a-directory"), "");
+    expect(() => takeLock(join(dir, "not-a-directory"), "k")).toThrow();
+  });
+
   it("lets one job take a key's build, and another once it is released or left stale", () => {
     const cache = temp("ovis-build-cache-lock-");
     expect(takeLock(cache, "k")).toBe(true);
@@ -275,12 +303,18 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     chmodSync(join(bin, "vite"), 0o755);
     return { root, runs: () => existsSync(join(root, "node_modules/runs")) ? readFileSync(join(root, "node_modules/runs"), "utf8").length : 0 };
   }
-  const build = (root: string, cache: string | null, extra: Record<string, string> = {}): string => {
-    const env: Record<string, string | undefined> = { ...process.env, ...extra };
+  const buildEnv = (cache: string | null, extra: Record<string, string> = {}): Record<string, string | undefined> => {
+    const env: Record<string, string | undefined> = { ...process.env };
     // the run's own GitHub Actions variables would turn the cache off outside a pull request run
     for (const name of ["OVIS_BUILD_CACHE_DIR", "GITHUB_ACTIONS", "GITHUB_EVENT_NAME"]) delete env[name];
+    Object.assign(env, extra);
     if (cache) env["OVIS_BUILD_CACHE_DIR"] = cache;
-    const result = spawnSync(process.execPath, [script], { cwd: root, env, encoding: "utf8" });
+    return env;
+  };
+  /** The key the build in `root` computes with `buildEnv(null)`'s variables (none of the extra ones above touch it). */
+  const keyFor = (root: string): string => (cacheKey(root, buildEnv(null), []) as { key: string }).key;
+  const build = (root: string, cache: string | null, extra: Record<string, string> = {}): string => {
+    const result = spawnSync(process.execPath, [script], { cwd: root, env: buildEnv(cache, extra), encoding: "utf8" });
     expect(result.status).toBe(0);
     return readFileSync(join(root, "dist/index.html"), "utf8");
   };
@@ -350,6 +384,40 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     expect(readdirSync(cache)).toEqual([]);
     expect(readdirSync(outbox).map((name) => name.replace(/^[0-9a-f]{64}/, "<key>")).sort()).toEqual(["<key>.claim", "<key>.tar"]);
     expect(readdirSync(locks)).toEqual([]);
+  }, 60_000);
+
+  it("records a restore only in its own outbox, never through a link another job planted in the shared locks", () => {
+    const { root } = project();
+    const base = temp("ovis-build-cache-planted-");
+    const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
+    for (const dir of [outbox, locks]) mkdirSync(dir);
+    // an entry for this checkout, as the launcher would have taken it in
+    const key = keyFor(root);
+    const built = join(base, "built");
+    mkdirSync(built);
+    writeFileSync(join(built, "index.html"), "export const a = 1;\n");
+    store(cache, key, built, 1 << 30);
+    const victim = join(base, "victim.ts");
+    writeFileSync(victim, "process.exit(1);\n");
+    symlinkSync(victim, join(locks, `used-${key}`));
+    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks })).toBe("export const a = 1;\n");
+    expect(readFileSync(victim, "utf8")).toBe("process.exit(1);\n");
+    expect(readdirSync(outbox)).toEqual([`used-${key}`]);
+  }, 60_000);
+
+  it("builds at once, waiting for no other job, in a run whose build would not be taken in", async () => {
+    const { root, runs } = project();
+    const base = temp("ovis-build-cache-untrusted-");
+    const [cache, outbox, locks] = ["cache", "outbox", "locks"].map((name) => join(base, name));
+    for (const dir of [cache, outbox, locks]) mkdirSync(dir);
+    const key = keyFor(root);
+    // another job of the run holds the lock
+    mkdirSync(join(locks, `.lock-${key}`));
+    const started = Date.now();
+    expect(build(root, cache, { OVIS_BUILD_CACHE_OUTBOX: outbox, OVIS_BUILD_CACHE_LOCKS: locks, OVIS_BUILD_CACHE_WRITER: "w", GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_TRIGGERING_ACTOR: "other" })).toBe("export const a = 1;\n");
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(runs()).toBe(1);
+    expect(readdirSync(outbox)).toEqual([]);
   }, 60_000);
 
   it("stops waiting as soon as the launcher has judged its build, taken in or not", async () => {

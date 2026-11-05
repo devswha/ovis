@@ -55,6 +55,8 @@ function runRunner(options: {
   args?: string[];
   /** XDG_CACHE_HOME for the launcher, kept after the run; a fresh one inside the run's temp dir otherwise */
   cacheHome?: string;
+  /** XDG_STATE_HOME for the launcher (the build cache's outboxes), kept after the run; fresh otherwise */
+  stateHome?: string;
   gitFetchExitCode?: number;
   /** exit status of the container that builds the Bun cache */
   cacheBuildExitCode?: number;
@@ -287,6 +289,7 @@ exit 0
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
+      XDG_STATE_HOME: options.stateHome ?? join(tempDir, "state"),
       GIT_FETCH_EXIT: String(options.gitFetchExitCode ?? 0),
       DOCKER_CACHE_EXIT: String(options.cacheBuildExitCode ?? 0),
       GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
@@ -332,28 +335,34 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   it("mounts the build cache read-only in every runner container, with only its own outbox to write", () => {
     const home = mkdtempSync(join(tmpdir(), "herdr-runner-build-cache-test-"));
     try {
-      const { result, calls } = runRunner({ count: 2, args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "devswha"] });
+      const stateHome = join(home, "state");
+      const { result, calls } = runRunner({ count: 2, stateHome, args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "devswha"] });
       expect(result.status).toBe(0);
       const root = join(home, "shm/owner/repo");
+      const outboxes = join(stateHome, "ovis-ci-runner/build-outbox/owner/repo");
       const lines = calls.split("\n");
+      const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
+      const locks = `herdr-ci-${host}-build-cache-locks`;
+      expect(lines).toContain(`docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=16m,mode=1777 ${locks}`);
       const runners = lines.filter((call) => runnerRun.test(call));
       expect(runners).toHaveLength(2);
       for (const call of runners) {
         const name = /--name (\S+)/.exec(call)![1]!;
-        expect(call).toContain(`-v ${root}/entries:/build-cache:ro -v ${root}/locks:/build-cache-locks -v ${root}/outbox/${name}:/build-cache-outbox `);
-        expect(call).toContain("-e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox ");
-        // the cache itself is never mounted writable
+        expect(call).toContain(`-v ${root}/entries:/build-cache:ro -v ${locks}:/build-cache-locks -v ${outboxes}/${name}:/build-cache-outbox `);
+        expect(call).toContain("-e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox -e OVIS_BUILD_CACHE_WRITER=devswha ");
+        // the cache itself is never mounted writable, nor anything under it
         expect(call).not.toMatch(/entries:\/build-cache(?!:ro)/);
+        expect(call).not.toContain(`-v ${root}/used`);
       }
       expect(lines.filter((call) => call.startsWith("docker run -d ")).every((call) => !call.includes("build-cache"))).toBe(true);
       const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
-      expect([mode(join(root, "entries")), mode(join(root, "locks")), mode(join(root, "outbox")), mode(join(root, "outbox/herdr-ci-" + spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim() + "-1"))]).toEqual(["755", "1777", "755", "1777"]);
+      const first = join(outboxes, `herdr-ci-${host}-1`);
+      expect([mode(join(root, "entries")), mode(join(root, "used")), mode(first)]).toEqual(["755", "755", "1777"]);
       expect(runRunner().calls).not.toContain("build-cache");
       // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
-      const first = join(root, "outbox", "herdr-ci-" + spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim() + "-1");
       mkdirSync(join(first, "junk"), { recursive: true });
       writeFileSync(join(first, "junk/blob"), "x");
-      const again = runRunner({ args: ["--build-cache", join(home, "shm")] });
+      const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", "0"] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
@@ -780,13 +789,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot = false, used = false) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
       const root = join(dir, "root");
-      const outbox = join(root, "outbox", slot);
-      for (const path of [bin, join(root, "entries"), join(root, "locks"), outbox]) mkdirSync(path, { recursive: true });
+      const outboxes = join(dir, "outboxes");
+      const outbox = join(outboxes, slot);
+      for (const path of [bin, join(root, "entries"), outbox]) mkdirSync(path, { recursive: true });
       const dist = join(dir, "dist");
       mkdirSync(join(dist, "assets"), { recursive: true });
       writeFileSync(join(dist, "index.html"), "<p>");
@@ -795,7 +805,13 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
       writeFileSync(join(outbox, `${key}.claim`), "7 1\n");
       // an earlier slot whose job left a directory named like a claim
-      if (junkSlot) mkdirSync(join(root, "outbox", "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
+      if (junkSlot) mkdirSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), { recursive: true });
+      // a restore's use of an entry another run left, and a used marker that is a link
+      if (used) {
+        mkdirSync(join(root, "entries", "c".repeat(64)));
+        writeFileSync(join(outbox, `used-${"c".repeat(64)}`), "");
+        symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
+      }
       const sha = "5".repeat(40);
       const answers: Record<string, unknown> = {
         jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
@@ -813,7 +829,7 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
-      const result = spawnSync("bash", [promoteScript, "owner/repo", root, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const result = spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
       const entry = join(root, "entries", key);
       return {
         status: result.status,
@@ -821,6 +837,7 @@ esac
         outbox: readdirSync(outbox),
         entries: readdirSync(join(root, "entries")),
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
+        used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
       };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -841,6 +858,12 @@ esac
     const run = promote({}, "files", "devswha", true);
     expect(run.status).toBe(0);
     expect(run.entries).toEqual([key]);
+  });
+
+  it("stamps an entry's use from a restore's marker in the host's own directory, and drops the marker", () => {
+    const run = promote({}, "files", "devswha", false, true);
+    expect(run.used).toEqual(["c".repeat(64)]);
+    expect(run.outbox).toEqual([]);
   });
 
   it("takes in the build of a push to the default branch", () => {

@@ -6,14 +6,16 @@
 # running a job of that run and the run is trusted: a push to the default branch, or a pull request
 # from this repository that --writer opened and pushed. Every other outbox file is deleted.
 #
-# Usage: build-cache-promote.sh REPO CACHE_ROOT WRITER MAX_MB SLOT_NAME...
-#   CACHE_ROOT holds entries/ (the cache), outbox/<slot name>/ and locks/; WRITER may be empty.
+# Usage: build-cache-promote.sh REPO CACHE_ROOT OUTBOXES WRITER MAX_MB SLOT_NAME...
+#   CACHE_ROOT holds entries/ (the cache) and used/ (when each was last restored), both written only
+#   here; OUTBOXES holds a directory per runner, named after it; WRITER may be empty. A restore says it used an entry
+#   with an empty outbox file used-<key>, of which only the name is read.
 set -euo pipefail
 
-REPO="$1" ROOT="$2" WRITER="$3" MAX_MB="$4"
-shift 4
+REPO="$1" ROOT="$2" OUTBOXES="$3" WRITER="$4" MAX_MB="$5"
+shift 5
 ENTRIES="$ROOT/entries"
-LOCKS="$ROOT/locks"
+USED="$ROOT/used"
 
 log() { echo "[build-cache] $*" >&2; }
 
@@ -64,7 +66,7 @@ admit() {
   return 1
 }
 
-# Keeps the most recently used entries within MAX_MB; a reader marks a use in locks/used-<key>.
+# Keeps the most recently used entries within MAX_MB.
 evict() {
   local total=0 limit=$(( 10#$MAX_MB * 1024 * 1024 )) line size path
   find "$ENTRIES" -mindepth 1 -maxdepth 1 -name '.new-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
@@ -72,19 +74,25 @@ evict() {
     path="${line#* }"
     size="$(du -sb "$path" | cut -f1)" || continue
     total=$((total + size))
-    if [ "$total" -gt "$limit" ]; then rm -rf "$path"; rm -f "$LOCKS/used-${path##*/}"; fi
+    if [ "$total" -gt "$limit" ]; then rm -rf "$path"; rm -f "$USED/${path##*/}"; fi
   done < <(for path in "$ENTRIES"/*; do
     [ -d "$path" ] || continue
     used="$(stat -c %Y "$path")"
-    if [ -f "$LOCKS/used-${path##*/}" ]; then stamp="$(stat -c %Y "$LOCKS/used-${path##*/}")"; [ "$stamp" -gt "$used" ] && used="$stamp"; fi
+    if [ -f "$USED/${path##*/}" ]; then stamp="$(stat -c %Y "$USED/${path##*/}")"; [ "$stamp" -gt "$used" ] && used="$stamp"; fi
     echo "$used $path"
   done | sort -rn)
 }
 
 promoted=0
 for name in "$@"; do
-  outbox="$ROOT/outbox/$name"
+  outbox="$OUTBOXES/$name"
   [ -d "$outbox" ] || continue
+  for used in "$outbox"/used-*; do
+    [ -e "$used" ] || [ -L "$used" ] || continue
+    key="${used##*/used-}"
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && [ -d "$ENTRIES/$key" ]; then mkdir -p "$USED" && touch "$USED/$key"; fi
+    rm -rf "$used" 2>/dev/null || true
+  done
   for claim in "$outbox"/*.claim; do
     [ -e "$claim" ] || [ -L "$claim" ] || continue
     file="${claim##*/}" key="${file%.claim}" tar="$outbox/${file%.claim}.tar"

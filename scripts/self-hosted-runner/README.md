@@ -106,16 +106,20 @@ lets the first of them build it and the others restore its `dist/` in a fraction
 commit, as one run's jobs do): 246-266 CPU s without it, 53-70 CPU s with it; four started at once
 build once.
 
-Every runner container gets `DIR/OWNER/NAME/entries` (the cache) **read-only** at `/build-cache`,
-`locks/` (which job builds a key; the others wait for it) and its slot's own `outbox/<runner>`. A job
-that built a commit leaves `<key>.tar` and `<key>.claim` (its run) in that outbox, and the launcher
+Every runner container gets `DIR/OWNER/NAME/entries` (the cache) **read-only** at `/build-cache`, the
+Docker volume `herdr-ci-<host>-build-cache-locks` (a 16 MiB tmpfs: which job builds a key, the others
+wait for it) and its slot's own outbox, on disk under `~/.local/state/ovis-ci-runner/build-outbox/`. A
+job that built a commit leaves `<key>.tar` and `<key>.claim` (its run) in that outbox, and the launcher
 (`build-cache-promote.sh`, every second) takes it in only when GitHub says that runner is running a
 job of that run and the run is trusted: a push to the default branch, or a pull request from this
 repository that `--build-cache-writer` opened and started. Without the flag only pushes write. The
 launcher unpacks only files and directories and writes the sha256 of each into the entry's
 `.manifest`; a restore refuses an entry with a link, a missing, changed or extra file. Every other
-outbox file is deleted. Pull request runs and pushes to main read it; a tag's release validation
-and manual runs always build.
+outbox file is deleted. A restore says it used an entry with an empty `used-<key>` in its own
+outbox, which the launcher stamps into `used/` (never written through a directory other jobs share).
+Pull request runs and pushes to main read it; a tag's release validation and manual runs always
+build, and a run whose build the launcher would refuse (another author's pull request, say) builds
+at once instead of waiting on the lock.
 
 An entry is named after the commit, Bun's version, the variables Vite reads and any `.env` file; a
 checkout with uncommitted changes, or with ignored files where Vite reads, never uses it.
@@ -222,5 +226,6 @@ the default branch's lockfile. A git object is named by its hash, so the mirror 
 commit a job checks out; Bun does not check a cached package again, which is why only that
 lockfile, never a job, fills the Bun cache. A job's copy of it is its own. The build cache (with
 `--build-cache`) is read-only to jobs as well: only the launcher writes it, from the builds of runs
-GitHub names as trusted (above). A job can write its own outbox and the shared locks, so at worst it
-makes the jobs waiting on a key wait up to five minutes and build themselves.
+GitHub names as trusted (above). A job can write its own outbox (on disk, as its workspace is) and the
+16 MiB locks volume, so at worst it makes the jobs waiting on a key wait up to five minutes and build
+themselves.

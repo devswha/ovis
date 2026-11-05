@@ -126,17 +126,22 @@ fi
 # dist/ instead of building it (scripts/build-cache.ts). Runners read it only; a job's build goes to its
 # slot's own outbox, and this launcher moves it in (build-cache-promote.sh) only for a trusted run.
 BUILD_CACHE_ROOT=""
+BUILD_CACHE_OUTBOXES=""
+# which job of a commit builds it: a volume of its own in RAM, capped, so a job filling it fills nothing else
+BUILD_CACHE_LOCKS="${PREFIX}build-cache-locks"
 if [ -n "$BUILD_CACHE" ]; then
   case "$REPO" in
     .*|*/.*|*/*/*|*[!A-Za-z0-9._/-]*|*/|/*) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
     */*)
-      # entries/ only this user writes; locks/ and each slot's outbox the runners' user (not this one) does too
-      if BUILD_CACHE_ROOT="$(umask 022 && mkdir -p "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/locks" "$BUILD_CACHE/$REPO/outbox" &&
-        chmod 0755 "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/outbox" && chmod 1777 "$BUILD_CACHE/$REPO/locks" &&
-        cd "$BUILD_CACHE/$REPO" && pwd -P)"; then
+      # The cache (entries/, used/) only this user writes. Each slot's outbox the runners' user writes too:
+      # on disk, not in RAM, as the job's own workspace is, so a job filling it costs what that already can.
+      outboxes="${XDG_STATE_HOME:-$HOME/.local/state}/ovis-ci-runner/build-outbox/$REPO"
+      if BUILD_CACHE_ROOT="$(umask 022 && mkdir -p "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/used" && cd "$BUILD_CACHE/$REPO" && pwd -P)" &&
+        BUILD_CACHE_OUTBOXES="$(umask 022 && mkdir -p "$outboxes" && cd "$outboxes" && pwd -P)" &&
+        docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=16m,mode=1777 "$BUILD_CACHE_LOCKS" >/dev/null; then
         :
       else
-        echo "[build-cache] cannot use $BUILD_CACHE/$REPO: running without it" >&2
+        echo "[build-cache] cannot use $BUILD_CACHE/$REPO, its outboxes or the $BUILD_CACHE_LOCKS volume: running without it" >&2
         BUILD_CACHE_ROOT=""
       fi ;;
     *) echo "[build-cache] $REPO is not an OWNER/NAME: running without it" >&2 ;;
@@ -145,7 +150,7 @@ fi
 
 # Set when each runner starts: its slot's outbox, emptied of what an earlier job left.
 build_cache_args() {
-  local outbox="$BUILD_CACHE_ROOT/outbox/$1"
+  local outbox="$BUILD_CACHE_OUTBOXES/$1"
   BUILD_CACHE_ARGS=()
   [ -n "$BUILD_CACHE_ROOT" ] || return 0
   # a file the runners' user made in it is this user's to delete (sticky directory); a directory's contents
@@ -158,9 +163,9 @@ build_cache_args() {
     fi
   fi
   mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0
-  BUILD_CACHE_ARGS=(-v "$BUILD_CACHE_ROOT/entries:/build-cache:ro" -v "$BUILD_CACHE_ROOT/locks:/build-cache-locks"
+  BUILD_CACHE_ARGS=(-v "$BUILD_CACHE_ROOT/entries:/build-cache:ro" -v "$BUILD_CACHE_LOCKS:/build-cache-locks"
     -v "$outbox:/build-cache-outbox" -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks
-    -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox)
+    -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox ${BUILD_CACHE_WRITER:+-e "OVIS_BUILD_CACHE_WRITER=$BUILD_CACHE_WRITER"})
 }
 
 # Every second: the trusted builds in the outboxes go into the cache. In its own process group, which cleanup stops.
@@ -169,7 +174,7 @@ promote_loop() {
   local names=() slot
   for slot in $(seq 1 "$COUNT"); do names+=("${PREFIX}${slot}"); done
   while true; do
-    bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
+    bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_OUTBOXES" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
     # with --once too: until cleanup stops it, after the slots' containers end
     sleep 1
   done

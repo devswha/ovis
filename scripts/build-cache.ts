@@ -97,7 +97,7 @@ function parseManifest(text: string): Map<string, string> {
  * Puts the entry's files at `dist`, replacing what is there, once every file matches its manifest
  * (and nothing else is there: no link, no file it does not name). False when there is no entry.
  */
-export function restore(cacheDir: string, key: string, dist: string, usedDir?: string): boolean {
+export function restore(cacheDir: string, key: string, dist: string, outbox?: string): boolean {
   const entry = join(cacheDir, key);
   if (!existsSync(join(entry, MANIFEST))) return false;
   // beside dist/ (one file system, for the rename), under a directory git ignores: a crash leaves the checkout clean
@@ -117,10 +117,11 @@ export function restore(cacheDir: string, key: string, dist: string, usedDir?: s
     rmSync(staging, { recursive: true, force: true });
     throw error;
   }
-  // its last use, which eviction goes by; a read-only cache takes it in a directory of its own
+  // its last use, which eviction goes by: a read-only cache hears of it through the job's own outbox,
+  // never a directory other jobs write (a link planted there would be written through)
   const now = new Date();
   try {
-    if (usedDir) writeFileSync(join(usedDir, `used-${key}`), "");
+    if (outbox) writeFileSync(join(outbox, `used-${key}`), "");
     else utimesSync(entry, now, now);
   } catch { /* evicted or unwritable: the use goes unrecorded */ }
   return true;
@@ -196,7 +197,9 @@ export function takeLock(lockDir: string, key: string, staleMs = 900_000): boole
     try {
       mkdirSync(lock);
       return true;
-    } catch {
+    } catch (error) {
+      // a full or broken lock directory is no lock another job holds: build without waiting
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
         if (Date.now() - statSync(lock).mtimeMs <= staleMs) return false;
         rmSync(lock, { recursive: true, force: true });
@@ -213,6 +216,23 @@ export async function awaitBuild(cacheDir: string, key: string, ms: number, pend
   const settled = (): boolean => existsSync(join(cacheDir, key, MANIFEST)) || !existsSync(pending);
   const deadline = Date.now() + ms;
   while (!settled() && Date.now() < deadline) await Bun.sleep(200);
+}
+
+/**
+ * Whether the launcher could take in this job's build: a push to main, or a pull request of this
+ * repository that `writer` opened and started (build-cache-promote.sh decides; this only spares an
+ * untrusted run the wait for a build that would be refused). Outside GitHub Actions: yes.
+ */
+export function mayWrite(env: Record<string, string | undefined>, writer: string | undefined): boolean {
+  if (env["GITHUB_ACTIONS"] !== "true") return true;
+  if (env["GITHUB_EVENT_NAME"] === "push") return env["GITHUB_REF"] === "refs/heads/main";
+  if (env["GITHUB_EVENT_NAME"] !== "pull_request" || !writer || env["GITHUB_TRIGGERING_ACTOR"] !== writer) return false;
+  try {
+    const event = JSON.parse(readFileSync(env["GITHUB_EVENT_PATH"] ?? "", "utf8")) as { pull_request?: { user?: { login?: string }; head?: { repo?: { full_name?: string } } } };
+    return event.pull_request?.user?.login === writer && event.pull_request?.head?.repo?.full_name === env["GITHUB_REPOSITORY"];
+  } catch {
+    return false;
+  }
 }
 
 function viteBuild(args: readonly string[]): number {
@@ -241,7 +261,7 @@ if (import.meta.main) {
   const name = key.key.slice(0, 12);
   const restored = (): boolean => {
     try {
-      if (!restore(cacheDir, key.key, dist, outbox ? lockDir : undefined)) return false;
+      if (!restore(cacheDir, key.key, dist, outbox)) return false;
       console.log(`build cache: hit ${name}, dist/ restored without building`);
       return true;
     } catch (error) {
@@ -250,6 +270,11 @@ if (import.meta.main) {
     }
   };
   if (restored()) process.exit(0);
+  if (!mayWrite(process.env, process.env["OVIS_BUILD_CACHE_WRITER"])) {
+    // nothing this run builds is taken in, so none of its jobs waits for another's
+    console.log(`build cache: miss ${name}; building (this run does not write the cache)`);
+    process.exit(viteBuild(args));
+  }
   let owner = false;
   try {
     mkdirSync(lockDir, { recursive: true });
