@@ -175,9 +175,6 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
 
-/** The most tombstones of revokes on this PC kept (record_id "local"); an account's removals are not counted. */
-export const LOCAL_TOMBSTONES_MAX = 1000;
-
 /** A key removed through the account, kept in `account-tombstones.json` beside devices.json. */
 export interface AccountTombstone { key: string; account: string; record_id: string; removed_at: string }
 
@@ -312,9 +309,10 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row an add or a remote approval made goes whatever its time, as removeAccountKey takes it
+    // a row an add or a remote approval made goes with an account's removal whatever its time, as removeAccountKey
+    // takes it; a revoke on this PC takes only rows made before it
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key && ((device.added_by !== undefined && t.record_id !== "local") || t.removed_at >= device.created_at));
   }
 
   /**
@@ -788,18 +786,12 @@ export class DeviceStore {
     this.writeTombstones(this.tombstones.filter((t) => t.key !== key));
   }
 
-  /**
-   * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. At most
-   * LOCAL_TOMBSTONES_MAX of them, the oldest dropped first; an account's removals all stay.
-   */
+  /** Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. */
   private tombstone(rows: readonly StoredDevice[], now: number): void {
     const keys = [...new Set(rows.flatMap((d) => d.relay_public_key === undefined || this.isTombstoned(d.relay_public_key) ? [] : [d.relay_public_key]))];
     const removedAt = new Date(now).toISOString();
-    const added = [...this.tombstones,
+    const next = [...this.tombstones,
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
-    const local = added.filter((t) => t.record_id === "local").sort((a, b) => a.removed_at.localeCompare(b.removed_at));
-    const dropped = new Set(local.slice(0, Math.max(0, local.length - LOCAL_TOMBSTONES_MAX)));
-    const next = added.filter((t) => !dropped.has(t));
     if (!keys.length) return;
     // with the main file unreadable the revoke still wins: its tombstone waits beside it
     if (this.accountError !== null) {

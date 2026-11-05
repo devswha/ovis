@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
-import { DeviceStore, LOCAL_TOMBSTONES_MAX } from "./devices.ts";
+import { DeviceStore } from "./devices.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { privateStateFs } from "./private-state.ts";
 import { MachineRelay } from "./machine-relay.ts";
@@ -1199,28 +1199,6 @@ it("a PC in no account lets a revoked key pair again with a code started through
   }
 });
 
-it("keeps at most LOCAL_TOMBSTONES_MAX tombstones of revokes on the PC, dropping the oldest", async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-tombstone-cap-"));
-  try {
-    const old = Array.from({ length: LOCAL_TOMBSTONES_MAX }, (_, index) => ({ key: `old-${index}`, account: "", record_id: "local", removed_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString() }));
-    const removed = { key: "removed-by-account", account: "acct_1", record_id: "r1", removed_at: "2025-01-01T00:00:00.000Z" };
-    writeFileSync(join(stateDir, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [removed, ...old] }), { mode: 0o600 });
-    const store = new DeviceStore(stateDir);
-    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
-    const paired = store.pairRelay(store.startPairing().code, "Relay phone", publicKey);
-    if (!paired) throw new Error("Expected relay enrollment");
-    store.revoke(paired.device.id);
-    const kept = JSON.parse(readFileSync(join(stateDir, "account-tombstones.json"), "utf8")) as { tombstones: { key: string; record_id: string }[] };
-    expect(kept.tombstones.filter((t) => t.record_id === "local")).toHaveLength(LOCAL_TOMBSTONES_MAX);
-    expect(store.isTombstoned("old-0")).toBe(false);
-    expect(store.isTombstoned(publicKey)).toBe(true);
-    expect(store.isTombstoned("removed-by-account")).toBe(true);
-  } finally {
-    rmSync(stateDir, { recursive: true, force: true });
-  }
-});
-
 it("a PC in no account still refuses, with a code started through the relay, a key its account removed", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-account-removed-"));
   try {
@@ -1248,23 +1226,31 @@ it("a PC in no account whose tombstone file will not parse refuses a code starte
   }
 });
 
-it("the cap on local tombstones drops the oldest by time, not by place in the file", async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-tombstone-order-"));
+
+it("a key re-paired with a relay code on a PC in no account stays when a sibling state dir brings its tombstone back", async () => {
+  const [stateDir, sibling] = [mkdtempSync(join(tmpdir(), "ovis-relay-repair-a-")), mkdtempSync(join(tmpdir(), "ovis-relay-repair-b-"))];
   try {
-    const at = (index: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
-    // the oldest one sits last, as a merge of two dirs can leave it
-    const old = [...Array.from({ length: LOCAL_TOMBSTONES_MAX - 1 }, (_, index) => ({ key: `old-${index + 1}`, account: "", record_id: "local", removed_at: at(index + 1) })),
-      { key: "oldest", account: "", record_id: "local", removed_at: at(0) }];
-    writeFileSync(join(stateDir, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: old }), { mode: 0o600 });
     const store = new DeviceStore(stateDir);
-    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
-    const paired = store.pairRelay(store.startPairing().code, "Relay phone", publicKey);
-    if (!paired) throw new Error("Expected relay enrollment");
-    store.revoke(paired.device.id);
-    expect(store.isTombstoned("oldest")).toBe(false);
-    expect(store.isTombstoned("old-1")).toBe(true);
+    const fresh = async () => {
+      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      return Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    };
+    const [starterKey, publicKey] = [await fresh(), await fresh()];
+    const starter = store.pairRelay(store.startPairing().code, "Laptop", starterKey);
+    const first = store.pairRelay(store.startPairing().code, "Phone", publicKey);
+    if (!starter || !first) throw new Error("Expected relay enrollment");
+    store.revoke(first.device.id);
+    // both dirs hold the registry and the revoke's tombstone
+    for (const name of ["devices.json", "account-tombstones.json"]) writeFileSync(join(sibling, name), readFileSync(join(stateDir, name)), { mode: 0o600 });
+    // a second later, as a person pairing again would be
+    const later = Date.now() + 1_000;
+    const again = store.pairRelay(store.startPairing(later, { remote: true, startedBy: starter.device.id, memberRequired: false }).code, "Phone", publicKey, later);
+    expect(again).not.toBeNull();
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, siblingStateDir: sibling, token: "t", tailscaleOwner: null, machines: false, sidecar: false });
+    try {
+      expect(app.context.services.devices.hasKey(publicKey)).toBe(true);
+    } finally { app.stop(); }
   } finally {
-    rmSync(stateDir, { recursive: true, force: true });
+    for (const dir of [stateDir, sibling]) rmSync(dir, { recursive: true, force: true });
   }
 });
