@@ -161,7 +161,10 @@ printf 'docker %s\\n' "$(printf '%s' "$*" | tr '\\n' ' ')" >> "$RUNNER_TEST_LOG"
 case "$1" in
   image) exit 0 ;;
   # a slot's container an earlier launcher left running, while this file exists
-  container) [ "$2" = inspect ] && [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && exit 0; exit 1 ;;
+  # (its State.Running is the file's content: true while it runs its job, false once it stopped)
+  container) [ "$2" = inspect ] && [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
+  # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
+  rm) for last; do :; done; case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
     # the shared network namespace container is detached and reads no token
     [ "$2" = -d ] && exit 0
@@ -395,14 +398,14 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   it("starts a slot's runner only once the container an earlier launcher left in that slot has ended", async () => {
     const { tempDir, args, env, logPath } = prepareRunner({});
     const held = join(tempDir, "slot-held");
-    writeFileSync(held, "");
+    writeFileSync(held, "true\n");
     const child = Bun.spawn(["bash", ...args], { env: { ...env, RUNNER_TEST_SLOT_HELD: held }, stdout: "ignore", stderr: "ignore" });
     try {
       const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
       // it asks about the slot's container before anything else of the slot
       const deadline = Date.now() + LOADED_BOUND_MS;
-      while (!/docker container inspect herdr-ci-\S+-1/.test(calls()) && Date.now() < deadline) await Bun.sleep(25);
-      expect(calls()).toMatch(/docker container inspect herdr-ci-\S+-1/);
+      while (!/docker container inspect .*herdr-ci-\S+-1/.test(calls()) && Date.now() < deadline) await Bun.sleep(25);
+      expect(calls()).toMatch(/docker container inspect .*herdr-ci-\S+-1/);
       expect(calls()).not.toContain("registration-token");
       expect(calls().split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
       rmSync(held);
@@ -414,6 +417,21 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       rmSync(tempDir, { recursive: true, force: true });
     }
   }, HUNG_RUN_MS);
+
+  it("removes a stopped container left in a slot's name, instead of waiting on it forever", () => {
+    const { tempDir, args, env, logPath } = prepareRunner({});
+    try {
+      const held = join(tempDir, "slot-held");
+      writeFileSync(held, "false\n");
+      const result = spawnSync("bash", args, { encoding: "utf8", timeout: LOADED_BOUND_MS, env: { ...env, RUNNER_TEST_SLOT_HELD: held } });
+      expect(result.status).toBe(0);
+      const calls = readFileSync(logPath, "utf8").split("\n");
+      expect(calls.some((call) => /^docker rm -f herdr-ci-\S+-1$/.test(call))).toBe(true);
+      expect(calls.filter((call) => runnerRun.test(call))).toHaveLength(1);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a host env file it cannot read before starting anything", () => {
     const { result, calls } = runRunner({ envFile: "missing" });

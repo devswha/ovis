@@ -399,14 +399,20 @@ start_netns() {
 }
 
 slot_loop() {
-  local slot="$1" name token container_status labels="$LABELS"
+  local slot="$1" name token container_status running labels="$LABELS"
   name="${PREFIX}${slot}"
   if [ "$slot" -le "$((10#$RESERVED))" ]; then labels="$RESERVED_LABELS"; fi
   delay=30
   while true; do
     # A container of this slot that an earlier launcher started may still run its job: a new one would
     # register the same runner name (--replace) and take that job's registration, so wait for it to end.
-    while docker container inspect "$name" >/dev/null 2>&1; do sleep 5; done
+    # One that is not running (created, or stopped without --rm's removal) would hold the name forever.
+    while running="$(docker container inspect -f '{{.State.Running}}' "$name" 2>/dev/null)"; do
+      [ "$running" = true ] && { sleep 5; continue; }
+      echo "[$name] removing a container left in this slot's name that is not running" >&2
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      break
+    done
     if ! token="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then
       echo "[$name] could not fetch a registration token; retrying in ${delay}s" >&2
       [ "$ONCE" = 1 ] && return 1

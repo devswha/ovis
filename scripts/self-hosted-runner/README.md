@@ -23,7 +23,11 @@ A slot whose container is still running (one an earlier launcher started, say, s
 waits for it to end before it starts the next: the new runner would register the same name
 (`--replace`) and take the running job's registration. So a launcher can be restarted under running
 jobs by killing its main process alone (`kill -KILL`; its stop trap would stop every container), after
-which systemd starts it again and each slot moves over once its job ends.
+which systemd starts it again and each slot moves over once its job ends. That relies on the unit's
+`KillMode=mixed`: systemd then SIGKILLs the old launcher's slot loops and `docker run` clients, which
+leaves their containers running. With `KillMode=control-group` they would get SIGTERM, which the
+clients pass on to their containers, ending the jobs. A container that holds a slot's name without
+running (created, or stopped) is removed, so it never holds the slot.
 
 A slot that cannot fetch a registration token retries after 30 s, doubling up to 10 minutes: GitHub
 limits these requests per hour, and eight slots retrying every 30 s keep the account over that limit,
