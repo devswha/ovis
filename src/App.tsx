@@ -614,6 +614,11 @@ export function App() {
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const paneMenuInMore = selectedPane !== null
     && loneTabHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0);
+  // on a phone the header's line is the title's: the sessions' one pill goes to the end of the tab row
+  // under it, and stays in the header only where that row is not drawn (a lone tab on a cramped phone)
+  const phoneNarrow = useMediaQuery("(max-width: 480px)");
+  const sessionsInStrip = phoneNarrow && !paneMenuInMore && !splitOn;
+  const sessionsPill = <HeaderSessions counts={sessionTally} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)} compact={phoneNarrow} />;
   const paneMoreItems = paneMenuInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
     ...item, divider: index === 0 || item.divider,
     run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),
@@ -746,7 +751,7 @@ export function App() {
           </>
         )}
         <div className="header-meta">
-          <HeaderSessions counts={sessionTally} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)} />
+          {!sessionsInStrip && sessionsPill}
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
           <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
           {!guideShown && <ConnectionChip
@@ -913,7 +918,7 @@ export function App() {
                 <CrashProbe region="pane" />
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {slotSnapshot && pane && workspace && (
-                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd}
+                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd ?? (sessionsInStrip && active ? <div className="tab-strip-sessions">{sessionsPill}</div> : undefined)}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     onRenameHandled={clearRenameRequest}
                     onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}

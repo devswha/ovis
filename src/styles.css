@@ -2163,16 +2163,31 @@ button.header-session-count[aria-disabled="true"] {
   }
 }
 
-/* a phone's line keeps the title readable: while a session waits, its button stands for the figures
-   (the sidebar keeps the rest), and on the narrowest phones the tab strip under the header tells the
-   tab's place. Each figure's words stay in its title and accessible text where it is drawn */
-@media (max-width: 480px) {
-  .header-sessions:has(.is-blocked) > .header-session-count:not(.is-blocked) {
-    display: none;
-  }
+/* a phone's header line is the title's (App.tsx): the sessions' one pill sits at the end of the tab
+   row under it, tinted with its state like the waiting button, and the tab's place, which that row
+   shows, leaves the header below 420px */
+.tab-strip-sessions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 0 auto;
+  padding: 0 var(--space-3);
 }
 
-@media (max-width: 374px) {
+.header-sessions.is-compact .header-session-count {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+}
+
+.header-sessions.is-compact .header-session-count.is-working {
+  background: color-mix(in srgb, var(--status-working) 14%, transparent);
+}
+
+.header-sessions.is-compact .header-session-count.is-done {
+  background: color-mix(in srgb, var(--status-done) 14%, transparent);
+}
+
+@media (max-width: 419px) {
   .context-position {
     display: none;
   }

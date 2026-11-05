@@ -2044,18 +2044,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   background work counts), `--status-blocked` question mark for waiting for an answer,
   `--status-done` dot for finished and not looked at yet (a finish looked at reads as ready, as in
   the sidebar). Tabular figures, so a count that changes moves nothing; nothing at all while every
-  session rests. The waiting figure is the one button: tinted with its state, it opens the next
-  waiting session after the selected one in the roster's order, wrapping, never the selected one
-  and never one a zoomed tab hides (a pick of it lands on the zoomed pane)
-  (then it stays a button, `aria-disabled`, so a keyboard's focus is not dropped). It follows Slack's "next unread" rather than a coding-agent app,
-  because the question on a phone is the same: which conversation needs me now. On a phone its
-  target reaches `--touch-target-header` through an invisible expander, as the lens buttons do.
-  A PC that is not connected counts nothing: its cached roster is greyed out in the sidebar.
-  After the title, `--text-dim` and kept whole, the selected tab's place in its workspace's strip
-  (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more. The title is the
-  one item that shortens. At `<=480px`, while a session waits, the waiting button stands for the
-  figures (the sidebar keeps the rest); below `375px` the tab's place goes too, since the tab strip
-  under the header shows it.
+  session rests, and nothing for a PC that is not connected (its cached roster is greyed out in the
+  sidebar). The waiting figure is the one button: tinted with its state, it opens the next waiting
+  session after the selected one in the roster's order, wrapping, never the selected one and never
+  one a zoomed tab hides (a pick of it lands on the zoomed pane); with none to open it stays a
+  button, `aria-disabled`, so a keyboard's focus is not dropped. It follows Slack's "next unread"
+  rather than a coding-agent app, because the question on a phone is the same: which conversation
+  needs me now. After the title, `--text-dim` and kept whole, the selected tab's place in its
+  workspace's strip (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more.
+  At `<=480px` the header's line is the title's, as wide as without these: the figures become one
+  pill (waiting, else running, else done, tinted with its state) at the end of the tab row under the
+  header (`.tab-strip-sessions`), a full `--touch-target-header` target; only where that row is not
+  drawn (a lone tab on a cramped phone) does the pill stay in the header. Below `420px` the tab's
+  place leaves the header: the tab row shows it.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
