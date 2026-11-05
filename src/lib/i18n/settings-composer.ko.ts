@@ -1,5 +1,5 @@
 /**
- * Korean for the settings keys of Settings → Chat → Composer's optional buttons and chips, and of Settings → Terminal → Split into rows and columns: the rest of the
+ * Korean for the settings keys of Settings → Chat → Composer's optional buttons and chips, of Settings → Terminal → Split into rows and columns, and of Settings → Shortcuts → herdr prefix keys: the rest of the
  * settings part (./settings.ko.ts), kept apart so each file stays short. Both files are the one settings part,
  * so a key lives in only one of them; its header lists the settings files and the register.
  */
@@ -14,4 +14,11 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "A button in the empty message box sends the text copied on this device as a message.": "빈 입력창의 버튼으로 이 기기에서 복사한 글을 메시지로 보냅니다.",
   "Split into rows and columns": "행과 열로 나누기",
   "Drop a pane on the edge of another in the split view to open it beside, above or below that pane, up to four at once, and drag the line between two panes to resize them. Off: the split view keeps two halves side by side.": "분할 보기에서 패널을 다른 패널의 가장자리에 놓으면 그 패널의 옆, 위, 아래에 열립니다. 한 번에 넷까지 열 수 있고, 두 패널 사이의 선을 끌어 크기를 바꿉니다. 끄면 분할 보기는 좌우 두 칸으로 나뉩니다.",
+  "Go to tab 1-9": "1~9번 탭으로 이동",
+  "Prefix": "접두키",
+  "This PC's server does not report herdr's keys yet.": "이 PC의 서버가 아직 herdr 키를 알려 주지 않습니다.",
+  "Use herdr's prefix keys": "herdr 접두키 사용",
+  "herdr prefix keys": "herdr 접두키",
+  "herdr's prefix in its config.toml cannot be used here, so no key is taken.": "config.toml의 herdr 접두키를 여기서 쓸 수 없어 어떤 키도 가로채지 않습니다.",
+  "herdr's prefix, then a key herdr's config.toml on this PC binds, runs that action here: the ones listed below. The prefix no longer reaches the pane: press it twice to send it. Fields, dialogs and IME input keep their keys.": "herdr 접두키에 이어 이 PC의 herdr config.toml이 지정한 키를 누르면 아래 동작이 여기서 실행됩니다. 접두키는 더 이상 패널로 가지 않으니, 보내려면 두 번 누르세요. 입력칸·대화상자·IME 입력은 키를 그대로 받습니다.",
 };

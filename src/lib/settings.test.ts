@@ -471,6 +471,10 @@ it("keeps the sidebar's hover peek off until this device turns it on, and keeps 
 });
 
 it("keeps the composer's New tab button off until this device turns it on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).herdrPrefixKeys).toBe(false);
+  expect(sanitizeSettings({ herdrPrefixKeys: true }).herdrPrefixKeys).toBe(true);
+  expect(sanitizeSettings({ herdrPrefixKeys: "true" }).herdrPrefixKeys).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("herdrPrefixKeys");
   expect(sanitizeSettings({}).composerNewTabButton).toBe(false);
   expect(sanitizeSettings({ composerNewTabButton: true }).composerNewTabButton).toBe(true);
   expect(sanitizeSettings({ composerNewTabButton: "true" }).composerNewTabButton).toBe(false);
