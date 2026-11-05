@@ -318,7 +318,7 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
     const ts = typeof value.created_at === "string" ? value.created_at : null;
     if (value.type === "USER_INPUT") {
       const envelope = agyEnvelope(content);
-      const skills = envelope === null ? [] : agyInvokedSkills(envelope.metadata).map((skill) => ({ kind: "skill" as const, skill }));
+      const skills = envelope === null ? [] : agyInvokedSkills(envelope.request, envelope.metadata).map((skill) => ({ kind: "skill" as const, skill }));
       turns.push({ role: "user", ts, parts: [{ kind: "text", text: envelope?.request ?? content }, ...skills] });
       continue;
     }

@@ -263,6 +263,7 @@ export function parseGrokTranscript(text: string, path?: string, wholeCall?: str
     call.part.error = fields.status === "failed";
     const skill = call.part.name === "read_file" ? skillDocument(input.target_file) : null;
     if (skill) call.part.skill = { ...skill, status: fields.status === "completed" ? "loaded" : fields.status === "failed" ? "failed" : "requested" };
+    else delete call.part.skill;
     // ACP replaces content as a whole. Keep the edit evidence separately so a later
     // completion message cannot erase a diff that the tool already displayed.
     const content = Array.isArray(fields.content) ? fields.content : [];

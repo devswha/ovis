@@ -172,10 +172,10 @@ export function devinConversation(sessionId: string, cwd: string, options: Devin
         const part = pending.get(text(message.tool_call_id));
         if (part) {
           if (typeof message.content === "string" && message.content) part.output = toolContent(message.content);
-          if (message.is_error === true || message.error === true) {
-            part.error = true;
-            if (part.skill) part.skill.status = "failed";
-          }
+          if (message.is_error === true || message.error === true) part.error = true;
+          const success = record(record(meta.extensions)["chisel/tool_result_meta"]).success;
+          if (part.skill && (part.error || success === false)) part.skill.status = "failed";
+          else if (part.skill && success === true) part.skill.status = "loaded";
         }
         continue;
       }
