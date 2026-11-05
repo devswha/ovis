@@ -50,6 +50,20 @@ export interface PaneSwapped {
   target_pane_id: string | null;
 }
 
+/** POST /api/pane/move: the pane leaves its place for `side` of another pane of its own tab, taking half of that pane's. */
+export interface MovePaneRequest {
+  pane_id: string;
+  target_pane_id: string;
+  side: PaneDirection;
+}
+
+/** `changed` false names why: same_pane, or cross_tab for a target in another tab. */
+export interface PaneMoved {
+  ok: true;
+  changed: boolean;
+  reason: string | null;
+}
+
 /**
  * POST /api/pane/resize: the border the pane shares with a neighbour moves `direction`-wards by
  * `amount` of the split that border belongs to, which herdr measures on the split's own extent,

@@ -297,6 +297,11 @@ export type { DevicePairedEvent, RelayPairingRequest, RelayPairingsEvent, Machin
  *         -> PaneSwapped { ok: true, changed, reason, target_pane_id } (pane.swap with the neighbour
  *         on that side, prefix+shift+hjkl, or an explicit pane; exactly one destination is required;
  *         changed false names no_neighbor, same_pane, cross_tab or not_found)
+ *  POST   /api/pane/move   { pane_id, target_pane_id, side: left|right|up|down } -> PaneMoved { ok: true, changed, reason }
+ *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
+ *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
+ *         it left of or above the target; herdr's focus stays where it was; changed false names
+ *         same_pane or cross_tab, an unknown pane answers pane_not_found)
  *  POST   /api/pane/resize { pane_id, direction: left|right|up|down, amount? } -> PaneResized { ok: true, changed, reason }
  *         (pane.resize, herdr's resize mode: the border the pane shares with a neighbour moves that way
  *         by `amount` of the split the border belongs to, not of the tab (0 < amount <= 0.5, herdr's
@@ -687,7 +692,7 @@ export interface AgentRenameRequest {
   name: string | null;
 }
 
-export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
+export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, MovePaneRequest, PaneMoved, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
 
 /** GET /api/pane/commands: one slash command the pane's agent understands. */
 export interface SlashCommand {

@@ -871,6 +871,57 @@ export async function paneSwapWith(paneId: string, targetPaneId: string, socketP
   });
 }
 
+/**
+ * The pane leaves its place for `side` of another pane of its own tab, its terminal running and its
+ * ID kept. herdr 0.9.5 moves a pane into a tab only from another one (`same_tab` otherwise), and only
+ * right of or below its target: the pane first goes to a tab of its own in its workspace, which herdr
+ * closes again once the pane is back beside the target, and a swap then puts it left of or above
+ * it. A herdr that moves within a tab, and herdr-core, take the first call. Queued with the other
+ * focus writers: herdr's focus, which a pane moved out or a swap takes, goes back to the pane that
+ * had it, unless something else took it meanwhile.
+ */
+export async function paneMoveBeside(paneId: string, targetPaneId: string, side: PaneDirection, socketPath?: string): Promise<{ changed: boolean; reason: string | null }> {
+  if (paneId === targetPaneId) return { changed: false, reason: "same_pane" };
+  return queueHerdrFocus(socketPath, async (socket) => {
+    const before = await sessionSnapshot(socket);
+    const pane = before.panes.find((candidate) => candidate.pane_id === paneId);
+    const target = before.panes.find((candidate) => candidate.pane_id === targetPaneId);
+    if (!pane || !target) throw new HerdrError("pane_not_found", `pane ${pane ? targetPaneId : paneId} not found`);
+    if (pane.tab_id !== target.tab_id) return { changed: false, reason: "cross_tab" };
+    const move = async (id: string, destination: Record<string, unknown>) =>
+      (await herdrRpc<{ move_result: { changed?: boolean; reason?: string | null; pane: PaneInfo } }>("pane.move", { pane_id: id, destination, focus: false }, socket)).move_result;
+    const into = { type: "tab", tab_id: target.tab_id, target_pane_id: targetPaneId, split: side === "left" || side === "right" ? "right" : "down" };
+    let moved = await move(paneId, into);
+    if (moved.changed === false && moved.reason === "same_tab") {
+      const passing = (await move(paneId, { type: "new_tab", workspace_id: pane.workspace_id })).pane.pane_id;
+      try {
+        moved = await move(passing, into);
+      } catch (error) {
+        if (error instanceof HerdrError) throw new HerdrError(error.code, `pane ${passing} waits in a tab of its own: ${error.message}`);
+        throw error;
+      }
+    }
+    if (moved.changed === false) return { changed: false, reason: moved.reason ?? null };
+    const id = moved.pane.pane_id;
+    if (side === "left" || side === "up") await herdrRpc("pane.swap", { source_pane_id: id, target_pane_id: targetPaneId }, socket);
+    const focused = before.focused_pane_id;
+    if (focused) {
+      try {
+        const now = await sessionSnapshot(socket);
+        const at = now.focused_pane_id;
+        // a pane moved out leaves herdr's focus on a pane of the tab it left; a swap gives it its source
+        const took = at !== focused && (focused === paneId ? now.panes.find((candidate) => candidate.pane_id === at)?.tab_id === target.tab_id : at === id);
+        // Already inside the focus queue: do not enqueue recursively.
+        if (took) await herdrRpc("pane.focus", { pane_id: focused === paneId ? id : focused }, socket);
+      } catch (error) {
+        // The layout is already committed, as after a swap.
+        console.warn("pane move focus restore failed", error);
+      }
+    }
+    return { changed: true, reason: null };
+  });
+}
+
 /** A split's absolute ratio: [] is the root, false descends first, true descends second. */
 export async function layoutSetSplitRatio(tabId: string, path: boolean[], ratio: number, socketPath?: string): Promise<void> {
   await herdrRpc("layout.set_split_ratio", { tab_id: tabId, path, ratio }, socketPath);

@@ -111,7 +111,9 @@ a half's bar onto the left or right half of the pane area. A pick in the sidebar
 list then opens in the active half only, and the focus stays there. Both halves can show the same
 tab, and you type in whichever half is active; the other half shows that tab at the active half's size.
 To rearrange a split tab instead, drop a pane's title on another pane's title in the same tab: the
-two panes trade places.
+two panes trade places. Drop it on another pane's body to move it beside that pane, on the side
+nearest the pointer; the highlighted half shows where it goes. Within its own tab a title only
+arranges the tab: to open it in a half, drop it on the other half while that half shows another tab.
 
 
 **3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. No Tailscale? Turn on the [Ovis relay](#through-the-ovis-relay) and scan its QR code instead. See [On your phone](#on-your-phone).

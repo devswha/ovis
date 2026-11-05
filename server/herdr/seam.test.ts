@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneFocus, paneProcessInfo, paneRead, paneSwap, paneSwapWith, sessionSnapshot,
+  agentGet, HerdrError, herdrRpc, LARGE_REPLY_BYTES, LINE_BYTES, makeLineReader, paneFocus, paneMoveBeside, paneProcessInfo, paneRead, paneSwap, paneSwapWith, sessionSnapshot,
   subscribeEvents, type EventFrame,
 } from "./client.ts";
 import type { AgentInfo, PaneInfo, PaneLayoutRect, PaneLayoutSnapshot, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
@@ -233,6 +233,104 @@ it("releases the swap queue after a native swap fails without restoring focus", 
   state.failSwap = false;
   expect((await paneSwapWith("next", "target", path)).changed).toBe(true);
   expect(state.focus).toBe("elsewhere");
+});
+
+/**
+ * herdr's pane.move as measured on 0.9.5: into the pane's own tab it answers same_tab (`withinTab`
+ * models a herdr that moves there); a pane moved out to a new tab keeps its ID and leaves herdr's
+ * focus on a pane of the tab it left; an explicit swap focuses its source.
+ */
+async function movePeer({ withinTab = false } = {}) {
+  const state = {
+    tabs: new Map([["source", "tab"], ["target", "tab"], ["sibling", "tab"], ["other", "tab-2"]]),
+    focus: "elsewhere", failInto: false,
+    onInto: () => {},
+  };
+  const fixture = await peer((request, { socket }) => {
+    const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+    const params = request.params as { pane_id: string; source_pane_id: string; target_pane_id: string; destination: { type: string; tab_id: string } };
+    const info = (pane_id: string) => ({ pane_id, tab_id: state.tabs.get(pane_id), workspace_id: "ws" });
+    if (request.method === "session.snapshot") {
+      answer({ snapshot: { focused_pane_id: state.focus, panes: [...state.tabs.keys()].map(info) } });
+    } else if (request.method === "pane.move") {
+      const { pane_id: pane, destination } = params;
+      if (destination.type === "tab" && state.tabs.get(pane) === destination.tab_id && !withinTab) {
+        answer({ move_result: { changed: false, reason: "same_tab", pane: info(pane) } });
+        return;
+      }
+      if (destination.type === "tab") {
+        state.onInto();
+        if (state.failInto) {
+          socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: "target pane not found" } })}\n`);
+          return;
+        }
+      }
+      if (destination.type === "new_tab" && state.focus === pane) state.focus = "sibling";
+      state.tabs.set(pane, destination.type === "new_tab" ? "passing" : destination.tab_id);
+      answer({ move_result: { changed: true, pane: info(pane), closed_tab_id: destination.type === "tab" && withinTab ? null : "passing" } });
+    } else if (request.method === "pane.swap") {
+      state.focus = params.source_pane_id;
+      answer({ swap: { changed: true, reason: null, focused_pane_id: state.focus, target_pane_id: params.target_pane_id } });
+    } else if (request.method === "pane.focus") {
+      state.focus = params.pane_id;
+      answer({ type: "ok" });
+    } else throw new Error(`unexpected RPC ${request.method}`);
+  });
+  return { ...fixture, state };
+}
+
+/** What a move asked of herdr, its reads left out. */
+const changes = (requests: Request[]) => requests.filter((request) => request.method !== "session.snapshot").map((request) => [request.method, request.params]);
+
+for (const side of ["left", "right", "up", "down"] as const) {
+  it(`moves a pane ${side} of another of its tab through a tab of its own, herdr's focus kept`, async () => {
+    const { path, state, requests } = await movePeer();
+    expect(await paneMoveBeside("source", "target", side, path)).toEqual({ changed: true, reason: null });
+    const into = { type: "tab", tab_id: "tab", target_pane_id: "target", split: side === "left" || side === "right" ? "right" : "down" };
+    const before = side === "left" || side === "up";
+    expect(changes(requests)).toEqual([
+      ["pane.move", { pane_id: "source", destination: into, focus: false }],
+      ["pane.move", { pane_id: "source", destination: { type: "new_tab", workspace_id: "ws" }, focus: false }],
+      ["pane.move", { pane_id: "source", destination: into, focus: false }],
+      // herdr places a moved pane right of or below its target: a swap puts it before
+      ...(before ? [["pane.swap", { source_pane_id: "source", target_pane_id: "target" }], ["pane.focus", { pane_id: "elsewhere" }]] : []),
+    ]);
+    expect(state.tabs.get("source")).toBe("tab");
+    expect(state.focus).toBe("elsewhere");
+  });
+}
+
+it("takes one pane.move where herdr moves a pane within its tab", async () => {
+  const { path, requests } = await movePeer({ withinTab: true });
+  expect(await paneMoveBeside("source", "target", "down", path)).toEqual({ changed: true, reason: null });
+  expect(changes(requests)).toEqual([["pane.move", { pane_id: "source", destination: { type: "tab", tab_id: "tab", target_pane_id: "target", split: "down" }, focus: false }]]);
+});
+
+it("gives herdr's focus back to the moved pane, but not over a focus the user moved meanwhile", async () => {
+  const { path, state } = await movePeer();
+  state.focus = "source";
+  await paneMoveBeside("source", "target", "right", path);
+  expect(state.focus).toBe("source");
+  state.onInto = () => { state.focus = "other"; };
+  await paneMoveBeside("source", "target", "down", path);
+  expect(state.focus).toBe("other");
+});
+
+it("refuses a pane beside itself or beside a pane of another tab, moving nothing", async () => {
+  const { path, requests } = await movePeer();
+  expect(await paneMoveBeside("source", "source", "left", path)).toEqual({ changed: false, reason: "same_pane" });
+  expect(await paneMoveBeside("source", "other", "left", path)).toEqual({ changed: false, reason: "cross_tab" });
+  expect((await rejection(paneMoveBeside("source", "gone", "left", path))).code).toBe("pane_not_found");
+  expect(changes(requests)).toEqual([]);
+});
+
+it("says where the pane waits when herdr will not bring it back beside its target", async () => {
+  const { path, state } = await movePeer();
+  state.failInto = true;
+  const error = await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(error.code).toBe("pane_not_found");
+  expect(error.message).toContain("a tab of its own");
+  expect(state.tabs.get("source")).toBe("passing");
 });
 
 /** `promise`, or a rejection naming `what` once `ms` pass: an awaited event, never a fixed wait. */
