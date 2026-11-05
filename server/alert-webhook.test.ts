@@ -146,6 +146,28 @@ describe("alert webhook delivery", () => {
   });
 });
 
+describe("alert webhook ownership", () => {
+  it("posts nothing once whoever set it lost access, as a push subscription's device would get nothing", async () => {
+    const allowed = new Set<string | null>([null, "dev-a"]);
+    let gated = false;
+    const hook = createAlertWebhook({ stateDir, loopbackHttp: true, retryDelays: [1], canDeliver: (owner) => owner === undefined ? !gated : allowed.has(owner) });
+    hook.save({ preset: "json", url: destination.url() }, undefined, "dev-a");
+    hook.send(alert);
+    await hook.settled();
+    allowed.delete("dev-a");
+    hook.send(alert);
+    await hook.settled();
+    expect(destination.received).toHaveLength(1);
+    // the open LAN (no owner) is heard only while it stays open, also after a restart
+    hook.save({ preset: "json", url: destination.url() }, undefined, undefined);
+    gated = true;
+    const restarted = createAlertWebhook({ stateDir, loopbackHttp: true, canDeliver: (owner) => owner === undefined ? !gated : allowed.has(owner) });
+    restarted.send(alert);
+    await restarted.settled();
+    expect(destination.received).toHaveLength(1);
+  });
+});
+
 describe("alert webhook staleness and bounds", () => {
   it("does not retry an alert that is no longer news", async () => {
     destination.answer([503, 200]);

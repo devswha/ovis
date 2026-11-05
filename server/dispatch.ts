@@ -457,7 +457,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
   if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {
-    try { return (await handleAlertWebhookRequest(request, pathname, alertWebhook))!; } catch (error) { return errorResponse(error); }
+    // its owner as a push subscription's: a paired device, null for a local/token/Tailscale sign-in, undefined for the open LAN
+    const owner = access.level !== "full" ? null : access.device?.id ?? (access.via === "open" ? undefined : null);
+    try { return (await handleAlertWebhookRequest(request, pathname, alertWebhook, owner))!; } catch (error) { return errorResponse(error); }
   }
   if (pathname === "/api/push" || pathname.startsWith("/api/push/")) {
     try {

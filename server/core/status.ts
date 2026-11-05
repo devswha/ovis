@@ -85,7 +85,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   usage: UsageService;
   usageLogin: UsageLoginService;
 }) {
-  const alertWebhook = createAlertWebhook({ stateDir: options.stateDir ?? defaultStateDir() });
+  const canDeliver = (id: string | null | undefined): boolean => id === null || (id === undefined ? !devices.gated : devices.has(id));
+  const alertWebhook = createAlertWebhook({ stateDir: options.stateDir ?? defaultStateDir(), canDeliver });
   const push = createPushService({
     stateDir: options.stateDir ?? defaultStateDir(),
     webhook: alertWebhook,
@@ -93,7 +94,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     timing: options.alertTiming,
     now: options.statusNow,
     loopbackHttp: options.pushLoopbackHttp === true,
-    canDeliver: (id) => id === null || (id === undefined ? !devices.gated : devices.has(id)),
+    canDeliver,
     inUse: () => present.size > 0,
     // the persisted list, read as each alert is scheduled and again as it goes out
     muted: (machineId, paneId) => paneAlertsMuted(preferences.get().muted_panes, machineId, paneId),
