@@ -150,6 +150,7 @@ export class RelayPairCodes {
         if (typeof event.data === "string") {
           let message: { type?: unknown; attempt?: unknown };
           try { message = JSON.parse(event.data) as typeof message; } catch { return; }
+          if (typeof message !== "object" || message === null || Array.isArray(message)) return;
           if (message.type === "waiting") {
             settle("held");
             if (current.keepalive) clearInterval(current.keepalive);

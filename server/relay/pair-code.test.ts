@@ -57,6 +57,18 @@ it("keeps its nameplate on the relay with keepalives while no device comes", asy
   } finally { done(); }
 });
 
+it("text from the relay that is not an object leaves the code showing", async () => {
+  const { pairCodes, sockets, done } = codes();
+  try {
+    const minted = pairCodes.mint();
+    const host = sockets[0]!;
+    host.relay(JSON.stringify({ type: "waiting" }));
+    await minted;
+    for (const text of ["null", "1", "[]"]) host.relay(text);
+    expect(pairCodes.showing).not.toBeNull();
+    expect(host.closed).toBe(false);
+  } finally { done(); }
+});
 
 it("a code the relay did not take leaves the six-digit code, and so the QR code, as it was", async () => {
   const { pairCodes, sockets, devices, done } = codes();
