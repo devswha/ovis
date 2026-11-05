@@ -132,7 +132,7 @@ describe("handleBackgroundAgentRequest", () => {
 
 // OpenCode 2.0.32's two tables, as far as the detail reads them (server/opencode-subagents.test.ts has the whole schema)
 const OPENCODE_SCHEMA = `
-CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, title text, agent text, time_created integer NOT NULL);
+CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, title text, agent text, revert text, time_created integer NOT NULL);
 CREATE TABLE session_message (
   id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL,
   time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL
@@ -231,6 +231,23 @@ describe("handleBackgroundAgentRequest on an OpenCode pane", () => {
     expect(body.events.some((event) => event.text.startsWith("y"))).toBe(false);
     const bytes = body.events.reduce((sum, event) => sum + Buffer.byteLength(event.text), Buffer.byteLength(body.prompt ?? ""));
     expect(bytes).toBeLessThanOrEqual(DETAIL_LIMITS.max_output_bytes);
+  });
+
+  it("answers a continued child's current run: its newest prompt and the work since, not the earlier task's", async () => {
+    const { request, files } = opencodeHarness([PARENT_A]);
+    files.add("ses_childA", "user", { text: "the second task" });
+    files.add("ses_childA", "assistant", { content: [{ type: "text", text: "on the second task" }] });
+    const body: PaneBackgroundAgentDetail = await (await request("pane_id=w0:p0&agent_id=ses_childA")).json();
+    expect([body.prompt, body.events.map((event) => event.text)]).toEqual(["the second task", ["on the second task"]]);
+  });
+
+  it("hides what a staged /undo took back, as the chat does", async () => {
+    const { request, files } = opencodeHarness([PARENT_A]);
+    files.add("ses_childA", "assistant", { content: [{ type: "text", text: "undone words" }] });
+    const undone = files.db.query<{ id: string }, []>("SELECT id FROM session_message ORDER BY seq DESC LIMIT 1").get()!.id;
+    files.db.query("UPDATE session_v2 SET revert = ? WHERE id = 'ses_childA'").run(JSON.stringify({ messageID: undone }));
+    const body: PaneBackgroundAgentDetail = await (await request("pane_id=w0:p0&agent_id=ses_childA")).json();
+    expect(body.events.map((event) => event.text)).toEqual(["looking", 'read {"filePath":"a.ts"}']);
   });
 
   it("is unavailable while the store cannot be read", async () => {

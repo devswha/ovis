@@ -30,7 +30,7 @@ import type { Database } from "bun:sqlite";
 import type { HerdrPane, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
 import type { OmoTask } from "../shared/tasks.ts";
 import { DETAIL_LIMITS, fitDetail, type DetailRefusal } from "./claude-subagents.ts";
-import { opencodeSessionId, withStore } from "./opencode.ts";
+import { opencodeSessionId, sessionView, supportedRowSize, withStore } from "./opencode.ts";
 
 /** As for Claude Code and OmO: the newest ten that ended in the last day are listed. */
 const RECENT_MS = 24 * 60 * 60_000;
@@ -343,9 +343,11 @@ const DETAIL_RECORD_BYTES = 64 * 1024;
 /**
  * GET /api/pane/background-agent for an OpenCode pane: what the child session `childId` of the session `sessionId` did,
  * read-only and bounded as a Claude Code subagent's detail is (claude-subagents.ts backgroundAgentDetail), from one
- * snapshot of the store. The prompt is the child's first `user` row (what it was dispatched with); its work is the text
- * and tool parts of its newest `assistant` rows, as many as max_events and max_read_bytes allow (no reasoning, no tool
- * output). A row over DETAIL_RECORD_BYTES or that is not JSON is left out and said (`incomplete`); rows left unread for
+ * snapshot of the store. The prompt is the child's newest `user` row: what its current (or last) run was dispatched
+ * with, a child continued by its sessionID having run an earlier task before it. Its work is the text and tool parts of
+ * the `assistant` rows since that prompt, the newest as many as max_events and max_read_bytes allow (no reasoning, no
+ * tool output); rows are sized before any is read, and a staged `/undo` hides the rows from its message on, as the chat
+ * does (server/opencode.ts sessionView). A row over DETAIL_RECORD_BYTES or that is not JSON is left out and said (`incomplete`); rows left unread for
  * the limits are said (`truncated`). Only a child of `sessionId` is answered: another session's is not found. `command`:
  * the id is one of the session's background commands, which has no work of its own to read.
  */
@@ -360,7 +362,7 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
   // 1.x tables, or a 2.0 store from before child sessions: no subagent to read
   if (!columns.has("parent_id")) return { refusal: "not_found" };
   const child = db.query<{ title: unknown; agent: unknown }, [string, string]>(
-    `SELECT ${["title", "agent"].map((name) => columns.has(name) ? name : `NULL AS ${name}`).join(", ")} FROM session_v2 WHERE id = ? AND parent_id = ?`,
+    `SELECT ${["title", "agent"].map((name) => columns.has(name) ? `substr(${name}, 1, 300) AS ${name}` : `NULL AS ${name}`).join(", ")} FROM session_v2 WHERE id = ? AND parent_id = ?`,
   ).get(childId, sessionId);
   if (child === null) {
     // a background command is listed by its shellID, else its row's id (shellStep)
@@ -370,22 +372,24 @@ function childDetail(db: Database, sessionId: string, childId: string): ReturnTy
     return { refusal: command === null ? "not_found" : "command" };
   }
   let incomplete = false;
-  const sized = `CASE WHEN length(CAST(data AS BLOB)) <= ${DETAIL_RECORD_BYTES} THEN data END AS data, length(CAST(data AS BLOB)) AS bytes, time_created`;
-  type DetailRow = { data: string | null; bytes: number; time_created: number };
+  const end = sessionView(db, childId)?.end ?? Number.MAX_SAFE_INTEGER;
+  const size = supportedRowSize(db);
+  const sized = `CASE WHEN ${size} <= ${DETAIL_RECORD_BYTES} THEN data END AS data, ${size} AS bytes, seq, time_created`;
+  type DetailRow = { data: string | null; bytes: number; seq: number; time_created: number };
   const parsed = (row: DetailRow): Row | null => {
     if (row.data === null) { incomplete = true; return null; }
     try { const data = JSON.parse(row.data) as unknown; if (data !== null && typeof data === "object" && !Array.isArray(data)) return data as Row; } catch { /* said below */ }
     incomplete = true;
     return null;
   };
-  const first = db.query<DetailRow, [string]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq LIMIT 1`).get(childId);
+  const first = db.query<DetailRow, [string, number]>(`SELECT ${sized} FROM session_message WHERE session_id = ? AND type = 'user' AND seq < ? ORDER BY seq DESC LIMIT 1`).get(childId, end);
   const dispatch = first === null ? null : parsed(first);
   const prompt = dispatch !== null && typeof dispatch.text === "string" && dispatch.text.trim().length > 0 ? dispatch.text : null;
   // the newest rows' sizes first, one more than can be shown to tell whether older ones were left; then only the rows
   // that fit max_read_bytes are read, so no more than that comes out of the store
-  const sizes = db.query<{ seq: number; bytes: number }, [string]>(
-    `SELECT seq, length(CAST(data AS BLOB)) AS bytes FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT ${DETAIL_LIMITS.max_events + 1}`,
-  ).all(childId);
+  const sizes = db.query<{ seq: number; bytes: number }, [string, number, number]>(
+    `SELECT seq, ${size} AS bytes FROM session_message WHERE session_id = ? AND type = 'assistant' AND seq > ? AND seq < ? ORDER BY seq DESC LIMIT ${DETAIL_LIMITS.max_events + 1}`,
+  ).all(childId, first?.seq ?? -1, end);
   let truncated = sizes.length > DETAIL_LIMITS.max_events;
   let left = DETAIL_LIMITS.max_read_bytes - (first === null || first.data === null ? 0 : first.bytes);
   const fits: number[] = [];
