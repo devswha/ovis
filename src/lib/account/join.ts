@@ -244,19 +244,24 @@ const UNDECIDED = new Set(["account_unavailable"]);
  * Sends a planned PC (planEnroll) the account's devices as this client knows them
  * (docs/account.md, "Account members"): first the `remove`s it signed, so the PC tombstones those
  * keys, then the `add`s for the devices it approved itself. Only records it signed itself go, as
- * signed: never a key another PC lists, nor one a PC says was removed. `fetch`
+ * signed: never a key another PC lists, nor one a PC says was removed. An `add` goes only while
+ * `members` (the account keys another PC of the account lists, accountMembers) holds its key, so a
+ * PC can only hold an add back, never make this client vouch for a key. `fetch`
  * must be a session signed in with the account key on that PC, after the link. Every record's
  * outcome is read; one the PC did not answer, or could not decide on, is sent again on the next
  * call. True once nothing is left to send there.
  */
-export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; members: ReadonlySet<string> | null }): Promise<boolean> {
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return true;
   const pending = (devices: KnownDevices | undefined) => Object.values(devices ?? {})
     .filter((record) => record.account === options.account && !planned.done.includes(record.id));
   const known = pending(await options.store.get("devices"));
   const removes = known.filter((record) => record.kind === "remove");
-  const adds = known.filter((record) => record.kind === "add");
+  // an add goes only for a key another PC of the account still lists as a member: one another member
+  // removed meanwhile (its remove may never reach this PC) waits, and none goes with no such PC answering
+  const adds = known.filter((record) => record.kind === "add" && options.members?.has(record.key) === true);
+  const held = known.some((record) => record.kind === "add" && !adds.includes(record));
   const done: string[] = [];
   const send = async (path: string, records: readonly { id: string }[]): Promise<boolean> => {
     let all = true;
@@ -274,7 +279,7 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
     return all;
   };
   // the adds go only once every removal has its outcome there: a removed key is tombstoned first
-  const sent = await send("/api/account/records", removes) && await send("/api/account/enroll", adds);
+  const sent = await send("/api/account/records", removes) && await send("/api/account/enroll", adds) && !held;
   let finished = false;
   // checked in the same write that ends the plan: a record signed meanwhile (another tab) keeps it for the next call
   await options.store.updateMany(["enrolls", "devices"], (current) => {
@@ -294,10 +299,19 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
  * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
  * signed in with the account key there. The PC's status gives this client no record to sign.
  */
-export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string }): Promise<boolean> {
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; members: () => Promise<ReadonlySet<string> | null> }): Promise<boolean> {
   const status = await pcAccountStatus(options.fetch);
   if (status.account !== options.account) return false;
-  return enrollPc({ fetch: options.fetch, store: options.store, account: options.account, serverId: options.serverId });
+  return enrollPc({ fetch: options.fetch, store: options.store, account: options.account, serverId: options.serverId, members: await options.members() });
+}
+
+/** The account keys of `account`'s members on a PC this client drives there (`GET /api/devices`, docs/account.md). */
+export async function accountMembers(fetch: PcFetch, account: string): Promise<Set<string>> {
+  const response = await fetch("/api/devices");
+  if (!response.ok) throw await refusal(response);
+  const body = await response.json() as { devices?: unknown };
+  const rows = Array.isArray(body.devices) ? body.devices as { account?: unknown; account_key?: unknown }[] : [];
+  return new Set(rows.filter((row) => row.account === account && typeof row.account_key === "string").map((row) => row.account_key as string));
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */
