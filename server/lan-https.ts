@@ -73,7 +73,8 @@ export function lanHttpsCertificate(stateDir: string, config: LanHttpsConfig, ad
   try {
     const kept = loaded(readFileSync(certPath, "utf8"), readFileSync(keyPath, "utf8"));
     const x509 = new X509Certificate(kept.cert);
-    if (Date.parse(x509.validTo) > Date.now() && addresses.every((address) => x509.checkIP(address) !== undefined)) {
+    // one made while the clock ran ahead is refused by clients until then
+    if (Date.parse(x509.validFrom) <= Date.now() && Date.parse(x509.validTo) > Date.now() && addresses.every((address) => x509.checkIP(address) !== undefined)) {
       // a restored or copied state dir may have widened them
       chmodSync(dir, 0o700);
       chmodSync(keyPath, 0o600);

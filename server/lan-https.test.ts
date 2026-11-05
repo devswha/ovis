@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { forgetAuthAttempts } from "./auth.ts";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { createServer } from "./index.ts";
+import { PortalService } from "./portal.ts";
 import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, selfSignedCertificate } from "./lan-https.ts";
 
 const dirs: string[] = [];
@@ -67,6 +68,18 @@ describe("lanHttpsCertificate", () => {
     expect(new X509Certificate(moved.cert).checkIP("10.0.0.7")).toBe("10.0.0.7");
     writeFileSync(join(stateDir, "lan-https", "cert.pem"), "not a certificate");
     expect(lanHttpsCertificate(stateDir, { port: 7318 }, ["10.0.0.7"]).sha256).not.toBe(moved.sha256);
+  });
+
+  it("makes a new one when the kept one starts in the future (made while the clock ran ahead)", () => {
+    const stateDir = tempDir();
+    const first = lanHttpsCertificate(stateDir, { port: 7318 }, ["192.168.1.50"]);
+    const ahead = selfSignedCertificate(["192.168.1.50"], new Date(Date.now() + 86_400_000));
+    writeFileSync(join(stateDir, "lan-https", "cert.pem"), ahead.cert);
+    writeFileSync(join(stateDir, "lan-https", "key.pem"), ahead.key);
+    const again = lanHttpsCertificate(stateDir, { port: 7318 }, ["192.168.1.50"]);
+    expect(again.sha256).not.toBe(new X509Certificate(ahead.cert).fingerprint256);
+    expect(again.sha256).not.toBe(first.sha256);
+    expect(Date.parse(new X509Certificate(again.cert).validFrom)).toBeLessThanOrEqual(Date.now());
   });
 
   it("narrows a kept key's permissions again before reusing it", () => {
@@ -261,6 +274,21 @@ describe("the LAN HTTPS listener", () => {
       expect(() => store.assertRelayPairing()).not.toThrow();
     } finally {
       app.stop();
+    }
+  });
+
+  it("does not take Portal's proof there", async () => {
+    const stateDir = tempDir();
+    const portal = new PortalService({ stateDir });
+    const proof = spyOn(portal, "vouches").mockReturnValue(true);
+    const app = createServer({ ...base, stateDir, portal });
+    try {
+      const headers = { host: "192.168.1.10:7318", "x-portal-proof": "proof", "x-portal-user": "owner@example.com", "x-portal-auth": "oidc" };
+      expect((await handleRequest(new Request(`${origin}/api/devices`, { headers }), lanContext(app)))!.status).toBe(401);
+      expect((await handleRequest(new Request(`${origin}/api/devices`, { headers }), { ...lanContext(app), lanHttps: false }))!.status).toBe(200);
+    } finally {
+      app.stop();
+      proof.mockRestore();
     }
   });
 

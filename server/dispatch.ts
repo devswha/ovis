@@ -181,7 +181,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // only the shape decideAccess could let in by login: from loopback, one tailnet address, not Funnel
       token === "" && pairedDevice === null && loopback && tailscaleLogin !== null && !funnel && inTailnet(forwardedFor) && apiPath)
     : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
-  const portalProven = relayPeer === undefined && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
+  // Portal reaches this server over loopback, never the LAN listener: its proof is not a way in there
+  const portalProven = relayPeer === undefined && ctx.lanHttps !== true && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
   const access = decideAccess({
     relayPeer,
     ...requestShape,
