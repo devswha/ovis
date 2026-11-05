@@ -117,24 +117,33 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   // then one ends the other
   const words = (before: string): string => before.replace(/^…/, "").replace(/[[\]*`]/g, "");
   const was = words(match.before), after = words(snippet.before);
-  if (!match.before.startsWith("…") && !snippet.before.startsWith("…")) return was === after;
-  return was !== "" && after !== "" && (after.endsWith(was) || was.endsWith(after));
+  const sameBefore = !match.before.startsWith("…") && !snippet.before.startsWith("…") ? was === after
+    : was !== "" && after !== "" && (after.endsWith(was) || was.endsWith(after));
+  // and the words after it go on as they did (a turn grows at its end; a snippet's end may be cut)
+  const went = match.after.replace(/…$/, ""), goes = snippet.after.replace(/…$/, "");
+  return sameBefore && (goes.startsWith(went) || went.startsWith(goes));
 }
 
 /**
- * The row a pick opens among the turns shown (null: a row that is no turn): the one turn that is
- * `match`, by its name or changed since (searchedTurnChanged). `several` when two are, as when an
- * answer grew and a later answer of its time took its old name: none is opened, never the wrong one.
+ * The row a pick opens among the turns shown (null: a row that is no turn): the first with the
+ * match's name, as before, when no other turn changed into the match; else the one turn changed
+ * since (searchedTurnChanged). `several` when a named turn and a changed one both are, as when an
+ * answer grew and a later answer of its time took its old name, or two changed ones: none is
+ * opened, never the wrong one.
  */
 export function pickedTurn(turns: readonly (ConversationTurn | null)[], match: ConversationSearchMatch): number | "none" | "several" {
-  let picked: number | "none" = "none";
+  let named: number | null = null, changed: number | null = null;
   for (let index = 0; index < turns.length; index++) {
     const turn = turns[index];
-    if (turn == null || (conversationTurnAnchor(turn) !== match.turn && !searchedTurnChanged(turn, match))) continue;
-    if (picked !== "none") return "several";
-    picked = index;
+    if (turn == null) continue;
+    if (conversationTurnAnchor(turn) === match.turn) named ??= index;
+    else if (searchedTurnChanged(turn, match)) {
+      if (changed !== null) return "several";
+      changed = index;
+    }
   }
-  return picked;
+  if (named !== null && changed !== null) return "several";
+  return named ?? changed ?? "none";
 }
 
 /** The turns that hold the pattern, newest first, each with its first match. */

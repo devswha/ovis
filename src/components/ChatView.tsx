@@ -2531,9 +2531,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;
-    if (pick === null || list === null || node === null) return;
+    if (pick === null) return;
     // the pages read are in the rows by now (loadOlder lays a page before it answers)
     revealing.current = null;
+    if (list === null || node === null) { pick.done("failed"); return; }
     const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
     if (typeof index !== "number") { pick.done("missing"); return; }
     placeRow(list, node, index, 0);

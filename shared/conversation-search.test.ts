@@ -153,6 +153,19 @@ describe("pickedTurn", () => {
     expect(pickedTurn([answer("Deploy script fails. Rerunning it."), user("again"), answer("Deploy script passes.")], fails!)).toBe(0);
   });
 
+  it("opens the first of turns that share the match's name, as without a changed one", () => {
+    const turns = [user("continue", null), answer("ok one"), user("continue", null), answer("ok two")];
+    for (const match of searchTurns(turns, searchPattern("continue")!)) expect(pickedTurn(turns, match)).toBe(0);
+  });
+
+  it("takes no answer of the same opening whose words after the match went another way", () => {
+    const tooled = (output: string, text: string): ConversationTurn => ({ role: "assistant", ts: "2026-10-01T00:00:01Z", parts: [
+      { kind: "tool", name: "exec", summary: "exec", input: "", output }, { kind: "text", text }] });
+    const searched = searchTurns([tooled("ok", "deploy succeeded")], searchPattern("deploy")!)[0]!;
+    expect(pickedTurn([tooled("fail", "deploy failed")], searched)).toBe("none");
+    expect(pickedTurn([tooled("ok, all of it", "deploy succeeded on both hosts")], searched)).toBe(0);
+  });
+
   it("opens none when the answer grew and a later answer of its time took its old name", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
