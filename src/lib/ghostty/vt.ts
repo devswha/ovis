@@ -96,7 +96,7 @@ const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 1
 const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE = 34;
 /** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
-const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3;
+const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3, CSI_OTHER = 4, CSI_STRING = 5;
 /**
  * Whether a code point joins the emoji before it into one cell: ZWJ, the emoji-presentation selector,
  * skin tones, the keycap mark, tags (subdivision flags) and regional indicators (country flags).
@@ -174,8 +174,9 @@ export class GhosttyVt {
   private csi = CSI_GROUND;
   private param = 0;
   private sawGraphemeMode = false;
-  /** whether the last code point printed was a ZWJ */
+  /** whether the last code point printed was a ZWJ, and whether an escape sequence came since the last one */
   private afterZwj = false;
+  private broken = true;
 
   private constructor(exports: Exports, layout: TypeLayout, cols: number, rows: number) {
     this.x = exports;
@@ -248,36 +249,48 @@ export class GhosttyVt {
     };
     for (let at = 0; at < bytes.length; at++) {
       const byte = bytes[at]!;
-      if (byte === 0x1b) { this.csi = CSI_ESC; continue; }
+      if (byte === 0x1b) { this.csi = CSI_ESC; this.broken = true; continue; }
       if (this.csi === CSI_GROUND) {
         if (byte < 0x20) continue;
         if (byte >= 0x80 && byte < 0xc0) continue;
-        if (byte < 0xe0 || byte >= 0xf8) { this.afterZwj = false; continue; }
+        if (byte < 0xe0 || byte >= 0xf8) { this.afterZwj = false; this.broken = false; continue; }
         const length = byte >= 0xf0 ? 4 : 3;
         if (at + length > bytes.length) continue;
         const codepoint = length === 3
           ? ((byte & 0x0f) << 12) | ((bytes[at + 1]! & 0x3f) << 6) | (bytes[at + 2]! & 0x3f)
           : ((byte & 0x07) << 18) | ((bytes[at + 1]! & 0x3f) << 12) | ((bytes[at + 2]! & 0x3f) << 6) | (bytes[at + 3]! & 0x3f);
-        if (joinsEmoji(codepoint) || (this.afterZwj && codepoint <= 0x10ffff && PICTOGRAPHIC.test(String.fromCodePoint(codepoint)))) {
+        // xterm starts a new cell after an escape sequence, so nothing joins across one
+        const joins = !this.broken && (joinsEmoji(codepoint) || (this.afterZwj && codepoint <= 0x10ffff && PICTOGRAPHIC.test(String.fromCodePoint(codepoint))));
+        if (joins) {
           flush(at);
           this.setGraphemeClusters(true);
           flush(at + length);
           this.setGraphemeClusters(false);
         }
-        this.afterZwj = codepoint === 0x200d;
+        this.afterZwj = codepoint === 0x200d && !this.broken;
+        this.broken = false;
         at += length - 1;
+        continue;
+      }
+      // an OSC, DCS or APC (a title, a Kitty picture) prints nothing up to its BEL or ST (ESC \)
+      if (this.csi === CSI_STRING) {
+        if (byte === 0x07 || byte === 0x18 || byte === 0x1a) this.csi = CSI_GROUND;
         continue;
       }
       // a C0 control or DEL inside an escape sequence runs without ending it; CAN and SUB cancel it
       if ((byte < 0x20 && byte !== 0x18 && byte !== 0x1a) || byte === 0x7f) continue;
       switch (this.csi) {
         case CSI_ESC:
-          this.csi = byte === 0x5b ? CSI_BRACKET : CSI_GROUND;
+          this.csi = byte === 0x5b ? CSI_BRACKET : byte === 0x5d || byte === 0x50 || byte === 0x5f || byte === 0x5e || byte === 0x58 ? CSI_STRING : CSI_GROUND;
           continue;
         case CSI_BRACKET:
-          this.csi = byte === 0x3f ? CSI_PRIVATE : CSI_GROUND;
+          // another CSI (a style, a cursor move) is skipped to its final byte: its parameters print nothing
+          this.csi = byte === 0x3f ? CSI_PRIVATE : byte >= 0x40 && byte <= 0x7e ? CSI_GROUND : CSI_OTHER;
           this.param = 0;
           this.sawGraphemeMode = false;
+          continue;
+        case CSI_OTHER:
+          if (byte >= 0x40 && byte <= 0x7e) this.csi = CSI_GROUND;
           continue;
       }
       if (byte >= 0x30 && byte <= 0x39) this.param = Math.min(this.param * 10 + byte - 0x30, 1e6);

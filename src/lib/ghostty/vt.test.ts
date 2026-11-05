@@ -83,6 +83,12 @@ describe("GhosttyVt widths", () => {
     ["Thai SARA AM", "aน้ำb c"],
     ["Devanagari vowel sign", "aकाb c"],
     ["zero-width space", "a\u200bb c"],
+    ["a style change before a skin tone", "a👍\x1b[31m🏽b c"],
+    ["a style change before a ZWJ", "a👨\x1b[31m‍👩b c"],
+    ["a style change after a ZWJ", "a👨‍\x1b[31m👩b c"],
+    ["a bell before a flag's second half", "a🇰\x07🇷b c"],
+    ["an OSC title before a skin tone", "a👍\x1b]0;t\x07🏽b c"],
+    ["an OSC title ended by ST before a skin tone", "a👍\x1b]0;t\x1b\\🏽b c"],
   ] as const) {
     it(`puts the text after it in xterm's columns: ${name}`, async () => {
       expect(ascii(await ghosttyLayout(text))).toEqual(ascii(await xtermLayout(text)));
