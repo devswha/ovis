@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { cpuPercent, cpuTimesOf, createSystemSampler, DISK_STALE_MS, diskOf, handleSystemRequest, parseMeminfo, STALE_MS, type SystemIo } from "./system-stats.ts";
+import { cpuPercent, cpuTimesOf, createSystemSampler, DISK_STALE_MS, diskOf, diskReader, type ReadPath, handleSystemRequest, parseMeminfo, STALE_MS, type SystemIo } from "./system-stats.ts";
 
 const MEMINFO = `MemTotal:       16384000 kB
 MemFree:         1000000 kB
@@ -130,6 +130,22 @@ describe("the sampler", () => {
     expect(second.disks).toEqual([]);
     // one read is still pending, so no second thread was spent on the stuck mount
     expect(asked).toBe(1);
+  });
+
+  it("shows the root as read now while the home folder's mount does not answer, and asks that mount once", async () => {
+    const gib = 1024 ** 3;
+    let rootFree = 50;
+    const asked: string[] = [];
+    const read: ReadPath = (path) => {
+      asked.push(path);
+      if (path === "/home/me") return new Promise<never>(() => {});
+      return Promise.resolve({ dev: 1, numbers: { bsize: 1, blocks: 100 * gib, bfree: rootFree * gib, bavail: rootFree * gib } });
+    };
+    const disks = diskReader(read, () => ["/", "/home/me"], 20);
+    expect((await disks()).map((disk) => [disk.path, disk.percent])).toEqual([["/", 50]]);
+    rootFree = 10;
+    expect((await disks()).map((disk) => [disk.path, disk.percent])).toEqual([["/", 90]]);
+    expect(asked).toEqual(["/", "/home/me", "/"]);
   });
 
   it("stops showing the last disks once a stuck read has outlasted them", async () => {

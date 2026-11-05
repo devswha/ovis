@@ -97,30 +97,48 @@ export function diskOf(path: string, stats: { bsize: number; blocks: number; bfr
   return { path, used, total, percent: round((used / total) * 100) };
 }
 
+/** What one path says: the device it is on and df's numbers for its filesystem. */
+export type ReadPath = (path: string) => Promise<{ dev: number; numbers: { bsize: number; blocks: number; bfree: number; bavail: number } }>;
+
+const readPath: ReadPath = async (path) => {
+  const { dev } = await stat(path);
+  return { dev, numbers: await statfs(path) };
+};
+
+const diskPaths = (): string[] => [parsePath(resolve(homedir())).root || "/", homedir()];
+
 /**
  * The root, then the home folder when it is on another disk: at most MAX_DISKS, each filesystem
  * once. Two btrfs subvolumes have different device numbers but one pool, so the numbers decide too.
+ * Each path is read on its own: one that does not answer (a stuck network mount under home) is left
+ * out after `capMs` and not asked again until it does, while the other still shows, as read now.
  */
-async function readDisks(): Promise<SystemDisk[]> {
-  const root = parsePath(resolve(homedir())).root || "/";
-  const devices = new Set<number>();
-  const shapes = new Set<string>();
-  const disks: SystemDisk[] = [];
-  for (const path of [root, homedir()]) {
-    try {
-      const { dev } = await stat(path);
-      if (devices.has(dev)) continue;
-      const numbers = await statfs(path);
+export function diskReader(read: ReadPath = readPath, paths: () => string[] = diskPaths, capMs = DISK_CAP_MS): () => Promise<SystemDisk[]> {
+  const pending = new Set<string>();
+  const one = (path: string) => {
+    if (pending.has(path)) return Promise.resolve(null);
+    pending.add(path);
+    return within(read(path).finally(() => pending.delete(path)), capMs, () => null);
+  };
+  return async () => {
+    const list = paths();
+    const answers = await Promise.all(list.map(one));
+    const devices = new Set<number>();
+    const shapes = new Set<string>();
+    const disks: SystemDisk[] = [];
+    answers.forEach((answer, i) => {
+      if (answer === null || devices.has(answer.dev)) return;
+      const { numbers } = answer;
       const shape = `${numbers.bsize}:${numbers.blocks}:${numbers.bfree}:${numbers.bavail}`;
-      if (shapes.has(shape)) continue;
-      const disk = diskOf(path, numbers);
-      if (disk === null) continue;
-      devices.add(dev);
+      if (shapes.has(shape)) return;
+      const disk = diskOf(list[i]!, numbers);
+      if (disk === null) return;
+      devices.add(answer.dev);
       shapes.add(shape);
       disks.push(disk);
-    } catch { /* a disk that does not answer is left out; the others still show */ }
-  }
-  return disks.slice(0, MAX_DISKS);
+    });
+    return disks.slice(0, MAX_DISKS);
+  };
 }
 
 export const realIo: SystemIo = {
@@ -141,7 +159,7 @@ export const realIo: SystemIo = {
     const total = totalmem();
     return total > 0 ? { total, used: Math.max(0, total - freemem()) } : null;
   },
-  disks: readDisks,
+  disks: diskReader(),
 };
 
 export interface SystemSampler { read(): Promise<SystemReport> }

@@ -44,6 +44,8 @@ export function useSystemStats(machineId: string, enabled: boolean, retryKey: st
 
   useEffect(() => {
     if (!enabled || !visible || missing.current === retryKey) return;
+    // back on screen after a while: a reading that has aged out is not shown again while the next ask is out
+    if (Date.now() - answeredAt.current > SYSTEM_STALE_MS) setState((last) => last.report === null ? last : { report: null, unavailable: false });
     const abort = new AbortController();
     let timer: number | undefined;
     const load = async () => {
