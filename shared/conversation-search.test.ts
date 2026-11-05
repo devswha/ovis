@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ConversationTurn } from "./protocol.ts";
 import { createCodexTranscriptParser } from "../server/codex.ts";
-import { parseCodexTranscript } from "../server/codex.ts";
 import { conversationTurnAnchor, matchSnippet, pickedTurn, pickSettled, searchableText, searchedTurnChanged, searchPattern, searchTurns } from "./conversation-search.ts";
 
 const user = (text: string, ts: string | null = "2026-10-01T00:00:00Z"): ConversationTurn => ({ role: "user", ts, parts: [{ kind: "text", text }] });
@@ -192,17 +191,6 @@ describe("pickedTurn", () => {
   it("opens none when the answer grew and a later answer of its time took its old name", () => {
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script")], match)).toBe("several");
     expect(pickedTurn([answer("The deploy script is ready."), user("again"), answer("The deploy script passes.")], match)).toBe("several");
-  });
-
-  it("finds a prompt whose inline picture was paired with its local path after it was searched", () => {
-    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH1sAAAAASUVORK5CYII=";
-    const ts = "2026-09-27T00:00:00Z";
-    const inline = { type: "response_item", timestamp: ts, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "why does the deploy fail" }, { type: "input_image", image_url: png }] } };
-    const local = { type: "event_msg", timestamp: ts, payload: { type: "user_message", message: "why does the deploy fail", local_images: ["/tmp/shot.png"] } };
-    const searched = searchTurns(parseCodexTranscript(JSON.stringify(inline)), searchPattern("deploy")!)[0]!;
-    const paired = parseCodexTranscript(`${JSON.stringify(inline)}\n${JSON.stringify(local)}`);
-    expect(conversationTurnAnchor(paired[0]!)).not.toBe(searched.turn);
-    expect(pickedTurn(paired, searched)).toBe(0);
   });
 });
 

@@ -96,8 +96,8 @@ export function matchSnippet(text: string, pattern: RegExp): Pick<ConversationSe
 /**
  * Whether `turn` may be the one `match` was found in after it changed since the search, so its name
  * (conversationTurnAnchor) changed too: an answer that went on, or whose first tool's output came. It
- * has the match's role and time, goes on from how the searched turn began (its first text grew, its
- * first tool is the same call up to its output, or its first picture was paired), and still holds the match after the same words
+ * has the match's role and time, goes on from how the searched turn began (its first text grew, or
+ * its first tool is the same call up to its output), and still holds the match after the same words
  * (a Markdown mark that streamed in may close: `[deploy` became a link). Two answers of one time
  * (Codex, when the user steers mid-task) can both pass: see pickedTurn.
  */
@@ -108,10 +108,7 @@ export function searchedTurnChanged(turn: ConversationTurn, match: ConversationS
   if (!match.turn.startsWith(prefix)) return false;
   const began = match.turn.slice(prefix.length), now = name.slice(prefix.length);
   const output = began.startsWith("tool|") ? began.indexOf('"output":') : -1;
-  // a prompt's picture may become the same picture's local path a moment later (Codex pairs a
-  // response's inline copy with its event's): a picture first is the same beginning
-  const picture = began.startsWith("image|") && now.startsWith("image|");
-  if (!picture && !now.startsWith(output < 0 ? began : began.slice(0, output))) return false;
+  if (!now.startsWith(output < 0 ? began : began.slice(0, output))) return false;
   // the matched words find what the query found: the same words, any whitespace, case ignored
   const pattern = searchPattern(match.match);
   const snippet = pattern === null ? null : matchSnippet(searchableText(turn), pattern);
