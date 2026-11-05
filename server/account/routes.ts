@@ -66,8 +66,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (first) context.services.accountHolds.startEnrolling(peer.device.id);
       const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId });
       if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
-      // the wait is this device's to end: a link refused meanwhile may have named another
-      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
+      // the wait is this device's to end: a link refused meanwhile may have named another; the first link that succeeds keeps it
+      if (first) context.services.accountHolds.confirmEnrolling(peer.device.id);
       return reply({ device: linked.device });
     }
     case "/api/account/records": {
@@ -84,6 +84,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       setRequestRoute(pathname);
       const { records, held, held_full: heldFull, last } = body;
       if (!Array.isArray(records) || records.length > ACCOUNT_ENROLL_MAX) return fail("record_invalid", `Send at most ${ACCOUNT_ENROLL_MAX} records`, 400);
+      if ((last !== undefined && typeof last !== "boolean") || (heldFull !== undefined && typeof heldFull !== "boolean")) return fail("record_invalid", "last and held_full are true or false", 400);
       if (held !== undefined && (!Array.isArray(held) || held.length > ACCOUNT_HELD_MAX || !held.every(isAccountKey))) return fail("record_invalid", `Hold at most ${ACCOUNT_HELD_MAX} account keys`, 400);
       // what a member hands a PC it brought into the account: the caller is a member of that account here already
       if (peer.kind !== "relay" || !devices.isAccountApproverSession(peer.device.id, peer.key) || typeof body.account !== "string" || devices.account() !== body.account) {

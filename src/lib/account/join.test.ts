@@ -270,6 +270,23 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(y.f.app.context.services.accountHolds.enrolling()).toBe(false);
   });
 
+  it("sends no add while a PC from before enrollments answers beside a newer one", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const link = await connect(x, onX);
+    const older = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const { fresh: _fresh, ...rest } = await answer.json() as Record<string, unknown>;
+      return Response.json(rest);
+    };
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id,
+      others: [{ serverId: x.identity.server_id, fetch: pcFetch(await connect(x, onX)) }, { serverId: "e".repeat(32), fetch: older }] });
+    expect(enrolled.admitted).toEqual([]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+  });
+
   it("sends no add, and holds every one, when a PC it read lost removal evidence", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");

@@ -383,7 +383,8 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   ]);
   // a PC that lost removal evidence may keep out a key it cannot name: then no add goes, and the new PC holds every one
   // only older PCs answered: no add goes, as before enrollments, and the account's devices ask this PC once each
-  const blind = seen.some((status) => status.blockedAll === true) || (others.length > 0 && answered.length === 0);
+  // an older PC cannot list what it keeps out (`blocked`), so while one answers, no add goes either
+  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0;
   const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))
     .filter((record, index, all) => all.findIndex((other) => other.id === record.id) === index);

@@ -15,7 +15,7 @@ import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { enrollOnPc, keepRemovals, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -414,7 +414,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
           if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
           const others = (await store.list()).filter((other) => other.server_id !== serverId && other.device_id !== null && other.account === session.account && other.public_spki === key.public_spki);
           const reached = await Promise.allSettled(others.map(async (other) => {
-            const peer = await open(offerOf(other), { store, label });
+            const controller = new AbortController();
+            // fixed wait: a PC that does not open within the deadline counts as not checked, as one that does not answer
+            const timer = setTimeout(() => controller.abort(), PEER_STATUS_MS);
+            const peer = await open(offerOf(other), { store, label, signal: controller.signal }).finally(() => clearTimeout(timer));
             peers.push(peer);
             return { serverId: other.server_id, fetch: (path: string, init?: RequestInit) => peer.fetch(path, init) };
           }));

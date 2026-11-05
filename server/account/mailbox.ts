@@ -82,8 +82,9 @@ export class AccountMailbox {
   /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
-  /** When a pull last read the mailbox to its end without an error. */
+  /** When a pull last read the mailbox to its end without an error, and for which account and relay identity (`scope`). */
   private drainedAt: number | null = null;
+  private drainedScope: string | null = null;
   error: string | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pulling: Promise<number> | undefined;
@@ -173,7 +174,10 @@ export class AccountMailbox {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
-    return this.error === null && this.drainedAt !== null && Date.now() - this.drainedAt < ASKED_PULL_MS;
+    const account = this.options.devices.account();
+    const identity = this.options.identity();
+    const current = account === null || !identity ? null : scope(account, identity.server_id, "");
+    return this.error === null && this.drainedAt !== null && Date.now() - this.drainedAt < ASKED_PULL_MS && current !== null && this.drainedScope === current;
   }
 
   /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
@@ -231,7 +235,12 @@ export class AccountMailbox {
     // full: a waiting add makes room (it can come again); with none, the remove is undecided and its sender tries again
     if (waiting.length >= PENDING_MAX) {
       const add = next.findIndex((kept) => removedKey(kept) === null);
-      if (add === -1) return false;
+      if (add === -1) {
+        // nowhere to keep it: its key stays out of every add until a pairing here settles it
+        const key = removedKey(record);
+        if (key !== null) this.options.holds?.hold([key]);
+        return false;
+      }
       next.splice(add, 1);
     }
     // on disk first, with the ones a pull is retrying, so a stop (or a failed write) loses none of them
@@ -306,7 +315,7 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
-      if (complete) this.drainedAt = Date.now();
+      if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }

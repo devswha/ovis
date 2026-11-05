@@ -426,6 +426,33 @@ test("a barrier file that cannot be read never lets the held keys be written ove
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a relayed remove the full queue cannot take still keeps its key out, and only true or false is taken for last", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const pendingPath = join(f.stateDir, "account-pending.json");
+  const stranger = await accountKey();
+  writeFileSync(pendingPath, JSON.stringify(await Promise.all(Array.from({ length: PENDING_MAX }, async () => remove(stranger, (await accountKey()).spki)))), { mode: 0o600 });
+  const holds = new AccountHolds({ heldPath: join(f.stateDir, "account-held.json") });
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => undefined, service: "https://account.test", pendingPath, holds });
+  const mac = await accountKey();
+  expect(mailbox.wait(await remove(stranger, mac.spki))).toBe(false);
+  expect((await applyAccountRecords(f.app.context.services.devices, [await add(key, mac.spki)], SERVER_ID, Date.now(), mailbox.gates()))[0]).toMatchObject({ outcome: "refused", code: "removal_pending" });
+  expect((await post(link, "/api/account/enroll", { account: ACCOUNT, records: [], last: "false" })).body.error?.code).toBe("record_invalid");
+});
+
+test("the first link that succeeds keeps the barrier: a later link cannot take it over", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-holds-"));
+  try {
+    const enrollingPath = join(dir, "account-enrolling.json");
+    const holds = new AccountHolds({ enrollingPath });
+    holds.startEnrolling("first");
+    holds.confirmEnrolling("first");
+    holds.startEnrolling("second");
+    holds.confirmEnrolling("second");
+    expect(new AccountHolds({ enrollingPath }).enrollingMember()).toBe("first");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a full queue makes room for a relayed remove by dropping a waiting add, never a remove", async () => {
   const f = fixture();
   const { key } = await member(f);
