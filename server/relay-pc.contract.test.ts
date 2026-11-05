@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../relay/bun.ts";
@@ -104,6 +104,10 @@ it("adds a PC through the relay, shows its panes, signs in again after a restart
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine).toMatchObject({ kind: "relay", name: "Lab", relay: { server_id: new URL(link).pathname.split("/")[2] } });
+
+  // a release from before relay PCs reads machines.json: a relay PC is kept apart, so a rollback still starts
+  expect(readFileSync(join(aState, "machines.json"), "utf8")).not.toContain(machine.id);
+  expect(readFileSync(join(aState, "relay-pcs.json"), "utf8")).toContain(machine.id);
 
   // B admitted A as one more paired device, by the same consent a phone needs
   const devices = b.context.services.devices;

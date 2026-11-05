@@ -73,7 +73,8 @@ under **Settings → Phone & devices**, choose **Copy link**, and paste that lin
 server then pairs with that one exactly as a phone does: the same one-time code, the same
 end-to-end encryption and the same device key, kept on this server in
 `<stateDir>/relay-pcs/<pc id>.json` (mode `0600`). The other PC lists it under Devices as
-`Ovis on <this PC's name>`, with the access any paired device has.
+`Ovis on <this PC's name>`, with the access any paired device has. The PC itself is saved in
+`<stateDir>/relay-pcs.json`, apart from `machines.json`, so going back to an older release still starts.
 
 Its workspaces then join the sidebar as an SSH PC's do. Nothing is installed on that PC: it runs
 its own Ovis, which updates itself, so it has no bridge controls. Its connection carries the PC's

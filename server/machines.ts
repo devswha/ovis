@@ -270,6 +270,9 @@ export class MachineManager {
   private statePath: string;
   /** machines.json as this manager last wrote it (persist) */
   private written: string | undefined;
+  /** the PCs added through the relay, apart from machines.json (constructor) */
+  private relayStatePath: string;
+  private relayWritten: string | undefined;
   /** the state files that were not JSON at startup, by the name they were moved to (settings) */
   private setAside: string[] = [];
   private sshDir: string;
@@ -313,6 +316,7 @@ export class MachineManager {
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
     this.statePath = join(stateDir, "machines.json");
+    this.relayStatePath = join(stateDir, "relay-pcs.json");
     this.sshDir = join(stateDir, "ssh");
     this.settingsPath = join(stateDir, "machine-settings.json");
     try {
@@ -326,26 +330,33 @@ export class MachineManager {
     if (this.profileState.setAside !== null) this.setAside.push(basename(this.profileState.setAside));
     // bytes that are not JSON (a crash can leave the file all NULs) are moved aside and the app starts
     // without saved PCs; JSON that is not a list of PCs still refuses to start, so nothing replaces it
-    const read = readStateDocument(this.statePath);
-    if (read.kind === "malformed") {
-      const aside = setAsideDamaged(this.statePath);
-      this.setAside.push(basename(aside));
-      console.error(`${this.statePath} is not JSON; it was set aside as ${aside}, and the app starts without the PCs added here`);
-    }
-    if (read.kind === "json") {
-      const saved = read.value;
-      if (!Array.isArray(saved)) throw new Error("Invalid machines.json; registrations were preserved");
-      for (const item of saved as StoredMachine[]) {
-        if (!/^[a-f0-9-]{36}$/.test(item.id) || typeof item.name !== "string" || typeof item.enabled !== "boolean") throw new Error("Invalid machine registration");
-        const common = { id: item.id, name: item.name, enabled: item.enabled, state: "disconnected" as const, snapshot: item.snapshot ?? null, error: null };
-        let machine: Machine;
-        if (item.kind === "relay") {
-          if (typeof item.relay?.server_id !== "string" || !SERVER_ID_PATTERN.test(item.relay.server_id) || typeof item.relay.relay !== "string" || !isWssOrigin(item.relay.relay)) throw new Error("Invalid machine registration");
-          machine = { ...common, kind: "relay", relay: { server_id: item.relay.server_id, relay: item.relay.relay } };
-        } else machine = { ...common, kind: "ssh", target: validateTarget(item.target) };
-        const runtime = this.runtime(machine);
-        this.machines.set(item.id, runtime);
-        if (item.enabled) queueMicrotask(() => void this.reconnect(runtime));
+    // PCs added through the relay live in a file of their own: a release from before them reads machines.json and
+    // refuses one it does not know, so a rollback would not start (docs/development.md, rollback restores code)
+    for (const path of [this.statePath, this.relayStatePath]) {
+      const relayPcs = path === this.relayStatePath;
+      const read = readStateDocument(path);
+      if (read.kind === "malformed") {
+        const aside = setAsideDamaged(path);
+        this.setAside.push(basename(aside));
+        console.error(`${path} is not JSON; it was set aside as ${aside}, and the app starts without the PCs added here`);
+      }
+      if (read.kind === "json") {
+        const saved = read.value;
+        if (!Array.isArray(saved)) throw new Error(`Invalid ${basename(path)}; registrations were preserved`);
+        for (const item of saved as StoredMachine[]) {
+          if (!/^[a-f0-9-]{36}$/.test(item.id) || typeof item.name !== "string" || typeof item.enabled !== "boolean") throw new Error("Invalid machine registration");
+          const common = { id: item.id, name: item.name, enabled: item.enabled, state: "disconnected" as const, snapshot: item.snapshot ?? null, error: null };
+          let machine: Machine;
+          if (relayPcs) {
+            if (item.kind !== "relay") throw new Error("Invalid machine registration");
+            if (typeof item.relay?.server_id !== "string" || !SERVER_ID_PATTERN.test(item.relay.server_id) || typeof item.relay.relay !== "string" || !isWssOrigin(item.relay.relay)) throw new Error("Invalid machine registration");
+            machine = { ...common, kind: "relay", relay: { server_id: item.relay.server_id, relay: item.relay.relay } };
+          } else if (item.kind === "relay") throw new Error("Invalid machine registration");
+          else machine = { ...common, kind: "ssh", target: validateTarget(item.target) };
+          const runtime = this.runtime(machine);
+          this.machines.set(item.id, runtime);
+          if (item.enabled) queueMicrotask(() => void this.reconnect(runtime));
+        }
       }
     }
     void this.refreshLocal();
@@ -561,9 +572,15 @@ export class MachineManager {
    * disk pays for the write and its fsync.
    */
   private persist(): void {
-    const data: StoredMachine[] = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => m.kind === "relay"
-      ? { id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }
-      : { id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot });
+    const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine }) => machine);
+    const data: StoredMachine[] = owned.filter((m) => m.kind !== "relay").map((m) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
+    const relayPcs: StoredMachine[] = owned.filter((m) => m.kind === "relay").map((m) => ({ id: m.id, name: m.name, kind: "relay", relay: m.relay!, enabled: m.enabled, snapshot: m.snapshot }));
+    const relayText = JSON.stringify(relayPcs);
+    if (relayText !== this.relayWritten || !holdsDocument(this.relayStatePath, relayText)) {
+      // never an empty file where none was: an install without relay PCs keeps none
+      if (relayPcs.length > 0 || this.relayWritten !== undefined || existsSync(this.relayStatePath)) writePrivateState(this.relayStatePath, relayPcs);
+      this.relayWritten = relayText;
+    }
     const text = JSON.stringify(data);
     // the PCs' registrations are written last: a save that fails before them leaves them as they were on disk, so a
     // PC moved to another address (setup) is saved there only when nothing else of its save can still fail (#2075)
@@ -1380,7 +1397,12 @@ export class MachineManager {
         let key: RelayPcKey;
         const wanted = () => !this.stopped && runtime.generation === generation && this.machines.get(runtime.machine.id) === runtime;
         try { key = await RelayPcKey.load(this.relayKeyPath(runtime.machine.id), wanted); }
-        catch (error) { throw new RelayPcRefused("This PC's relay key could not be read. Remove it and add it again with a new pairing link.", { cause: error }); }
+        catch (error) {
+          // a key that is gone or damaged cannot come back by retrying; another read error (EIO, EACCES) may
+          const lostForGood = (error as NodeJS.ErrnoException).code === "ENOENT" || !("code" in (error as object));
+          if (!lostForGood) throw error;
+          throw new RelayPcRefused("This PC's relay key could not be read. Remove it and add it again with a new pairing link.", { cause: error });
+        }
         if (generation !== runtime.generation || this.stopped) return;
         const tunnel = await openRelayPcTunnel(key.offer, key, { socket: this.relaySocket, onLost: (error) => this.lost(runtime, generation, error) });
         if (generation !== runtime.generation || this.stopped) { tunnel.close(); return; }
