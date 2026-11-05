@@ -552,7 +552,10 @@ describe("relay usage counters", () => {
     setSystemTime(new Date(1_000_000));
     let room = new RelayRoom(fake.state, usage);
     const control = await connectServer(room, fake);
-    const { client, data, connection_id } = await connectPair(room, fake);
+    const client = await connect(room, fake, "role=client");
+    const { connection_id } = client.json(0) as { connection_id: string };
+    room.webSocketMessage(client, "hello"); // held until the PC's data socket attaches, still traffic
+    const data = await connectServer(room, fake, connection_id);
     room.webSocketMessage(data, "x".repeat(100)); // the PC answers: the session starts
     room = new RelayRoom(fake.state, usage); // evicted: the counts live with the socket
     room.webSocketMessage(client, new Uint8Array(40).buffer);
@@ -560,7 +563,7 @@ describe("relay usage counters", () => {
     room.webSocketMessage(data, "é"); // 2 bytes in UTF-8
     setSystemTime(new Date(1_000_000 + 90_000));
     closeFromFar(room, client);
-    expect(usage.points).toEqual([{ indexes: [usageKey(SERVER)], blobs: ["device"], doubles: [40, 102, 90, 1] }]);
+    expect(usage.points).toEqual([{ indexes: [usageKey(SERVER)], blobs: ["device"], doubles: [45, 102, 90, 1] }]);
     expect(usageKey(SERVER)).not.toBe(SERVER);
     expect(JSON.stringify(usage.points)).not.toContain(connection_id);
     closeFromFar(room, control);

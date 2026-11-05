@@ -66,7 +66,7 @@ export const IDLE_MS = 120_000;
 export const KEEPALIVE_PING = '{"type":"ping"}';
 export const KEEPALIVE_PONG = '{"type":"pong"}';
 /** a socket open longer than this reports its usage so far, so a long connection shows up day by day */
-export const USAGE_REPORT_MS = 15 * 60_000;
+export const USAGE_REPORT_MS = 5 * 60_000;
 /** how stale a socket's saved last-seen time may get before it is written again (worker.ts saves it with the socket) */
 const SEEN_WRITE_MS = 30_000;
 
@@ -107,7 +107,7 @@ export interface SocketInfo {
   proof?: { expected: string; expires: number };
   /** the room's server_id, kept with a socket whose usage is counted */
   server_id?: string;
-  /** a proven control socket or an answered client: its usage not reported yet */
+  /** a proven control socket or a client: its usage not reported yet (a client's only once the PC answered it) */
   usage?: Usage;
 }
 
@@ -276,6 +276,8 @@ export class Room<S extends object> {
   /** hands `usage` to the host when the socket ended or it is due; returns what is left to report */
   private report(info: SocketInfo, usage: Usage, now: number, ended: boolean): Usage {
     if (!ended && now - usage.since < USAGE_REPORT_MS) return usage;
+    // a client the PC never answered is no session: what it sent is dropped with it
+    if (info.role === "client" && !info.answered) return usage;
     if (info.server_id !== undefined) this.host.usage?.({ server_id: info.server_id, side: info.role === "control" ? "pc" : "device", up: usage.up, down: usage.down, ms: Math.max(0, now - usage.since), ended });
     return { since: now, up: 0, down: 0 };
   }
@@ -327,7 +329,7 @@ export class Room<S extends object> {
     const waiting = clients.filter((peer) => !peer.info.answered).sort((a, b) => (a.info.arrived ?? a.info.seen) - (b.info.arrived ?? b.info.seen));
     for (const peer of waiting.slice(0, Math.max(0, waiting.length - MAX_PENDING + 1))) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many clients waiting for this server");
     const connectionId = randomHex();
-    const info: SocketInfo = { role: "client", connection_id: connectionId, seen: now, buffered: false, arrived: now, server_id: serverId };
+    const info: SocketInfo = { role: "client", connection_id: connectionId, seen: now, buffered: false, arrived: now, server_id: serverId, usage: { since: now, up: 0, down: 0 } };
     this.host.setInfo(socket, info);
     this.lastSeen.set(socket, now);
     // with a PC connected, the client must be answered in time; without one it waits a while for the PC
@@ -391,17 +393,16 @@ export class Room<S extends object> {
         // the PC answered the client: it now holds one of the server's slots, and its session starts
         if (this.peers().filter((peer) => peer.info.role === "client" && peer.info.answered).length >= MAX_CLIENTS) return this.end(client.socket, CLOSE.TRY_AGAIN, "too many clients for this server");
         const { deadline: _deadline, ...rest } = client.info;
-        this.host.setInfo(client.socket, { ...rest, answered: true, usage: { since: now, up: 0, down: 0 } });
+        // its time counts from here; what it sent while waiting (its first handshake frames) stays counted
+        this.host.setInfo(client.socket, { ...rest, answered: true, usage: { since: now, up: rest.usage?.up ?? 0, down: 0 } });
       }
       this.count(client.socket, "down", size, now);
       this.host.send(client.socket, frame);
       return;
     }
+    this.count(socket, "up", size, now);
     const data = this.find("data", connectionId);
-    if (data) {
-      this.count(socket, "up", size, now);
-      return this.host.send(data.socket, frame);
-    }
+    if (data) return this.host.send(data.socket, frame);
     // frames were held for this client by an instance that is gone: holding more would hand the PC a stream with a hole
     if (info.buffered && !this.held.has(connectionId)) return this.lostHeld(socket);
     const held = this.held.get(connectionId) ?? { frames: [], bytes: 0 };

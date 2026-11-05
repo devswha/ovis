@@ -129,7 +129,7 @@ announces itself again, and clients reconnect.
 ### Usage counters
 
 For capacity planning, the Cloudflare relay counts how much each PC uses it. When a PC's control
-socket or a phone's socket closes, and every 15 minutes while it stays open, it writes one data
+socket or a phone's socket closes, and every 5 minutes while it stays open, it writes one data
 point to the `ovis_relay_usage` Workers Analytics Engine dataset (`USAGE` in `wrangler.toml`):
 
 | Field | Holds |
@@ -138,13 +138,14 @@ point to the `ovis_relay_usage` Workers Analytics Engine dataset (`USAGE` in `wr
 | `blob1` | `pc` (the PC's control socket) or `device` (a phone or browser, both directions of its pair) |
 | `double1`, `double2` | bytes from the device to the PC, and from the PC to the device (frames passed on; keepalives not counted) |
 | `double3` | seconds connected |
-| `double4` | `1` when the socket closed with this point (one session), `0` for a 15-minute point |
+| `double4` | `1` when the socket closed with this point (one session), `0` for a 5-minute point |
 
-A device is counted from the PC's first answer, so a phone that never reached its PC is no
-session. The relay tells devices apart only by their random per-connection `connection_id`,
+A device's time counts from the PC's first answer, and its bytes from its first frame; a phone the
+PC never answered is no session and writes nothing. The relay tells devices apart only by their random per-connection `connection_id`,
 which is not written: a point says "a device of this PC", never which one. No frame content,
 address, public key or `connection_id` is written. The counts live in the socket's attachment
-until they are written, so an eviction loses none. Analytics Engine keeps each point three months
+until they are written, so an eviction loses none; a deploy or a reset of the Durable Object, which
+drops the sockets without their close, loses at most the last 5 minutes of each. Analytics Engine keeps each point three months
 and then drops it. The Bun server counts nothing.
 
 Only the Cloudflare account that runs the relay can read them, through the Analytics Engine SQL API
