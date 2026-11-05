@@ -545,9 +545,9 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
   link is online (the global one otherwise), and the relay status is the global link's; a phone
   paired before keeps the relay it saved, so it still connects through `relay.ovis.sh`. Each link
   has its own session limits.
-- **The phone falls back.** A phone whose saved relay is one of the regional ones and that cannot get
-  through it (the relay does not answer, or the PC does not answer there) tries `relay.ovis.sh` at
-  once, and keeps using the one that worked. A phone never falls back from any other relay, so a
+- **The phone falls back.** A phone (or a PC that added this PC through the relay) whose saved relay
+  is one of the regional ones and that cannot get through it (the relay does not answer, or the PC
+  does not answer there) tries `relay.ovis.sh` at once, and keeps using the one that worked. A phone never falls back from any other relay, so a
   self-hosted one is never traded for Ovis's.
 
 Which relay carries a connection changes nothing about its protection: the phone and the PC

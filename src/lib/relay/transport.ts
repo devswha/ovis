@@ -3,9 +3,9 @@ import { MuxStreamError } from "../../../shared/relay-mux-engine.ts";
 import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
-import { relayFallback } from "../../../shared/relay-regions.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
-import { openRelayChannel, RelayPcOfflineError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
+import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
+import { openRelayChannelWithFallback } from "../../../shared/relay-channel.ts";
 import type { RelayChannel, RelayChannelOptions, RelayServerInfo } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
 import { relayResourceUrl, serveRelayResources } from "./resources.ts";
@@ -171,21 +171,8 @@ export class RelayTransport implements Transport {
         this.failed(error);
       },
     };
-    // the device keeps the offer's relay whichever one carries this connection
-    const open = (relay: string) => (this.options.openChannel ?? openRelayChannel)(offer,
-      relay === offer.relay ? options : { ...options, carrier: relay });
-    let channel: RelayChannel;
-    try { channel = await open(this.relay); }
-    catch (error) {
-      // Neither the relay nor the PC answered there, so no pairing code was spent: the PC also
-      // keeps a link to the global relay, and the other relay is tried at once.
-      const fallback = relayFallback(this.offer.relay);
-      if (!fallback || generation !== this.generation || this.stopped
-        || !(error instanceof RelayUnreachableError || error instanceof RelayPcOfflineError)) throw error;
-      const other = this.relay === fallback ? this.offer.relay : fallback;
-      channel = await open(other);
-      this.relay = other;
-    }
+    const { channel, relay } = await openRelayChannelWithFallback(offer, options, this.options.openChannel ?? openRelayChannel, this.relay);
+    this.relay = relay;
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;

@@ -10,6 +10,7 @@ import { MuxEngine } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
 import type { RelayOffer } from "./relay-offer.ts";
+import { relayFallback } from "./relay-regions.ts";
 import { getDevice, sign } from "./relay-device.ts";
 import type { RelayDevice, RelayDeviceStore } from "./relay-device.ts";
 
@@ -303,4 +304,22 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       }).catch(failed);
     };
   });
+}
+
+/**
+ * Opens through `first` (the offer's own relay by default) and, when the offer names one of Ovis's
+ * regional relays and that attempt failed before the PC answered (so no pairing code was spent),
+ * through the other of the offer's relay and the global one, which such a PC is always linked to.
+ * The device keeps the offer's relay either way; the result names the relay that carried the channel.
+ */
+export async function openRelayChannelWithFallback<O extends { readonly carrier?: string }>(
+  offer: RelayOffer, options: O, open: (offer: RelayOffer, options: O) => Promise<RelayChannel>, first = offer.relay,
+): Promise<{ channel: RelayChannel; relay: string }> {
+  const attempt = async (relay: string) => ({ channel: await open(offer, relay === offer.relay ? options : { ...options, carrier: relay }), relay });
+  try { return await attempt(first); }
+  catch (error) {
+    const fallback = relayFallback(offer.relay);
+    if (!fallback || !(error instanceof RelayUnreachableError || error instanceof RelayPcOfflineError)) throw error;
+    return attempt(first === fallback ? offer.relay : fallback);
+  }
 }
