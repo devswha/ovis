@@ -89,7 +89,7 @@ async function stageAll(): Promise<void> {
   const bun = (await sh([join(stage, "bin", `bun${exe}`), "--version"], stage)).trim();
   if (bun !== BUN_VERSION) throw new Error(`The staged Bun says ${bun}, not ${BUN_VERSION}`);
 
-  // the server as the installer and the remote bundles run it: its sources, the built client and its production packages
+  // the server as the installer and the remote bundles run it: its sources, the built client and the production packages its code imports
   await sh(["bun", "run", "build"], repo);
   const server = join(stage, "server");
   for (const dir of ["server", "shared", "integrations", "dist", "patches"]) {
