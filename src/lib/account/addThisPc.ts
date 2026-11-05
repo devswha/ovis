@@ -9,6 +9,7 @@ import { decodeOffer } from "../../../shared/relay-offer.ts";
 import { requestRelayLink } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { pcAccountStatus } from "./join.ts";
+import { NEW_PC_MS } from "./myPcs.ts";
 import type { AccountService } from "./service.ts";
 
 /** Whether this PC belongs to no account yet: only such a PC offers to be added. */
@@ -16,10 +17,18 @@ export async function thisPcInNoAccount(): Promise<boolean> {
   return (await pcAccountStatus(apiFetch)).account === null;
 }
 
-/** Lists this PC in the account's directory and opens its approve-here pairing window; its name as listed. */
-export async function listThisPc(service: AccountService): Promise<string> {
+/**
+ * Lists this PC in the account's directory and opens its approve-here pairing window; its name as
+ * listed. `start`: the person just asked, so an entry older than the card's ten minutes is listed
+ * anew, which shows the card again and rings the account's devices.
+ */
+export async function listThisPc(service: AccountService, options: { start?: boolean } = {}): Promise<string> {
   const offer = decodeOffer((await requestRelayLink({ localOnly: true })).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
+  if (options.start) {
+    const listed = (await service.listPcs()).find((pc) => pc.server_id === offer.server_id);
+    if (listed !== undefined && Date.now() - Date.parse(listed.added_at) >= NEW_PC_MS) await service.deletePc(offer.server_id);
+  }
   const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
   await service.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });

@@ -60,6 +60,9 @@ export class RelayPairingApprovals {
     if (options.localOnly) this.localOnlyUntil = now + PAIRING_WINDOW_MS;
   }
 
+  /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */
+  localOnlyOpen(now = Date.now()): boolean { return now < this.localOnlyUntil; }
+
   /** Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one. */
   windowOpen(now = Date.now()): boolean { return now < this.windowUntil; }
 
@@ -97,7 +100,7 @@ export class RelayPairingApprovals {
   }
 
   /** Null when MAX_PENDING_APPROVALS are already waiting. `withdraw` ends it unapproved (the phone left, or time ran out). */
-  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
+  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void } | null {
     if (this.waiting.size >= MAX_PENDING_APPROVALS) return null;
     const id = randomBytes(8).toString("hex");
     const decided = Promise.withResolvers<PairingDecision>();
@@ -107,7 +110,8 @@ export class RelayPairingApprovals {
       decided.resolve(decision);
     };
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent }, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false,
-      localOnly: !(device.membersOnly ?? false) && Date.now() < this.localOnlyUntil, choices: decoys(digits), finish });
+      // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
+      localOnly: !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()), choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }

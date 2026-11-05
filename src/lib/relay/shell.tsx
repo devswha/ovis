@@ -165,8 +165,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let updating = false;
   /** the comparison on screen: its digits, and the phone's answer that they match */
   let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
-  /** a PC of the account joined from its card: this phone types the digits that PC shows, as it may not be the owner's (directory names are anyone's) */
-  let typedJoin: string | null = null;
+  /**
+   * A PC of the account joined from its card: this phone types the digits that PC shows, as it may not
+   * be the owner's (directory names are anyone's). Kept in this tab's session storage, since opening the
+   * PC loads its page anew; only ever makes a comparison stricter.
+   */
+  const TYPED_JOIN = "ovis-typed-join";
+  const typedJoinFor = (serverId: string): boolean => {
+    try { return sessionStorage.getItem(TYPED_JOIN) === serverId; } catch { return false; }
+  };
+  const setTypedJoin = (serverId: string | null): void => {
+    try { if (serverId === null) sessionStorage.removeItem(TYPED_JOIN); else sessionStorage.setItem(TYPED_JOIN, serverId); } catch { /* no storage: the plain comparison stays */ }
+  };
   /** the offer a typed code found, until its ID is compared on screen */
   let codeOffer: RelayOffer | null = null;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -230,7 +240,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const join = pc.join;
     if (join === undefined) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
-    typedJoin = pc.server_id;
+    setTypedJoin(pc.server_id);
     navigate(link.pathname + link.hash);
   };
 
@@ -326,7 +336,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;
           attempt.compared = true;
-          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: typedJoin === attempt.offer.server_id };
+          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: typedJoinFor(attempt.offer.server_id) };
           show({ kind: "compare", name: comparison.name, digits, confirmed: false, ...(comparison.typed ? { typed: true } : {}) });
         }),
         // the PC turned this phone away after it was in: the app goes, and the reason takes its place
@@ -554,13 +564,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (current.typed && typed !== current.digits) {
       // one wrong entry ends this comparison: a guess never gets a second try at the same digits
       comparison = null;
-      typedJoin = null;
+      setTypedJoin(null);
       opening?.abort();
       opening = null;
       show({ kind: "compare", name: current.name, digits: "", confirmed: false, typed: true, wrong: true });
       return;
     }
-    typedJoin = null;
+    setTypedJoin(null);
     show({ kind: "compare", name: current.name, digits: current.digits, confirmed: true });
     current.matched();
   };
@@ -599,7 +609,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   const cancel = (): void => {
     comparison = null;
-    typedJoin = null;
+    setTypedJoin(null);
     codeOffer = null;
     opening?.abort();
     opening = null;

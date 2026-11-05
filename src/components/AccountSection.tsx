@@ -38,6 +38,11 @@ const RELIST_MS = 9 * 60_000;
 function AddThisPc() {
   const t = useT();
   const [state, setState] = useState<{ kind: "hidden" } | { kind: "offer" } | { kind: "waiting"; name: string } | { kind: "error"; message: string }>({ kind: "hidden" });
+  /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
+  const relist = useCallback(async () => {
+    if (!await thisPcInNoAccount()) { setState({ kind: "hidden" }); return; }
+    await listThisPc(new AccountService({ store: indexedAccountStore }));
+  }, []);
   useEffect(() => {
     let live = true;
     thisPcInNoAccount().then((none) => { if (live && none) setState({ kind: "offer" }); }, (error: unknown) => console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error));
@@ -47,11 +52,11 @@ function AddThisPc() {
   useEffect(() => {
     if (!waiting) return;
     // the window this screen opened closes after ten minutes: kept open while the screen waits
-    const timer = setInterval(() => { void listThisPc(new AccountService({ store: indexedAccountStore })).catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error)); }, RELIST_MS);
+    const timer = setInterval(() => { relist().catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error)); }, RELIST_MS);
     return () => clearInterval(timer);
-  }, [waiting]);
+  }, [waiting, relist]);
   const add = (): void => {
-    listThisPc(new AccountService({ store: indexedAccountStore })).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
+    listThisPc(new AccountService({ store: indexedAccountStore }), { start: true }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
       setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
         ? t("Turn on remote access through the Ovis relay above first.") : t("This PC could not be listed in your account. Try again.") });
