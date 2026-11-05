@@ -1018,7 +1018,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   setting, pin keys that hold only while the row is pinned, so every browser and phone honours
   them; a lock moves with its pin when herdr moves the pane. Closing from herdr, the Herdr app or a
   script is untouched. Browsers' pinned tabs keep their place but still close; this adds the
-  missing lock to the pin, as an item in the row's own menu, off until chosen.
+  missing lock to the pin, as an item in the row's own menu, off until chosen. It follows VS
+  Code's Lock Group (a locked place that ordinary actions leave alone) rather than the coding-agent
+  apps (the Codex and Claude apps, Paseo, T3 Code), whose session lists we follow for pin and
+  archive but which give a session no lock: their sessions are not the pane a user drives the
+  others from, which is what this guards.
   A desktop (`pointer: fine` wider than 768px, the tab strip's rule) draws no row `⋯`: a
   right-click or the context-menu key opens the menu, at the pointer or at the row, and dismissal
   returns the focus where it was.
