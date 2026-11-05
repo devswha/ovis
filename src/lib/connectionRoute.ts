@@ -1,7 +1,7 @@
 /**
  * How this device reaches the Ovis it shows, from facts the page owns: the hosted shell's relay
- * transport, a Portal sign-in, the server's word on how this request came (Tailscale Funnel, the
- * public internet, or Tailscale serve), or the address the browser loaded the app from. Nothing guesses what lies
+ * transport, a Portal sign-in, the server's word on how this request came (Portal, Tailscale Funnel,
+ * the public internet, or Tailscale serve), or the address the browser loaded the app from. Nothing guesses what lies
  * behind a name: an address that is none of the known kinds, a bare machine name included (a LAN
  * host, or a Tailscale MagicDNS short name), is "direct". A loopback address is "local": this PC, or
  * a tunnel to another one, which neither the page nor the server can tell apart.
@@ -32,7 +32,7 @@ function lanHost(host: string): boolean {
 export function connectionRoute(page: { relay: boolean; portal: boolean; ingress: ObservedIngress | null; protocol: string; hostname: string }): ConnectionRoute | null {
   if (page.protocol === "capacitor:") return null;
   if (page.relay) return "relay";
-  if (page.portal) return "portal";
+  if (page.portal || page.ingress === "portal") return "portal";
   if (page.ingress === "funnel") return "direct";
   if (page.ingress === "tailscale") return "tailscale";
   // a trailing root dot names the same host (the server's own host check drops it too)

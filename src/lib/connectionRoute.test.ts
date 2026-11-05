@@ -11,6 +11,8 @@ describe("how this device reaches Ovis", () => {
     expect(route("app.ovis.sh", { relay: true })).toBe("relay");
     expect(route("localhost", { relay: true })).toBe("relay");
     expect(route("herdr-test.relay.example", { portal: true })).toBe("portal");
+    // the token or a paired device signed it in, but the server saw Portal vouch for the request
+    expect(route("herdr-test.relay.example", { ingress: "portal" })).toBe("portal");
   });
 
   it("says nothing in the phone app's bundled demo, which reaches no PC", () => {
