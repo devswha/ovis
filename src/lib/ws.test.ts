@@ -1687,6 +1687,37 @@ it("settles a submit that waited on a probe as not transmitted when the socket i
   }
 });
 
+it("probes a socket that has said nothing since a submit left, without waiting for the idle check", async () => {
+  jest.useFakeTimers();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    void client.submit("w1:p1", "hello", "hello");
+    await settle();
+    expect(socket.sent.filter((frame) => frame.type === "submit")).toHaveLength(1);
+    jest.advanceTimersByTime(3_000);
+    expect(socket.sent.filter((frame) => frame.type === "ping")).toHaveLength(1);
+  } finally {
+    client.close();
+    jest.useRealTimers();
+  }
+});
+
+it("does not probe after a submit when the socket has answered meanwhile", async () => {
+  jest.useFakeTimers();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    void client.submit("w1:p1", "hello", "hello");
+    await settle();
+    jest.advanceTimersByTime(1_000);
+    socket.receive({ type: "pane-status", pane_id: "w1:p1", agent_status: "working" });
+    jest.advanceTimersByTime(2_000);
+    expect(socket.sent.filter((frame) => frame.type === "ping")).toEqual([]);
+  } finally {
+    client.close();
+    jest.useRealTimers();
+  }
+});
+
 it("still stops output on a 4008 close that comes after a probe dropped the socket", () => {
   jest.useFakeTimers();
   const { client, socket } = liveClient(["ping"]);
