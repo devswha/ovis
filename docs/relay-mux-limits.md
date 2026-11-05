@@ -14,6 +14,7 @@ not silently interpreted with new credit. No deployed protocol is migrated.
 | --- | ---: |
 | HTTP DATA credit per stream | 320 KiB |
 | WS DATA credit / maximum message | 1 MiB |
+| Maximum message to a phone that offered `large-ws-messages` | 4 MiB |
 | Plaintext frame / HTTP DATA payload | 16,384 / 16,376 bytes |
 | Bulk protected-wire flight, across streams | 384 KiB |
 | Ordinary flight, including bulk | 408 KiB |
@@ -58,6 +59,15 @@ counts. Thirty-two HTTP streams fit (10 MiB); with eight WS streams, twelve HTTP
 streams fit (11.75 MiB), and another HTTP stream is refused before dispatch.
 Reservations remain charged during asynchronous cleanup. A WS rejection changes
 its 1 MiB reservation to the smaller HTTP reservation.
+
+A phone offers the `large-ws-messages` feature in HELLO (it is never selected in
+WELCOME, and the v1 limits stay exact); a PC that reads it sends that phone WS
+messages up to 4 MiB, the outgoing queue's size, such as a large session's
+snapshot. Such a message cannot wait for the 1 MiB window: its receiver reserves
+its whole size against the same 12 MiB bound when its START arrives, credits
+each fragment as it is copied in, and releases the reservation once the message
+is handed over. One that does not fit closes its WS with 1009; the session goes
+on. Inbound payload stays within reservations, so the bound below holds as is.
 
 The shell queues up to 64 HTTP requests when local stream admission is full.
 Requests resume in order after a stream retires and releases its reservation.
