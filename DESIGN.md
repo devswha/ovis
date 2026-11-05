@@ -2054,9 +2054,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   workspace's strip (`.context-position`, "1/2", said "Tab 1 of 2"), only with two tabs or more.
   At `<=480px` the header's line is the title's, as wide as without these: the figures become one
   pill (waiting, else running, else done, tinted with its state) at the end of the tab row under the
-  header (`.tab-strip-sessions`), a full `--touch-target-header` target; only where that row is not
-  drawn (a lone tab on a cramped phone) does the pill stay in the header. Below `420px` the tab's
-  place leaves the header: the tab row shows it.
+  header (`.tab-strip-sessions`), a full `--touch-target-header` target. Where that row is not drawn
+  (a lone tab on a cramped phone) More carries the jump: **Open the next session waiting for you** is
+  its first item, and its button wears a `--status-blocked` dot (`.header-more-dot.is-waiting`, in
+  place of the alerts-off dot) and says the count in its name. Below `420px` the tab's place leaves
+  the header: the tab row shows it.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single

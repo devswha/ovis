@@ -2277,6 +2277,11 @@ button.header-session-count[aria-disabled="true"] {
 
 /* alerts are off on this device: the one state of the menu worth a glance. The button's name
    and the Alerts item say it in words. */
+/* a session waiting where no tab row carries the sessions' pill (App.tsx): More's first item opens it */
+.header-more-dot.is-waiting {
+  background: var(--status-blocked);
+}
+
 .header-more-dot {
   position: absolute;
   top: var(--space-1);

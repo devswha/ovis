@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
+import { Bell, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { authenticate, createTab, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
@@ -615,15 +615,21 @@ export function App() {
   const paneMenuInMore = selectedPane !== null
     && loneTabHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0);
   // on a phone the header's line is the title's: the sessions' one pill goes to the end of the tab row
-  // under it, and stays in the header only where that row is not drawn (a lone tab on a cramped phone)
+  // under it. Where that row is not drawn (a lone tab on a cramped phone) More carries the jump instead,
+  // its first item, with a waiting-coloured dot on its button
   const phoneNarrow = useMediaQuery("(max-width: 480px)");
   const sessionsInStrip = phoneNarrow && !paneMenuInMore && !splitOn;
+  const sessionsInMore = phoneNarrow && paneMenuInMore && !splitOn;
+  const waitingInMore = sessionsInMore && sessionTally.waiting > 0;
   const sessionsPill = <HeaderSessions counts={sessionTally} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)} compact={phoneNarrow} />;
   const paneMoreItems = paneMenuInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
     ...item, divider: index === 0 || item.divider,
     run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),
   })) : [];
+  const moreBase = alertsOffDot ? t("More · alerts are off") : t("More");
+  const moreLabel = waitingInMore ? `${moreBase} · ${t("{count} waiting for you", { count: sessionTally.waiting })}` : moreBase;
   const moreItems: RowMenuItem[] = [
+    ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: () => selectPane(nextWaiting) }] : []),
     // first at every width: a phone's header has no palette button, and a touch screen no shortcut
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(selectedPane && !selectedPane.restore_error ? [{ id: "find", label: t("Find in terminal"), icon: Search, run: actions.openFind }] : []),
@@ -751,7 +757,7 @@ export function App() {
           </>
         )}
         <div className="header-meta">
-          {!sessionsInStrip && sessionsPill}
+          {!sessionsInStrip && !sessionsInMore && sessionsPill}
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
           <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
           {!guideShown && <ConnectionChip
@@ -774,8 +780,8 @@ export function App() {
             <button
               type="button"
               className="icon-button header-more-button"
-              aria-label={alertsOffDot ? t("More · alerts are off") : t("More")}
-              title={alertsOffDot ? t("More · alerts are off") : t("More")}
+              aria-label={moreLabel}
+              title={moreLabel}
               aria-haspopup="menu"
               aria-expanded={more !== null}
               onClick={(event) => {
@@ -785,7 +791,7 @@ export function App() {
             >
               <Ellipsis />
             </button>
-            {alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
+            {waitingInMore ? <span className="header-more-dot is-waiting" aria-hidden="true" /> : alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
           </span>
         </div>
         {more && (
