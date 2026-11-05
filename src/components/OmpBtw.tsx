@@ -14,6 +14,7 @@ import type { OmpBtwExchange, OmpBtwTopic } from "../../shared/protocol.ts";
 
 const OPEN_POLL_MS = 3000;
 const CLOSED_POLL_MS = 10_000;
+const READ_DEADLINE_MS = 10_000;
 
 /**
  * The status line's chip for the side conversations an OMP pane's session saved with `/btw`
@@ -40,6 +41,7 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<string | null>(null);
   const root = useRef<HTMLSpanElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
   usePhoneSheetBack(() => setOpen(false), open);
@@ -49,17 +51,26 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let reading: AbortController | undefined;
+    // a read that stalls is given up at its deadline and asked again, so the list never stops refreshing
     const load = (): void => {
-      const again = (): void => { if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
-      fetchPaneBtw(paneId).then((found) => { if (alive) setTopics(found); again(); }, again);
+      const controller = reading = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), READ_DEADLINE_MS);
+      const again = (): void => { clearTimeout(deadline); if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
+      fetchPaneBtw(paneId, controller.signal).then((found) => { if (alive) setTopics(found); again(); }, again);
     };
     load();
-    return () => { alive = false; clearTimeout(timer); };
+    return () => { alive = false; clearTimeout(timer); reading?.abort(); };
   }, [fetchPaneBtw, paneId, open]);
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent): void => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") setOpen(false); };
+    const escape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      // the list unmounts with the topic that held the focus: hand it back to the chip
+      if (root.current?.contains(document.activeElement)) toggle.current?.focus();
+      setOpen(false);
+    };
     window.addEventListener("pointerdown", outside);
     window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("pointerdown", outside); window.removeEventListener("keydown", escape); };
@@ -103,7 +114,7 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
   };
   // a phone's status line keeps the icon and the number (BackgroundTasks.css), the button's name has the words
   return <span className="bg-tasks" ref={root}>
-    <button type="button" className="bg-tasks-toggle is-idle" aria-label={name} title={name} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
+    <button type="button" ref={toggle} className="bg-tasks-toggle is-idle" aria-label={name} title={name} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
       <MessagesSquare aria-hidden="true" /><span className="bg-tasks-label">{name}</span><span className="bg-tasks-count" aria-hidden="true">{topics.length}</span>
     </button>
     {open && <div ref={menu} id={id} className="menu bg-tasks-menu btw-menu" role="dialog" aria-label={t("Side conversations")}>

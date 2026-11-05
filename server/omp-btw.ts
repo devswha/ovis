@@ -5,7 +5,10 @@
  * with an optional `entry-<id>.title` beside it (OMP 18.14, packages/coding-agent/src/session/btw-history.ts).
  * Only the main session's topics are read: `btw-history/sessions/` holds a focused subagent's, which
  * are another conversation. A record is taken only as OMP itself would load it (a regular file, its
- * exact fields, its id matching its name); anything else is skipped. Statuses are shown as saved:
+ * exact fields, its id matching its name); anything else is skipped, and so is a history reached
+ * through a linked folder. A question may carry pictures, so a read is bounded: the hundred most
+ * recently written topics, a byte budget, and a record kept until its file changes, since the chip
+ * asks again every few seconds. Statuses are shown as saved:
  * a reader cannot tell a topic still being answered from one whose writer stopped. Pictures attached
  * to a question are not sent. The dispatcher in index.ts runs the access gate first.
  */
@@ -15,8 +18,14 @@ import type { OmpBtwExchange, OmpBtwTopic } from "../shared/protocol.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 
 const MAX_TOPICS = 100;
-/** a topic whose question carries pictures is larger than its words; OMP sets no bound, this keeps a read cheap */
+/** a topic whose question carries pictures is larger than its words; OMP sets no bound, these keep a read cheap */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_READ_BYTES = 32 * 1024 * 1024;
+const MAX_TITLE_BYTES = 4096;
+/** the histories read lately: by folder, each topic file's record as of its size and time */
+const MAX_CACHED_HISTORIES = 16;
+type Cached = { size: number; mtimeMs: number; topic: Omit<OmpBtwTopic, "title"> | null };
+const cache = new Map<string, Map<string, Cached>>();
 const ENTRY = /^entry-([a-zA-Z0-9][a-zA-Z0-9_-]{0,127})\.json$/;
 const STATUSES = new Set<string>(["running", "complete", "cancelled", "error", "interrupted"]);
 const EXCHANGE_KEYS = new Set(["question", "images", "answer", "status", "createdAt", "updatedAt", "error"]);
@@ -35,17 +44,14 @@ function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
   return { question, answer, status: status as OmpBtwExchange["status"], error: error ?? null, at: new Date(createdAt).toISOString() };
 }
 
-function topicOf(directory: string, name: string, id: string): OmpBtwTopic | null {
-  const path = join(directory, name);
+function topicOf(path: string, id: string): Omit<OmpBtwTopic, "title"> | null {
   try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return null;
     const record = row(JSON.parse(readFileSync(path, "utf8")));
     if (record === null || record["id"] !== id || !(record["leafId"] === null || typeof record["leafId"] === "string")) return null;
     const head = exchangeOf(record, TOPIC_KEYS);
     const followUps = record["followUps"] === undefined ? [] : Array.isArray(record["followUps"]) ? record["followUps"].map((entry) => { const found = row(entry); return found && exchangeOf(found, EXCHANGE_KEYS); }) : null;
     if (head === null || followUps === null || followUps.some((entry) => entry === null)) return null;
-    return { id, title: titleOf(join(directory, `entry-${id}.title`)), ...head, follow_ups: followUps as OmpBtwExchange[] };
+    return { id, ...head, follow_ups: followUps as OmpBtwExchange[] };
   } catch {
     // removed between the listing and the read, or not JSON: OMP would not load it either
     return null;
@@ -54,7 +60,8 @@ function topicOf(directory: string, name: string, id: string): OmpBtwTopic | nul
 
 function titleOf(path: string): string | null {
   try {
-    if (!lstatSync(path).isFile()) return null;
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.size > MAX_TITLE_BYTES) return null;
     const title = readFileSync(path, "utf8").trim();
     return title.length > 0 ? title.slice(0, 300) : null;
   } catch {
@@ -62,23 +69,46 @@ function titleOf(path: string): string | null {
   }
 }
 
+const folder = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
+
 /** The saved `/btw` topics of the OMP session whose transcript is `transcript`, newest first. */
 export function ompBtwTopics(transcript: string): OmpBtwTopic[] {
   if (!transcript.endsWith(".jsonl")) return [];
-  const directory = join(transcript.slice(0, -".jsonl".length), "btw-history");
+  const artifacts = transcript.slice(0, -".jsonl".length);
+  const directory = join(artifacts, "btw-history");
   let names: string[];
   try {
+    if (!folder(artifacts) || !folder(directory)) return [];
     names = readdirSync(directory);
   } catch {
     return [];
   }
-  const topics = names.flatMap((name) => {
+  const files = names.flatMap((name) => {
     const id = ENTRY.exec(name)?.[1];
-    const topic = id === undefined ? null : topicOf(directory, name, id);
-    return topic === null ? [] : [topic];
-  });
+    if (id === undefined) return [];
+    try {
+      const stat = lstatSync(join(directory, name));
+      return stat.isFile() ? [{ name, id, size: stat.size, mtimeMs: stat.mtimeMs }] : [];
+    } catch {
+      return [];
+    }
+  }).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, MAX_TOPICS);
+  const known = cache.get(directory);
+  const kept = new Map<string, Cached>();
+  let budget = MAX_READ_BYTES;
+  for (const file of files) {
+    const before = known?.get(file.name);
+    if (before && before.size === file.size && before.mtimeMs === file.mtimeMs) { kept.set(file.name, before); continue; }
+    if (file.size > MAX_FILE_BYTES || file.size > budget) continue;
+    budget -= file.size;
+    kept.set(file.name, { size: file.size, mtimeMs: file.mtimeMs, topic: topicOf(join(directory, file.name), file.id) });
+  }
+  cache.delete(directory);
+  cache.set(directory, kept);
+  if (cache.size > MAX_CACHED_HISTORIES) cache.delete(cache.keys().next().value!);
+  const topics = [...kept.values()].flatMap(({ topic }) => topic === null ? [] : [{ ...topic, title: titleOf(join(directory, `entry-${topic.id}.title`)) }]);
   // OMP's own order: newest first, then by id
-  return topics.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).slice(0, MAX_TOPICS);
+  return topics.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 /** How the route finds a pane's OMP transcript: null for a pane that runs no OMP session with one. */

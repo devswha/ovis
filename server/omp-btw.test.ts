@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,6 +58,29 @@ describe("ompBtwTopics", () => {
     symlinkSync(outside, join(history, "entry-linked.json"));
 
     expect(ompBtwTopics(transcript).map((found) => found.id)).toEqual(["kept"]);
+  });
+
+  it("reads only the hundred most recently written topics and a short title, and none through a linked history folder", () => {
+    const { transcript, history } = session("bounded");
+    for (let index = 0; index < 101; index++) {
+      save(history, topic(`n${index}`, 1000 + index));
+      const written = new Date(Date.UTC(2026, 10, 1) + index * 1000);
+      utimesSync(join(history, `entry-n${index}.json`), written, written);
+    }
+    // the least recently written file asked the newest question: past the read bound, it is not read
+    save(history, topic("n0", 999_999));
+    utimesSync(join(history, "entry-n0.json"), new Date(Date.UTC(2026, 9, 1)), new Date(Date.UTC(2026, 9, 1)));
+    writeFileSync(join(history, "entry-n100.title"), "t".repeat(5000));
+    const read = ompBtwTopics(transcript);
+    expect(read).toHaveLength(100);
+    expect(read.map((found) => found.id)).not.toContain("n0");
+    expect(read[0]).toMatchObject({ id: "n100", title: null });
+
+    const linked = join(root, "linked.jsonl");
+    writeFileSync(linked, "");
+    mkdirSync(join(root, "linked"));
+    symlinkSync(history, join(root, "linked", "btw-history"));
+    expect(ompBtwTopics(linked)).toEqual([]);
   });
 
   it("answers none for a session that never used /btw", () => {

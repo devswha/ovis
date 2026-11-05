@@ -1383,8 +1383,8 @@ export async function fetchPaneArtifacts(paneId: string, machineId = "local"): P
 }
 
 /** GET /api/pane/btw: the side conversations the pane's OMP session saved with `/btw`, newest first. */
-export async function fetchPaneBtw(paneId: string, machineId = "local"): Promise<OmpBtwTopic[]> {
-  return (await getJson<{ topics: OmpBtwTopic[] }>(machinePath(machineId, `pane/btw?pane_id=${encodeURIComponent(paneId)}`))).topics;
+export async function fetchPaneBtw(paneId: string, machineId = "local", signal?: AbortSignal): Promise<OmpBtwTopic[]> {
+  return (await getJson<{ topics: OmpBtwTopic[] }>(machinePath(machineId, `pane/btw?pane_id=${encodeURIComponent(paneId)}`), { signal })).topics;
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */

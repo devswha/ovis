@@ -74,6 +74,19 @@ test("lists the saved topics once opened, and a topic opens on its question, its
   expect(text()).toContain("The API is on 7421.");
 });
 
+test("gives up a read that never answers at its deadline and asks again", async () => {
+  // The HTTP boundary holds every request open until the client aborts it.
+  const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(
+    (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+    globalThis.fetch,
+  ));
+  await act(async () => { renderer = create(pane()); });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  await act(async () => { jest.runOnlyPendingTimers(); });
+  await act(async () => { jest.runOnlyPendingTimers(); });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
 test("finds topics asked after an empty first look, and stops asking once unmounted", async () => {
   // The HTTP boundary answers none until a /btw is saved; the component and machine API are real.
   let topics: OmpBtwTopic[] = [];
