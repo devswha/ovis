@@ -125,6 +125,34 @@ describe("NewSessionDialog", () => {
     }
   });
 
+  it("drops a chat's effort with its agent when the PC does not offer that agent (#774)", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents: [{ kind: "codex", label: "Codex", installed: true }] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
+    localStorage.setItem("ovis:new-session-agent", "codex");
+    const tab = { workspaceId: "w1", workspaceLabel: "repo", cwd: "/home/u/repo", number: 2, chat: { agent: "claude", model: "claude-opus-5-5", effort: "high" } };
+    try {
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", tab, onClose: () => undefined, onCreated: () => undefined }) })); });
+      // Claude Code is not on this PC: the dialog gives way to the last agent picked, with none of Claude Code's choices
+      expect(renderer!.root.findByType(AgentPicker).props.value).toBe("codex");
+      expect(renderer!.root.findByProps({ id: "new-session-model" }).props.value).toBe("");
+      expect(renderer!.root.findByProps({ id: "new-session-effort" }).props.value).toBe("");
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("puts the chat the button was pressed in before a link's fields left from an earlier opening (#774)", async () => {
+    const agents = [{ kind: "claude", label: "Claude Code", installed: true }, { kind: "omp", label: "Oh My Pi", installed: true }];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
+    const tab = { workspaceId: "w1", workspaceLabel: "repo", cwd: "/home/u/repo", number: 2, chat: { agent: "claude", model: "claude-opus-5-5", effort: "high" } };
+    try {
+      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", tab, prefill: { cwd: null, name: null, agent: "omp" }, onClose: () => undefined, onCreated: () => undefined }) })); });
+      expect(renderer!.root.findByType(AgentPicker).props.value).toBe("claude");
+      expect(renderer!.root.findByProps({ id: "new-session-model" }).props.value).toBe("claude-opus-5-5");
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it("offers no group while Named agent groups is off (#2431)", async () => {
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents: [] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
     localStorage.setItem("ovis:settings", JSON.stringify({ agentNamedGroups: false, agentGroupNames: ["Agents"] }));

@@ -168,8 +168,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const filled = prefillRef.current;
     const chat = chatRef.current;
     const remembered = rememberedAgent();
-    const stored = filled?.agent ?? chat?.agent ?? remembered;
-    const carried = chat !== null && chat.agent === stored ? recordedChoices(stored, chat) : { model: "", effort: "" };
+    // the chat the button was pressed in comes first: a link's fields may be left from an earlier opening
+    const stored = chat?.agent ?? filled?.agent ?? remembered;
+    const carried = chat !== null ? recordedChoices(chat.agent, chat) : { model: "", effort: "" };
     setCwd(filled?.cwd ?? defaultCwdRef.current ?? "");
     setName(filled?.name ?? "");
     setModel(carried.model);
@@ -198,10 +199,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
         if (stored && !next.some((agent) => agent.kind === stored)) {
           const kind = stored !== remembered && next.some((agent) => agent.kind === remembered) ? remembered : "";
           setAgentKind(kind);
-          // what was chosen meanwhile for the agent that gave way goes as pickAgent's choices go
+          // what was chosen meanwhile for the agent that gave way goes as pickAgent's choices go; a chat's recorded
+          // effort was that chat's agent's, so it goes with it
           const can = launchCapabilities(kind);
           setModel("");
-          setEffort((current) => can.efforts.includes(current) ? current : "");
+          setEffort((current) => chat === null && can.efforts.includes(current) ? current : "");
           if (!can.ultracode) setUltracode(false);
         }
       })
