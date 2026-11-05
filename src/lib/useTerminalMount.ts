@@ -603,7 +603,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         );
       };
       const selectionChange = term.onSelectionChange(() => {
-        if (!term.hasSelection()) {
+        // a selection is the user's own copy: no program's copy fills the clipboard over it
+        if (term.hasSelection()) cancelCopy();
+        else {
           copiedText = null;
           selectionGeneration++;
           setSelectionQuote(null);
@@ -716,7 +718,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (edgeTimer !== null) window.clearInterval(edgeTimer);
         edgeTimer = null;
       };
+      /** the pane an OpenCode press went to as it is (xterm reports it): its release may copy too */
+      let openCodePress: string | null = null;
       const onMouseDown = (event: MouseEvent): void => {
+        openCodePress = null;
         // a click handed on to the program (forwardClick) is not a new drag
         if (event.button !== 0 || !event.isTrusted) return;
         if ((event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } }).sourceCapabilities?.firesTouchEvents) return;
@@ -732,6 +737,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // here. herdr reports which agent runs, never a program's mouse mode, so this goes by the agent.
         if (reporting && agentRef.current === "opencode" && !event.shiftKey && !event.altKey && !onLink && !term.options.disableStdin) {
           term.clearSelection();
+          openCodePress = paneRef.current;
           return;
         }
         const click: ClickKeys | null = reporting && !selecting && !onLink && !term.hasSelection()
@@ -809,7 +815,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const onMouseUp = (event: MouseEvent): void => {
         const d = drag;
-        if (!d || event.button !== 0) return;
+        if (event.button !== 0) return;
+        if (!d) {
+          const pane = openCodePress;
+          openCodePress = null;
+          if (pane !== null && pane === paneRef.current && mayReserveCopy()) reserveCopy(pane);
+          return;
+        }
         drag = null;
         stopEdge();
         // Window bubble runs after xterm's document listener, still inside the
@@ -819,8 +831,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // released on the pane it was pressed on: a pane switched meanwhile gets no click of this press
         if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !term.hasSelection()
           && released.row === d.anchor.row && released.col === d.anchor.col) {
-          if (osc52AllowedRef.current && !observeRef.current && !heldRef.current) reserveCopy(d.pane);
           forwardClick(event, d.click);
+          if (mayReserveCopy()) reserveCopy(d.pane);
           return;
         }
         if (!term.hasSelection()) return;
@@ -904,7 +916,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // bridge marked `replay` (the screen from before this attach) is presentation history, and a
       // copy request in it was answered when it was new. The flag holds from the frame's write
       // until its callback; xterm's own parser state says whether a replayed OSC is still open.
-      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void }[] = [];
+      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; seq: number }[] = [];
       let writingOutput = false;
       let parsingReplay = false;
       // a hidden tab's view parsed on its return (resume): what it drew is history, and a query in it
@@ -915,8 +927,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       let outputOwner = 0;
       let parsingOwner = 0;
       // A click handed to the program starts a clipboard write that its OSC 52 answer fills in
-      // (osc52Clipboard.ts): Safari writes only within the click. One at a time, for that pane's output.
-      let copyReservation: { pane: string; owner: number; copy: Osc52Reservation } | null = null;
+      // (osc52Clipboard.ts): Safari writes only within the click. One at a time, for that pane's output,
+      // and only output that arrived after the click (`after`, a count of frames received) answers it.
+      let framesReceived = 0;
+      let parsingFrame = 0;
+      let copyReservation: { pane: string; owner: number; after: number; copy: Osc52Reservation } | null = null;
       const cancelCopy = (): void => {
         copyReservation?.copy.cancel();
         copyReservation = null;
@@ -924,14 +939,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const reserveCopy = (pane: string): void => {
         cancelCopy();
         const copy = reserveOsc52Copy();
-        if (copy) copyReservation = { pane, owner: outputOwner, copy };
+        if (copy) copyReservation = { pane, owner: outputOwner, after: framesReceived, copy };
       };
-      /** the reservation this live copy may fill: still waiting, same pane and output, nothing selected since */
+      /** whether a click on the terminal now reaches a program that may copy for it */
+      const mayReserveCopy = (): boolean => osc52AllowedRef.current && !observeRef.current && !heldRef.current
+        && !term.options.disableStdin && !term.hasSelection();
+      /** the reservation this live copy may fill: still waiting, same pane and output, output from after the click */
       const takeCopy = (): Osc52Reservation | null => {
         const held = copyReservation;
         copyReservation = null;
         if (held && held.copy.pending && held.pane === paneRef.current && held.owner === outputOwner
-          && !observeRef.current && !term.hasSelection()) return held.copy;
+          && parsingFrame > held.after && !observeRef.current && !term.hasSelection()) return held.copy;
         held?.copy.cancel();
         return null;
       };
@@ -951,6 +969,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         writingOutput = true;
         parsingReplay = frame.replay;
         parsingView = frame.view === true;
+        parsingFrame = frame.seq;
         const owner = parsingOwner = outputOwner;
         term.write(frame.data, () => {
           parsingReplay = false;
@@ -969,7 +988,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         });
       };
       const writeOutput = (data: string, replay = false, done?: () => void, view = false): void => {
-        outputFrames.push({ data, replay, view, done });
+        outputFrames.push({ data, replay, view, done, seq: ++framesReceived });
         if (!writingOutput) writeNextOutput();
       };
       // A pane switch resets the parser, and a reconnect replays afresh: frames still queued from
@@ -1026,13 +1045,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!replayed && parsingOwner === outputOwner && osc52AllowedRef.current && presentedRef.current && shownRef.current) {
           const text = parseOsc52(payload);
           if (text !== null) {
-            const clipboard = navigator.clipboard;
+            // a reserved write that fails is not tried again later: that would be a write outside the click
             const reserved = takeCopy();
-            const writeText = (): Promise<boolean> => clipboard.writeText(text).then(() => true, () => false);
-            if (reserved || clipboard) {
-              void (reserved ? reserved.fulfil(text).then((copied) => copied || writeText()) : writeText())
-                .then((copied) => noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser"));
-            }
+            const written = reserved ? reserved.fulfil(text) : navigator.clipboard?.writeText(text).then(() => true, () => false);
+            void written?.then((copied) => noteClipboard(copied ? "copied to clipboard" : "clipboard write blocked by the browser"));
           }
         }
         return true;
@@ -1350,6 +1366,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // observing still refuses it, so the next accepted key cannot carry it into the pane
           if (observeRef.current && !nowObserving) commitPendingText();
           observeRef.current = nowObserving;
+          if (nowObserving) cancelCopy();
           // no fit runs while observing: a font shrunk for this client's own grid would stay
           if (nowObserving) {
             term.options.fontSize = baseFontRef.current;
