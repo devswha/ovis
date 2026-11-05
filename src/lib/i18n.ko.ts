@@ -151,6 +151,12 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
   "Via the local network": "로컬 네트워크를 거쳐 연결",
   "Straight to this address": "이 주소로 바로 연결",
+  "Sessions on this PC": "이 PC의 세션",
+  "{count} working": "작업 중 {count}개",
+  "{count} waiting for you": "내 응답 대기 {count}개",
+  "{count} done": "완료 {count}개",
+  "Open the next session waiting for you": "응답을 기다리는 다음 세션 열기",
+  "Tab {index} of {count}": "탭 {count}개 중 {index}번째",
   "Reconnecting…": "재연결 중…",
   "Add PC": "PC 추가",
   "Connect": "연결",
@@ -258,6 +264,9 @@ const BASE: Record<string, string> = {
   // ---- devices ----
   "Loading…": "불러오는 중…",
   "Done": "완료",
+  "Name": "이름",
+  "Recent": "최근",
+  "Needs you": "내 응답 필요",
 
   // ---- phone ----
   "Copy": "복사",
@@ -277,6 +286,7 @@ const BASE: Record<string, string> = {
   "This device would not make a push subscription. Check that push messaging is allowed in its settings, then try again.": "이 기기에서 푸시 구독을 만들지 못했습니다. 설정에서 푸시 메시지가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
   "This device can only watch.": "이 기기는 보기만 할 수 있습니다.",
   "Needs input": "입력 필요",
+  "Needs permission": "권한 필요",
   "Finished": "작업 완료",
   "Open pane": "패널 열기",
   "Quick replies": "빠른 답장",
