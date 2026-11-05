@@ -217,6 +217,40 @@ try {
         assert.deepEqual(zwj.wide, ["\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"], "core: the ZWJ family is one wide cell");
         assert.ok(Math.abs(zwj.column - 5) < 0.1, `core: the text after a ZWJ family starts at xterm's column 5 (${zwj.column})`);
 
+        // glyphs fit their cells as xterm's rows fit them (terminalGlyphs.ts): an underlined Hangul syllable fills its two
+        // cells and keeps its underline, and a Nerd Font icon stays in its one cell, so the text after both keeps its column
+        await print(page, "\x1b[4m\uD55C\x1b[24m\ue0a0Q|\r\n", "GLYPHS");
+        const glyphs = await page.evaluate(() => {
+          const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
+          const cw = parseFloat(getComputedStyle(layer).getPropertyValue("--ghostty-cw"));
+          const row = [...layer.querySelectorAll<HTMLElement>(".ghostty-row")].find((r) => r.textContent?.includes("Q|"))!;
+          // the box one character of the row is drawn in, wherever its text node starts
+          const box = (char: string) => {
+            const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const at = node.textContent?.indexOf(char) ?? -1;
+              if (at < 0) continue;
+              const range = document.createRange();
+              range.setStart(node, at);
+              range.setEnd(node, at + char.length);
+              return { rect: range.getBoundingClientRect(), parent: node.parentElement! };
+            }
+            throw new Error(`no ${char} in the row`);
+          };
+          const hangul = box("\uD55C");
+          const left = layer.getBoundingClientRect().left;
+          return {
+            fill: hangul.rect.width / (2 * cw),
+            underline: getComputedStyle(hangul.parent).textDecorationLine,
+            icon: box("\ue0a0").rect.width / cw,
+            column: (box("Q").rect.left - left) / cw,
+          };
+        });
+        assert.ok(glyphs.fill >= 0.88, `core: a Hangul syllable fills its two cells as xterm draws it (${glyphs.fill})`);
+        assert.ok(glyphs.underline.includes("underline"), `core: an underlined Hangul syllable is underlined (${glyphs.underline})`);
+        assert.ok(glyphs.icon <= 1.05, `core: a Nerd Font icon stays in its one cell (${glyphs.icon} cells)`);
+        assert.ok(Math.abs(glyphs.column - 3) < 0.1, `core: the text after them starts at xterm's column 3 (${glyphs.column})`);
+
         await print(page, "\x1b_Ga=d,d=I,i=7,q=2\x1b\\", "RED-DELETED");
         assert.equal(await picture(page), null, "core: a picture the program deletes goes");
 
