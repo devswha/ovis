@@ -11,6 +11,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { SettingsRow } from "./SettingsControls.tsx";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
+import { ACCOUNT_LINKED_EVENT } from "../lib/account/join.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -46,12 +47,14 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
 };
 
 /**
- * Whether a `remove` signed with this client's account key would be applied here: the PC takes it only
- * from a drive member of the account (server/account/records.ts). A browser signed in on the PC's own
- * address, paired by cookie, holds a key no row has, and every PC would refuse it (`signer_not_member`).
+ * Whether `row` can be disconnected from every PC from here: another device of the account, and a
+ * `remove` signed with this client's account key would be applied, as the PC takes one only from a
+ * drive member of the account (server/account/records.ts). A browser signed in on the PC's own address,
+ * paired by cookie, holds a key no row has, and every PC would refuse it (`signer_not_member`).
  */
-export function signsAccountRemoves(devices: readonly PairedDevice[], account: string, key: string | null): boolean {
-  return key !== null && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
+export function offersAccountRemove(devices: readonly PairedDevice[], row: PairedDevice, account: string, key: string | null): boolean {
+  return key !== null && !row.current && row.account === account && row.account_key !== undefined && row.account_key !== key
+    && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
 }
 
 /** Settings → Devices: the paired devices, and a code to pair one more. */
@@ -161,7 +164,12 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
     indexedAccountStore.key().then((key) => { if (live) setAccountKey(key.public_spki); }, () => undefined);
     return () => { live = false; };
   }, [signedIn]);
-  const removesHere = signedIn !== null && devices !== null && signsAccountRemoves(devices, signedIn, accountKey);
+  // a list read before this client's pairing joined the account would hide its removals
+  useEffect(() => {
+    const onLinked = () => void load();
+    window.addEventListener(ACCOUNT_LINKED_EVENT, onLinked);
+    return () => window.removeEventListener(ACCOUNT_LINKED_EVENT, onLinked);
+  }, [load]);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
   const disconnect = async (id: string, key: string, account: string) => {
@@ -261,7 +269,7 @@ export function DevicesPanel({ onPair, onDevicePaired, auth, onPaired, onRevoked
                   {!guest && (
                     <div className="devices-actions">
                       <button type="button" className="icon-button" aria-label={t("Rename {name}", { name: d.label })} onClick={() => setRenaming({ id: d.id, label: d.label })}><Pencil /></button>
-                      {removesHere && d.account === signedIn && d.account_key !== undefined && !d.current && (
+                      {signedIn !== null && offersAccountRemove(devices, d, signedIn, accountKey) && (
                         <button type="button" className={disconnecting === d.id ? "btn btn-danger" : "btn"} onClick={() => void disconnect(d.id, d.account_key!, signedIn!)}>
                           {disconnecting === d.id ? t("Disconnect everywhere?") : t("Disconnect from all PCs")}
                         </button>
