@@ -17,6 +17,7 @@ import type { NotificationTarget } from "./notificationTarget.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import type { SplitState } from "./split.ts";
 import { deviceInUse, followsHerdrFocus, movingHerdrFocusOn } from "./followFocus.ts";
+import { pruneWaitingSends } from "./sentWaiting.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { displayPaneTitle } from "../components/Sidebar.tsx";
 import type { usePreferencesSync } from "./preferencesSync.ts";
@@ -139,6 +140,7 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
       await snapshotRequests.current.read(fetchMachines, (next) => {
         // a PC whose herdr was replaced leaves its panes' drafts and lenses before they are drawn
         paneLifetimes.observe(next, displayPaneTitle);
+        pruneWaitingSends(next);
         // a pane's conversation answers stand for the session it was on: the chats read this roster's
         observePaneSessions(next, readAfter);
         // a read showing this PC away ends the slow backstop as a pushed roster would: a stream can
@@ -268,6 +270,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
       if (payload.type === "machines") {
         onRosterStream(payload.machines);
         paneLifetimes.observe(payload.machines, displayPaneTitle);
+        pruneWaitingSends(payload.machines);
         observePaneSessions(payload.machines);
         onRoster(payload.machines);
         reorderCoordinator.roster(payload.machines, { kind: "event" });
