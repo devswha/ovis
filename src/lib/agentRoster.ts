@@ -91,11 +91,12 @@ export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
 /**
  * The list's unpinned rows split into the agents a person drives and the background ones (workers,
  * subagents), each in the order given. A background row is one tagged `role=background`, or a
- * helper started (herdr-core's `parent_pane_id`) by one; a blocked one stays with the people's rows,
- * so a question is never folded away.
+ * helper started (herdr-core's `parent_pane_id`) by one, looked up in `all` (the whole roster); a
+ * blocked one stays with the people's rows, so a question is never folded away.
  */
-export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined): { people: AgentRow[]; background: AgentRow[] } {
-  const byKey = new Map(rows.map((row) => [sidebarPinKey(row.machine.id, row.entry.pane.pane_id), row]));
+export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined, all: readonly AgentRow[] = rows): { people: AgentRow[]; background: AgentRow[] } {
+  // a helper's agent is looked up among every row, pinned or filtered out ones too
+  const byKey = new Map(all.map((row) => [sidebarPinKey(row.machine.id, row.entry.pane.pane_id), row]));
   const tagged = (row: AgentRow): boolean => {
     // up the helpers chain to the first tagged row; a loop ends the walk
     const passed = new Set<AgentRow>();
@@ -108,7 +109,9 @@ export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: Age
   const people: AgentRow[] = [];
   const background: AgentRow[] = [];
   for (const row of rows) (tagged(row) && knownStatus(status(row)) !== "blocked" ? background : people).push(row);
-  return { people, background };
+  // a helper whose agent stayed with the people's rows stands as a root here, not under another row
+  const keyOf = ({ machine, entry }: AgentRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
+  return { people, background: nestRows(background, keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id)) };
 }
 
 /** Settings → Group agents by state: the groups, in the order the list draws them */

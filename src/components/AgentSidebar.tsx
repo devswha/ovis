@@ -182,7 +182,6 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const t = useT();
   const listId = useId();
   const [collapsed, setCollapsed] = useState(initialFold);
-  const backgroundListId = useId();
   const [backgroundCollapsed, setBackgroundCollapsed] = useState(initialBackgroundFold);
   const { settings } = useSettings();
   const pressPane = useContext(PanePressContext);
@@ -209,7 +208,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   }, [roster, filter]);
   const rows = useMemo(() => [...split.pinned, ...split.rest], [split]);
   // background agents (a pane tagged role=background, and its helpers) stand apart, after the rest (lib/agentRoster.ts)
-  const parts = useMemo(() => splitBackgroundRows(split.rest, ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined), [split, activity]);
+  const parts = useMemo(() => splitBackgroundRows(split.rest, ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, allRows), [split, activity, allRows]);
   // Settings → Group agents by state (this device): the unpinned rows in groups, needs-you first (lib/agentRoster.ts)
   const groups = useMemo(() => !settings.agentGroups ? null : groupAgentRows(parts.people, {
     sort: settings.agentGroupSort,
@@ -249,7 +248,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const target = refocusPin.current;
     if (target === null) return;
     refocusPin.current = null;
-    sectionRef.current?.querySelector<HTMLButtonElement>(`.agent-item[data-pin-key="${CSS.escape(target.key)}"] .${target.control}`)?.focus({ preventScroll: true });
+    const control = sectionRef.current?.querySelector<HTMLButtonElement>(`.agent-item[data-pin-key="${CSS.escape(target.key)}"] .${target.control}`);
+    // a row unpinned into the folded background part is hidden: its heading takes the focus
+    (control?.closest("li")?.hidden ? sectionRef.current?.querySelector<HTMLButtonElement>(".agent-background-toggle") : control)?.focus({ preventScroll: true });
   }, [pinned]);
   const [menu, setMenu] = useState<PinMenu | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -327,7 +328,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     return { restDepths, restLines };
   }, [parts, groups]);
 
-  const agentItem = (row: AgentRow) => {
+  const agentItem = (row: AgentRow, hidden = false) => {
     const { machine, entry } = row;
     const { pane, agent } = entry;
     const depth = Math.min(2, restDepths.get(row) ?? 0);
@@ -349,7 +350,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
-    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined}
+    return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined} hidden={hidden || undefined}
       onMouseDownCapture={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
       onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
       <button type="button" className="agent-select agent-row" disabled={!online} aria-current={selected ? "true" : undefined} title={tooltip} onClick={() => onSelect(machine.id, pane.pane_id)}
@@ -408,25 +409,28 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       {rows.length > 0 && <>
         {split.pinned.length > 0 && <>
           <p className="sidebar-pinned-label" aria-hidden="true"><span><Pin />{t("Pinned")}</span></p>
-          <ul className="agent-list agent-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{split.pinned.map(agentItem)}</ul>
+          <ul className="agent-list agent-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{split.pinned.map((row) => agentItem(row))}</ul>
         </>}
-        {/* one list, so a row that changes groups is moved, not drawn anew: its focus and open menu stay with it */}
-        {groups ? <ul className="agent-list agent-list-grouped">{groups.flatMap(({ group, rows: groupRows }) => [
-          <li className="agent-group-label" key={`group:${group}`} data-group={group} aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></li>,
-          ...groupRows.map(agentItem),
-        ])}</ul>
-          : parts.people.length > 0 && <ul className="agent-list">{parts.people.map(agentItem)}</ul>}
-        {parts.background.length > 0 && <>
-          <button type="button" className="agent-background-toggle" aria-expanded={!backgroundFolded} aria-controls={backgroundListId} onClick={() => {
-            if (filter.active) { setBackgroundFilterFold(!backgroundFolded); return; }
-            setBackgroundCollapsed(!backgroundCollapsed);
-            try { window.localStorage.setItem(BACKGROUND_FOLD_KEY, backgroundCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
-          }}>
-            {backgroundFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
-            <span>{t("Background agents")}</span><span className="agent-section-count">{parts.background.length}</span>
-          </button>
-          <ul className="agent-list agent-list-background" id={backgroundListId} aria-label={t("Background agents")} hidden={backgroundFolded}>{parts.background.map(agentItem)}</ul>
-        </>}
+        {/* one list, so a row that changes groups or parts is moved, not drawn anew: its focus and open menu stay with it */}
+        {(parts.people.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups ? " agent-list-grouped" : ""}`}>
+          {groups ? groups.flatMap(({ group, rows: groupRows }) => [
+            <li className="agent-group-label" key={`group:${group}`} data-group={group} aria-hidden="true"><span>{groupLabel(group, t)}</span><span className="agent-group-count">{groupRows.length}</span></li>,
+            ...groupRows.map((row) => agentItem(row)),
+          ]) : parts.people.map((row) => agentItem(row))}
+          {parts.background.length > 0 && [
+            <li className="agent-background-label" key="background">
+              <button type="button" className="agent-background-toggle" aria-expanded={!backgroundFolded} onClick={() => {
+                if (filter.active) { setBackgroundFilterFold(!backgroundFolded); return; }
+                setBackgroundCollapsed(!backgroundCollapsed);
+                try { window.localStorage.setItem(BACKGROUND_FOLD_KEY, backgroundCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
+              }}>
+                {backgroundFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
+                <span>{t("Background agents")}</span><span className="agent-section-count">{parts.background.length}</span>
+              </button>
+            </li>,
+            ...parts.background.map((row) => agentItem(row, backgroundFolded)),
+          ]}
+        </ul>}
       </>}
     </div>
     {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.context} detail={[menuBlocked, ...menuShown.tokens].filter(Boolean).join(" · ") || undefined} onClose={closeMenu} items={[

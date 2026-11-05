@@ -67,6 +67,17 @@ describe("agent roster", () => {
       const machines = [machine("local", "connected", [["a", "idle"], ["w1", "working", undefined, background], ["h", "blocked", "w1"], ["w2", "blocked", undefined, background]])];
       expect(parts(machines)).toEqual({ people: ["local/a", "local/h", "local/w2"], background: ["local/w1"] });
     });
+    it("looks up a helper's agent among every row, so a helper of a pinned or filtered-out background agent stays background", () => {
+      const all = agentRoster([machine("local", "connected", [["w1", "working", undefined, background], ["h", "working", "w1"], ["a", "idle"]])], { byActivity: false, seqs: () => new Map(), pinned: [sidebarPinKey("local", "w1")] });
+      const { people, background: rest } = splitBackgroundRows(all.rest, ({ entry }) => entry.pane.agent_status, [...all.pinned, ...all.rest]);
+      expect({ people: people.map(({ entry }) => entry.pane.pane_id), background: rest.map(({ entry }) => entry.pane.pane_id) }).toEqual({ people: ["a"], background: ["h"] });
+    });
+
+    it("lays out the background part anew, a helper whose agent stayed with the people standing as a root", () => {
+      // c's agent b is blocked: c must not read as one of a's helpers
+      const machines = [machine("local", "connected", [["a", "working", undefined, background], ["b", "blocked", "a"], ["c", "working", "b"], ["d", "working", "a"]])];
+      expect(parts(machines)).toEqual({ people: ["local/b"], background: ["local/a", "local/d", "local/c"] });
+    });
   });
 
   describe("in groups by state", () => {

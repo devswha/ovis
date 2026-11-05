@@ -127,9 +127,12 @@
   cursor: pointer;
 }
 
-.agent-background-toggle:first-child { margin-top: 0; }
+.agent-background-label:first-child .agent-background-toggle { margin-top: 0; }
 .agent-background-toggle .agent-section-caret { opacity: 1; }
 .agent-background-toggle .agent-section-count { font-size: inherit; }
+
+/* the folded part's rows stay in the list (a row that changes part moves), only out of sight */
+.agent-list .agent-item[hidden] { display: none; }
 
 @media (hover: hover) {
   .agent-background-toggle:hover { color: var(--text); }
