@@ -8,6 +8,7 @@ import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { alertStatus, paneAlertsMuted, paneTitle } from "../../shared/notify-policy.ts";
 import { BackgroundWait } from "../background-wait.ts";
+import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
 import { ClaudeSubagentStatus } from "../claude-subagents.ts";
 import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
@@ -60,6 +61,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     pushLoopbackHttp?: boolean;
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
+    /** keep desktop-activity.json for the desktop app (server/desktop-activity.ts) */
+    desktopActivity?: boolean;
     openCodeState?: OpenCodePromptState;
     /** herdr's identity behind finish epochs and `herdr_lifetime` (server/finishes.ts); tests give their own */
     herdrIdentity?: () => string | null;
@@ -351,7 +354,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   // on herdr-core, the core's other machines are PCs too, each reached through this PC's core
   if (machines && servingCore()) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
 
+  const desktopActivity = options.desktopActivity === true ? trackDesktopActivity({
+    path: join(options.stateDir ?? defaultStateDir(), DESKTOP_ACTIVITY_FILE),
+    working: async () => busyPanes((await clientSnapshot()).panes),
+  }) : null;
+
   function broadcastAll(message: ServerMessage): void {
+    if (message.type === "pane-status" || message.type === "pane-exited" || message.type === "session-changed") desktopActivity?.changed();
     machines?.localMessage(message);
     for (const client of clients) send(client, message);
   }
@@ -635,7 +644,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   // a verified OpenCode pane is tracked like a usage-login pane: its end or close reaches paneGone above
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId));
-  const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); collector.stop(); } };
+  const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); desktopActivity?.stop(); collector.stop(); } };
 
   const queueHeld = (paneId: string): boolean => queueStatus(paneId, "idle") === "working";
   /**
