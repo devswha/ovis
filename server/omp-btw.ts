@@ -81,10 +81,11 @@ function exchangeOf(record: Row, keys: Set<string>): OmpBtwExchange | null {
   return { question, answer, status: status as OmpBtwExchange["status"], error: error ?? null, at: new Date(createdAt).toISOString() };
 }
 
-function topicOf(path: string, id: string, limit: number): Read | "big" {
-  const none = { topic: null, cut: false };
+/** `bytes`: what was read, which the request's budget is charged, never the size the listing saw */
+function topicOf(path: string, id: string, limit: number): (Read & { bytes: number }) | "big" {
   const text = readBounded(path, limit);
   if (text === "big") return "big";
+  const none = { topic: null, cut: false, bytes: text === null ? 0 : Buffer.byteLength(text) };
   if (text === null) return none;
   try {
     const record = row(JSON.parse(text));
@@ -94,7 +95,7 @@ function topicOf(path: string, id: string, limit: number): Read | "big" {
     // only the first follow-ups are kept, and only those are checked
     const followUps = all?.slice(0, MAX_FOLLOW_UPS).map((entry) => { const found = row(entry); return found && exchangeOf(found, EXCHANGE_KEYS); }) ?? null;
     if (head === null || all === null || followUps === null || followUps.some((entry) => entry === null)) return none;
-    return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS };
+    return { topic: { id, ...head, follow_ups: followUps as OmpBtwExchange[] }, cut: all.length > MAX_FOLLOW_UPS, bytes: none.bytes };
   } catch {
     // not JSON, or not a record OMP would load
     return none;
@@ -102,11 +103,11 @@ function topicOf(path: string, id: string, limit: number): Read | "big" {
 }
 
 /** OMP's title for a topic, and `cut` when a cap shortened or dropped it */
-function titleOf(path: string): { title: string | null; cut: boolean } {
-  const text = readBounded(path, MAX_TITLE_BYTES);
-  if (text === "big") return { title: null, cut: true };
+function titleOf(path: string, limit: number): { title: string | null; cut: boolean; bytes: number } {
+  const text = readBounded(path, limit);
+  if (text === "big") return { title: null, cut: true, bytes: 0 };
   const title = text?.trim() ?? "";
-  return { title: title.length > 0 ? title.slice(0, 300) : null, cut: title.length > 300 };
+  return { title: title.length > 0 ? title.slice(0, 300) : null, cut: title.length > 300, bytes: text === null ? 0 : Buffer.byteLength(text) };
 }
 
 const folder = (path: string): boolean => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
@@ -167,7 +168,7 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
       if (file.size > MAX_FILE_BYTES || file.size > budget) { more = true; continue; }
       const read = topicOf(join(directory, file.name), file.id, Math.min(MAX_FILE_BYTES, budget));
       if (read === "big") { more = true; continue; }
-      budget -= file.size;
+      budget -= read.bytes;
       const { topic, cut } = read;
       entry = { size: file.size, mtimeMs: file.mtimeMs, ctimeMs: file.ctimeMs, ino: file.ino, topic, text: textOf(topic), cut };
     }
@@ -182,7 +183,8 @@ export function ompBtwTopics(transcript: string): OmpBtwHistory {
   if (cache.size > MAX_CACHED_HISTORIES) cache.delete(cache.keys().next().value!);
   const topics = [...kept.values()].flatMap(({ topic }) => {
     if (topic === null) return [];
-    const { title, cut } = titleOf(join(directory, `entry-${topic.id}.title`));
+    const { title, cut, bytes: read } = titleOf(join(directory, `entry-${topic.id}.title`), Math.min(MAX_TITLE_BYTES, budget));
+    budget -= read;
     if (cut) more = true;
     return [{ ...topic, title }];
   });
