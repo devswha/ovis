@@ -111,6 +111,34 @@ try {
             await page.locator(`.agent-list .agent-item[data-pane="${panes.api}"].is-selected`).waitFor();
             assert.equal(await peeking(page).count(), 1, "picking a row keeps the sidebar while the pointer is on it");
 
+            // a workspace renamed in it: the sidebar stays while the name is typed, with the pointer gone, and the
+            // field's Escape cancels the rename, not the peek
+            await page.locator(".machine-list .workspace-header").first().click({ button: "right" });
+            await page.getByRole("menuitem", { name: "Rename workspace", exact: true }).click();
+            const rename = page.locator(".workspace-rename-input");
+            await rename.waitFor();
+            await rename.pressSequentially("-x");
+            await away(page);
+            await page.clock.runFor(PEEK_CLOSE_MS * 3);
+            assert.equal(await peeking(page).count(), 1, "kept while a name is typed in it");
+            assert.equal(await rename.evaluate((element) => element === document.activeElement), true, "and the field keeps the focus");
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+            await page.keyboard.press("Escape");
+            await rename.waitFor({ state: "detached" });
+            await page.clock.runFor(PEEK_CLOSE_MS * 3);
+            assert.equal(await peeking(page).count(), 1, "the rename's Escape leaves the peek");
+
+            // a dialog the sidebar did not open holds nothing
+            await page.evaluate(() => { const foreign = document.createElement("div"); foreign.id = "foreign-dialog"; foreign.setAttribute("role", "dialog"); document.body.append(foreign); });
+            await away(page);
+            await page.clock.runFor(PEEK_CLOSE_MS);
+            await peeking(page).waitFor({ state: "detached" });
+            await page.evaluate(() => document.getElementById("foreign-dialog")?.remove());
+            await onToggle(page);
+            await page.clock.runFor(PEEK_OPEN_MS);
+            await peeking(page).waitFor();
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+
             // leaving both puts it away after the grace
             await away(page);
             await page.clock.runFor(PEEK_CLOSE_MS);
