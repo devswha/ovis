@@ -110,6 +110,16 @@ try {
         await page.keyboard.press("Escape");
         await palette.waitFor({ state: "detached" });
 
+        // armed, the app's own shortcut stays the app's: the palette opens, the prefix is left
+        await focusTerminal(page);
+        await page.keyboard.press("Control+KeyB");
+        await waiting(page).waitFor();
+        await page.keyboard.press("Control+Shift+KeyK");
+        await palette.waitFor();
+        await waiting(page).waitFor({ state: "detached" });
+        await page.keyboard.press("Escape");
+        await palette.waitFor({ state: "detached" });
+
         // c opens a terminal tab at once; 1 goes back to the first tab in the strip
         await focusTerminal(page);
         const tabs = page.locator(".tab-strip-item");

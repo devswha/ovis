@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HERDR_DEFAULT_PREFIX, HERDR_PREFIX_DEFAULTS } from "../shared/herdr-keys.ts";
 import { readHerdrUi } from "./herdr-ui.ts";
 
 const roots: string[] = [];
@@ -49,26 +48,53 @@ describe("herdr's [ui] copy_on_select", () => {
 });
 
 describe("herdr's [keys] prefix bindings", () => {
-  const defaults = { prefix: HERDR_DEFAULT_PREFIX, bindings: { ...HERDR_PREFIX_DEFAULTS } };
+  const keysOf = (toml: string) => readHerdrUi(config(toml)).keys!;
 
   it("are herdr's defaults without a config, without [keys], or with a config herdr cannot parse", () => {
     const root = mkdtempSync(join(tmpdir(), "ovis-herdr-ui-"));
     roots.push(root);
-    expect(readHerdrUi(join(root, "missing.toml")).keys).toEqual(defaults);
-    expect(readHerdrUi(config("[ui]\ncopy_on_select = false\n")).keys).toEqual(defaults);
-    expect(readHerdrUi(config("[keys")).keys).toEqual(defaults);
+    const defaults = readHerdrUi(join(root, "missing.toml")).keys!;
+    expect(defaults.prefix).toBe("ctrl+b");
+    expect(defaults.bindings).toMatchObject({ new_tab: ["prefix+c"], switch_tab: ["prefix+1..9"], split_horizontal: ["prefix+minus"], next_workspace: [] });
+    expect(keysOf("[ui]\ncopy_on_select = false\n")).toEqual(defaults);
+    expect(keysOf("[keys")).toEqual(defaults);
+    // a value of a type herdr does not read makes herdr read no config: its defaults stand
+    expect(keysOf('[keys]\nprefix = 1\nnew_tab = "prefix+t"\n')).toEqual(defaults);
+    expect(keysOf('[keys]\nzoom = 3\n')).toEqual(defaults);
   });
 
-  it("take the prefix and each binding the config writes, an empty one unbinding the action", () => {
-    const keys = readHerdrUi(config('[keys]\nprefix = "ctrl+a"\nnew_tab = "prefix+t"\nzoom = ""\nnext_workspace = "prefix+shift+right"\n')).keys;
-    expect(keys).toEqual({ prefix: "ctrl+a", bindings: { ...HERDR_PREFIX_DEFAULTS, new_tab: "prefix+t", zoom: "", next_workspace: "prefix+shift+right" } });
+  it("take the prefix and the bindings the config writes, one or a list, an empty one unbinding the action", () => {
+    const keys = keysOf('[keys]\nprefix = "ctrl+a"\nnew_tab = ["prefix+c", "prefix+t"]\nzoom = ""\nnext_workspace = "prefix+shift+right"\n');
+    expect(keys.prefix).toBe("ctrl+a");
+    expect(keys.bindings).toMatchObject({ new_tab: ["prefix+c", "prefix+t"], zoom: [], next_workspace: ["prefix+shift+right"] });
   });
 
-  it("unbind a value that is no string, and never carry a custom command or another action", () => {
-    const keys = readHerdrUi(config('[keys]\nprefix = 1\nsplit_vertical = ["prefix+v"]\nclose_pane = "prefix+x"\n[[keys.command]]\nkey = "prefix+alt+g"\ntype = "shell"\ncommand = "rm -rf ~"\n')).keys;
-    expect(keys?.prefix).toBe("");
-    expect(keys?.bindings.split_vertical).toBe("");
-    expect(JSON.stringify(keys)).not.toContain("rm -rf");
-    expect(Object.keys(keys?.bindings ?? {})).toEqual(Object.keys(HERDR_PREFIX_DEFAULTS));
+  it("let a binding the config writes take a default's key, whatever action it is for (as herdr's user-before-default passes)", () => {
+    const zoom = keysOf('[keys]\nzoom = "prefix+?"\n');
+    expect(zoom.bindings.zoom).toEqual(["prefix+?"]);
+    expect(zoom.bindings.help).toEqual([]);
+    // an action the app does not run still takes its key from one it does
+    expect(keysOf('[keys]\nclose_pane = "prefix+c"\n').bindings.new_tab).toEqual([]);
+    // and so does a custom command, whose body is never returned
+    const command = keysOf('[[keys.command]]\nkey = "prefix+v"\ntype = "shell"\ncommand = "rm -rf ~"\n');
+    expect(command.bindings.split_vertical).toEqual([]);
+    expect(JSON.stringify(command)).not.toContain("rm -rf");
+    // a command herdr skips takes no key
+    expect(keysOf('[[keys.command]]\nkey = "prefix+v"\ncommand = ""\n').bindings.split_vertical).toEqual(["prefix+v"]);
+  });
+
+  it("keep herdr's rules for indexed actions, the prefix and its fallback", () => {
+    expect(keysOf('[keys]\nswitch_tab = "prefix+3"\n').bindings.switch_tab).toEqual(["prefix+3"]);
+    expect(keysOf('[keys]\nswitch_tab = "prefix+t"\nnew_tab = "prefix+1..9"\n').bindings).toMatchObject({ switch_tab: [], new_tab: [] });
+    // a [keys.indexed] entry is the user's own tab keys: the prefix+1..9 default stands down
+    expect(keysOf('[keys.indexed]\ntabs = "ctrl"\n').bindings.switch_tab).toEqual([]);
+    // a user binding on one digit leaves the default range its other eight
+    expect(keysOf('[keys]\nnext_tab = "prefix+2"\n').bindings.switch_tab).toEqual(["prefix+1", "prefix+3", "prefix+4", "prefix+5", "prefix+6", "prefix+7", "prefix+8", "prefix+9"]);
+    // the prefix as its own second key sends the prefix: that binding is dropped
+    expect(keysOf('[keys]\nprefix = "ctrl+a"\nnew_tab = "prefix+ctrl+a"\n').bindings.new_tab).toEqual([]);
+    // an unreadable prefix is herdr's ctrl+b
+    expect(keysOf('[keys]\nprefix = "nonsense+key"\n').prefix).toBe("ctrl+b");
+    expect(keysOf('[keys]\nprefix = "ctrl+space"\n').prefix).toBe("ctrl+space");
+    expect(keysOf('[keys]\nfullscreen = "prefix+f"\n').bindings.zoom).toEqual(["prefix+f"]);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { HERDR_PREFIX_DEFAULTS } from "../../shared/herdr-keys.ts";
+import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
 import { copyOnSelect, forgetHerdrUi, herdrKeys, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { nativeTransport, setTransport } from "./transport.ts";
 
@@ -37,10 +37,10 @@ describe("herdr's copy_on_select in the browser", () => {
   });
 
   it("keeps herdr's keys from a whole answer only, and none from an older server's", async () => {
-    const keys = { prefix: "ctrl+a", bindings: { ...HERDR_PREFIX_DEFAULTS } };
+    const keys = { ...resolveHerdrKeys(undefined), prefix: "ctrl+a" };
     await loadHerdrUi(answer(200, { copy_on_select: true, keys }));
     expect(herdrKeys()).toEqual(keys);
-    await loadHerdrUi(answer(200, { copy_on_select: true, keys: { prefix: "ctrl+a", bindings: { ...HERDR_PREFIX_DEFAULTS, zoom: 1 } } }));
+    await loadHerdrUi(answer(200, { copy_on_select: true, keys: { prefix: "ctrl+a", bindings: { ...keys.bindings, zoom: "prefix+z" } } }));
     expect(herdrKeys()).toBeNull();
     await loadHerdrUi(answer(200, { copy_on_select: true }));
     expect(herdrKeys()).toBeNull();

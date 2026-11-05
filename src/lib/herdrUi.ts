@@ -32,7 +32,7 @@ function readKeys(value: unknown): HerdrKeys | null {
   const { prefix, bindings } = value as { prefix?: unknown; bindings?: unknown };
   if (typeof prefix !== "string" || typeof bindings !== "object" || bindings === null) return null;
   const read = bindings as Record<string, unknown>;
-  if (!HERDR_PREFIX_ACTIONS.every((action) => typeof read[action] === "string")) return null;
+  if (!HERDR_PREFIX_ACTIONS.every((action) => Array.isArray(read[action]) && (read[action] as unknown[]).every((key) => typeof key === "string"))) return null;
   return { prefix, bindings: Object.fromEntries(HERDR_PREFIX_ACTIONS.map((action) => [action, read[action]])) as HerdrKeys["bindings"] };
 }
 

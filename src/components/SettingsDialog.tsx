@@ -15,7 +15,7 @@ import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib
 import { exactChordRisk, isReservedShortcutKey, parseExactChord } from "../lib/shortcutBindings.ts";
 import { compileHerdrKeys } from "../lib/herdrKeys.ts";
 import { herdrKeys, loadHerdrUi } from "../lib/herdrUi.ts";
-import type { HerdrKeys, HerdrPrefixAction } from "../../shared/herdr-keys.ts";
+import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "../../shared/herdr-keys.ts";
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, HISTORY_PROMPTS, DEFAULT_SETTINGS, DIFF_STYLES, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
@@ -984,8 +984,9 @@ function HerdrPrefixKeys() {
   }, [on]);
   const read = keys?.read ?? null;
   const map = read ? compileHerdrKeys(read) : null;
-  const rows = map === null ? [] : [...new Set(map.bindings.map((binding) => HERDR_ACTION_LABELS[binding.action]))]
-    .map((label) => ({ label, keys: map.bindings.filter((binding) => HERDR_ACTION_LABELS[binding.action] === label).map((binding) => binding.action) }));
+  const bound = read === null || map === null ? [] : HERDR_PREFIX_ACTIONS.filter((action) => read.bindings[action].length > 0);
+  const rows = [...new Set(bound.map((action) => HERDR_ACTION_LABELS[action]))]
+    .map((label) => ({ label, keys: bound.filter((action) => HERDR_ACTION_LABELS[action] === label).flatMap((action) => read?.bindings[action] ?? []) }));
   const status = !on || keys === null ? null
     : read === null ? t("This PC's server does not report herdr's keys yet.")
     : map === null ? t("herdr's prefix in its config.toml cannot be used here, so no key is taken.")
@@ -1000,7 +1001,7 @@ function HerdrPrefixKeys() {
         <SettingsRow label={t("Prefix")}><kbd className="kbd">{read.prefix}</kbd></SettingsRow>
         {rows.map((row) => (
           <SettingsRow key={row.label} label={t(row.label)}>
-            <span className="settings-keys">{row.keys.map((action) => <kbd className="kbd" key={action}>{read.bindings[action]}</kbd>)}</span>
+            <span className="settings-keys">{row.keys.map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span>
           </SettingsRow>
         ))}
       </>}

@@ -1112,8 +1112,9 @@ then a key herdr binds runs the same action here. These actions are taken: `new_
 tab, at once), `split_vertical` / `split_horizontal`, `zoom`, `previous_tab` / `next_tab`,
 `switch_tab` (`1..9`), `rename_tab`, `previous_workspace` / `next_workspace`, `new_workspace`,
 `toggle_sidebar`, `settings`, and `help` / `goto` / `workspace_picker` (the command palette).
-The Settings row lists the bindings it read. Every other action, a direct (non-prefix) binding and
-`[[keys.command]]` stay herdr's. The header says when the prefix waits for its key; Escape, a click
+Bindings resolve as herdr resolves them: one key or a list per action, and a key the config gives any
+other action or custom command is no longer the default's. The Settings row lists what it read. Every
+other action, a direct (non-prefix) binding and `[[keys.command]]` stay herdr's. The header says when the prefix waits for its key; Escape, a click
 or leaving the window cancels it, and a key with no action behind it (the prefix again too) goes to
 the pane as typed, so the prefix pressed twice sends it. Text fields, dialogs, menus, IME
 composition and the app's own shortcuts keep their keys.
