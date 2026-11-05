@@ -35,6 +35,10 @@ export function newLines(before: readonly string[], after: readonly string[]): s
 
 /** Nerd Font icons and the like, which a font means to fill one cell (terminalGlyphs.ts oversizedIcon) */
 const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
+/** Powerline's separators run from the top of the row to the bottom: made smaller, a prompt's coloured segments would not join, so they are only narrowed */
+const POWERLINE = /^[\ue0b0-\ue0d7]$/u;
+/** distinct glyphs measured before the measures start over: a long session of ever new graphemes must not grow without end */
+const MEASURED_MAX = 4096;
 
 const latin1 = new TextDecoder("latin1");
 /** an iTerm2 inline picture (OSC 1337 File=) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
@@ -179,6 +183,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     if (now === grid) return;
     grid = now;
     vt.resize(term.cols, term.rows, cellW, cellH);
+    // rows past a shorter grid are gone
+    rowRuns.length = Math.min(rowRuns.length, term.rows);
     rebuildRows();
     redrawRows();
     schedule();
@@ -205,6 +211,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       const { fontFamily, fontSize, fontWeight, fontWeightBold } = term.options;
       measure.font = `${flags & STYLE_ITALIC ? "italic " : ""}${flags & STYLE_BOLD ? fontWeightBold ?? "bold" : fontWeight ?? "normal"} ${fontSize ?? 13}px ${fontFamily ?? "monospace"}`;
       width = measure.measureText(text).width;
+      if (widths.size >= MEASURED_MAX) widths.clear();
       widths.set(key, width);
     }
     return width;
@@ -213,6 +220,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     if (!wide && !PRIVATE_USE.test(text)) return null;
     // each character asks for its faces once a font, as xterm's rows do
     if (!asked.has(text)) {
+      if (asked.size >= MEASURED_MAX) asked.clear();
       asked.add(text);
       lateFaces.ask(term.options.fontFamily ?? "", text);
     }
@@ -220,6 +228,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     const size = term.options.fontSize ?? 13;
     if (!wide) {
       if (!oversizedIcon(text, width, cellW)) return null;
+      // a separator keeps its height and is narrowed to its cell, as xterm's rows draw it
+      if (POWERLINE.test(text)) return `<span class="ghostty-icon"><span class="ghostty-fit" style="transform:scaleX(${cellW / width});transform-origin:0 0">${escapeHtml(text)}</span></span>`;
       return `<span class="ghostty-icon" style="font-size:${size * iconScale([width], cellW)}px">${escapeHtml(text)}</span>`;
     }
     const fit = glyphFit(2 * cellW - width, width, cellW);

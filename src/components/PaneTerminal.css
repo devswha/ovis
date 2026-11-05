@@ -546,7 +546,8 @@
 .pane-terminal .ghostty-wide { display: inline-block; width: calc(var(--ghostty-cw) * 2); text-align: center; letter-spacing: 0; text-decoration: inherit; }
 /* an inline-block takes no underline or strikethrough from the run around it: each asks for its own (terminalGlyphs.ts) */
 .pane-terminal .ghostty-fit { display: inline-block; text-decoration: inherit; }
-.pane-terminal .ghostty-icon { display: inline-block; width: var(--ghostty-cw); overflow: hidden; text-align: center; letter-spacing: 0; text-decoration: inherit; }
+/* clipped to its cell, it would sit on its bottom edge as on a baseline: it takes the row's top and height instead, as xterm's fitted icons do */
+.pane-terminal .ghostty-icon { display: inline-block; width: var(--ghostty-cw); height: var(--ghostty-ch); vertical-align: top; overflow: hidden; text-align: center; letter-spacing: 0; text-decoration: inherit; }
 .pane-terminal .ghostty-image { position: absolute; image-rendering: auto; }
 .pane-terminal .ghostty-cursor { inset: auto; opacity: 0.6; }
 .pane-terminal[data-renderer="ghostty"] .composition-view { z-index: 2; }
