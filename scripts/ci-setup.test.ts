@@ -203,7 +203,8 @@ describe("CI cache contract", () => {
     const names = action.runs.steps.map((step) => step.name);
     const seed = names.indexOf("Seed Bun cache from the runner host");
     expect(seed).toBeGreaterThan(names.indexOf("Select workspace-local Bun cache"));
-    expect(action.runs.steps[seed]!.if).toBe("runner.environment == 'self-hosted'");
+    // the Linux runners' image only: the Mac runner has no host cache
+    expect(action.runs.steps[seed]!.if).toBe("runner.environment == 'self-hosted' && runner.os == 'Linux'");
   });
 
   it("does not transfer dependency or browser caches over the prepared image", () => {

@@ -21,7 +21,31 @@ concurrency:
   group: remote-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # the macos-15 bundle may run on the maintainer's Mac runner (scripts/ci-mac-runner-route.sh)
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      macos: ${{ steps.mac-route.outputs.macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: mac-route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          CONFIGURED_LABELS: ${{ vars.CI_MAC_SELF_HOSTED_LABELS }}
+          RUNNER_SEEN: ${{ vars.CI_MAC_RUNNER_SEEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-mac-runner-route.sh >> "$GITHUB_OUTPUT"
   bundle:
+    needs: route
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -31,7 +55,7 @@ jobs:
           - { os: ubuntu-24.04-arm, pty: linux-arm64 }
           - { os: macos-15, pty: darwin-universal }
           - { os: macos-15-intel, pty: darwin-universal }
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'macos-15' && fromJSON(needs.route.outputs.macos) || matrix.os }}
     env:
       # the Rust PTY host each bundle carries beside its Node sidecar (scripts/pty-sidecar.ts)
       HERDR_BUNDLE_PTY_SIDECAR: ${{ github.workspace }}/pty-sidecar/ovis-pty-sidecar-${{ matrix.pty }}

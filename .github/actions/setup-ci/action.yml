@@ -33,8 +33,9 @@ runs:
       env:
         BROWSER_CACHE_DIR: ${{ github.workspace }}/.ci-cache/playwright
       run: printf 'PLAYWRIGHT_BROWSERS_PATH=%s\n' "$BROWSER_CACHE_DIR" >> "$GITHUB_ENV"
+    # Only the Linux runners use the prepared image; the Mac runner sets up Bun and Node like a hosted one.
     - name: Verify prepared self-hosted tools
-      if: runner.environment == 'self-hosted'
+      if: runner.environment == 'self-hosted' && runner.os == 'Linux'
       shell: bash
       env:
         EXPECTED_BUN_VERSION: ${{ inputs.bun-version }}
@@ -44,14 +45,14 @@ runs:
     # The runner host's copy of the default branch's packages (scripts/self-hosted-runner/run.sh),
     # read-only to jobs: bun install downloads only what this checkout's lockfile adds.
     - name: Seed Bun cache from the runner host
-      if: runner.environment == 'self-hosted'
+      if: runner.environment == 'self-hosted' && runner.os == 'Linux'
       shell: bash
       run: bash scripts/ci-seed-bun-cache.sh
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      if: runner.environment != 'self-hosted'
+      if: runner.environment != 'self-hosted' || runner.os != 'Linux'
       with:
         bun-version: ${{ inputs.bun-version }}
-    - if: inputs.node == 'true' && runner.environment != 'self-hosted'
+    - if: inputs.node == 'true' && (runner.environment != 'self-hosted' || runner.os != 'Linux')
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'

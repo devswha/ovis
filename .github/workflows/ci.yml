@@ -37,6 +37,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       draft: ${{ steps.filter.outputs.draft }}
       linux: ${{ steps.route.outputs.linux }}
+      macos: ${{ steps.mac-route.outputs.macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,6 +57,17 @@ jobs:
           SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
+      - id: mac-route
+        name: Choose the macOS runner
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          CONFIGURED_LABELS: ${{ vars.CI_MAC_SELF_HOSTED_LABELS }}
+          RUNNER_SEEN: ${{ vars.CI_MAC_RUNNER_SEEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-mac-runner-route.sh >> "$GITHUB_OUTPUT"
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -121,7 +133,7 @@ jobs:
     name: Native macOS session identity
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-15
+    runs-on: ${{ fromJSON(needs.changes.outputs.macos) }}
     timeout-minutes: 5
     env:
       HERDR_TEST_MODE: unit
