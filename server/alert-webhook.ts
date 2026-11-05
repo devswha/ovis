@@ -56,6 +56,8 @@ export interface WebhookAlert {
   workspace_id?: string;
   /** whether the alert is still news (the pane unchanged, not muted, no window in use): asked before each try */
   current?: () => boolean;
+  /** the destination's `generation()` when the alert arose: a destination set since is not told it */
+  generation?: number;
 }
 
 export type WebhookResult = { ok: true } | { ok: false; error: string; retry: boolean };
@@ -64,6 +66,8 @@ export interface AlertWebhook {
   /** what the destination wants told, or null: none is set */
   prefs(): AlertPrefs | null;
   wants(kind: AlertKind): boolean;
+  /** changes whenever the destination does (a new URL, token or chat, or none) */
+  generation(): number;
   send(alert: WebhookAlert): void;
   test(): Promise<WebhookResult | null>;
   view(): AlertWebhookView;
@@ -120,6 +124,12 @@ function checkUrl(preset: AlertWebhookPreset, value: unknown, loopbackHttp = fal
 export function maskSecret(preset: AlertWebhookPreset, secret: string): string {
   if (preset === "telegram") return "…";
   try { return `${new URL(secret).host}/…`; } catch { return "…"; }
+}
+
+/** Whether a link on `base` opens on another device: not this PC's own loopback address. */
+function reachable(base: string | undefined): boolean {
+  if (base === undefined) return false;
+  try { return !isLoopbackHost(new URL(base).host); } catch { return false; }
 }
 
 /** The link that opens the pane in the app (src/lib/deepLink.ts), where the app's address is known. */
@@ -250,6 +260,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       target: target ? maskSecret(target.preset, target.secret) : null,
       chat_id: target?.chat_id ?? null,
       alerts: target?.alerts ?? DEFAULT_ALERTS,
+      reachable_link: reachable(target?.link_base),
       last_success_at: iso(lastSuccess),
       last_failure_at: iso(lastFailure),
       last_error: lastError,
@@ -271,8 +282,9 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       const prefs = current()?.alerts;
       return prefs !== undefined && alertKindAllowed(prefs, kind);
     },
+    generation: () => generation,
     send(alert) {
-      if (current() === null) return;
+      if (current() === null || alert.generation !== undefined && alert.generation !== generation) return;
       next = alert;
       running ??= drain().finally(() => { running = null; });
     },
@@ -308,8 +320,14 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
         secret = typed || !same ? checkUrl(input.preset, input.url, options.loopbackHttp) : same.secret;
       }
       let base = same?.link_base ?? before?.link_base;
-      // a relay request names no address the app opens at (relay/session.ts RELAY_ORIGIN): the saved base stays
-      if (linkBase && linkBase !== RELAY_ORIGIN) { try { base = new URL(linkBase).origin; } catch { /* keep the one saved */ } }
+      // a relay request names no address the app opens at (relay/session.ts RELAY_ORIGIN), and this PC's own loopback
+      // address opens nothing on a phone: a saved base another device can reach stays
+      if (linkBase && linkBase !== RELAY_ORIGIN) {
+        try {
+          const origin = new URL(linkBase).origin;
+          if (reachable(origin) || !reachable(base)) base = origin;
+        } catch { /* keep the one saved */ }
+      }
       const saved: StoredWebhook = {
         preset: input.preset, secret, ...(chatId ? { chat_id: chatId } : {}),
         alerts: input.alerts === undefined ? same?.alerts ?? DEFAULT_ALERTS : parseAlerts(input.alerts),
