@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcess } from "node:child_process";
 import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
-import { updatePlan } from "./updates.ts";
+import { debInstallCommand, updatePlan } from "./updates.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -289,13 +289,33 @@ function allowPermissions(): void {
 async function startUpdates(): Promise<void> {
   let linuxPackage: string | null = null;
   try { linuxPackage = readFileSync(join(process.resourcesPath, "package-type"), "utf8").trim(); } catch { /* not a Linux package */ }
-  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")), linuxPackage });
+  const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")), linuxPackage, execPath: process.execPath });
   if (!plan.enabled) {
     console.log(`Updates are off: ${plan.reason}.`);
     return;
   }
   const updater = await import("electron-updater");
-  const autoUpdater = plan.installer === "deb" ? new updater.DebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
+  // one privileged apt-get and nothing else. DebUpdater's own dpkg path follows any failure with
+  // `apt-get install -f` (a cancelled prompt asked again, and a no-op repair restarted Ovis on its
+  // old version); its apt path allows unauthenticated, downgraded and held packages.
+  class OvisDebUpdater extends updater.DebUpdater {
+    protected override doInstall(options: { isForceRunAfter: boolean }): boolean {
+      const file = this.installerPath;
+      if (file == null) {
+        this.dispatchError(new Error("No downloaded update to install"));
+        return false;
+      }
+      try {
+        this.runCommandWithSudoIfNeeded(debInstallCommand(file));
+      } catch (error) {
+        this.dispatchError(error instanceof Error ? error : new Error(String(error)));
+        return false;
+      }
+      if (options.isForceRunAfter) app.relaunch();
+      return true;
+    }
+  }
+  const autoUpdater = plan.installer === "deb" ? new OvisDebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
   if (plan.feed) autoUpdater.setFeedURL({ provider: "generic", url: plan.feed });
   // a .deb installs behind a password prompt: only when asked from the tray, never on a plain quit
   if (plan.installer === "deb") autoUpdater.autoInstallOnAppQuit = false;
@@ -304,12 +324,7 @@ async function startUpdates(): Promise<void> {
     // the .deb installs first and the app quits (stopping the server) only once it did, then starts again;
     // a cancelled prompt leaves the app and its server running. The AppImage starts its new copy at
     // once, so the server stops before.
-    // apt, not DebUpdater's default dpkg: dpkg's fallback runs `apt-get install -f` after any failure,
-    // so a cancelled prompt asked again and a no-op repair restarted Ovis on its old version. apt
-    // installs the file and its dependencies in one command, and fails when it did not install.
-    updateReady = plan.installer === "deb"
-      ? () => { process.env["ELECTRON_BUILDER_LINUX_PACKAGE_MANAGER"] = "apt"; autoUpdater.quitAndInstall(); }
-      : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
+    updateReady = plan.installer === "deb" ? () => autoUpdater.quitAndInstall() : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
     rebuildTrayMenu();
   });
   const check = () => void autoUpdater.checkForUpdates().catch((error: unknown) => console.error(`Update check failed: ${message(error)}`));

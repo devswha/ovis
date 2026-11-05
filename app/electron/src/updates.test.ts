@@ -27,9 +27,14 @@ describe("updatePlan", () => {
     const linux = { ...packaged, platform: "linux" };
     expect(updatePlan(linux).enabled).toBe(false);
     expect(updatePlan({ ...linux, linuxPackage: "rpm" }).enabled).toBe(false);
-    expect(updatePlan({ ...linux, env: { APPIMAGE: "/home/u/Ovis.AppImage" } })).toEqual({ enabled: true, feed: null, installer: "appimage" });
-    expect(updatePlan({ ...linux, linuxPackage: "deb" })).toEqual({ enabled: true, feed: null, installer: "deb" });
+    const appImage = { env: { APPIMAGE: "/home/u/Ovis.AppImage", APPDIR: "/tmp/.mount_OvisAb" }, execPath: "/tmp/.mount_OvisAb/ovis" };
+    expect(updatePlan({ ...linux, ...appImage })).toEqual({ enabled: true, feed: null, installer: "appimage" });
+    expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis" })).toEqual({ enabled: true, feed: null, installer: "deb" });
     // electron-builder may leave the deb's package-type file in the AppImage too: a running AppImage stays one
-    expect(updatePlan({ ...linux, linuxPackage: "deb", env: { APPIMAGE: "/home/u/Ovis.AppImage" } })).toEqual({ enabled: true, feed: null, installer: "appimage" });
+    expect(updatePlan({ ...linux, ...appImage, linuxPackage: "deb" })).toEqual({ enabled: true, feed: null, installer: "appimage" });
+    // started from another AppImage (a terminal, an editor): its APPIMAGE and APPDIR are not this program's
+    const inherited = { APPIMAGE: "/home/u/Terminal.AppImage", APPDIR: "/tmp/.mount_TermXy" };
+    expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: inherited })).toEqual({ enabled: true, feed: null, installer: "deb" });
+    expect(updatePlan({ ...linux, execPath: "/opt/Ovis/ovis", env: inherited }).enabled).toBe(false);
   });
 });

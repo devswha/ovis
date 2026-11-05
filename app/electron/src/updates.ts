@@ -3,7 +3,7 @@
  * feed (OVIS_UPDATE_FEED at build time writes electron-builder's app-update.yml) or is started
  * with OVIS_UPDATE_URL; a development run never does, and OVIS_UPDATES=0 turns it off. On Linux
  * the AppImage replaces itself, and a .deb install (electron-builder's `package-type` file in the
- * resources says `deb`) installs the downloaded .deb with dpkg behind the system's password prompt.
+ * resources says `deb`) installs the downloaded .deb with apt-get behind the system's password prompt.
  */
 type Env = Record<string, string | undefined>;
 
@@ -12,7 +12,17 @@ export type Installer = "default" | "appimage" | "deb";
 
 export type UpdatePlan = { enabled: false; reason: string } | { enabled: true; feed: string | null; installer: Installer };
 
-export function updatePlan(options: { packaged: boolean; env: Env; platform: string; builtWithFeed: boolean; linuxPackage?: string | null }): UpdatePlan {
+/**
+ * How a downloaded .deb is installed (as root, behind the password prompt): apt-get resolves its
+ * dependencies in the same command, fails when it did not install, and with --no-remove stops
+ * rather than remove another package. No --allow-* flags: the feed only ever offers a newer
+ * version, and a local file needs no repository signature.
+ */
+export function debInstallCommand(file: string): string[] {
+  return ["apt-get", "install", "-y", "--no-remove", file];
+}
+
+export function updatePlan(options: { packaged: boolean; env: Env; platform: string; builtWithFeed: boolean; linuxPackage?: string | null; execPath?: string }): UpdatePlan {
   const { env } = options;
   if (["0", "false", "off", "no"].includes(env["OVIS_UPDATES"]?.trim().toLowerCase() ?? "")) return { enabled: false, reason: "turned off with OVIS_UPDATES" };
   if (!options.packaged) return { enabled: false, reason: "a development run" };
@@ -20,8 +30,11 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
   if (options.platform === "linux") {
     // chosen here, not by electron-updater: it goes by the package-type file alone, and electron-builder
     // writes that file into the folder the AppImage is also built from (whether the AppImage gets it
-    // depends on which target builds first)
-    if (env["APPIMAGE"]) installer = "appimage";
+    // depends on which target builds first). An AppImage only when this program runs from its mount:
+    // APPIMAGE alone may be left over from another AppImage that started this one, and the
+    // AppImage updater would overwrite that file.
+    const mount = env["APPDIR"];
+    if (env["APPIMAGE"] && mount && options.execPath?.startsWith(`${mount.replace(/\/+$/, "")}/`)) installer = "appimage";
     else if (options.linuxPackage === "deb") installer = "deb";
     else return { enabled: false, reason: "only the AppImage and the .deb install update themselves" };
   }
