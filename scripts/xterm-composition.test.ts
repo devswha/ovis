@@ -195,7 +195,7 @@ describe("xterm mobile composition input", () => {
     expect(e.sent).toEqual(["abcdef", "\x1b[D", "X"]);
   });
 
-  it("sends a just finished composition before the embedder's input", () => {
+  it("leaves a just finished composition to its own send after the embedder's input", () => {
     const term = new CoreBrowserTerminal();
     const e = editor(term);
     e.event("compositionstart");
@@ -203,7 +203,9 @@ describe("xterm mobile composition input", () => {
     e.event("compositionupdate", { data: "abc" });
     e.event("compositionend", { data: "abc" });
     term.input("\x1b[D");
+    // the embedder's input is the first data its label meets (the key bar's, the Stop's)
+    expect(e.sent).toEqual(["\x1b[D"]);
     jest.runAllTimers();
-    expect(e.sent).toEqual(["abc", "\x1b[D"]);
+    expect(e.sent).toEqual(["\x1b[D", "abc"]);
   });
 });

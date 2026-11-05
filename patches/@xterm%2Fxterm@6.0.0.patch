@@ -301,7 +301,7 @@ index 10e604114ae9fffc25c931497413800b0b6bd7bb..9bd1c71c684c7def8e69f0dfb3ac7068
    compositionstart(): void;
    compositionupdate(ev: CompositionEvent): void;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda4131aebb670 100644
+index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..2c91c7006a0c9c05ab2960c44443889950b10040 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -6,6 +6,19 @@
@@ -358,7 +358,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
    constructor(
      private readonly _textarea: HTMLTextAreaElement,
      private readonly _compositionView: HTMLElement,
-@@ -50,17 +74,179 @@ export class CompositionHelper {
+@@ -50,17 +74,180 @@ export class CompositionHelper {
      @IRenderService private readonly _renderService: IRenderService
    ) {
      this._isComposing = false;
@@ -518,13 +518,14 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
 +  /**
 +   * Input that bypasses the textarea (the embedder's: a key bar's arrow, Tab or Esc) can move the
 +   * shell cursor off the end of the textarea's text, where the 229 fallback sends its DELs: a
-+   * Gboard replacement then deleted text the user never edited (#2836). Send what the textarea
-+   * still owes, then empty it as Enter does. A composition in progress keeps its text.
++   * Gboard replacement then deleted text the user never edited (#2836). Empty it as Enter does.
++   * A composition in progress, or one whose deferred send has yet to read it, keeps its text:
++   * sending that here would put the commit first, under the label the embedder gave its own
++   * input (a key bar key, the Stop).
 +   */
 +  public clearTextarea(): void {
 +    this.finishReplacement();
-+    if (this._isComposing) return;
-+    for (const send of this._pendingSends.splice(0)) send();
++    if (this._isComposing || this._pendingSends.length > 0) return;
 +    this._textarea.value = '';
 +  }
 +
@@ -540,7 +541,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
      this._compositionView.textContent = '';
      this._dataAlreadySent = '';
      this._compositionView.classList.add('active');
-@@ -71,9 +257,12 @@ export class CompositionHelper {
+@@ -71,9 +258,12 @@ export class CompositionHelper {
     * @param ev The event.
     */
    public compositionupdate(ev: Pick<CompositionEvent, 'data'>): void {
@@ -553,7 +554,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
        this._compositionPosition.end = this._textarea.value.length;
      }, 0);
    }
-@@ -83,6 +272,7 @@ export class CompositionHelper {
+@@ -83,6 +273,7 @@ export class CompositionHelper {
     * the handler.
     */
    public compositionend(): void {
@@ -561,7 +562,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
      this._finalizeComposition(true);
    }
  
-@@ -92,7 +282,26 @@ export class CompositionHelper {
+@@ -92,7 +283,26 @@ export class CompositionHelper {
     * @returns Whether the Terminal should continue processing the keydown event.
     */
    public keydown(ev: KeyboardEvent): boolean {
@@ -589,7 +590,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
        if (ev.keyCode === 20 || ev.keyCode === 229) {
          // 20 is CapsLock, 229 is Enter
          // Continue composing if the keyCode is the "composition character"
-@@ -126,57 +335,46 @@ export class CompositionHelper {
+@@ -126,57 +336,46 @@ export class CompositionHelper {
     *   the command is executed.
     */
    private _finalizeComposition(waitForPropagation: boolean): void {
@@ -675,7 +676,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -185,25 +383,39 @@ export class CompositionHelper {
+@@ -185,25 +384,39 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
@@ -732,7 +733,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..371b39db3484c900d58efe0fe9dda413
    }
  
    /**
-@@ -218,25 +430,44 @@ export class CompositionHelper {
+@@ -218,25 +431,44 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
