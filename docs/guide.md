@@ -229,7 +229,8 @@ runtime bundle, run it with the bundle's Bun as for GJC above. The extension lis
 only your user can open, `herdr-web-ui-ask/<pid>.sock` in the same directory, and relays the
 card's answer to pi-ask as its submit event: the form then shows as a card with one question per
 step, its options and **Type your own answer**. The card shows only when the pane's pi process
-answers on that socket, writes the session herdr reports for the pane, has one form open and
+answers on that socket, writes the session herdr reports for the pane (on herdr-core, the one
+it names there itself), has one form open and
 that form's `ask_user` call is still unanswered on pi's current branch (after a `/tree` move
 too); anything else, a form opened by `/answer` or `/ask:replay`, Windows, and pi without the
 extension use Terminal. pi-ask is never answered with typed keys: a pi pane never gets the
@@ -907,8 +908,26 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   app's window's: Ovis shows it and hides those actions. A Herdr app started later on a core
   Ovis arranged takes in its terminals, grouped and named as they were, but not their split
   ratios or order; from then on the app arranges them.
+- **Agents' sessions:** herdr-core keeps no session reports, which herdr's own agent integrations
+  send to herdr's TUI server only, so a chat that needs one has none there. pi's chat comes from
+  the session the pane's pi names itself through the web UI's pi extension (see
+  [Supported agents](#supported-agents): `bun scripts/install-pi-integration.ts`, then restart
+  pi); without the extension a pi pane uses Terminal. Other agents whose chat reads only that
+  report, OpenCode for example, use Terminal on herdr-core.
 - **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
-  scroll buttons beside it, plugins and worktrees. Remote PCs keep running herdr's TUI server.
+  scroll buttons beside it, plugins and worktrees.
+- **Other machines:** each machine the core reaches (`hc machine add vps`, or added in the Herdr
+  app) is a PC of its own in the sidebar, beside this one: its workspaces and tabs as its own
+  `herdr-app` document lays them out, its live terminals, input, status and alerts, and new
+  workspaces and tabs started there. Ovis reaches it through this PC's core: nothing of Ovis is
+  installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
+  Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
+  own), so its agents' chat history is not read here: their transcripts are on that machine.
+  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
+  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
+  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  there. Temporary machines (`hc machine add --temp`) are not shown, and
+  PCs added over SSH or through the relay keep working beside them.
 
 ## Configuration
 
