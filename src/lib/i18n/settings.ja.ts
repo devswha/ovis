@@ -91,6 +91,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "File viewer": "ファイルビューア",
   "Wrap long lines": "長い行を折り返す",
   "Markdown width": "Markdown の幅",
+  "Markdown outline": "Markdown の目次",
+  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "Markdown のプレビューの横に見出しの一覧を表示し、読んでいる見出しを示します。狭い画面では、ヘッダーの目次ボタンで一覧を開きます。",
   "Full width": "全幅",
   "Shortcuts": "ショートカット",
   "Phone": "スマートフォン",

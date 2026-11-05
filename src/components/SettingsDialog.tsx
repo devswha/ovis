@@ -549,6 +549,9 @@ function ChatPage() {
           {/* literal keys, so the i18n check finds them */}
           <Segmented label={t("Markdown width")} value={settings.markdownWidth} onChange={(markdownWidth) => update({ markdownWidth })} options={MARKDOWN_WIDTHS.map((markdownWidth) => ({ value: markdownWidth, label: markdownWidth === "full" ? t("Full width") : t("Default") }))} />
         </SettingsRow>
+        <SettingsRow label={t("Markdown outline")} description={t("A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.")}>
+          <Toggle label={t("Markdown outline")} checked={settings.markdownOutline} onChange={(markdownOutline) => update({ markdownOutline })} />
+        </SettingsRow>
         <SettingsRow label={t("Diff layout")} description={t("A phone shows one column either way.")}>
           <Segmented label={t("Diff layout")} value={settings.diffStyle} onChange={(diffStyle) => update({ diffStyle })} options={DIFF_STYLES.map((diffStyle) => ({ value: diffStyle, label: diffStyle === "split" ? t("Split") : t("Unified") }))} />
         </SettingsRow>

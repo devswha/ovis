@@ -4,7 +4,7 @@
  * components/TextFileView.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
- * components/PullRequestPanel.tsx, lib/pullRequest.ts.
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const FILES_JA: Record<string, string> = {
@@ -187,4 +187,5 @@ export const FILES_JA: Record<string, string> = {
   "Increase file text size": "ファイルの文字を大きく",
   "Files beside the pane": "ペインの横にファイル一覧",
   "On a wide window, Browse files opens as a panel on the right of the pane instead of a popup. With Open files set to Beside the pane, a file opened from it shows in its place, and closing the file brings the list back.": "広いウィンドウでは、ファイルの参照がポップアップではなくペインの右側のパネルで開きます。「ファイルを開く」が「ペインの横」のときは、一覧から開いたファイルがその場所に表示され、閉じると一覧に戻ります。",
+  "Outline": "目次",
 };

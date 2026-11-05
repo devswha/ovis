@@ -4,7 +4,7 @@
  * components/TextFileView.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
- * components/PullRequestPanel.tsx, lib/pullRequest.ts.
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const FILES_ZH: Record<string, string> = {
@@ -187,4 +187,5 @@ export const FILES_ZH: Record<string, string> = {
   "Increase file text size": "增大文件字号",
   "Files beside the pane": "在窗格旁显示文件",
   "On a wide window, Browse files opens as a panel on the right of the pane instead of a popup. With Open files set to Beside the pane, a file opened from it shows in its place, and closing the file brings the list back.": "在宽窗口中，浏览文件会在窗格右侧的面板中打开，而不是弹出窗口。当“打开文件”设为“在窗格旁”时，从列表打开的文件会显示在该位置，关闭文件后会回到列表。",
+  "Outline": "大纲",
 };

@@ -91,6 +91,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "File viewer": "文件查看器",
   "Wrap long lines": "长行自动换行",
   "Markdown width": "Markdown 宽度",
+  "Markdown outline": "Markdown 大纲",
+  "A Markdown preview lists its headings beside the text and marks the one you are reading. On a narrow screen, the Outline button in the header opens the list.": "在 Markdown 预览旁列出标题，并标出正在阅读的标题。在窄屏上，用标题栏中的大纲按钮打开列表。",
   "Full width": "全宽",
   "Shortcuts": "快捷键",
   "Phone": "手机",
