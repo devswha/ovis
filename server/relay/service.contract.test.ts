@@ -635,10 +635,12 @@ async function regionalFixture({ rtt = { global: 130, regional: 13 } as { global
   const synced = { global: deferred<void>(), regional: deferred<void>() };
   const lost = { global: deferred<void>(), regional: deferred<void>() };
   const probed: string[] = [];
+  const signals: AbortSignal[] = [];
   const service = new RelayService({
     stateDir: dir, ...(named ? { relay: named } : { relay: "wss://global.test", regionalRelays: ["wss://regional.test"] }),
-    probe: async (relay) => {
+    probe: async (relay, signal) => {
       probed.push(relay);
+      signals.push(signal);
       await probeGate;
       return relay === `wss://${globalHost}` ? rtt.global : rtt.regional;
     },
@@ -657,7 +659,7 @@ async function regionalFixture({ rtt = { global: 130, regional: 13 } as { global
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
   const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
-  return { dir, relays, synced, lost, probed, service, post,
+  return { dir, relays, synced, lost, probed, signals, service, post,
     async offer() { return decodeOffer(((await (await post("/offer")).json()) as { url: string }).url)!; } };
 }
 
@@ -704,7 +706,10 @@ it("keeps no measurement that finishes after the relay was turned off", async ()
   expect((await f.post("/start")).status).toBe(200);
   await bounded(f.synced.global.promise);
   expect((await f.post("/stop")).status).toBe(200);
-  // When it finishes, nothing is saved and no regional link opens
+  // Then its requests are cancelled
+  expect(f.signals.length).toBe(2);
+  expect(f.signals.every((signal) => signal.aborted)).toBe(true);
+  // And when it finishes, nothing is saved and no regional link opens
   gate.resolve();
   // a macrotask runs only once every microtask the measurement queued has run
   await new Promise((resolve) => setImmediate(resolve));

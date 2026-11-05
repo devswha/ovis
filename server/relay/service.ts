@@ -28,7 +28,7 @@ export interface RelayServiceOptions {
    */
   readonly regionalRelays?: readonly string[];
   /** The round trip to a relay in ms, or null when it does not answer; `/health` over HTTPS by default. */
-  readonly probe?: (relay: string) => Promise<number | null>;
+  readonly probe?: (relay: string, signal: AbortSignal) => Promise<number | null>;
 }
 
 /** A regional relay is advertised only when it answers in at most this share of the global one's round trip. */
@@ -36,13 +36,13 @@ const REGIONAL_SHARE = 0.5;
 const PROBE_TIMEOUT_MS = 5_000;
 
 /** The best of three `/health` round trips; the first one opens the connection and is not counted. */
-async function probeRelay(relay: string): Promise<number | null> {
+async function probeRelay(relay: string, signal: AbortSignal): Promise<number | null> {
   const url = new URL("/health", relay.replace(/^wss:/, "https:"));
   let best: number | null = null;
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       const started = performance.now();
-      const response = await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS), cache: "no-store" });
+      const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]), cache: "no-store" });
       await response.arrayBuffer();
       if (!response.ok) return null;
       const elapsed = performance.now() - started;
@@ -69,6 +69,8 @@ export class RelayService {
   private regionalLink: RelayLink | undefined;
   private regionalPhase: RelayStatus["phase"] = "off";
   private regionalRelay: string | null = null;
+  /** Cancels the measurement of the current start: turning the relay off leaves no request to it. */
+  private measuring: AbortController | undefined;
   private readonly regionalRelays: readonly string[];
   /** A regional relay named by OVIS_RELAY_URL: used with no measuring, and still beside the global one. */
   private readonly pinned: string | null;
@@ -109,14 +111,14 @@ export class RelayService {
   private regionPath(): string { return join(this.options.stateDir, "relay", "region.json"); }
 
   /** A saved regional choice is kept (`save` false); with none, the relays are measured on every start. */
-  private async chooseRegion(): Promise<{ relay: string; save: boolean } | null> {
+  private async chooseRegion(signal: AbortSignal): Promise<{ relay: string; save: boolean } | null> {
     if (this.pinned) return { relay: this.pinned, save: false };
     try {
       const saved: unknown = JSON.parse(readFileSync(this.regionPath(), "utf8"));
       if (isJsonObject(saved) && typeof saved.relay === "string" && this.regionalRelays.includes(saved.relay)) return { relay: saved.relay, save: false };
     } catch { /* none saved, or unreadable: measure again */ }
     const probe = this.options.probe ?? probeRelay;
-    const [global, ...regional] = await Promise.all([this.relay, ...this.regionalRelays].map((relay) => probe(relay)));
+    const [global, ...regional] = await Promise.all([this.relay, ...this.regionalRelays].map((relay) => probe(relay, signal)));
     let chosen: string | null = null;
     let fastest = Infinity;
     for (const [index, rtt] of regional.entries()) {
@@ -129,7 +131,8 @@ export class RelayService {
 
   private startRegional(link: RelayLink, services: RequestServices, identity: RelayIdentity): void {
     if (this.regionalRelays.length === 0) return;
-    void this.chooseRegion().catch(() => null).then((choice) => {
+    this.measuring = new AbortController();
+    void this.chooseRegion(this.measuring.signal).catch(() => null).then((choice) => {
       // stopped, restarted or reset meanwhile: that start chooses again, and this measurement is not kept
       if (!choice || this.link !== link || this.regionalLink) return;
       const { relay } = choice;
@@ -208,6 +211,8 @@ export class RelayService {
     this.regionalLink = undefined;
     this.regionalPhase = "off";
     this.regionalRelay = null;
+    this.measuring?.abort();
+    this.measuring = undefined;
     this.phase = "off";
     this.error = null;
     this.ending = Promise.all([this.ending, link?.stop(), regional?.stop()]).then(() => undefined);

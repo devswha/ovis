@@ -134,7 +134,8 @@ exception for data a user sends to their own storage needs an app that "never co
 accesses" that data, and Ovis shows it, so it does not apply. Three routes leave the phone:
 
 - **To the user's own PC**: everything the app shows and sends while it is open. For a PC paired
-  through the Ovis relay it travels through the developer's `relay.ovis.sh`, end-to-end encrypted
+  through the Ovis relay it travels through the developer's `relay.ovis.sh` (or its regional
+  endpoint `relay-ap.ovis.sh`), end-to-end encrypted
   between the phone and the PC (`docs/relay.md`, Trust model): the relay sees each connection's
   PC relay ID (and, for the PC's own connection, its public key), its role, its address and when
   and how much passes, never the content, and keeps none of it (no logs, no storage; the
@@ -185,7 +186,7 @@ Answers:
 | Files and docs | files the user attaches in the composer, and files opened in the file viewer | optional, user-initiated | App functionality |
 | App activity > Other user-generated content | what is typed into terminals | required | App functionality |
 | App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
-| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
+| Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on | required (cookie); optional (ID, push token) | App functionality (cookie, push token); Analytics (ID) |
 | Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; the address is not stored | optional (can be turned off) | Analytics |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 
