@@ -681,6 +681,10 @@ describe("WebSockets", () => {
     expect(p.client.stats.reservedBytes).toBe(reserved);
     expect(p.client.stats.inboundBytes).toBe(0);
     expect(remote.getBufferedAmount()).toBe(0);
+    // the largest such message leaves the outgoing queue room for a PC's whole output budget behind it
+    expect(remote.send(new Uint8Array(MAX_LARGE_WS_MESSAGE_BYTES))).toBeGreaterThan(0);
+    expect(remote.send(new Uint8Array(MiB))).toBeGreaterThan(0);
+    expect(remote.live).toBe(true);
     // a message past the larger cap is still refused
     const closed = deferred<WsClose>();
     local.onClose = closed.resolve;
@@ -704,7 +708,8 @@ describe("WebSockets", () => {
     p.server.sendLargeMessages();
     const sockets = [];
     for (let i = 0; i < LIMITS_V1.max_ws_streams; i++) sockets.push(await socket(p));
-    p.client.openHttp({ method: "GET", target: "/api/held", headers: [], body: "none" });
+    // 8 WS windows (8 MiB) and four HTTP windows (1.25 MiB) leave less than the message under the 12 MiB bound
+    for (let i = 0; i < 4; i++) p.client.openHttp({ method: "GET", target: "/api/held", headers: [], body: "none" });
     await p.flush();
     const { local, remote } = required(sockets[0]);
     let delivered = 0;

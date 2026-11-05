@@ -46,8 +46,11 @@ export const PAIR_SAS_FEATURE = "pair-sas";
  * never selected in WELCOME, which may go out before HELLO is read, and v1 limits stay as they are.
  */
 export const LARGE_WS_MESSAGES = "large-ws-messages";
-/** The outgoing queue's own size (relay-mux-engine.ts): a larger message could never be queued. */
-export const MAX_LARGE_WS_MESSAGE_BYTES = 4 * 1024 * 1024;
+/**
+ * A 4 MiB outgoing queue (relay-mux-engine.ts) holds one such message and, behind it, the 1 MiB a PC's
+ * core still sends to a client while it drains (server/output-window.ts OUTPUT_HARD_BYTES).
+ */
+export const MAX_LARGE_WS_MESSAGE_BYTES = 3 * 1024 * 1024;
 export const HTTP_END_FLAGS = { STOPPED: 0x0001 } as const;
 export const WS_DATA_FLAGS = { START: 0x0001, END: 0x0002, TEXT: 0x0004 } as const;
 
