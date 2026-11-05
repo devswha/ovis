@@ -12,10 +12,12 @@ import { createServer } from "node:http";
 /**
  * The account service this app signs in with: account.ovis.sh, or the https origin
  * OVIS_ACCOUNT_SERVICE_URL names; none when it is `off` or not https, and the app offers no sign-in.
+ * The old HERDR_WEB_ name counts while the new one is unset, as it does for the server it starts
+ * (server/legacy-env.ts), so both pick the same service.
  */
 export function accountServiceOf(env: Record<string, string | undefined>): string | null {
   try {
-    const url = new URL(env["OVIS_ACCOUNT_SERVICE_URL"] ?? "https://account.ovis.sh");
+    const url = new URL(env["OVIS_ACCOUNT_SERVICE_URL"] ?? env["HERDR_WEB_ACCOUNT_SERVICE_URL"] ?? "https://account.ovis.sh");
     return url.protocol === "https:" ? url.origin : null;
   } catch { return null; } // `off`, or no address at all
 }

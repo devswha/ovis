@@ -117,7 +117,8 @@ const CSP_DIRECTIVES = [
 ];
 
 /**
- * The policy both headers carry. A browser script that serves a build of its own sends it as it is:
+ * The policy both headers carry, before contentSecurityPolicy() adds the request's host to `frame-src`
+ * and the account service to `connect-src`. A browser script that serves a build of its own sends it as it is:
  * serveStatic reads only this checkout's dist/, and sends no policy before that is built.
  */
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");

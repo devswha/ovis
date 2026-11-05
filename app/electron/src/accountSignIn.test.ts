@@ -6,6 +6,9 @@ it("signs in with account.ovis.sh unless OVIS_ACCOUNT_SERVICE_URL names another 
   expect(accountServiceOf({ OVIS_ACCOUNT_SERVICE_URL: "https://account.example/v1/" })).toBe("https://account.example");
   expect(accountServiceOf({ OVIS_ACCOUNT_SERVICE_URL: "off" })).toBeNull();
   expect(accountServiceOf({ OVIS_ACCOUNT_SERVICE_URL: "http://account.example" })).toBeNull();
+  // the server takes the old name too (server/legacy-env.ts)
+  expect(accountServiceOf({ HERDR_WEB_ACCOUNT_SERVICE_URL: "off" })).toBeNull();
+  expect(accountServiceOf({ OVIS_ACCOUNT_SERVICE_URL: "https://account.example", HERDR_WEB_ACCOUNT_SERVICE_URL: "off" })).toBe("https://account.example");
 });
 
 it("hands back the callback's query once the browser returns with the expected state, and stops listening", async () => {

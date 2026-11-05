@@ -135,6 +135,7 @@ describe("the PC's own pages and the account service", () => {
       expect(accountServiceUrl("http://127.0.0.1:8787/v1")).toBe("http://127.0.0.1:8787");
       process.env["OVIS_ACCOUNT_SERVICE_URL"] = "off";
       expect(() => accountServiceUrl()).toThrow("turned off");
+      expect(() => accountServiceUrl(" OFF ")).toThrow("turned off");
     } finally { restore(); }
   });
 });

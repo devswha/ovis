@@ -28,7 +28,7 @@ function scope(account: string, serverId: string, key: string): string {
 const MAX_PAGES = 20;
 
 export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string {
-  if (value === "off") throw new Error("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
+  if (value.trim().toLowerCase() === "off") throw new Error("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
   const url = new URL(value);
   const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("The account service must be https");
