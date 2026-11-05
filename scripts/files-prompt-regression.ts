@@ -150,6 +150,30 @@ async function checkFiles(page: Page, label: string, phone: boolean, paneA: stri
   assert.equal(await settings.isVisible(), true, "one Escape closed both Files and Settings");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });
+  // Files opened from the palette over Settings holds the keyboard: Escape closes Files first, though Settings
+  // listened first (#3037)
+  await page.keyboard.press("Control+Shift+Comma");
+  await settings.waitFor();
+  await page.keyboard.press("Control+Shift+K");
+  await page.locator(".command-palette input[type='search']").fill("Browse files");
+  await page.locator(".command-palette").getByRole("option", { name: /^Browse files/ }).first().click();
+  await dialog.waitFor();
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(await settings.isVisible(), true, "Escape in Files over Settings closed Settings");
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+  // Settings opened by its shortcut over New workspace: Escape closes Settings, and New workspace stays (#3037)
+  await page.locator(".machine-new-row").click();
+  const create = page.getByRole("dialog", { name: /^New workspace/ });
+  await create.waitFor();
+  await page.keyboard.press("Control+Shift+Comma");
+  await settings.waitFor();
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+  assert.equal(await create.isVisible(), true, "Escape in Settings over New workspace closed New workspace");
+  await page.keyboard.press("Escape");
+  await create.waitFor({ state: "hidden" });
 }
 
 async function paintStartupMenu(pane: string): Promise<void> {
