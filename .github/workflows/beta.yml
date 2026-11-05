@@ -128,8 +128,11 @@ jobs:
     uses: ./.github/workflows/pty-sidecar.yml
     with:
       ref: ${{ needs.pick.outputs.sha }}
+    # its attest job signs the binaries' build provenance when the commit is the run's own
     permissions:
       contents: read
+      id-token: write
+      attestations: write
   # the write token runs no repository code: it only uploads what host-build made
   host-publish:
     needs: [pick, host-build]
