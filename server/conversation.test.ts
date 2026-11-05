@@ -3296,6 +3296,7 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   const home = mkdtempSync(join(tmpdir(), "claude-win32-shell-"));
   const previousHome = process.env["HOME"];
+  const previousProfile = process.env["USERPROFILE"];
   const session = "5c7e1f40-2d1b-4f9e-8a3c-6b5d4e3f2a10";
   const cwd = join(home, "work");
   const started = 1_793_000_000_000;
@@ -3311,7 +3312,9 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
     { pid: 3244, parent: 900, path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe", commandLine: "pwsh.exe", started: started - 60_000 },
     { pid: 10108, parent: 3244, path: "C:\\Users\\demo\\.local\\bin\\claude.exe", commandLine: "claude", started },
   ]);
+  // Windows reads the home from USERPROFILE first (user-home.ts)
   process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
   Object.defineProperty(process, "platform", { value: "win32" });
   try {
     const found = await claudePaneSession({ pane_id: "claude-win32", cwd, foreground_cwd: cwd } as HerdrPane);
@@ -3320,6 +3323,7 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
   } finally {
     Object.defineProperty(process, "platform", platform);
     if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
+    if (previousProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = previousProfile;
     table.mockRestore(); rpc.mockRestore();
     rmSync(home, { recursive: true, force: true });
   }
