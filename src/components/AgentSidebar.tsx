@@ -194,7 +194,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // the panes whose alerts are off, shared the same way; null on a server that keeps no such list, which then offers no mute
   const muted = useSyncExternalStore(subscribePaneMutes, currentPaneMutes, currentPaneMutes);
   // the pinned rows this app does not close, shared as a setting (lib/paneLocks.ts)
-  const locked = useMemo(() => lockedPinKeys(settings.lockedAgents, pinned), [settings.lockedAgents, pinned]);
+  const locked = useMemo(() => lockedPinKeys(settings.lockedAgents, pinned, settings.agentLocks), [settings.lockedAgents, pinned, settings.agentLocks]);
   // which `$name` tokens herdr's own sidebar draws, from this server's herdr config (server/herdr-sidebar.ts)
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
@@ -451,7 +451,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         ? { id: "unpin", label: t("Unpin agent"), icon: PinOff, run: () => runPin(menu) }
         : { id: "pin", label: t("Pin agent"), icon: Pin, run: () => runPin(menu) }]),
       // only a pinned row locks: this app then offers no close for its pane or its tab (lib/paneLocks.ts)
-      ...(!menuPinned ? [] : [{
+      // Settings -> Lock pinned agents (experimental), off until chosen
+      ...(!menuPinned || !settings.agentLocks ? [] : [{
         // a watching device sends no settings: it sees the lock and cannot change it, as with Mute alerts
         id: menuLocked ? "unlock" : "lock", label: menuLocked ? t("Unlock agent") : t("Lock agent"), icon: menuLocked ? LockOpen : Lock, disabled: watching,
         run: () => updateSettings({ lockedAgents: toggleAgentLock(settings.lockedAgents, pinned, menu.key) }),

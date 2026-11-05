@@ -1008,7 +1008,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Discord's per-channel mute, a checkbox item in the row's own menu, not a per-channel switch
   (Codex's and Claude's apps have no mute of their own); agent-of-empires has a per-channel
   override, which the shared, PC-keyed list replaces.
-  A pinned agent row's menu also offers Lock agent (#2432): a locked row has no Unpin agent until
+  While Settings -> Appearance -> Lock pinned agents (experimental) is on (shared, off by default;
+  off, no item shows and no lock holds), a pinned agent row's menu also offers Lock agent (#2432): a locked row has no Unpin agent until
   Unlock agent, draws a lock beside its state (drawn as the muted bell is, named Locked), and this
   app offers no way to close it: no Close pane in the pane's menu, no Close tab (menu item,
   Delete key or middle click) for the tab it is in, and no Close workspace, Close group or Delete

@@ -1241,6 +1241,8 @@ describe("shared settings", () => {
   });
 
   it("locks no agent until one is locked, and keeps only distinct pin keys (#2432)", () => {
+    expect(DEFAULT_SETTINGS.agentLocks).toBe(false);
+    expect(SETTING_SCOPE.agentLocks).toBe("shared");
     expect(DEFAULT_SETTINGS.lockedAgents).toEqual([]);
     expect(SETTING_SCOPE.lockedAgents).toBe("shared");
     expect(sanitizeSettings({ lockedAgents: ["local:p1", 3, "", "local:p1", "pc:w1:p2"] }).lockedAgents).toEqual(["local:p1", "pc:w1:p2"]);

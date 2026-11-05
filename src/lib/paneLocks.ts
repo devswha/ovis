@@ -9,8 +9,9 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useSettings } from "./settings.ts";
 import { currentSidebarPins, sidebarPinKey, subscribeSidebarPins } from "./sidebarPins.ts";
 
-/** The locks that hold: those of rows still pinned. */
-export function lockedPinKeys(locks: readonly string[], pins: readonly string[]): ReadonlySet<string> {
+/** The locks that hold: those of rows still pinned, and none while Settings -> Lock pinned agents is off. */
+export function lockedPinKeys(locks: readonly string[], pins: readonly string[], enabled = true): ReadonlySet<string> {
+  if (!enabled) return new Set();
   const pinned = new Set(pins);
   return new Set(locks.filter((key) => pinned.has(key)));
 }
@@ -26,6 +27,6 @@ export function toggleAgentLock(locks: readonly string[], pins: readonly string[
 export function usePaneLocked(machineId: string): (paneId: string) => boolean {
   const pins = useSyncExternalStore(subscribeSidebarPins, currentSidebarPins, currentSidebarPins);
   const { settings } = useSettings();
-  const locked = useMemo(() => lockedPinKeys(settings.lockedAgents, pins), [settings.lockedAgents, pins]);
+  const locked = useMemo(() => lockedPinKeys(settings.lockedAgents, pins, settings.agentLocks), [settings.lockedAgents, pins, settings.agentLocks]);
   return useCallback((paneId: string) => locked.has(sidebarPinKey(machineId, paneId)), [locked, machineId]);
 }

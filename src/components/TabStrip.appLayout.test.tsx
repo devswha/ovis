@@ -125,7 +125,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
   });
 
   it("offers no Close tab for a tab holding a locked pinned agent, and its Delete and middle click close nothing (#2432)", async () => {
-    stored.set("ovis:settings", JSON.stringify({ lockedAgents: ["local:w1:t1:p"] }));
+    stored.set("ovis:settings", JSON.stringify({ agentLocks: true, lockedAgents: ["local:w1:t1:p"] }));
     setSidebarPins(["local:w1:t1:p"]);
     try {
       await withFetch(async () => {

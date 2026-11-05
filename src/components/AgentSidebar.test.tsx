@@ -108,7 +108,27 @@ describe("AgentSidebar phone sheet live row", () => {
     };
   }
 
+  // Settings -> Lock pinned agents (experimental), as this device's stored settings carry it
+  const lockSetting = (agentLocks: boolean, lockedAgents: string[] = []) => {
+    (globalThis.window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
+      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentLocks, lockedAgents }) : null, setItem() {}, removeItem() {},
+    };
+  };
+
+  it("offers no lock, and holds none, until Lock pinned agents is turned on (#2432)", async () => {
+    lockSetting(false, [`local:${paneId}`]);
+    setSidebarPins([`local:${paneId}`]);
+    try {
+      const { mounted } = await open();
+      expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["unpin"]);
+      expect(mounted.root.findAllByProps({ "data-testid": "agent-locked" })).toHaveLength(0);
+    } finally {
+      setSidebarPins([]);
+    }
+  });
+
   it("locks only a pinned row, which keeps its pin and shows a lock until it is unlocked (#2432)", async () => {
+    lockSetting(true);
     setSidebarPins([]);
     try {
       const { mounted } = await open();

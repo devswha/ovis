@@ -4,7 +4,10 @@
  * the open tab then offers no Close tab, and Unlock agent brings Unpin back. At 390 and 1280, light
  * and dark. No live session is read.
  *
- * UI_EVIDENCE_DIR: agent-lock-<390|1280>-<light|dark>.png (the row's menu while locked).
+ * The Agents list offers the lock only while Settings -> Appearance -> Lock pinned agents (experimental) is on.
+ *
+ * UI_EVIDENCE_DIR: agent-lock-<390|1280>-<light|dark>.png (the row's menu while locked) and
+ * agent-lock-setting-<390|1280>-<light|dark>.png (the setting's row).
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,6 +17,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -21,7 +25,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   const phone = width === 390;
   const tag = `${width} ${theme}`;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US" });
-  await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme }));
+  await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme, agentLocks: true }));
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -71,6 +75,15 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   assert.equal(await row.locator('[data-testid="agent-locked"]').count(), 0, `${tag}: unlocked, the lock goes`);
   await dismiss();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
+
+  if (phone) await page.keyboard.press("Escape");
+  await page.keyboard.press("ControlOrMeta+Shift+Comma");
+  await openSettingsPage(page, "Appearance");
+  const toggle = page.locator(".settings-dialog").getByRole("switch", { name: "Lock pinned agents (experimental)", exact: true });
+  assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: the setting reads on`);
+  const settingRow = toggle.locator("xpath=ancestor::*[contains(@class, 'settings-row')][1]");
+  await settingRow.scrollIntoViewIfNeeded();
+  if (EVIDENCE) await settingRow.screenshot({ path: join(EVIDENCE, `agent-lock-setting-${width}-${theme}.png`) });
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
   console.log(`PASS agent lock ${tag}`);

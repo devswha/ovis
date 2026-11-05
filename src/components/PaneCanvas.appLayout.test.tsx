@@ -191,7 +191,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
 
   it("offers no Close for a locked pinned agent, nor Close tab for the tab it is in (#2432)", async () => {
     phone = true;
-    stored.set("ovis:settings", JSON.stringify({ lockedAgents: ["local:p1"] }));
+    stored.set("ovis:settings", JSON.stringify({ agentLocks: true, lockedAgents: ["local:p1"] }));
     setSidebarPins(["local:p1"]);
     try {
       const itemsOf = await draw(TUI);
