@@ -4,13 +4,14 @@
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
- * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
+ * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const CHAT_KO: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
   "Chat read timed out.": "대화 읽기 시간이 초과되었습니다.",
   "Thinking…": "생각 중…",
+  "Updates paused — waiting for the agent's next activity": "업데이트 일시 중지 — 에이전트의 다음 활동을 기다리는 중",
   "Grok chat is unavailable. Open Terminal to see activity and tool calls.": "Grok 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
   "Message from another session: {name}": "다른 세션에서 온 메시지: {name}",
   "Message from another session": "다른 세션에서 온 메시지",
@@ -60,7 +61,6 @@ export const CHAT_KO: Record<string, string> = {
   "{m}m {s}s": "{m}분 {s}초",
   "Conversation": "대화",
   "Image {n} from {tool}": "{tool}에서 가져온 이미지 {n}",
-  "Needs you": "내 응답 필요",
   "failed": "실패",
   "Error": "오류",
   "{n} failed": "실패 {n}개",
@@ -172,7 +172,7 @@ export const CHAT_KO: Record<string, string> = {
   "The agent wrote more than this view reads.": "에이전트가 쓴 내용이 이 보기에서 읽는 양보다 많습니다.",
   "The middle part is left out.": "중간 부분은 빠졌습니다.",
   "Update this PC's bridge to see what a running agent is doing.": "실행 중인 에이전트의 작업을 보려면 이\u00a0PC의\u00a0브리지를\u00a0업데이트하세요.",
-  "Only a running Claude Code subagent's work can be opened here.": "여기서는 실행 중인 Claude Code 하위\u00a0에이전트만\u00a0열\u00a0수\u00a0있습니다.",
+  "Only a running Claude Code or OpenCode subagent's work can be opened here.": "여기서는 실행 중인 Claude Code 또는 OpenCode 하위\u00a0에이전트만\u00a0열\u00a0수\u00a0있습니다.",
   "It may have ended. Close this and look at the task list again.": "이미 끝났을\u00a0수\u00a0있습니다. 이\u00a0창을\u00a0닫고 작업\u00a0목록을\u00a0다시\u00a0확인하세요.",
   "Close this and open the task again from the list.": "이 창을 닫고 목록에서 작업을 다시 여세요.",
   "Refresh once the PC is connected again.": "PC가 다시 연결되면 새로 고치세요.",
@@ -207,4 +207,17 @@ export const CHAT_KO: Record<string, string> = {
   "Show full message": "전체 메시지 보기",
   "Open link": "링크 열기",
   "Sent · waiting for the agent's next turn": "전송됨 · 에이전트의 다음 턴을 기다리는 중",
+  "Search messages and answers…": "메시지와 답변 검색…",
+  "Matching messages": "일치하는 메시지",
+  "You": "나",
+  "Type a word from a message or an answer.": "메시지나 답변에 있는 단어를 입력하세요.",
+  "This PC's bridge cannot search conversations yet. Update it to search here.": "이 PC의 브리지는 아직 대화를 검색할 수 없습니다. 여기서 검색하려면 브리지를 업데이트하세요.",
+  "The conversation was replaced while it was searched.": "검색하는 동안 대화가 바뀌었습니다.",
+  "Couldn't search the conversation.": "대화를 검색하지 못했습니다.",
+  "Searching earlier messages…": "이전 메시지 검색 중…",
+  "Showing the newest {n} matches.": "가장 최근에 일치한 {n}개를 표시합니다.",
+  "No message or answer holds this.": "이 내용이 있는 메시지나 답변이 없습니다.",
+  "Searched the whole conversation.": "대화 전체를 검색했습니다.",
+  "This message is no longer in the conversation.": "이 메시지는 더 이상 대화에 없습니다.",
+  "Couldn't load the earlier messages.": "이전 메시지를 불러오지 못했습니다.",
 };

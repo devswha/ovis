@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, MessageSquarePlus, Minimize2, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, MessageSquarePlus, Minimize2, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -121,7 +121,8 @@ export interface ComposerProps {
   /** true: sent, clear the box; a string: keep the text and say why; a DraftRefusal: the same, and the
    * note offers to send again with `clearDraft`, which clears that draft from the terminal first, or,
    * where it named none, with `sendAnyway`; a promise settles to any of them */
-  onSend: (text: string, clearDraft?: string, sendAnyway?: boolean, agentOnly?: boolean) => boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal>;
+  /** `now`: Ctrl+Enter, the queued row's Send now for this message as soon as it is queued (#2596) */
+  onSend: (text: string, clearDraft?: string, sendAnyway?: boolean, agentOnly?: boolean, now?: boolean) => boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal>;
   /** a Send pressed waits for its claim (the pane's cross-tab lock, granted in a later task): +1 at the press, -1 once the claim ran, sent or not */
   onClaim?: (delta: 1 | -1) => void;
   onAbort: () => void;
@@ -842,8 +843,8 @@ export function Composer({
   }, [placeWaitingMentions]);
 
   /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over;
-   * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it. */
-  const send = useCallback((clearDraft?: string, sendAnyway = false): boolean => {
+   * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it; `now`: Ctrl+Enter. */
+  const send = useCallback((clearDraft?: string, sendAnyway = false, now = false): boolean => {
     if (composingRef.current) return false;
     if (role === "observe" || !connected || uploading || roomless || sending || (text.trim().length === 0 && carried.length === 0)) return false;
     if (terminalTyped?.name === "resume" && onOpenHistory) { setMenuDismissed(true); onOpenHistory(); return true; }
@@ -888,7 +889,8 @@ export function Composer({
       try {
         // a message with comments goes only to an agent: a shell would read `> quote` as a redirect
         const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
-        const result = agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
+        const result = now ? onSend(message, clearDraft, sendAnyway, agentOnly, true)
+          : agentOnly ? onSend(message, clearDraft, sendAnyway, true) : onSend(message, clearDraft, sendAnyway);
         if (!(result instanceof Promise)) { settle(result); ended(); return true; }
         // settled outside the lock: it clears the draft before it ends the lease, which a claim reads first
         void result.then(settle).catch(() => { if (mounted.current) setNote(t("Not confirmed. Check the terminal before sending again.")); }).finally(ended);
@@ -1011,6 +1013,59 @@ export function Composer({
   /** Send it: the terminal draft a DraftRefusal named goes as it is, as Clear it and send with the draft for the message. */
   const sendDraft = useCallback((draft: string) => sendBeside(() => onSend(draft, draft), draft), [onSend, sendBeside]);
 
+  /**
+   * Paste and send (#2493): this device's clipboard is read on the press, never the PC's, and its text goes into the
+   * empty box and out through Send, so it is queued, refused or kept exactly as a typed message would be. A read that
+   * answers after the pane, the connection or the box changed sends nothing; nothing is cut to fit or retried.
+   */
+  const [pasteReading, setPasteReading] = useState(false);
+  const pasteReadingRef = useRef(false);
+  /** each change of the box's text: a read that answers after any edit (typed and cleared too) sends nothing */
+  const textEdits = useRef({ text, count: 0 });
+  if (textEdits.current.text !== text) textEdits.current = { text, count: textEdits.current.count + 1 };
+  /** the clipboard text put in the box, sent once the box is drawn with it (Send reads the drawn text) */
+  const pasted = useRef<{ key: string; text: string } | null>(null);
+  useEffect(() => {
+    const waiting = pasted.current;
+    if (waiting === null) return;
+    pasted.current = null;
+    if (waiting.key === draftKey && waiting.text === text) send();
+  }, [draftKey, send, text]);
+  const pasteAndSend = useCallback(() => {
+    if (pasteReadingRef.current || composingRef.current) return;
+    if (!connected || sending || textRef.current !== "" || attachmentsRef.current.length > 0) return;
+    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+    if (typeof clipboard?.readText !== "function") { setNote(t("Paste is not available here. Use the keyboard's own paste in the message box.")); return; }
+    const key = draftKey;
+    const pressedOn = drops.current;
+    const editsAt = textEdits.current.count;
+    const here = (): boolean => mounted.current && draftKeyRef.current === key;
+    pasteReadingRef.current = true;
+    setPasteReading(true);
+    setNote(null);
+    clipboard.readText().then((clip) => {
+      if (!here()) return;
+      if (clip.trim().length === 0) { setNote(t("Nothing to paste: the clipboard is empty.")); return; }
+      if (clip.length > MAX_COMPOSER_CHARS) { setNote(t("The clipboard holds more than a message's {max} characters. Nothing was sent.", { max: formatChars(MAX_COMPOSER_CHARS) })); return; }
+      if (!connectedRef.current || drops.current !== pressedOn || composingRef.current || textRef.current !== ""
+        || textEdits.current.count !== editsAt || attachmentsRef.current.length > 0) return;
+      // another tab may have stored a draft for this pane whose storage event has not reached this one yet
+      composerDrafts.refresh(key);
+      const stored = composerDrafts.read(key);
+      if (stored.text !== "" || stored.sending) return;
+      textRef.current = clip;
+      caretRef.current = clip.length;
+      pasted.current = { key, text: clip };
+      composerDrafts.set(key, clip);
+      setCaret(clip.length);
+    }, () => {
+      if (here()) setNote(t("The clipboard could not be read. Use the keyboard's own paste in the message box."));
+    }).finally(() => {
+      pasteReadingRef.current = false;
+      if (mounted.current) setPasteReading(false);
+    });
+  }, [connected, draftKey, sending, t]);
+
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
       // an IME keeps its keys; WebKit can send the committing Enter after compositionend, as key code 229
@@ -1072,9 +1127,12 @@ export function Composer({
           return;
         }
       }
-      if (!shouldSend) return;
+      // Claude Code's own key for this during a turn: Ctrl+Enter sends now. Not Cmd on a Mac, and only while
+      // Enter sends: with it off, Mod+Enter is the plain send (#2596)
+      const sendNow = enterSends && event.key === "Enter" && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
+      if (!shouldSend && !sendNow) return;
       event.preventDefault();
-      send();
+      send(undefined, false, sendNow);
     },
     [agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
   );
@@ -1445,6 +1503,21 @@ export function Composer({
           >
             <Plus aria-hidden="true" />
           </button>
+          {/* only once this device turned it on (Settings → Chat → Composer): the composer's row stays minimal */}
+          {settings.composerPasteSend && role !== "observe" && (
+            <button
+              type="button"
+              className="icon-button composer-paste-send"
+              aria-label={t("Paste and send")}
+              title={t("Paste and send")}
+              aria-busy={pasteReading || undefined}
+              disabled={!connected || sending || uploading || pasteReading || text !== "" || attachments.length > 0}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={pasteAndSend}
+            >
+              <ClipboardPaste aria-hidden="true" />
+            </button>
+          )}
           {dictation.shown && <MicButton dictation={dictation} />}
           {/* only once this device turned it on (Settings → Chat → Composer; the composer's row stays minimal, and
               the tab menu opens the same dialog), and in a mouse-driven window only, like the usage glance: a phone's

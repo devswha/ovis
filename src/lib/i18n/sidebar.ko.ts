@@ -1,20 +1,24 @@
 /**
  * Korean for the keys only the sidebar files use:
- * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx.
+ * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
+ * components/SidebarSplit.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_KO: Record<string, string> = {
   "Pin agent": "에이전트 고정",
   "Unpin agent": "에이전트 고정 해제",
+  "Lock agent": "에이전트 잠금",
+  "Unlock agent": "에이전트 잠금 해제",
+  "Locked": "잠김",
   "Mute alerts": "알림 끄기",
   "Unmute alerts": "알림 켜기",
   "Alerts muted": "알림 꺼짐",
   "Pin workspace": "워크스페이스 고정",
   "Unpin workspace": "워크스페이스 고정 해제",
   "Pinned": "고정됨",
+  "Background agents": "백그라운드 에이전트",
   "Background tasks running: {count}": "실행 중인 백그라운드 작업: {count}",
   "Agent waiting on background work": "에이전트가 백그라운드 작업을 기다리는 중",
-  "Needs permission": "권한 필요",
   "Has a question": "질문 있음",
   "Needs sign-in": "로그인 필요",
   "Progress {percent}%": "진행률 {percent}%",
@@ -32,6 +36,7 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Reorder workspace {name}": "워크스페이스 {name} 순서 바꾸기",
   "Drag to reorder · Alt+↑/↓": "끌어서 순서 바꾸기 · Alt+↑/↓",
   "Resize sidebar": "사이드바 너비 조절",
+  "Resize PCs and Agents": "PC와 에이전트 높이 조절",
   "More for {title}": "{title} 더보기",
   "Rename workspace": "워크스페이스 이름 바꾸기",
   "Close workspace": "워크스페이스 닫기",
@@ -57,4 +62,9 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Collapse": "접기",
   "Expand": "펼치기",
   "Shell": "셸",
+  "Working": "작업 중",
+  "Idle": "대기",
+  "{count} need you": "{count}개가 기다림",
+  "Move to {group}": "{group}(으)로 옮기기",
+  "Remove from {group}": "{group}에서 빼기",
 };

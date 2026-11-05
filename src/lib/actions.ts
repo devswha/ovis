@@ -76,6 +76,8 @@ export interface AppActions {
   refresh: () => void;
   /** null without a pane: the files of its folder, each opened in the file viewer */
   openFiles: (() => void) | null;
+  /** Search conversation over the selected pane's chat; null where it shows no chat, or its PC's bridge does not search */
+  searchConversation: (() => void) | null;
   /**
    * herdr's split beside the selected pane (its prefix+v and prefix+-), null without a pane. The
    * selection stays on this pane, as herdr's --no-focus keeps its focus, unless `focus` asks for
@@ -87,4 +89,9 @@ export interface AppActions {
    * lib/layoutMap.ts): its tab shows it alone, or every pane again; null without a pane
    */
   zoomPane: ((mode: ZoomMode) => void) | null;
+  /**
+   * The Zoom pane shortcut: zooms the selected pane, or unzooms it where its tab shows it alone;
+   * nothing for a pane alone in its tab. null where zoomPane is
+   */
+  toggleZoom: (() => void) | null;
 }

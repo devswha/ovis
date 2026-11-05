@@ -1,20 +1,24 @@
 /**
  * Simplified Chinese for the keys only the sidebar files use:
- * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx.
+ * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
+ * components/SidebarSplit.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_ZH: Record<string, string> = {
   "Pin agent": "固定 Agent",
   "Unpin agent": "取消固定 Agent",
+  "Lock agent": "锁定 Agent",
+  "Unlock agent": "解锁 Agent",
+  "Locked": "已锁定",
   "Mute alerts": "静音提醒",
   "Unmute alerts": "取消静音提醒",
   "Alerts muted": "提醒已静音",
   "Pin workspace": "固定工作区",
   "Unpin workspace": "取消固定工作区",
   "Pinned": "已固定",
+  "Background agents": "后台代理",
   "Background tasks running: {count}": "正在运行的后台任务：{count}",
   "Agent waiting on background work": "Agent 正在等待后台工作",
-  "Needs permission": "需要权限",
   "Has a question": "有问题",
   "Needs sign-in": "需要登录",
   "Progress {percent}%": "进度 {percent}%",
@@ -32,6 +36,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Reorder workspace {name}": "调整工作区 {name} 的顺序",
   "Drag to reorder · Alt+↑/↓": "拖动以调整顺序 · Alt+↑/↓",
   "Resize sidebar": "调整侧边栏宽度",
+  "Resize PCs and Agents": "调整 PC 与代理的高度",
   "More for {title}": "{title} 的更多操作",
   "Rename workspace": "重命名工作区",
   "Close workspace": "关闭工作区",
@@ -57,4 +62,9 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Collapse": "折叠",
   "Expand": "展开",
   "Shell": "Shell",
+  "Working": "工作中",
+  "Idle": "空闲",
+  "{count} need you": "{count} 个需要你",
+  "Move to {group}": "移到 {group}",
+  "Remove from {group}": "从 {group} 移出",
 };

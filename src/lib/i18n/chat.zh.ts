@@ -4,13 +4,14 @@
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
- * lib/chatTimestamp.ts, lib/chatReadDeadline.ts.
+ * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const CHAT_ZH: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 聊天暂不可用。请打开终端查看运行状态和工具调用。",
   "Chat read timed out.": "读取对话超时。",
   "Thinking…": "思考中…",
+  "Updates paused — waiting for the agent's next activity": "更新已暂停 — 正在等待代理的下一次活动",
   "Grok chat is unavailable. Open Terminal to see activity and tool calls.": "Grok 聊天暂不可用。请打开终端查看运行状态和工具调用。",
   "Message from another session: {name}": "来自另一个会话的消息：{name}",
   "Message from another session": "来自另一个会话的消息",
@@ -60,7 +61,6 @@ export const CHAT_ZH: Record<string, string> = {
   "{m}m {s}s": "{m} 分 {s} 秒",
   "Conversation": "对话",
   "Image {n} from {tool}": "{tool} 读取的图片 {n}",
-  "Needs you": "需要你回应",
   "failed": "失败",
   "Error": "错误",
   "{n} failed": "{n} 个失败",
@@ -172,7 +172,7 @@ export const CHAT_ZH: Record<string, string> = {
   "The agent wrote more than this view reads.": "代理写入的内容超过了此视图读取的范围。",
   "The middle part is left out.": "中间部分已省略。",
   "Update this PC's bridge to see what a running agent is doing.": "更新此电脑的桥接，即可查看正在运行的代理在做什么。",
-  "Only a running Claude Code subagent's work can be opened here.": "这里只能打开正在运行的 Claude Code 子代理的工作。",
+  "Only a running Claude Code or OpenCode subagent's work can be opened here.": "这里只能打开正在运行的 Claude Code 或 OpenCode 子代理的工作。",
   "It may have ended. Close this and look at the task list again.": "它可能已经结束。请关闭此窗口，再查看任务列表。",
   "Close this and open the task again from the list.": "请关闭此窗口，再从列表中重新打开该任务。",
   "Refresh once the PC is connected again.": "电脑重新连接后请刷新。",
@@ -207,4 +207,17 @@ export const CHAT_ZH: Record<string, string> = {
   "Show full message": "显示完整消息",
   "Open link": "打开链接",
   "Sent · waiting for the agent's next turn": "已发送 · 等待 agent 的下一轮",
+  "Search messages and answers…": "搜索消息和回答…",
+  "Matching messages": "匹配的消息",
+  "You": "你",
+  "Type a word from a message or an answer.": "输入消息或回答中的一个词。",
+  "This PC's bridge cannot search conversations yet. Update it to search here.": "这台 PC 的桥接尚不能搜索对话。更新桥接后即可在此搜索。",
+  "The conversation was replaced while it was searched.": "搜索期间对话已被替换。",
+  "Couldn't search the conversation.": "无法搜索对话。",
+  "Searching earlier messages…": "正在搜索更早的消息…",
+  "Showing the newest {n} matches.": "显示最新的 {n} 条匹配。",
+  "No message or answer holds this.": "没有包含此内容的消息或回答。",
+  "Searched the whole conversation.": "已搜索整个对话。",
+  "This message is no longer in the conversation.": "此消息已不在对话中。",
+  "Couldn't load the earlier messages.": "无法加载更早的消息。",
 };

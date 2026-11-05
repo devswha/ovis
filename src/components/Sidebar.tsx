@@ -6,8 +6,10 @@ import "./Sidebar.css";
 import type { AgentStatus, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
+import { renamesWorkspace } from "../lib/layoutTargets.ts";
 import { useAppLayout, useMachineApi, useMachineId, useReorderCoordinator } from "../lib/machineContext.tsx";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
+import { usePaneLocked } from "../lib/paneLocks.ts";
 import type { AppActions } from "../lib/actions.ts";
 import { indicatorGlyph, knownStatus, rollupStatus, STATUS_WORD } from "../lib/status.ts";
 import { AgentMark } from "./AgentMark.tsx";
@@ -183,7 +185,25 @@ export function onRowContextMenu(event: MouseEvent<HTMLElement>, toggle: (anchor
 
 /** The row whose ⋯ menu is open: a workspace, seen through the pane its row shows. */
 interface MenuState { anchor: HTMLElement; point?: { x: number; y: number }; previousFocus?: HTMLElement | null; workspace: WorkspaceInfo; title: string; place: string }
-interface ConfirmState { title: string; body: string; action?: string; run: () => Promise<void>; escalation?: { label: string; code: string; run: () => Promise<void> } }
+/**
+ * What a close takes, read from a roster: the workspace, with a group close the repository's other
+ * workspaces as herdr finds them when it closes, and every pane in them by id.
+ */
+interface CloseScope { workspaceId: string; group: boolean; workspaces: string[]; panes: string[] }
+
+function closeScope(shown: SessionSnapshot | null, workspaceId: string, group: boolean): CloseScope | null {
+  const head = shown?.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+  if (!shown || !head) return null;
+  const repoKey = head.worktree?.repo_key;
+  const others = group && repoKey !== undefined ? shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && candidate.worktree?.repo_key === repoKey) : [];
+  const workspaces = [workspaceId, ...others.map((candidate) => candidate.workspace_id)].sort();
+  const panes = shown.panes.filter((pane) => workspaces.includes(pane.workspace_id)).map((pane) => pane.pane_id).sort();
+  return { workspaceId, group, workspaces, panes };
+}
+
+interface ConfirmState { title: string; body: string; action?: string; run: () => Promise<void>;
+  /** what the action closes as the user agreed to it (closeScope): it goes once the roster or a lock says otherwise */
+  closes?: CloseScope; escalation?: { label: string; code: string; run: () => Promise<void> } }
 
 export interface SidebarProps {
   snapshot: SessionSnapshot | null;
@@ -204,8 +224,9 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   const twoLine = settings.sidebarRows === "two";
   const machineId = useMachineId();
   const pressPane = useContext(PanePressContext);
-  // the Herdr app's window owns this PC's workspaces (lib/machineContext.tsx): no rename, no reorder, no worktree here
-  const appLayout = useAppLayout();
+  // what the PC's herdr answers for its workspaces (lib/machineContext.tsx): herdr-core has no worktrees, and
+  // renames and reorders them only where Ovis keeps its layout
+  const { rename: renameOffered, arrange, worktrees: worktreesOffered } = useAppLayout();
   const activity = useSidebarActivity();
   const { closeWorkspace, listWorktrees, moveWorkspace, removeWorktree, renameWorkspace } = useMachineApi();
   // the row menu's Earlier sessions needs the PC's bridge to list them (lib/useSessionHistoryOffered.ts)
@@ -223,7 +244,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   useEffect(() => {
     const known = repositoryAnswers.current;
     // a watching device is refused the listing (#2250), and a PC the Herdr app lays out offers no worktree: nothing to ask
-    if (!online || unmarked === "" || watching || appLayout) { known.clear(); setRepositoryWorkspaces(new Set()); return; }
+    if (!online || unmarked === "" || watching || !worktreesOffered) { known.clear(); setRepositoryWorkspaces(new Set()); return; }
     const ids = unmarked.split("\n");
     for (const id of [...known.keys()]) if (!ids.includes(id)) known.delete(id);
     let live = true;
@@ -234,7 +255,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       (error: unknown) => { if (live && error instanceof ApiError && error.status < 500) known.set(id, false); },
     ))).then(publish);
     return () => { live = false; };
-  }, [listWorktrees, unmarked, online, watching, appLayout]);
+  }, [listWorktrees, unmarked, online, watching, worktreesOffered]);
   // a repository's folder that stops being a checkout is refused on a later poll: that refusal is an answer too (#2726)
   const notCheckout = useCallback((id: string) => {
     repositoryAnswers.current.set(id, false);
@@ -261,6 +282,17 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   useEffect(() => { if (!filtering) setFilterFolds((current) => current.size === 0 ? current : new Map()); }, [filtering]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  // a workspace holding a locked pinned agent (lib/paneLocks.ts) is closed or deleted from no menu here
+  const paneLocked = usePaneLocked(machineId);
+  const holdsLock = (workspaceIds: readonly string[]): boolean => snapshot?.panes.some((pane) => workspaceIds.includes(pane.workspace_id) && paneLocked(pane.pane_id)) === true;
+  // a close goes only over what the user agreed to: read again at each render, the one a confirm's click lands
+  // in too, and any workspace or pane come or gone, or a lock landed (from another browser), takes the
+  // confirmation away unsent
+  const stillAgreed = (agreed: CloseScope): boolean => {
+    const now = closeScope(snapshot, agreed.workspaceId, agreed.group);
+    return now !== null && JSON.stringify([now.workspaces, now.panes]) === JSON.stringify([agreed.workspaces, agreed.panes]) && !holdsLock(now.workspaces);
+  };
+  if (confirm?.closes && !stillAgreed(confirm.closes)) setConfirm(null);
   const [worktreeDialog, setWorktreeDialog] = useState<{ mode: WorktreeDialogMode; workspace: WorkspaceInfo } | null>(null);
   // worktrees are not offered to a watching device: one open when this device turns into one closes
   useEffect(() => { if (watching) setWorktreeDialog(null); }, [watching]);
@@ -444,13 +476,16 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const worktrees = sameRepo.filter((candidate) => candidate.worktree?.is_linked_worktree);
     const otherHeads = sameRepo.length > worktrees.length;
     // making or opening a worktree is a drive feature, and the dialog's checkout list is refused to a watching device
-    const worktreeItems: RowMenuItem[] = (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !linked && !watching && !appLayout ? [
+    const worktreeItems: RowMenuItem[] = (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !linked && !watching && worktreesOffered ? [
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => setWorktreeDialog({ mode: "create", workspace }) },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => setWorktreeDialog({ mode: "open", workspace }) },
     ] : [];
-    const deleteItems: RowMenuItem[] = linked && !appLayout ? [{
+    const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];
+    const scope = (group: boolean): CloseScope | undefined => closeScope(snapshot, workspace.workspace_id, group) ?? undefined;
+    const deleteItems: RowMenuItem[] = linked && worktreesOffered && !holdsLock([workspace.workspace_id]) ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({
+        closes: scope(false),
         title: t("Delete the checkout of {name}?", { name: workspace.label }),
         body: t("The folder at {path} is deleted and the workspace closes. The branch stays.", { path: workspace.worktree?.checkout_path ?? "" }),
         action: t("Delete"),
@@ -461,6 +496,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     }] : [];
     // a repository's other open workspaces go with it
     const closeItem: RowMenuItem = { id: "close", label: t("Close workspace"), icon: X, danger: true, divider: true, run: () => setConfirm({
+      closes: scope(sameRepo.length > 0),
       title: t("Close workspace {name}?", { name: workspace.label }),
       body: (worktrees.length > 0
         ? t(paneCount === 1
@@ -477,10 +513,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       pinned
         ? { id: "unpin-workspace", label: t("Unpin workspace"), icon: PinOff, run: () => togglePin(state) }
         : { id: "pin-workspace", label: t("Pin workspace"), icon: Pin, run: () => togglePin(state) },
-      ...(appLayout ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
+      ...(!renameOffered || !renamesWorkspace(workspace.workspace_id) ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
       // the folder's earlier sessions, listed for the agent of the pane the row opens
       ...(historyOffered && !watching ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory({ machineId, workspaceId: workspace.workspace_id, agent: (panes.length > 0 ? currentPane(workspace, panes) : null)?.agent ?? null }) }] : []),
-      { ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false },
+      ...(holdsLock(closes) ? [] : [{ ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false }]),
       ...worktreeItems, ...deleteItems,
       ...(worktrees.length > 0 && repoKey ? [{ id: "fold", label: t(folded ? "Expand" : "Collapse"), icon: folded ? ChevronRight : ChevronDown, run: () => toggleWorktrees(repoKey, folded) }] : []),
     ];
@@ -546,7 +582,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
 
   const onDrop = (event: DragEvent<HTMLElement>, targetWorkspaceId: string): void => {
     // a move waits until the filter is cleared, also one dragged in from another window; the Herdr app's order is its own
-    if (filtered !== null || appLayout) return;
+    if (filtered !== null || !arrange) return;
     event.preventDefault();
     let payload: { machine_id?: string; workspace_id?: string };
     try { payload = JSON.parse(event.dataTransfer.getData("application/x-herdr-workspace")); } catch { return; }
@@ -620,7 +656,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // a finger's drag lands where the mouse's does: the same groups, the same index for herdr
   const touchHandlers = useRef<Parameters<typeof watchTouchReorder>[1] | null>(null);
   touchHandlers.current = {
-    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && !appLayout,
+    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && arrange,
     onLift: (id) => { setMenu(null); setTouchDrag({ source: id, over: id }); },
     onOver: (id) => setTouchDrag((current) => current && { ...current, over: id }),
     onDrop: (id, target) => {
@@ -661,7 +697,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   })();
 
   const onRowKeyDown = (event: KeyboardEvent<HTMLDivElement>, workspaceId: string): void => {
-    if (filtered !== null || appLayout || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    if (filtered !== null || !arrange || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     event.preventDefault();
     moveVisible(workspaceId, event.key === "ArrowUp" ? -1 : 1);
   };
@@ -700,7 +736,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;
     // a row that cannot move still drags its pane into half of the pane area; on herdr-core only the move is off
     const placed = fixedIds.has(workspace.workspace_id) || filtered !== null;
-    const fixed = placed || appLayout;
+    const fixed = placed || !arrange;
     const filterNote = context && selected ? <span className="sidebar-filter-note">{t("Selected")}</span> : null;
     const menuOpen = menu?.workspace.workspace_id === workspace.workspace_id;
     const contentsId = `${rosterId}-worktrees-${encodeURIComponent(workspace.workspace_id)}`;
