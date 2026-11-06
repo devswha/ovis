@@ -528,6 +528,16 @@ test("another member ends the wait once the member whose link started it is revo
   expect(f.app.context.services.accountHolds.enrolling()).toBe(false);
 });
 
+test("a row cannot link to a key this PC holds back", async () => {
+  const f = fixture();
+  const { link } = await member(f);
+  const other = await relayDevice(f);
+  const held = await accountKey();
+  await post(link, "/api/account/enroll", { account: ACCOUNT, records: [], held: [held.spki] });
+  expect((await post(await signedIn(f, other), "/api/account/link", { record: await linkRecord(other, held) })).body.error?.code).toBe("removal_pending");
+  expect(f.app.context.services.devices.hasKey(held.spki)).toBe(false);
+});
+
 test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {
   const f = fixture();
   const first = await relayDevice(f);

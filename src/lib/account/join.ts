@@ -362,17 +362,21 @@ export async function enrollPc(options: {
   const seen: PcAccountStatus[] = [];
   /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
   let legacy = 0;
+  let unvouched = 0;
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
       if (status.account !== options.account) return;
-      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet
-      if (status.fresh !== true) { legacy++; seen.push(status); return; }
+      // from before enrollments: its removals count, but it cannot vouch for its mailbox
+      if (status.fresh === undefined) { legacy++; seen.push(status); return; }
+      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet: its removals
+      // go, no add does, and the new PC keeps its wait until a later connection finds that PC read whole
+      if (status.fresh !== true) { unvouched++; seen.push(status); return; }
       answered.push(peer);
       seen.push(status);
     } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
   }));
-  if (others.length > 0 && answered.length === 0 && legacy === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
+  if (others.length > 0 && answered.length === 0 && legacy === 0 && unvouched === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
   await keepRemovals({ store: options.store, account: options.account, removals: seen.flatMap((status) => status.removals) });
   const collected = await verified(seen.flatMap((status) => [...status.removals, ...status.adds]), options.account);
   /** the removals to send: this client's own and the ones it kept, not answered yet */
@@ -396,7 +400,7 @@ export async function enrollPc(options: {
   // a PC that cannot vouch for what it keeps out (older, or its mailbox read failed): while one answers, no add goes
   // the directory lists PCs this client has no way to read: one of them may hold a removal it never saw
   const unread = others.length === 0 && (options.listed ?? 0) > 0;
-  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0 || unread;
+  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0 || unvouched > 0 || unread;
   const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))
     .filter((record, index, all) => all.findIndex((other) => other.id === record.id) === index);
@@ -404,7 +408,8 @@ export async function enrollPc(options: {
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
   const done: string[] = [];
   const admitted: string[] = [];
-  let sent = true;
+  // an unvouched PC keeps the new PC waiting: this enrollment is sent, but not as the last part
+  let sent = unvouched === 0;
   // through the enrollment, which also ends the PC's wait for this client: sent even with nothing in it
   // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {

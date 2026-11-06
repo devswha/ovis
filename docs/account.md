@@ -271,6 +271,8 @@ An enrollment applies, whatever the order sent:
    became a member applies before the next round's adds;
 4. then the barrier lifts, and the adds that waited for it are tried in turn.
 
+A held key is also refused to a member's remote approval (the session ends `auth_failed`) and to a
+`link` moving a row onto it (`removal_pending`); only a pairing approved on this PC lets it in.
 At every step an `add` is refused `removal_pending` when its key or its signer is held: a waiting remove names it
 (whatever that remove's signer, including one earlier in the same batch), an enrollment held it,
 the waiting queue cannot be read, or waiting removes were ever pushed out of a full queue. A key already on a row is not affected (its
@@ -288,9 +290,10 @@ none of them answers it sends nothing and tries again on its next connection. Wh
 PC at all while the account's directory lists others, it sends no add either. A new PC from
 before enrollments (its status has no `enrolling`) gets the removes through `records` and no add. A PC whose answer
 is not `fresh` (its mailbox read failed, or it is from before enrollments) counts for its removals
-only: while any such PC answers, the client sends the removals but no add, and ends the new PC's
-wait (a passing failure leaves no lasting hold; only a PC that says `blocked_all` makes the client
-send `held_full`): the account's devices
+only: while any such PC answers, the client sends the removals but no add. A PC whose read failed
+also keeps the new PC's wait until a later connection finds it read whole; one from before
+enrollments ends it (a passing failure leaves no lasting hold; only a PC that says `blocked_all`
+makes the client send `held_full`): the account's devices
 then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
 `enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
