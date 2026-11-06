@@ -39,7 +39,7 @@ import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
 import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
@@ -735,7 +735,7 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
       <PushTestControls onEnable={onEnableNotifications} />
       {/* the rows these chips replaced are still found by their words */}
       <SettingsRow label={t("Alert me when")} icon={Bell} wide
-        resetAlso={{ changed: (filters.permission !== undefined && filters.permission !== settings.alertInput) || filters.error === true, restore: () => updateAlertFilters({ permission: undefined, error: undefined }) }}
+        resetAlso={{ changed: alertFiltersChanged(filters, settings.alertInput) > 0, restore: () => updateAlertFilters({ permission: undefined, error: undefined }) }}
         keywords={[t("Long turn finished"), t("Any turn finished"), t("Needs input"), t("An agent asks you something"), t("Needs permission"), t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input."), t("Finished"), t("Long turns: only work that took a minute or more"), t("Stopped on an error"), t("A turn that ended on an error, as OmO and GJC report it")].join(" ")}
         reset={["alertInput", "alertDone"]}>
         <ChipToggles label={t("Alert me when")} chips={[

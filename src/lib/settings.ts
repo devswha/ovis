@@ -111,7 +111,7 @@ export interface Settings {
   agentMarks: AgentMarks;
   /** Settings -> Lock pinned agents (experimental): the Agents list offers Lock agent, and the locks below hold; off, none does */
   agentLocks: boolean;
-  /** Settings -> Read OpenCode subagent ends from their session (experimental): the server ends an OpenCode subagent where its parent session's record does (server/opencode-subagents.ts); off, by its own rows */
+  /** Settings -> Experimental -> OpenCode: subagent ends from their session: the server ends an OpenCode subagent where its parent session's record does (server/opencode-subagents.ts); off, by its own rows */
   opencodeParentEnds: boolean;
   /** pinned agent rows this app does not close (lib/paneLocks.ts), by their pin key; a lock holds only while its row is pinned */
   lockedAgents: string[];
