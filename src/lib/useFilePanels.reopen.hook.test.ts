@@ -158,6 +158,47 @@ it("on: a closed tab's file gives its place up before the oldest live one is for
   expect(panels.viewing).toEqual(fileOn("p0"));
 });
 
+it("on: the file of a tab that just closed, or one opened for another pane than the one shown, is released", async () => {
+  // Given a file open on p1 with Reopen files on return on.
+  await mount(true);
+  await act(async () => { panels.openFile(fileOn("p1")); });
+
+  // When the move leaves it while p1 is no longer in the roster.
+  let kept = true;
+  await act(async () => { kept = panels.leaveFile((_machine, pane) => pane !== "p1"); });
+
+  // Then its entry loses it and nothing waits for p1.
+  expect(kept).toBe(false);
+  expect(fileOf(entries[index])).toBeUndefined();
+  await moveTo("p1", true);
+  expect(panels.viewing).toBeNull();
+
+  // When a file opened for p2 while another pane is shown is left.
+  await act(async () => { panels.openFile(fileOn("p2")); });
+  await act(async () => { kept = panels.leaveFile(undefined, false); });
+
+  // Then it is released as well.
+  expect(kept).toBe(false);
+  expect(fileOf(entries[index])).toBeUndefined();
+  await moveTo("p2", true);
+  expect(panels.viewing).toBeNull();
+});
+
+it("on: a remembered tab that closes is forgotten, so a later pane with its id opens no file", async () => {
+  // Given a file left on p1.
+  await mount(true);
+  await act(async () => { panels.openFile(fileOn("p1")); });
+  await act(async () => { panels.leaveFile(); });
+  await moveTo("p2", true);
+
+  // When the roster no longer lists p1, and a new pane with that id is selected later.
+  await act(async () => { panels.forgetLeftFiles((_machine, pane) => pane !== "p1"); });
+  await moveTo("p1", true);
+
+  // Then no file opens on it.
+  expect(panels.viewing).toBeNull();
+});
+
 it("on: keeps the files of the ten panes left last", async () => {
   // Given files left on eleven panes in turn.
   await mount(true);

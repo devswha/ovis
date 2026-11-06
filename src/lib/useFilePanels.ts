@@ -138,18 +138,24 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   useEffect(() => {
     if (viewing?.paneId) leftFiles.current.delete(paneKey(viewing.machineId, viewing.paneId));
   }, [viewing]);
+  /** Forgets the files of remembered panes `paneLive` no longer finds: a later pane with the same id is another tab. */
+  const forgetLeftFiles = useCallback((paneLive: (machineId: string, paneId: string) => boolean) => {
+    const left = leftFiles.current;
+    for (const [key, file] of left) if (file.paneId !== null && !paneLive(file.machineId, file.paneId)) left.delete(key);
+  }, []);
   /**
    * Leaves the file behind on a move to another pane or PC; true when its entry keeps it for Back.
-   * `paneLive` says whether a remembered pane is still in its PC's roster: a closed tab's file gives
-   * its place up before the cap is applied, so only live tabs' files take the places.
+   * `paneLive` says whether a pane is still in its PC's roster: a closed tab's file gives its place up
+   * before the cap is applied, and the file of a tab that just closed is released, not kept. `wasShown`
+   * is false for a file opened for a pane other than the one shown, which is released as well.
    */
-  const leaveFile = useCallback((paneLive: (machineId: string, paneId: string) => boolean = () => true) => {
-    if (!settings.reopenFileOnReturn || viewing?.paneId == null) {
+  const leaveFile = useCallback((paneLive: (machineId: string, paneId: string) => boolean = () => true, wasShown = true) => {
+    if (!settings.reopenFileOnReturn || viewing?.paneId == null || !wasShown || !paneLive(viewing.machineId, viewing.paneId)) {
       releaseFile();
       return false;
     }
     const left = leftFiles.current;
-    for (const [key, file] of left) if (file.paneId !== null && !paneLive(file.machineId, file.paneId)) left.delete(key);
+    forgetLeftFiles(paneLive);
     const key = paneKey(viewing.machineId, viewing.paneId);
     // the oldest left beyond the cap is forgotten (a Map keeps insertion order)
     left.delete(key);
@@ -157,7 +163,7 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     for (const oldest of left.keys()) if (left.size > LEFT_FILES_KEPT) left.delete(oldest);
     hideFile();
     return true;
-  }, [settings.reopenFileOnReturn, viewing, releaseFile, hideFile]);
+  }, [settings.reopenFileOnReturn, viewing, releaseFile, hideFile, forgetLeftFiles]);
   /** After a move's entry is pushed: the file left on that pane opens over it again, as its own entry. */
   const restoreFile = useCallback((machineId: string, paneId: string) => {
     if (!settings.reopenFileOnReturn) return;
@@ -175,5 +181,5 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     if (!filesDocked && filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
     openFile({ path, paneId: selectedPaneId, machineId: selectedMachineId });
   }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen, filesDocked]);
-  return { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, setPresentation, releaseFile, leaveFile, restoreFile, fileFromPop, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
+  return { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, setPresentation, releaseFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, collapsing, presentFile, openDiffFile, reportFileKind, toggleFilePresentation, viewFile };
 }

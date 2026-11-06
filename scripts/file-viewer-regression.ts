@@ -897,10 +897,38 @@ try {
   assert.equal(await fileEntry(), null, "back on the pane's own entry, which holds no file");
   console.log("PASS Reopen files on return: Back and a sidebar switch show the file again; one closed on its tab stays closed");
 
+  // a Forward onto a file's entry whose pane has closed since selects no pane of the file's: the file
+  // is left behind at once, not kept over a pane it is not from (#3185 review)
+  const goTo = async (index: number) => {
+    await page.evaluate((steps) => { history.go(steps); }, index - await entryIndex());
+    await page.waitForFunction((index) => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index === index, index);
+  };
+  const paneIndex = await entryIndex();
+  await rowOf(otherPane).click();
+  await onPane(otherPane);
+  await openFiles(page);
+  await filesDialog.getByRole("button", { name: /notes\.txt/ }).click();
+  await filesDialog.waitFor({ state: "detached" });
+  await panel.getByText("File preview history regression", { exact: true }).waitFor();
+  assert.equal(await fileEntry(), otherPane, "the other pane's file is on its own entry");
+  const otherFileIndex = await entryIndex();
+  await page.goBack();
+  await panel.waitFor({ state: "detached" });
+  await goTo(paneIndex);
+  await onPane(pane);
+
   await workspaceClose(otherWorkspace);
   otherWorkspace = undefined;
   await rowOf(otherPane).waitFor({ state: "detached" });
   assert.equal(await selectedPane(), pane, "closing the other workspace leaves the selection on the pane");
+  await goTo(otherFileIndex);
+  await page.waitForFunction(() => history.state?.["ovis:file-preview"] === undefined, undefined, { timeout: 5_000 }).catch(() => {});
+  assert.equal(await fileEntry(), null, "the closed pane's file is released from the entry Forward landed on");
+  assert.equal(await panel.count(), 0, "the closed pane's file is not shown over another pane");
+  // back to the pane's own entry, so the steps after this one start from it again
+  await goTo(paneIndex);
+  await onPane(pane);
+  console.log("PASS Forward onto a closed pane's file entry leaves the file behind");
 
   // The actual App and server, with a readable file in the owned pane's repository.
   for (const width of [1280, 980, 979]) {

@@ -32,15 +32,18 @@ function previewFromState(state: unknown): FilePreview | null {
 export function useFileViewer() {
   const [viewing, setViewing] = useState(() => previewFromState(window.history.state));
   const closing = useRef(false);
-  // the file shown is the one a Back or Forward restored (a reload's too), not one opened since
-  const popped = useRef(viewing !== null);
+  // the file shown is the one a Back or Forward restored (a reload's too), not one opened since: the
+  // pop's number, 0 for none, so a later pop is told apart from one already handled
+  const pops = useRef(viewing !== null ? 1 : 0);
+  const popped = useRef(pops.current);
 
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
       closing.current = false;
       // Forward restores the preview with its original PC/pane, including after reload.
       const preview = previewFromState(event.state);
-      popped.current = preview !== null;
+      if (preview !== null) pops.current += 1;
+      popped.current = preview !== null ? pops.current : 0;
       setViewing(preview);
     };
     window.addEventListener("popstate", onPop);
@@ -59,7 +62,7 @@ export function useFileViewer() {
       const below = webPagesBelow(current);
       window.history.replaceState(below > 0 ? { ...state, [WEB_PANEL_BELOW_KEY]: below } : state, "");
     } else window.history.pushState(state, "");
-    popped.current = false;
+    popped.current = 0;
     setViewing(preview);
   }, []);
 
@@ -70,7 +73,7 @@ export function useFileViewer() {
       // X, Escape and scrim clicks consume the same entry as the system Back button. A traversal
       // the browser refuses lands nowhere and fires no popstate: the latch is let go for the next click.
       backUnderCurrentEntry(1 + webPagesBelow(outsideSettings(window.history.state)))?.catch(() => { closing.current = false; });
-    } else { popped.current = false; setViewing(null); }
+    } else { popped.current = 0; setViewing(null); }
   }, []);
 
   const setPresentation = useCallback((presentation: FilePresentation) => {
@@ -89,7 +92,7 @@ export function useFileViewer() {
   const releaseFile = useCallback(() => {
     const { [HISTORY_KEY]: _, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
     window.history.replaceState(rest, "");
-    popped.current = false;
+    popped.current = 0;
     setViewing(null);
   }, []);
 
@@ -97,7 +100,7 @@ export function useFileViewer() {
    * Hides the file when a tab switch leaves it behind and Settings asks for it again on return
    * (#3179): its entry keeps it, so Back to that tab shows it again, and the move pushes its own.
    */
-  const hideFile = useCallback(() => { popped.current = false; setViewing(null); }, []);
+  const hideFile = useCallback(() => { popped.current = 0; setViewing(null); }, []);
   const fileFromPop = useCallback(() => popped.current, []);
 
   return { viewing, openFile, closeFile, setPresentation, releaseFile, hideFile, fileFromPop };
