@@ -97,4 +97,5 @@ export const RELAY_ZH: Record<string, string> = {
   "No number on {name}? Cancel, then tap {name} in your list.": "{name} 上没有数字？请取消，然后在列表中点按 {name}。",
   "Only the PC itself shows its ID, at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Marked groups differ.": "只有电脑本身会显示它的 ID，在“设置 → 设备和电脑”中“我的设备”的顶部（旧版 Ovis 在代码下方）。标记的组不一致。",
   "The PC shows its ID at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Pair only if every group matches.": "电脑会在“设置 → 设备和电脑”中“我的设备”的顶部显示它的 ID（旧版 Ovis 在代码下方）。只有每一组都一致时才配对。",
+  "{n} removals you made are not confirmed on every PC yet. Leaving stops this device from bringing them there.": "你做的 {n} 项移除尚未在所有电脑上确认。离开后，此设备将不再把它们送到那些电脑。",
 };

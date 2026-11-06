@@ -167,6 +167,9 @@ export interface Settings {
   /** a plain drag in a Codex pane is Codex's, which selects and scrolls its own history (lib/useTerminalMount.ts);
    *  off: Ovis's selection, which stops at the screen's edge but copies on every device */
   codexDrag: boolean;
+  /** experimental: a removal this device signs is carried to every PC and each PC's report is shown, with
+   *  lost-or-stolen and Remove everywhere (docs/account.md, "Removing a device"); off: removals as before */
+  accountRemovalReports: boolean;
   /** this device opens the pane herdr's own focus moves to (a `pane-focused` frame from the selected PC), as
    *  herdr's window does after `herdr tab focus` or a click there; off: only this device's own picks move it */
   followHerdrFocus: boolean;
@@ -288,14 +291,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, voiceEngine, the agent groups, the
+ * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, codexDrag, accountRemovalReports, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, voiceEngine, the agent groups, the
  * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
-  | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "codexDrag" | "accountRemovalReports" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles">;
 
@@ -390,6 +393,8 @@ export const SETTING_SCOPE = {
   followHerdrFocus: "device",
   // a desk's mouse, where Codex's copy reaches or not
   codexDrag: "device",
+  // this device's own account store holds the removals it carries
+  accountRemovalReports: "device",
   // a desk's mouse, which a phone has not
   sidebarPeek: "device",
   // a phone's short list may set the workers apart while a desk keeps herdr's order, as with the filter
@@ -472,6 +477,7 @@ export const DEFAULT_SETTINGS: Settings = {
   releasePaneAway: false,
   followHerdrFocus: false,
   codexDrag: false,
+  accountRemovalReports: false,
   sidebarPeek: false,
   sidebarBackgroundWorkspaces: false,
   chatFontSize: null,
@@ -707,6 +713,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
     codexDrag: record["codexDrag"] === true,
+    accountRemovalReports: record["accountRemovalReports"] === true,
     sidebarPeek: record["sidebarPeek"] === true,
     sidebarBackgroundWorkspaces: record["sidebarBackgroundWorkspaces"] === true,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),

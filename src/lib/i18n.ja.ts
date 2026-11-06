@@ -38,6 +38,7 @@ const BASE: Record<string, string> = {
 
   "Only for {pc}": "{pc} のみ",
   "Could not verify this device. It was declined: approve only a device you are signing in yourself.": "このデバイスを確認できなかったため拒否しました。自分でサインインしているデバイスだけを承認してください。",
+  "This device was removed from your account. It was declined: pair it on the PC itself to let it back in.": "このデバイスはアカウントから削除済みのため拒否しました。戻すには、そのPC上で直接ペアリングしてください。",
   "Account": "アカウント",
   "Finish signing in in your browser.": "ブラウザーでサインインを完了してください。",
   "Signed in with {provider}": "{provider} でサインイン中",

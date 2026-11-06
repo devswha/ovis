@@ -70,7 +70,7 @@ export type PcUpdate =
 export type AccountView =
   | { kind: "signed-out"; error: string | null }
   | { kind: "signing-in" }
-  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; unsettled?: number };
 
 export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }

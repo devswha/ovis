@@ -343,4 +343,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "Follow its focus": "フォーカスに追従",
   "Don't open the keyboard when tapping the terminal": "ターミナルをタップしてもキーボードを開かない",
   "Hide the key bar in the input line": "入力欄ではキーバーを隠す",
+  "Account: confirm removals on every PC": "アカウント: すべてのPCで削除を確認",
+  "On this device, a device you remove from your account is brought to every PC each time this device connects, with what each PC says. Removing a lost or stolen device also lists the devices it added.": "このデバイスでアカウントから外したデバイスを、このデバイスが接続するたびにすべてのPCに届け、各PCの答えを表示します。紛失・盗難したデバイスを外すと、そのデバイスが追加したデバイスも一覧にします。",
 };

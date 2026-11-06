@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { AppWindow, ArrowLeft, AudioLines, Bell, Bot, Box, Brain, CheckCheck, ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink, FilePen, FlaskConical, Globe, Image as ImageIcon, Info, Keyboard, Languages, Layers, ListCollapse, Lock, MessageCircleQuestionMark, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, OctagonX, Palette, PanelRight, Plus, Puzzle, Search, Send, ShieldAlert, Smartphone, Sparkles, SquareTerminal, Star, Tags, TextCursorInput, Timer, Volume2, WandSparkles, WrapText, X, ALargeSmall, ArrowDownUp, CircleDot, Filter, Gauge, ListTree, PanelLeft, Rows3, Shapes, SunMoon, Tag, Type, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowLeft, AudioLines, Bell, Bot, Box, Brain, CheckCheck, ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink, FilePen, FlaskConical, Globe, Image as ImageIcon, Info, Keyboard, Languages, Layers, ListCollapse, Lock, MessageCircleQuestionMark, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, OctagonX, Palette, PanelRight, Plus, Puzzle, Search, Send, ShieldAlert, ShieldCheck, Smartphone, Sparkles, SquareTerminal, Star, Tags, TextCursorInput, Timer, Volume2, WandSparkles, WrapText, X, ALargeSmall, ArrowDownUp, CircleDot, Filter, Gauge, ListTree, PanelLeft, Rows3, Shapes, SunMoon, Tag, Type, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -784,6 +784,9 @@ function ExperimentalPage() {
       </SettingsRow>
         <SettingsRow label={t("Codex panes: let Codex select and scroll")} icon={MousePointer2} reset={["codexDrag"]} description={t("On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.")}>
           <Toggle label={t("Codex panes: let Codex select and scroll")} checked={settings.codexDrag} onChange={(codexDrag) => update({ codexDrag })} />
+        </SettingsRow>
+        <SettingsRow label={t("Account: confirm removals on every PC")} icon={ShieldCheck} reset={["accountRemovalReports"]} description={t("On this device, a device you remove from your account is brought to every PC each time this device connects, with what each PC says. Removing a lost or stolen device also lists the devices it added.")}>
+          <Toggle label={t("Account: confirm removals on every PC")} checked={settings.accountRemovalReports} onChange={(accountRemovalReports) => update({ accountRemovalReports })} />
         </SettingsRow>
     </SettingsGroup>
     {/* one agent's own experiments, moved here from its row on Agents */}

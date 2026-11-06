@@ -133,6 +133,7 @@ export function AccountPcs({ view, onJoin, onSignOut, onLeave }: {
           {leaving && onLeave ? (
             <>
               <p className="account-fineprint">{t("Every PC of the account removes this device. You can pair it again later.")}</p>
+              {(view.unsettled ?? 0) > 0 && <p className="account-fineprint" role="alert">{t("{n} removals you made are not confirmed on every PC yet. Leaving stops this device from bringing them there.", { n: String(view.unsettled) })}</p>}
               <button type="button" className="btn btn-danger" onClick={onLeave}>{t("Remove this device")}</button>
               <button type="button" className="btn" onClick={() => setLeaving(false)}>{t("Cancel")}</button>
             </>

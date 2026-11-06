@@ -343,4 +343,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Follow its focus": "跟随焦点",
   "Don't open the keyboard when tapping the terminal": "点击终端时不打开键盘",
   "Hide the key bar in the input line": "在输入框中隐藏按键栏",
+  "Account: confirm removals on every PC": "账户：在每台电脑上确认移除",
+  "On this device, a device you remove from your account is brought to every PC each time this device connects, with what each PC says. Removing a lost or stolen device also lists the devices it added.": "在此设备上从账户中移除的设备，会在此设备每次连接时送到每台电脑，并显示每台电脑的回应。移除丢失或被盗的设备时，还会列出它添加的设备。",
 };

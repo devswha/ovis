@@ -343,4 +343,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Follow its focus": "포커스 따라",
   "Don't open the keyboard when tapping the terminal": "터미널을 눌러도 키보드 안 열기",
   "Hide the key bar in the input line": "입력창에서는 키 바 숨기기",
+  "Account: confirm removals on every PC": "계정: 모든 PC에서 삭제 확인",
+  "On this device, a device you remove from your account is brought to every PC each time this device connects, with what each PC says. Removing a lost or stolen device also lists the devices it added.": "이 기기에서 계정에서 뺀 기기를, 이 기기가 연결될 때마다 모든 PC에 전달하고 각 PC의 답을 보여 줍니다. 잃어버리거나 도난당한 기기를 빼면 그 기기가 추가한 기기도 함께 보여 줍니다.",
 };

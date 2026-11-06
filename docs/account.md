@@ -196,7 +196,7 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "tombstones": ["<key>", …], "paired_here": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
@@ -204,7 +204,10 @@ the relay too. Mutations need the app's mutation guard, like the other routes.
 Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
 that made a row, or the approver's own for a row its remote approval made. `blocked` lists every key
 an add cannot bring in here: every tombstone (signed or not), every key a waiting remove names, and
-every key an enrollment held ([Enrolling a PC](#enrolling-a-pc)). `enrolling` is true while the PC
+every key an enrollment held ([Enrolling a PC](#enrolling-a-pc)). `tombstones` lists every key
+this PC has removed (a tombstone, signed or not, with no row left for it): what a client reads as
+this PC's acknowledgement of a removal ([Removing a device](#removing-a-device)). `paired_here` lists
+the keys of rows paired on this PC itself (no `added_by`, never moved onto their key by a `link`). `enrolling` is true while the PC
 waits for its first member's enrollment. `blocked_all` is true when the PC holds every add back
 (removal evidence was lost to a full queue, or its waiting records cannot be read): then `blocked`
 may not name every key it keeps out, and a client enrolling another PC sends that PC no add and
@@ -298,7 +301,9 @@ then ask that PC once each, as before. A new PC from before enrollments, which r
 `enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
 
-- the `remove`s it signed itself and the ones it kept;
+- the `remove`s it signed itself (removals it kept of other signers go only as `held` keys, never
+  as records, so a stolen former key's removal never applies there;
+  [Removing a device](#removing-a-device));
 - the `add`s it signed itself and the ones those PCs list, except any for a key one of them keeps
   out or that any verified removal it saw names, whoever signed it. Such a device asks once by
   comparing digits instead. The new PC applies an add only when its signer is a member there, so a
@@ -364,6 +369,90 @@ The directory's `public_key` is stored but cannot be forged: it is bound to `ser
 derives the `server_id` from it again before using it. Its `relay` is only a route; comparing digits
 is what authenticates the PC.
 
+
+## Removing a device
+
+Experimental: all of this section's client behaviour is on only where **Settings → Experimental →
+Account: confirm removals on every PC** is on (default off). Off, a removal goes as before: to the
+PC in view and the mailboxes of the PCs this device is linked on, and an enrollment relays the
+removals this device kept. The PC's `tombstones` and `paired_here` fields are always there; a client
+that does not read them is unaffected.
+
+A client that removes a device keeps the removal and brings it to every PC it knows until each PC
+reports it applied, then shows where it is still missing. Nothing here needs the account service:
+it stays a mailbox that can hide records ([Rules](#rules)), and the client works around it.
+
+**What a client carries.** Only removals it signed itself. A removal signed by any other key, even
+a device's removal of its own key, one by a device this client approved, or one a PC lists as a member, is never carried, never blocks anything on
+the client and never feeds a cascade: a compromised PC or a stolen former key cannot make clients
+spread or act on it. The client shows such a removal, from a PC's verified `removals` only, as
+**Removed on {PC} by {signer}**, with **Remove everywhere**, which signs a new `remove` with this
+client's own key after the person confirms. A key that a PC only lists in `blocked` is not offered:
+an enrollment hold is that PC's word, and nothing signed backs it. Enrollment keeps its own fail-closed rule ([Enrolling a PC](#enrolling-a-pc)):
+a key any reachable PC keeps out is held on the new PC, so a false claim costs that device one
+comparison of digits there, never a removal.
+
+**Which PCs.** When it signs a removal, the client stores the removal's PC list: every PC the
+account's directory lists then (a directory it cannot read stops the removal from being called
+done) and every PC this client is paired with for the account. PCs the client later sees in the
+directory or pairs with are added to the list; none leaves it except by **Forget this PC** on this
+device. Done means done on the PCs in that list; a PC the device never heard of, hidden by the
+service, cannot be shown.
+
+**Carrying.** The removal is kept before it is sent, then sent to the PC in view and, at the same
+time, posted to the account service for every PC in the directory (not only the ones this client is
+linked on; a PC where the signer is not a member yet keeps it waiting), each post with a deadline of
+10 seconds after which its PCs are named as not reached. Then, on every connection to a PC of the
+account, not only when enrolling one, the client sends that PC (`POST /api/account/records`, 32 at
+a time) each removal it carries that the PC does not report removed. The PC decides every case
+itself, as before: a removal signed before a pairing made on that PC answers `unchanged` and
+leaves the pairing be.
+
+**What a PC reports.** `GET /api/account/status` adds `tombstones`: every key this PC removed and
+has no row for. A client reads it fresh on each connection and keeps, per removal and PC, the
+state it last read and when:
+
+| state | read on that PC | shown |
+|---|---|---|
+| `reported` | the key is in `tombstones` | **Removed** (the PC's word: a compromised PC can say so and still let the key in) |
+| `repaired` | the carried removal answered `unchanged`, the key is not in `tombstones`, and `paired_here` lists it | **Paired again on this PC**: the PC judged, by its clock against the removal's `issued_at`, that a pairing approved there came after it; `unchanged` with no such row is `unknown` |
+| `waiting` | the key is in `blocked` but not in `tombstones` | **Waiting** |
+| `unknown` | anything else: the send or the read failed, `account_unavailable`, `blocked_all`, a malformed answer | **Could not confirm**, with the reason |
+| `unconfirmed` | a PC from before `tombstones` (its status has no such field) | **Update Ovis on this PC to confirm** |
+| `not reached` | not read since the removal | **Not reached yet** |
+
+A removed device stays in the client's device list as **Removed**, with "not confirmed on {n}
+PCs" and their names, while any PC of its list is not `reported` or `repaired`; once every one
+is, the row says **Settled on every PC this device knows**, names the PCs that report it paired
+again, and stays in the history. A state is
+a report from the last read, never a proof: every connection reads it again.
+
+**Re-admission.** While this client carries a removal, it does not approve a join for that key on
+any PC, sign an `add` for it, introduce it, enroll an add for it, or relay an `add` signed by it.
+Only a pairing approved on the PC itself brings the key back there. An older client does not follow
+these rules; a PC that has applied the removal refuses its adds and approvals anyway.
+
+**Keeping.** Removals this client signed and their PC lists are kept in its account store
+(IndexedDB, per account) for good, at most 4096, and none is ever dropped on its own: at 4096 the
+client signs no new removal until the person clears settled ones (**Clear settled removals**, which
+keeps every one that some PC of its list has not reported, and first says: a PC added to the
+account later gets these removals only from the PCs that hold them when it is enrolled). Each removal and its PC list are
+written before it is sent anywhere; a store that cannot be written makes the removal fail before
+anything leaves this device. Signing out keeps them (only the sign-in goes).
+
+**Leaving.** **Remove this device from your account** first says how many removals this device
+signed are not settled on every PC of their lists; confirming leaves anyway, and the store goes with
+the sign-in. The device's own `remove` goes to the mailbox of every PC the account lists; a refused
+post fails the leave and keeps everything, and a PC the account does not list is named so the
+person revokes the device there.
+
+**Lost or stolen.** Removing a device offers **It was lost or stolen: also remove the devices it
+added**, off by default (retiring an old phone keeps the devices it approved). On, the client reads
+the PC in view (`?fresh=1`) and lists as candidates every key whose signed `add` (in its `adds`,
+signature checked) was signed by the removed key, then the same for those keys. Rows a PC says the device added (`added_by`) without a
+signed add are listed apart, as **the PC says**, unchecked. A signed add shows who approved a key,
+not that the row there came from it. The person ticks which to remove; the client signs one plain
+`remove` per ticked key, carried as above. Nothing is removed later on its own.
 
 ## On the PC
 
@@ -631,12 +720,25 @@ the account service gets an answer the relay refuses.
   the approver signs an `add` only for a key the account service lists as admitted at that PC
   (`GET /v1/admissions`), which only a device signed in to the account can post. A compromised PC
   together with a stolen sign-in still could.
-- **A PC that stays off while the account service hides a removal** keeps the removed device until a
-  client connects to it and hands over the record directly.
-- **A removal no reachable PC holds.** When a client brings a PC into the account, a removal held
-  only by PCs it cannot reach, and hidden by the account service, is missed (see what a client
-  enrolls): the device comes back on that PC, announced there. A client relays the removals it kept
-  only when it brings a PC into the account, not ones it learns later.
+- **A PC no client carrying a removal reaches**, while the account service hides it,
+  keeps the removed device; those clients show it as not reached until one gets there.
+- **A PC that reports a removal it did not apply.** `tombstones` is the PC's word: a compromised
+  PC can list a key and still let it in. Nothing a PC says can prove what it enforces.
+- **A removal signed by another device** reaches PCs only through the mailbox until a member signs
+  it again with **Remove everywhere**.
+- **A false hold at enrollment.** A compromised PC can list a key in `blocked`; a PC enrolled then
+  holds it, and that device joins it by comparing digits once. One that says `blocked_all` makes the
+  enrolled PC refuse every add (`held_full`) until `account-held.json` is removed there, as today:
+  the account's devices then join it by comparing digits.
+- **A cleared removal** reaches a PC added later only through the PCs that hold it when that PC is
+  enrolled (and the mailbox).
+- **A clock that is off** on a PC can make it judge a removal older than a pairing made there
+  (`repaired`), as it already can for any late `remove`.
+- **An old removal waiting for a signer who is no member any more** keeps holding its key on that
+  PC until its signer joins again; **Remove everywhere** signs a new one, which removes the device,
+  but the old one still waits beside it.
+- **An older client** still approves and adds for a key on a PC that has not applied its removal.
+- **Lost or stolen** finds only the devices that the PC in view shows signed adds for.
 - **A client from before enrollments** links a new PC and never enrolls it: that PC's barrier stays,
   and the account's devices join it by comparing digits.
 - **A coding agent on the desktop app's machine** can drive the app's account key (rule 3). The same

@@ -97,4 +97,5 @@ export const RELAY_KO: Record<string, string> = {
   "No number on {name}? Cancel, then tap {name} in your list.": "{name}에 숫자가 없나요? 취소한 뒤 목록에서 {name}을(를) 누르세요.",
   "Only the PC itself shows its ID, at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Marked groups differ.": "PC 자신만 자기 ID를 보여 줍니다. 설정 → 기기와 PC의 내 기기 맨 위에 있습니다(이전 Ovis에서는 코드 아래). 표시된 묶음이 다릅니다.",
   "The PC shows its ID at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Pair only if every group matches.": "PC는 설정 → 기기와 PC의 내 기기 맨 위에 자기 ID를 보여 줍니다(이전 Ovis에서는 코드 아래). 모든 묶음이 같을 때만 페어링하세요.",
+  "{n} removals you made are not confirmed on every PC yet. Leaving stops this device from bringing them there.": "내가 한 삭제 {n}건이 아직 모든 PC에서 확인되지 않았습니다. 나가면 이 기기가 더는 그 PC들에 전달하지 않습니다.",
 };

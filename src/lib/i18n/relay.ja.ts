@@ -97,4 +97,5 @@ export const RELAY_JA: Record<string, string> = {
   "No number on {name}? Cancel, then tap {name} in your list.": "{name} に番号が出ていませんか？キャンセルして、一覧の {name} をタップしてください。",
   "Only the PC itself shows its ID, at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Marked groups differ.": "ID を表示するのは PC 自身だけです。設定 → デバイスと PC の「マイデバイス」の一番上にあります（古い Ovis ではコードの下）。印の付いたまとまりが異なります。",
   "The PC shows its ID at the top of My devices in Settings → Devices and PCs (under the code on an older Ovis). Pair only if every group matches.": "PC は「設定 → デバイスと PC」の「マイデバイス」の一番上に自分の ID を表示します（古い Ovis ではコードの下）。すべてのまとまりが一致する場合だけペアリングしてください。",
+  "{n} removals you made are not confirmed on every PC yet. Leaving stops this device from bringing them there.": "あなたが行った削除 {n} 件は、まだすべてのPCで確認されていません。離れると、このデバイスはそれらのPCに届けなくなります。",
 };

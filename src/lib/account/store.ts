@@ -6,6 +6,7 @@
  * opens this one.
  */
 import { exportAccountKey } from "../../../shared/account-records.ts";
+import type { TrackedRemoval } from "./removals.ts";
 import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts";
 
 export interface AccountKey {
@@ -58,6 +59,8 @@ interface Records {
   removals: Readonly<Record<string, RemoveRecord>>;
   /** by server_id: a PC this device brought into the account, and the records whose outcome it read there */
   enrolls: Readonly<Record<string, PlannedEnroll>>;
+  /** by record id: a removal this device signed and what each PC of its list last said (account/removals.ts) */
+  tracked: Readonly<Record<string, TrackedRemoval>>;
 }
 
 export interface PlannedEnroll {

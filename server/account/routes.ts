@@ -35,7 +35,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const fresh = new URL(request.url).searchParams.get("fresh") === "1" ? await mailbox.freshen() : undefined;
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
     return reply({
-      account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
+      account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked, tombstones: devices.removedKeys(), paired_here: devices.pairedHereKeys(),
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
     });
   }

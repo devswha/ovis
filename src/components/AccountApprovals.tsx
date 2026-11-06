@@ -7,7 +7,9 @@
 import { useEffect, useState } from "react";
 
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
-import { admitToAccount, approveJoin, UnverifiedJoinError } from "../lib/account/join.ts";
+import { admitToAccount, approveJoin, RemovedDeviceError, UnverifiedJoinError } from "../lib/account/join.ts";
+import { carriesRemovalOf } from "../lib/account/removals.ts";
+import { loadSettings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountServiceOf, AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -46,6 +48,11 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();
+    // a device this one removed is let back in only by a pairing on the PC itself (docs/account.md, "Removing a device")
+    if (session !== undefined && loadSettings().accountRemovalReports && await carriesRemovalOf(indexedAccountStore, session.account, request.key)) {
+      await decideRelayPairing(request.id, "decline");
+      throw new Error(t("This device was removed from your account. It was declined: pair it on the PC itself to let it back in."));
+    }
     // signed out here: answered on this PC only, never added to the account
     if (session === undefined || request.intent !== "account") { await decideRelayPairing(request.id, "approve", digits); return; }
     const transport = getTransport();
@@ -56,11 +63,12 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
         admit: async () => admitToAccount({
           fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session.account,
           joining: { key: request.key, label: request.label }, through: serverId, paired: await indexedDeviceStore.list(),
-          directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore,
+          directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore, refuseCarried: loadSettings().accountRemovalReports,
         }),
       });
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
+      if (error instanceof RemovedDeviceError) throw new Error(t("This device was removed from your account. It was declined: pair it on the PC itself to let it back in."));
       throw error;
     }
   };

@@ -804,6 +804,20 @@ export class DeviceStore {
   /** Every key this PC keeps out, signed removal or not (a Revoke here, a record that no longer parses): /api/account/status `blocked`. */
   tombstoneKeys(): string[] { return [...new Set(this.tombstones.map((t) => t.key))]; }
 
+  /**
+   * Keys of rows paired on this PC itself (no `added_by`, never moved onto their key by a `link`): /api/account/status
+   * `paired_here`, what a client needs before it calls a removal "paired again" here.
+   */
+  pairedHereKeys(): string[] {
+    return [...new Set(this.devices.filter((d) => d.relay_public_key !== undefined && d.added_by === undefined && d.linked_at === undefined && !this.stale(d)).map((d) => d.relay_public_key!))];
+  }
+
+  /** Keys removed here with no row left for them (a stale row counts as gone): /api/account/status `tombstones`. */
+  removedKeys(): string[] {
+    return [...new Set(this.tombstones.filter((t) => !this.devices.some((d) => d.relay_public_key === t.key && !this.stale(d))).map((t) => t.key))];
+  }
+
+
   /** The signed `add`s behind this PC's account rows, as received: what /api/account/status lists. One that no longer parses or names another key is left out. */
   accountAdds(): AddRecord[] {
     const account = this.account();
