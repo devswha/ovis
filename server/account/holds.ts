@@ -47,7 +47,6 @@ export class AccountHolds {
     if (problems.length > 0) this.error = `${problems.join("; ")}: account adds wait until it is restored or removed.`;
   }
 
-  /** The PC waits for the member `by` that linked it first to enroll it: account adds wait meanwhile. */
   /**
    * A link while the PC has no account. `stale`: the PC has no account (its first member left before
    * enrolling it), so a barrier an earlier link confirmed is taken over.

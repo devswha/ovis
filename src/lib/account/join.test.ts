@@ -353,6 +353,27 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(y.f.app.context.services.accountHolds.full()).toBe(true);
   });
 
+  it("introduces a device an unfinished attempt let in once the enrollment ends", async () => {
+    const { x, y, accountStore, onX, approve, disconnect, linkY } = await setUp();
+    const [mac, lost] = [await approve("Mac app"), await approve("Lost phone")];
+    const onY = await linkY();
+    const pcY = { server_id: y.identity.server_id, server_public_key: y.identity.public_key, relay: "wss://relay.example", name: "nuc" };
+    const link = await connect(y, onY);
+    let removed = false;
+    // another tab removes a device while the enrollment is on its way to Y
+    const racing = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (path === "/api/account/enroll" && !removed) { removed = true; await disconnect(lost); }
+      return answer;
+    };
+    const others = async () => [{ serverId: x.identity.server_id, fetch: pcFetch(await connect(x, onX)) }];
+    expect((await enrollPc({ fetch: racing, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: await others(), pc: pcY })).finished).toBe(false);
+    expect((await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: await others(), pc: pcY })).finished).toBe(true);
+    const macStore = new MemoryDeviceStore();
+    const onXForMac = await macStore.update(x.identity.server_id, () => ({ server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: accountDeviceId(x.identity.server_id, mac.public_spki), private_key: mac.private_key, public_spki: mac.public_spki, label: "Mac app" }));
+    expect((await takeIntroduction({ fetch: pcFetch(await connect(x, onXForMac)), key: mac, label: "Mac app", store: macStore, relay: "wss://relay.example" })).map((pc) => pc.server_id)).toEqual([y.identity.server_id]);
+  });
+
   it("keeps the introductions a PC could not take, and sends them on the next connection", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");

@@ -514,6 +514,20 @@ test("a member whose key an enrollment held, but who is here, still signs adds",
   expect((await post(link, "/api/account/records", { records: [await add(b, t.spki)] })).body.results?.[0]?.outcome).toBe("applied");
 });
 
+test("another member ends the wait once the member whose link started it is revoked", async () => {
+  const f = fixture();
+  const first = await relayDevice(f);
+  const firstKey = await accountKey();
+  expect((await post(await signedIn(f, first), "/api/account/link", { record: await linkRecord(first, firstKey) })).status).toBe(200);
+  const second = await relayDevice(f);
+  const secondKey = await accountKey();
+  expect((await post(await signedIn(f, second), "/api/account/link", { record: await linkRecord(second, secondKey) })).status).toBe(200);
+  f.app.context.services.devices.revoke(first.id);
+  const other = await signedIn(f, { keys: secondKey.keys, publicKey: secondKey.spki, id: second.id });
+  expect((await post(other, "/api/account/enroll", { account: ACCOUNT, records: [] })).status).toBe(200);
+  expect(f.app.context.services.accountHolds.enrolling()).toBe(false);
+});
+
 test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {
   const f = fixture();
   const first = await relayDevice(f);

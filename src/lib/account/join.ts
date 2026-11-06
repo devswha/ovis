@@ -438,9 +438,11 @@ export async function enrollPc(options: {
     const rest = { ...current.enrolls };
     // enrolled: the plan stays only for the introductions, until every PC that answered took them
     const pc = options.pc;
-    if (finished && pc !== undefined && admitted.length > 0 && answered.length > 0) rest[options.serverId] = { account: entry.account, done: [], introduce: { keys: admitted, pc, to: answered.map((peer) => peer.serverId) } };
+    // with the devices an earlier, unfinished attempt let in
+    const keys = [...new Set([...entry.admitted ?? [], ...admitted])];
+    if (finished && pc !== undefined && keys.length > 0 && answered.length > 0) rest[options.serverId] = { account: entry.account, done: [], introduce: { keys, pc, to: answered.map((peer) => peer.serverId) } };
     else if (finished) delete rest[options.serverId];
-    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
+    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done], admitted: keys };
     return { devices: current.devices, removals: current.removals, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
   if (finished) finished = await introduceLeft(options.store, options.serverId, answered);

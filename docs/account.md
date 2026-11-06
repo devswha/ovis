@@ -240,7 +240,8 @@ while its key is held ([Enrolling a PC](#enrolling-a-pc)).
 `POST /api/account/enroll` `{ "account": "acct_1", "records": [<remove or add>, …], "held": ["<key>", …], "held_full": false, "last": true }`:
 what a member sends a PC it brought into the account, over the relay session of a device that is
 already a member of `account` (it links itself first). At most 512 records and 4096 held keys;
-`held_full` says there were more (every add is then refused from then on); `last: false` says more
+`held_full` says there were more (every add is then refused from then on, until
+`account-held.json` is removed; any member may send it); `last: false` says more
 parts follow, or an earlier part had a remove the PC could not decide (the client then sends the
 whole enrollment again on its next connection). Within one request, an add for the key of a remove
 the PC could not keep is held back too. Same answer as `records`, in the order sent; the PC applies them in its own order
@@ -253,7 +254,8 @@ A link sent while the PC has no account starts its **enrollment barrier**
 last `enroll` part answers every remove (none `account_unavailable`), no `add` applies here from
 `records` or the mailbox. One from the mailbox waits in `account-pending.json` and is tried again
 after the enrollment. An `enroll` from any other member applies its removes, but its adds wait
-like any other (`enrolling`), and it ends no wait. A
+like any other (`enrolling`), and it ends no wait, unless the device the barrier names is no longer
+a drive member here (revoked, say): then any member's last part ends it. A
 refused link leaves the barrier (with no account here no add applies anyway); the next first link
 takes it over. The first link that succeeds keeps it, unless the PC has no account again (its
 first member was revoked before enrolling it): then the next first link takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,

@@ -100,11 +100,13 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (heldFull === true) holds.overflow();
       const gates = mailbox.gates();
       // only the member whose link brought this PC in hands over its adds during the wait; another member's wait with the mailbox's
-      const linker = holds.enrollingMember() === peer.device.id;
+      // the member whose link brought this PC in, or any member once that one is no longer a drive member here (revoked, say)
+      const named = holds.enrollingMember();
+      const linker = named === peer.device.id || (named !== null && !devices.isAccountApprover(named));
       const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => !linker && holds.enrolling(), held: gates.held, ...(gates.removing ? { removing: gates.removing } : {}) }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
-      if (last !== false && !undecided && holds.enrollingMember() === peer.device.id) {
+      if (last !== false && !undecided && linker) {
         holds.endEnrolling();
         // adds the barrier held back now pass every gate in their turn
         await mailbox.settle();
