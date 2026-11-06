@@ -395,7 +395,6 @@ export const SETTING_SCOPE = {
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
-  // a wide desk splits its pane area into rows and columns where a laptop keeps two halves
   // a desk's mouse, where Codex's copy reaches or not
   codexDrag: "device",
   // a desk's mouse, which a phone has not
