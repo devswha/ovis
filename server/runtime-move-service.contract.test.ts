@@ -24,6 +24,7 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
   let hc: HcConnection | null = null;
   let workspace: string | null = null;
   const originalHcEnv = process.env["OVIS_HC_ENV"];
+  const originalHcBin = process.env["OVIS_HC_BIN"];
 
   beforeAll(async () => {
     for (const sub of ["state", "config", "run", "ovis-state"]) mkdirSync(join(root, sub), { mode: 0o700 });
@@ -38,6 +39,8 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
     };
     // the move reaches the core the server would once it serves herdr-core (runtime.ts hcEnv)
     process.env["OVIS_HC_ENV"] = JSON.stringify(env);
+    // found as startRuntime finds it: in this process's environment
+    process.env["OVIS_HC_BIN"] = bin!;
     const started = Bun.spawn([bin!, "server", "start"], { env: { ...process.env, ...env }, stdout: "ignore", stderr: "pipe" });
     expect({ exit: await started.exited, stderr: await new Response(started.stderr).text() }).toMatchObject({ exit: 0 });
     hc = new HcConnection(() => spawnHcConnect(bin!, { ...process.env, ...env }));
@@ -48,6 +51,7 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
     Bun.spawnSync([bin!, "server", "stop"], { env: { ...process.env, ...env } });
     if (workspace) await workspaceClose(workspace);
     if (originalHcEnv === undefined) delete process.env["OVIS_HC_ENV"]; else process.env["OVIS_HC_ENV"] = originalHcEnv;
+    if (originalHcBin === undefined) delete process.env["OVIS_HC_BIN"]; else process.env["OVIS_HC_BIN"] = originalHcBin;
     rmSync(root, { recursive: true, force: true });
   });
 
