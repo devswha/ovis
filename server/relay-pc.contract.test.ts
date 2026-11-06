@@ -7,6 +7,8 @@ import type { HerdrIdentity, Machine, MachineEvent } from "../shared/machines.ts
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
 import { RelayService } from "./relay/service.ts";
+import { openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
+import { decodeOffer } from "../shared/relay-offer.ts";
 import { bounded, deferred } from "./relay/test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -91,7 +93,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
     cleanup.push(stop);
     return { app: a, base: `http://127.0.0.1:${a.port}`, stop };
   };
-  return { b, bBase, link, aState, startA, delay, lan };
+  return { b, bBase, link, aState, startA, delay, lan, local, onLan };
 }
 
 const findRelayPc = (base: string, code: string) => postRelay(base, { code }, "/code");
@@ -339,24 +341,28 @@ it("keeps a relay PC on the relay while its same-network address does not answer
 }, 60_000);
 
 it("lets a request that starts while a move signs in finish, and still moves", async () => {
-  // Given B on A's network, with the move's sign-in there held (dial 1 is the probe, dial 2 the move's session)
+  // Given a tunnel to B paired through the relay, whose move to B's network has its sign-in held there
+  // (dial 1 is the probe after admission, dial 2 the move's session)
   const release = deferred<void>();
   const holding = deferred<void>();
-  const { link, startA } = await twoPcs({ direct: { reachable: () => true, held: (dial) => {
+  const { link, local, onLan } = await twoPcs({ direct: { reachable: () => true, held: (dial) => {
     if (dial !== 2) return undefined;
     holding.resolve();
     return release.promise;
   } } });
-  const a = startA();
-  const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const lost: Error[] = [];
+  const moved = deferred<void>();
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: (error) => lost.push(error), onMoved: () => moved.resolve() });
+  cleanup.push(() => tunnel.close());
   await bounded(holding.promise);
   // When a request starts in that window and the sign-in then completes
-  const states: string[] = [];
-  const moved = machineWhen(a.base, (pc) => { if (pc.id === machine.id) states.push(pc.state); return pc.id === machine.id && pc.route === "direct"; });
-  const request = fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } });
+  const request = fetch(`${tunnel.endpoint.url}/api/session`, { headers: { authorization: `Bearer ${tunnel.endpoint.token}` } });
   release.resolve();
-  // Then the request is answered, the PC never shows as lost, and the move happens
-  expect((await request).status).toBe(200);
-  expect((await moved).state).toBe("connected");
-  expect(states.filter((state) => state !== "connected")).toEqual([]);
+  // Then the request is answered, the move happens, and the connection was never lost
+  expect((await bounded(request)).status).toBe(200);
+  await bounded(moved.promise, 30_000);
+  expect(tunnel.route).toBe("direct");
+  expect(lost).toEqual([]);
 }, 60_000);
