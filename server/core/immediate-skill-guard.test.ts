@@ -17,9 +17,10 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * A chat message naming an OpenCode @skill, sent at once (not queued) to an idle OpenCode pane: its skill is typed key by
  * key. `race` changes the pane while it is typed: `masked` puts a masked prompt on the autocomplete read the skill key is
  * decided on, `live` puts one on the live screen while the scrolled viewport still shows the row, `first` shows one
- * before the first key. Returns what was written and how the send ended.
+ * before the first key, `wrapped` shows one wrapped at a width this send has no attachment to tell. Returns what was
+ * written, how the send ended and whether its OpenCode watch was let go.
  */
-async function send(race: "masked" | "live" | "first") {
+async function send(race: "masked" | "live" | "first" | "wrapped") {
   const pane = { pane_id: "p", terminal_id: "t", agent: "opencode", agent_status: "idle" } as HerdrPane;
   spyOn(herdr, "paneGet").mockImplementation(async () => pane);
   spyOn(conversation, "paneProcessRoots").mockImplementation(async () => ({ omo: null, processes: undefined }) as Awaited<ReturnType<typeof conversation.paneProcessRoots>>);
@@ -27,9 +28,10 @@ async function send(race: "masked" | "live" | "first") {
   spyOn(prompt, "bindCommandProcess").mockImplementation(() => {});
   spyOn(prompt, "noteSubmitted").mockImplementation(() => {});
   spyOn(native, "openCodeSkillsToType").mockImplementation(async (_pane, sent) => ({ sent, skills: ["effect"] }));
-  spyOn(native, "startOpenCodeWatch").mockReturnValue(null);
+  let cancelled = false;
+  spyOn(native, "startOpenCodeWatch").mockReturnValue({ cancel: () => { cancelled = true; }, commit: () => {} } as unknown as ReturnType<typeof native.startOpenCodeWatch>);
   const selected = readFileSync(join(import.meta.dir, "../fixtures/opencode-autocomplete-2.0.32-ansi-first-selected.ansi"), "utf8");
-  let live = race === "first" ? PROMPT : "";
+  let live = race === "first" ? PROMPT : race === "wrapped" ? "Enter passphrase for key\n'/tmp/key':" : "";
   let visible = 0;
   spyOn(herdr, "paneRead").mockImplementation(async (options) => {
     if (options.source !== "visible") return { text: live } as Awaited<ReturnType<typeof herdr.paneRead>>;
@@ -44,7 +46,7 @@ async function send(race: "masked" | "live" | "first") {
   const submit = createSubmitText({ options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true,
     SUBMIT_DEADLINE_MS: 45_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0 });
   const error = await submit("p", "@effect", "@effect", Date.now(), false, () => {}).then(() => null, (failure: unknown) => failure as herdr.HerdrError);
-  return { writes, code: error?.code ?? null };
+  return { writes, code: error?.code ?? null, cancelled };
 }
 
 it("sends no skill-accept key when its autocomplete read shows a masked prompt", async () => {
@@ -61,7 +63,14 @@ it("sends no skill-accept key while the live screen shows a masked prompt behind
 });
 
 it("types nothing of a skill message into a masked prompt already on the screen", async () => {
-  const { writes, code } = await send("first");
+  const { writes, code, cancelled } = await send("first");
+  expect(writes).toEqual([]);
+  expect(code).toBe("agent_blocked");
+  expect(cancelled).toBe(true);
+});
+
+it("types nothing into a masked prompt wrapped at a width the send cannot tell", async () => {
+  const { writes, code } = await send("wrapped");
   expect(writes).toEqual([]);
   expect(code).toBe("agent_blocked");
 });
