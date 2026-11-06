@@ -95,8 +95,9 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const provider = options.provider ?? "github";
   const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  // redirect "manual": a redirect is a failure here, never a way to carry the challenge, the device code or the verifier to another address
   const response = await fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
-    method: "POST", headers: { "content-type": "application/json" },
+    method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
     body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256" }),
   });
   if (!response.ok) throw await failure(response);
@@ -143,7 +144,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         try {
           answer = await fetchImpl(new URL("/v1/token", options.service), {
             method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: DEVICE_GRANT, device_code: deviceCode, code_verifier: verifier }),
-            signal,
+            redirect: "manual", signal,
           });
         } catch (error) {
           // offline for a moment: the code is still good, so the next poll tries again
@@ -163,7 +164,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
           });
           if (kept) return session;
           // a sign-in nobody keeps ends at the service too, so its tokens do not outlive the page
-          await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
+          await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` }, redirect: "manual" })
             .catch((error: unknown) => console.warn("Ovis: a cancelled sign-in was not ended at the account service", error instanceof Error ? error.name : error));
           signal.throwIfAborted();
           return session;
@@ -184,16 +185,16 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
 
 /**
  * The link page's sign-in, or `fallback`'s own device flow when the link page cannot start one: busy
- * (429, its global attempt budget can be spent by others), down (5xx), unreachable, or answering
- * something this client does not take. The person then types the provider's code instead.
+ * (429, its global attempt budget can be spent by others), missing (404), down (5xx) or unreachable.
+ * An answer the client does not take (another page, no S256 binding, a redirect) is a failure, not a
+ * reason to fall back, so a bad answer cannot push the sign-in off the link page.
  */
 export async function startLinkPageSignIn(options: DeviceSignInOptions, fallback: DeviceProvider): Promise<DeviceSignIn> {
   try {
     return await startDeviceSignIn({ ...options, provider: "ovis" });
   } catch (error) {
     const unusable = error instanceof TypeError
-      || (error instanceof AccountServiceError && (error.status === 429 || error.status === 404 || error.status >= 500))
-      || (error instanceof SignInError && error.code === "unsupported");
+      || (error instanceof AccountServiceError && (error.status === 429 || error.status === 404 || error.status >= 500));
     if (!unusable) throw error;
     console.warn("Ovis: the link page could not start a sign-in; using the provider's device page", error instanceof AccountServiceError ? error.status : error.name);
     return await startDeviceSignIn({ ...options, provider: fallback });

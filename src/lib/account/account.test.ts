@@ -317,6 +317,41 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
     expect(working.provider).toBe("ovis");
   });
 
+  it("does not fall back when the link page answers with a binding it cannot take: a bad answer cannot force the provider's page", async () => {
+    const { fake, options } = setup();
+    const evil = async (input: Request | string | URL, init?: RequestInit) => {
+      const answer = await fake.fetch(input instanceof Request ? input : new Request(input, init));
+      const body = await answer.json() as Record<string, unknown>;
+      return Response.json({ ...body, verification_uri: "https://evil.example/link" }, { status: answer.status });
+    };
+    await expect(startLinkPageSignIn({ ...options, fetch: evil }, "google")).rejects.toMatchObject({ code: "unsupported" });
+  });
+
+  it("follows no redirect: the device code and verifier never go to another address", async () => {
+    const { fake, options } = setup();
+    const elsewhere: string[] = [];
+    // as fetch does: a 307 is followed with the same body unless the call says redirect "manual" or "error"
+    const redirecting = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (path === "/v1/token" || path === "/v1/signin/ovis/device") {
+        if (init?.redirect === "manual") return new Response(null, { status: 307, headers: { location: "https://evil.example/collect" } });
+        if (init?.redirect === "error") throw new TypeError("redirect refused");
+        elsewhere.push(await request.text());
+        return Response.json({ error: { code: "authorization_pending", message: "" } }, { status: 400 });
+      }
+      return fake.fetch(request);
+    };
+    await expect(startDeviceSignIn({ ...options, fetch: redirecting })).rejects.toBeDefined();
+    const tokenOnly = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return new URL(request.url).pathname === "/v1/token" ? redirecting(input, init) : fake.fetch(request);
+    };
+    const started = await startDeviceSignIn({ ...options, fetch: tokenOnly });
+    await expect(started.finish(new AbortController().signal)).rejects.toBeDefined();
+    expect(elsewhere).toEqual([]);
+  });
+
   it("refuses a link page on another address, and shows no QR code for a link carrying another code", async () => {
     const { fake, options } = setup();
     const rewrite = (fields: Record<string, string>) => async (input: Request | string | URL, init?: RequestInit) => {

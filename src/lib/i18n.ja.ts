@@ -59,6 +59,7 @@ const BASE: Record<string, string> = {
   "Sign in again": "もう一度サインイン",
   "Added {date}": "{date} に追加",
   "To change how you sign in, sign in again with {provider} first.": "サインイン方法を変更するには、先に {provider} でもう一度サインインしてください。",
+  "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "サインイン方法を変更するには、先に {provider} 自身のサインインページでもう一度サインインしてください。",
   "Add another way to sign in from the Ovis desktop app.": "別のサインイン方法は Ovis デスクトップアプリから追加してください。",
   "Add {provider}": "{provider} を追加",
   "The code expired. Sign in again to get a new one.": "コードの有効期限が切れました。もう一度サインインして新しいコードを受け取ってください。",

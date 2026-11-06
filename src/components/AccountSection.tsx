@@ -344,7 +344,10 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
               </ul>
               {reauth !== null && (
                 <div className="account-reauth" role="alert">
-                  <p className="settings-description">{t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+                  <p className="settings-description">{bridge === null
+                      // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
+                      ? t("To change how you sign in, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
+                      : t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
                   {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
                 </div>
               )}
