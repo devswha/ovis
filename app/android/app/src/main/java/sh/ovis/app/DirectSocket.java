@@ -116,21 +116,24 @@ final class DirectSocket {
 
     /**
      * Ends the socket with `code`: before the upgrade at once, closing the TCP socket under a pending connect or
-     * handshake; after it with a close frame, then onClose when the peer answers or CLOSE_WAIT_MS passed.
+     * handshake; after it with a close frame, then onClose when the peer answers or CLOSE_WAIT_MS passed. A code
+     * an endpoint may not send (1005, 1006, 1015, an unassigned one) goes out as 1000.
      */
     void close(int code, String reason) {
+        if (!validCloseCode(code)) code = 1000;
         boolean beforeUpgrade;
         synchronized (this) {
             if (ended || closeQueued) return;
             beforeUpgrade = !upgraded;
             if (beforeUpgrade) closeQueued = true;
         }
+        int sent = code;
         if (beforeUpgrade) {
-            end(code, reason, false);
+            end(sent, reason, false);
             return;
         }
-        sendClose(code, reason);
-        TIMERS.schedule(() -> end(code, reason, false), CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
+        sendClose(sent, reason);
+        TIMERS.schedule(() -> end(sent, reason, false), CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
     }
 
     /** Ends the socket now, without a closing handshake: the page fell too far behind. */
@@ -138,10 +141,13 @@ final class DirectSocket {
         end(code, reason, false);
     }
 
-    /** A close frame, once; data frames asked for after it are dropped. */
+    /** A close frame, once; data frames asked for after it are dropped. Its reason is cut to 123 bytes between characters. */
     private void sendClose(int code, String reason) {
         byte[] text = reason.getBytes(StandardCharsets.UTF_8);
-        byte[] payload = new byte[2 + Math.min(text.length, 123)];
+        int length = Math.min(text.length, 123);
+        // never inside a character: back off continuation bytes (10xxxxxx) to the start of the one cut
+        if (length < text.length) while (length > 0 && (text[length] & 0xc0) == 0x80) length--;
+        byte[] payload = new byte[2 + length];
         payload[0] = (byte) (code >> 8);
         payload[1] = (byte) code;
         System.arraycopy(text, 0, payload, 2, payload.length - 2);
@@ -152,37 +158,36 @@ final class DirectSocket {
         enqueue(0x8, payload, true);
     }
 
-    /** Puts one frame on the writer's queue, or ends the socket with 1009 when the queue is full. */
+    /**
+     * Puts one frame on the writer's queue, or ends the socket with 1009 when the queue is full. Admitted and handed to
+     * the writer under one lock, so a data frame admitted before the close frame is also queued before it.
+     */
     private void enqueue(int opcode, byte[] payload, boolean control) {
-        boolean overflow;
         synchronized (this) {
             if (ended || (closeQueued && !control)) return;
-            overflow = queuedFrames + 1 > MAX_QUEUED || queuedBytes + payload.length > MAX_MESSAGE;
-            if (!overflow) {
+            if (queuedFrames + 1 <= MAX_QUEUED && queuedBytes + payload.length <= MAX_MESSAGE) {
                 queuedFrames++;
                 queuedBytes += payload.length;
+                try {
+                    writer.execute(() -> {
+                        try {
+                            frame(opcode, payload);
+                        } catch (IOException error) {
+                            end(1006, "", true);
+                        } finally {
+                            synchronized (this) {
+                                queuedFrames--;
+                                queuedBytes -= payload.length;
+                            }
+                        }
+                    });
+                } catch (java.util.concurrent.RejectedExecutionException gone) {
+                    // ended meanwhile: nothing goes out any more
+                }
+                return;
             }
         }
-        if (overflow) {
-            end(1009, "send queue full", false);
-            return;
-        }
-        try {
-            writer.execute(() -> {
-                try {
-                    frame(opcode, payload);
-                } catch (IOException error) {
-                    end(1006, "", true);
-                } finally {
-                    synchronized (this) {
-                        queuedFrames--;
-                        queuedBytes -= payload.length;
-                    }
-                }
-            });
-        } catch (java.util.concurrent.RejectedExecutionException gone) {
-            // ended meanwhile: nothing goes out any more
-        }
+        end(1009, "send queue full", false);
     }
 
     /** One masked frame, as a client must send. Only the writer thread calls it. */

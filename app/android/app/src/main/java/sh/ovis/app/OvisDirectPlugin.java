@@ -31,12 +31,16 @@ public class OvisDirectPlugin extends Plugin {
 
     private static final class Entry {
         DirectSocket socket;
+        /** the page closed it: its closing handshake no longer takes one of the page's places */
+        boolean closing;
         /** sizes of the messages sent to the page and not acknowledged yet, oldest first */
         final ArrayDeque<Integer> unacked = new ArrayDeque<>();
         long unackedBytes;
     }
 
     private final Map<String, Entry> sockets = new HashMap<>();
+    /** counts the pages this plugin served (closeAll): an open asked by an earlier page opens nothing */
+    private int pages;
 
     @Override
     public void load() {
@@ -99,6 +103,8 @@ public class OvisDirectPlugin extends Plugin {
     @PluginMethod
     public void open(PluginCall call) {
         if (!allowed(call)) return;
+        int askedOn;
+        synchronized (this) { askedOn = pages; }
         String[] carrier = DirectSocket.carrier(call.getString("url"));
         if (carrier == null) {
             call.reject("Only a direct carrier on a private address opens", "invalid_url");
@@ -115,7 +121,14 @@ public class OvisDirectPlugin extends Plugin {
             String id = UUID.randomUUID().toString();
             Entry entry = new Entry();
             synchronized (this) {
-                if (sockets.size() >= MAX_SOCKETS) {
+                if (pages != askedOn) {
+                    call.reject("The page that asked has left", "closed");
+                    return;
+                }
+                int open = 0;
+                for (Entry other : sockets.values()) if (!other.closing) open++;
+                // closing ones end within DirectSocket's close wait; at most as many again may still be closing
+                if (open >= MAX_SOCKETS || sockets.size() >= 2 * MAX_SOCKETS) {
                     call.reject("Two direct sockets are open already", "too_many");
                     return;
                 }
@@ -144,19 +157,20 @@ public class OvisDirectPlugin extends Plugin {
 
             @Override
             public void onClose(int code, String reason, boolean failed) {
+                // under the lock deliver queues its message in, so no message of the socket follows its close
                 synchronized (OvisDirectPlugin.this) {
                     if (sockets.remove(id) == null) return;
+                    if (failed) {
+                        JSObject event = new JSObject();
+                        event.put("id", id);
+                        emit("error", event);
+                    }
+                    JSObject closed = new JSObject();
+                    closed.put("id", id);
+                    closed.put("code", code);
+                    closed.put("reason", reason);
+                    emit("close", closed);
                 }
-                if (failed) {
-                    JSObject event = new JSObject();
-                    event.put("id", id);
-                    emit("error", event);
-                }
-                JSObject closed = new JSObject();
-                closed.put("id", id);
-                closed.put("code", code);
-                closed.put("reason", reason);
-                emit("close", closed);
             }
         };
     }
@@ -172,26 +186,23 @@ public class OvisDirectPlugin extends Plugin {
     /** One message to the page, unless the page is that far behind: then the socket ends with 1009. */
     private void deliver(String id, String kind, String data, int size) {
         Entry entry;
-        boolean overflow;
         synchronized (this) {
             entry = sockets.get(id);
             if (entry == null) return;
-            overflow = entry.unacked.size() + 1 > MAX_QUEUED_MESSAGES || entry.unackedBytes + size > MAX_QUEUED_BYTES;
-            if (!overflow) {
+            if (entry.unacked.size() + 1 <= MAX_QUEUED_MESSAGES && entry.unackedBytes + size <= MAX_QUEUED_BYTES) {
                 entry.unacked.add(size);
                 entry.unackedBytes += size;
+                JSObject event = new JSObject();
+                event.put("id", id);
+                event.put("kind", kind);
+                event.put("data", data);
+                // queued while the socket is still listed: its close event (onClose) comes after
+                emit("message", event);
+                return;
             }
         }
-        if (overflow) {
-            // its close event comes through onClose, with 1009
-            entry.socket.abort(1009, "receive queue full");
-            return;
-        }
-        JSObject event = new JSObject();
-        event.put("id", id);
-        event.put("kind", kind);
-        event.put("data", data);
-        emit("message", event);
+        // its close event comes through onClose, with 1009
+        entry.socket.abort(1009, "receive queue full");
     }
 
     @PluginMethod
@@ -206,7 +217,14 @@ public class OvisDirectPlugin extends Plugin {
             call.reject("That socket is closed", "closed");
             return;
         }
-        if ("text".equals(kind)) {
+        // too big for the send queue whatever it turns into: ends the socket as an overflow would, before converting it
+        boolean text = "text".equals(kind);
+        if (data.length() > (text ? DirectSocket.MAX_MESSAGE : (DirectSocket.MAX_MESSAGE + 2) / 3 * 4)) {
+            entry.socket.abort(1009, "send queue full");
+            call.resolve();
+            return;
+        }
+        if (text) {
             entry.socket.sendText(data);
         } else if ("binary".equals(kind)) {
             byte[] bytes;
@@ -228,6 +246,7 @@ public class OvisDirectPlugin extends Plugin {
         if (entry != null) {
             Integer code = call.getInt("code");
             String reason = call.getString("reason");
+            synchronized (this) { entry.closing = true; }
             entry.socket.close(code == null ? 1000 : code, reason == null ? "" : reason);
         }
         call.resolve();
@@ -247,9 +266,13 @@ public class OvisDirectPlugin extends Plugin {
         call.resolve();
     }
 
+    /** A page left: its sockets end at once, without a closing handshake, so the next page has both places. */
     private void closeAll() {
         Entry[] open;
-        synchronized (this) { open = sockets.values().toArray(new Entry[0]); }
-        for (Entry entry : open) if (entry.socket != null) entry.socket.close(1001, "page left");
+        synchronized (this) {
+            pages++;
+            open = sockets.values().toArray(new Entry[0]);
+        }
+        for (Entry entry : open) if (entry.socket != null) entry.socket.abort(1001, "page left");
     }
 }

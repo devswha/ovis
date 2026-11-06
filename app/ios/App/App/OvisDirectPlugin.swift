@@ -38,7 +38,11 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
     /// every socket's state, and the session's callbacks, on this one queue
     private let queue = DispatchQueue(label: "sh.ovis.direct")
     private var sockets: [String: Socket] = [:]
+    /// whether `session` was made, so teardown does not make one only to end it
+    private var sessionMade = false
+    private var pageObserver: NSObjectProtocol?
     private lazy var session: URLSession = {
+        sessionMade = true
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         // the relay channel keeps itself alive and the page gives up on a carrier that does not answer
@@ -232,13 +236,20 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
 
     /// A new page in the web view: the old page's sockets would hold both places and nobody reads them.
     public override func load() {
-        NotificationCenter.default.addObserver(forName: .ovisPageCommitted, object: nil, queue: nil) { [weak self] _ in
+        pageObserver = NotificationCenter.default.addObserver(forName: .ovisPageCommitted, object: nil, queue: nil) { [weak self] _ in
             DirectCallGate.clear()
             guard let self else { return }
             self.queue.async {
                 for id in Array(self.sockets.keys) { self.finish(id, code: 1001, reason: "page left", error: false) }
             }
         }
+    }
+
+    /// The bridge let go of the plugin (another PC opened, say) without a new page: its sockets end now, and the
+    /// session, which holds its delegate until invalidated, goes with them.
+    deinit {
+        if let pageObserver { NotificationCenter.default.removeObserver(pageObserver) }
+        if sessionMade { session.invalidateAndCancel() }
     }
 }
 

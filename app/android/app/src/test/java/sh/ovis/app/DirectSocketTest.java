@@ -202,6 +202,49 @@ public class DirectSocketTest {
         assertEquals(Integer.valueOf(1001), answered.poll(10, TimeUnit.SECONDS));
     }
 
+    /** The close frame the client sent after the upgrade, unmasked: [code, reason bytes...]. */
+    private DirectSocket closingClient(BlockingQueue<byte[]> closes) throws IOException {
+        return client((peer) -> {
+            upgrade(peer, "HTTP/1.1 101 Switching Protocols", GOOD, true);
+            peer.getOutputStream().write(frame(0x81, "hi".getBytes(StandardCharsets.UTF_8)));
+            DataInputStream in = new DataInputStream(peer.getInputStream());
+            int first = in.readUnsignedByte();
+            int length = in.readUnsignedByte() & 0x7f;
+            byte[] mask = new byte[4];
+            in.readFully(mask);
+            byte[] payload = new byte[length];
+            in.readFully(payload);
+            for (int index = 0; index < length; index++) payload[index] ^= mask[index & 3];
+            if (first == 0x88) closes.add(payload);
+        }, 5_000);
+    }
+
+    @Test
+    public void cutsALongCloseReasonBetweenCharacters() throws Exception {
+        BlockingQueue<byte[]> closes = new LinkedBlockingQueue<>();
+        DirectSocket socket = closingClient(closes);
+        socket.start();
+        assertEquals("text:hi", next());
+        String ascii = "a".repeat(122);
+        socket.close(4000, ascii + "\u00e9");
+        byte[] payload = closes.poll(10, TimeUnit.SECONDS);
+        assertNotNull(payload);
+        assertEquals(ascii, StandardCharsets.UTF_8.newDecoder()
+            .decode(java.nio.ByteBuffer.wrap(payload, 2, payload.length - 2)).toString());
+    }
+
+    @Test
+    public void neverSendsACloseCodeReservedForTheEndpoint() throws Exception {
+        BlockingQueue<byte[]> closes = new LinkedBlockingQueue<>();
+        DirectSocket socket = closingClient(closes);
+        socket.start();
+        assertEquals("text:hi", next());
+        socket.close(1006, "");
+        byte[] payload = closes.poll(10, TimeUnit.SECONDS);
+        assertNotNull(payload);
+        assertEquals(1000, ((payload[0] & 0xff) << 8) | (payload[1] & 0xff));
+    }
+
     @Test
     public void endsWithA1009WhenTooMuchWaitsToGoOut() throws Exception {
         CountDownLatch held = new CountDownLatch(1);
