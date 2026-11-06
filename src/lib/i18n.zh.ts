@@ -1,5 +1,6 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
+import { SETTINGS_AGENTS_ZH } from "./i18n/settings-agents.zh.ts";
 import { SETTINGS_COMPOSER_ZH } from "./i18n/settings-composer.zh.ts";
 import { SETTINGS_LAYOUT_ZH } from "./i18n/settings-layout.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
@@ -16,6 +17,7 @@ import { GUIDE_ZH } from "./i18n/guide.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
+import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -31,6 +33,7 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
   "Attach files": "附加文件",
   "Sign out": "退出登录",
@@ -42,10 +45,20 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "已使用 {provider} 登录",
   "Signing in…": "正在登录…",
   "The sign-in did not finish. Try again.": "登录未完成。请重试。",
-  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "打开 GitHub 并输入此代码。仅当这是你在此页面上自己发起的登录时才输入。",
-  "Waiting for GitHub…": "正在等待 GitHub 批准…",
-  "Open GitHub": "打开 GitHub",
-  "GitHub refused the sign-in.": "GitHub 拒绝了此次登录。",
+  "Open {provider} and enter this code. Enter it only if you started this sign-in on this page.": "打开 {provider} 并输入此代码。仅当这是你在此页面上自己发起的登录时才输入。",
+  "Waiting for {provider}…": "正在等待 {provider} 批准…",
+  "Open {provider}": "打开 {provider}",
+  "{provider} refused the sign-in.": "{provider} 拒绝了此次登录。",
+  "Your account already signs in with {provider}.": "此账户已经可以用 {provider} 登录。",
+  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "这个 {provider} 登录已属于另一个 Ovis 账户。没有做任何更改。",
+  "Add another way to sign in before removing this one.": "请先添加另一种登录方式，再移除这一种。",
+  "The sign-in method could not be removed. Try again.": "无法移除该登录方式。请重试。",
+  "Ways to sign in": "登录方式",
+  "Sign in again": "重新登录",
+  "Added {date}": "{date} 添加",
+  "To change how you sign in, sign in again with {provider} first.": "要更改登录方式，请先用 {provider} 重新登录。",
+  "Add another way to sign in from the Ovis desktop app.": "请在 Ovis 桌面应用中添加其他登录方式。",
+  "Add {provider}": "添加 {provider}",
   "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",
   "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
@@ -157,7 +170,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "命令面板 (⌘⇧K)",
   "Could not sign out. Try again.": "无法退出登录，请重试。",
   "Retry": "重试",
-  "Notify me when a pane needs input or finishes": "窗格需要输入或完成时通知我",
   "On, pushed to this device": "已开启，推送到此设备",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "提醒已开启，推送到此设备。即使关闭应用也会收到。点按可关闭",
   "Off on this device": "此设备已关闭",
@@ -189,15 +201,13 @@ const BASE: Record<string, string> = {
   "local": "本地",
   "Via a loopback address: this PC, or a tunnel to it": "经由回环地址：本机，或通往它的隧道",
   "Via the Ovis relay": "经由 Ovis 中继",
+  "Directly on the same network, not through the relay": "在同一网络上直接连接，不经过中继",
   "Via the Portal relay": "经由 Portal 中继",
   "Via Tailscale": "经由 Tailscale",
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
-  "Sessions on this PC": "此 PC 上的会话",
-  "{count} working": "{count} 个工作中",
   "{count} waiting for you": "{count} 个等待你回应",
-  "{count} done": "{count} 个已完成",
   "Open the next session waiting for you": "打开下一个等待你回应的会话",
   "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
   "Tabs of {workspace}": "{workspace} 的标签页",
@@ -254,7 +264,6 @@ const BASE: Record<string, string> = {
   "New code": "新代码",
   "Paired: {name}.": "已配对：{name}。",
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
-  "Connect a phone": "连接手机",
   "Pairing code": "配对码",
   "Open this address on your phone": "在手机上打开此地址",
   "{agent} is ready": "{agent} 已就绪",
@@ -430,15 +439,11 @@ const BASE: Record<string, string> = {
   "No group": "无分组",
   "Context {percent}% left": "上下文剩余 {percent}%",
   "{used} of {window} tokens": "{used} / {window} Token",
-  "Suggestion chip": "建议标签",
-  "Artifacts chip": "Artifact 标签",
-  "Side conversations chip (experimental)": "旁支对话标签（实验性）",
   "Permission mode": "权限模式",
   "Model": "模型",
   "One model name, without spaces.": "填写一个不含空格的模型名称。",
   "Effort": "推理强度",
   "Sandbox and approvals": "沙箱与审批",
-  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "电脑会在“设置 → 设备和电脑（旧版 Ovis 中为 手机和设备）”中代码下方显示它的 ID。只有每一组都一致时才配对。",
   "Add this PC to my account": "将此电脑添加到我的账号",
   "Add this PC to your account, so every device of your account can use it with one approval.": "将此电脑添加到账号后，只需批准一次，账号的所有设备都能使用它。",
   "Every device of your account can use this PC after that.": "之后，账号的所有设备都能使用此电脑。",
@@ -448,12 +453,25 @@ const BASE: Record<string, string> = {
   "New terminal": "新建终端",
   "New terminal failed: {reason}": "新建终端失败：{reason}",
   "herdr prefix: press a key": "herdr 前缀键：请按一个键",
+  "Shell": "Shell",
+  "Connect a device": "连接设备",
+  "This device": "此设备",
+  "Sign out of {provider}": "退出 {provider} 登录",
+  "Ovis relay": "Ovis 中继",
+  "Reset relay identity": "重置中继身份",
+  "Reset the relay identity?": "要重置中继身份吗？",
+  "Phones paired through the relay will need to scan a new code.": "通过中继配对的手机需要重新扫描新代码。",
+  "Pairs this phone through the relay, so Ovis keeps working away from home.": "通过中继配对这部手机，离家在外也能使用 Ovis。",
+  "This PC": "本机",
+  "Paste and send": "粘贴并发送",
+  "Conversation": "对话",
+  "Off": "关闭",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH },
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH, ...SETTINGS_AGENTS_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,
@@ -468,6 +486,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
+  "runtime-move": RUNTIME_MOVE_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));
