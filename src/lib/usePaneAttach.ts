@@ -9,6 +9,7 @@ import { holdViews, inUse } from "./paneTerminalShared.ts";
 import { modalOpen } from "./focus.ts";
 import type { PendingMessageView } from "./pendingMessages.ts";
 import { FONT_LOAD_TIMEOUT_MS, type FontSettled } from "./fontFamily.ts";
+import { typeAheadFocused } from "./typeAhead.ts";
 
 export interface PaneAttachDeps {
   activeRef: RefObject<boolean>;
@@ -152,7 +153,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       if (away) leaveRef.current();
       // the chat lens covers the grid and its composer takes the keyboard: focusing the hidden
       // grid sent the keys straight to the pane, and showed a phone's IME text mid-screen
-      if (activeRef.current && !chatViewRef.current && !autoSelected && !coarseRef.current && !modalOpen() && !findOpenRef.current) term.focus();
+      // a composition typed ahead and still open keeps its field until it ends (lib/typeAhead.ts)
+      if (activeRef.current && !chatViewRef.current && !autoSelected && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) term.focus();
     };
     const font = fontSettledRef.current;
     if (font.done) {

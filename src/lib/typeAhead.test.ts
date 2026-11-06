@@ -7,7 +7,7 @@ const key = (name: string, mods: Partial<Record<"ctrlKey" | "metaKey" | "altKey"
 describe("typeAheadKey", () => {
   it("sends the keys a shell line needs as a terminal does", () => {
     expect(key("Enter")).toEqual({ input: "\r" });
-    expect(key("Enter", { shiftKey: true })).toEqual({ input: "\r" });
+    expect(key("Enter", { shiftKey: true })).toEqual({ input: "\x1b\r" });
     expect(key("Tab")).toEqual({ input: "\t" });
     expect(key("Backspace")).toEqual({ input: "\x7f" });
     expect(key("Escape")).toEqual({ input: "\x1b" });

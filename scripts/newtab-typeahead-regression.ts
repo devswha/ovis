@@ -120,6 +120,7 @@ async function typeAhead(browser: Browser, origin: string, item: Case): Promise<
       const frame = page.locator(`[data-layout-pane=${JSON.stringify(second!)}]`);
       await frame.getByRole("button", { name: "Discard held input", exact: true }).waitFor();
       assert.match(await frame.innerText(), /echo ahead-/, `${item.name}: what was typed is held for review`);
+      if (item.name === "paste") assert.match(await frame.innerText(), /Not sent: the terminal is not ready for keys\./, "the refused paste is told");
       assert.equal(textOf(sent, second!), "", `${item.name}: nothing held is sent by itself`);
     }
     assert.equal(textOf(sent, first), "", `${item.name}: no key goes to the old tab`);
@@ -156,8 +157,9 @@ const CASES: Case[] = [
   {
     name: "paste", way: "plus", viewport: desktop, ran: null, holdCreate: true,
     type: async (page) => {
-      await page.evaluate(() => document.activeElement?.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true })));
-      await page.keyboard.insertText("echo ahead-paste");
+      const refused = await page.evaluate(() => !document.activeElement?.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true })));
+      assert.equal(refused, true, "a paste typed ahead is refused, never sent around the terminal's bracketed paste");
+      await page.keyboard.type("echo ahead-paste");
       await page.keyboard.press("Enter");
     },
   },

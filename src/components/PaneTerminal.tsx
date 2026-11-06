@@ -73,6 +73,7 @@ import { useChatCallbacks } from "../lib/useChatCallbacks.ts";
 import { useTypedKeys } from "../lib/useTypedKeys.ts";
 import { useTerminalImages } from "../lib/terminalImages.ts";
 import { mountRole, paneObserving } from "../lib/paneObserving.ts";
+import { typeAheadFocused } from "../lib/typeAhead.ts";
 
 /** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
 const PASTE_GUIDANCE_MS = 6000;
@@ -735,7 +736,8 @@ export function PaneTerminal({
   // A sibling already mounted in the split canvas becomes the keyboard target only on an
   // explicit navigation. Clicking inside it leaves focus on the actual clicked control.
   useEffect(() => {
-    if (active && !autoSelected && !chatViewRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current) termRef.current?.focus();
+    // keys typed ahead for a new tab hold the keyboard until its hand-over gives it to the terminal (lib/typeAhead.ts)
+    if (active && !autoSelected && !chatViewRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) termRef.current?.focus();
   }, [active, autoSelected]);
 
   // the user picked the pane App had switched to on its own (the same row or lens again,
@@ -744,7 +746,7 @@ export function PaneTerminal({
   useEffect(() => {
     const wasAuto = autoSelectedRef.current;
     autoSelectedRef.current = autoSelected;
-    if (activeRef.current && wasAuto && !autoSelected && !chatViewRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current) termRef.current?.focus();
+    if (activeRef.current && wasAuto && !autoSelected && !chatViewRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) termRef.current?.focus();
   }, [autoSelected]);
 
 

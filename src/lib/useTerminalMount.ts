@@ -1201,6 +1201,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (ahead === null) return;
         at = ahead.at;
         held = ahead.held || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+        if (ahead.pasteRefused) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
         if (!held) startResume(pane, ahead.since);
         take(ahead.items, ahead.held);
         takeKeyboard(ahead.focused);

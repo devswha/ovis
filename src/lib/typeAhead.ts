@@ -29,8 +29,10 @@ export interface TypeAhead {
   since: number;
   /** when the catch began (Date.now()), to compare with the PC connection's own clock */
   at: number;
-  /** held for review, never sent by itself: a paste, or keys typed before the user went elsewhere */
+  /** held for review, never sent by itself: keys typed before the user went elsewhere, or around a paste */
   held: boolean;
+  /** a paste was refused: it never reached the terminal's bracketed paste, so it is not kept at all (the user is told) */
+  pasteRefused: boolean;
   /** the field still had the keyboard: the terminal takes it over */
   focused: boolean;
 }
@@ -48,6 +50,7 @@ interface Pending {
   since: number;
   at: number;
   held: boolean;
+  pasteRefused: boolean;
   composing: boolean;
   later: TypeAheadLater | null;
   pane: string | null;
@@ -71,7 +74,8 @@ export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "met
   const arrow = ARROW_INPUT[event.key];
   if (arrow !== undefined) return event.shiftKey ? null : { input: arrow, arrow: event.key };
   const input = KEY_INPUT[event.key];
-  return input === undefined || (event.shiftKey && event.key !== "Enter") ? null : { input };
+  if (event.shiftKey && event.key === "Enter") return { input: "\x1b\r" };
+  return input === undefined || event.shiftKey ? null : { input };
 }
 
 export function catchTypeAhead(): TypeAheadCatch | null {
@@ -88,7 +92,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   field.spellcheck = false;
   field.tabIndex = -1;
   Object.assign(field.style, { position: "fixed", left: "0", top: "0", width: "1px", height: "1px", opacity: "0", pointerEvents: "none" });
-  const caught: Pending = { field, items: [], since: performance.now(), at: Date.now(), held: false, composing: false, later: null, pane: null, paneId: null, end: () => false };
+  const caught: Pending = { field, items: [], since: performance.now(), at: Date.now(), held: false, pasteRefused: false, composing: false, later: null, pane: null, paneId: null, end: () => false };
   const commit = (): void => {
     if (field.value === "") return;
     caught.items.push({ input: field.value });
@@ -103,7 +107,12 @@ export function catchTypeAhead(): TypeAheadCatch | null {
     caught.items.push(item);
   };
   const onInput = (event: Event): void => { if (!(event as InputEvent).isComposing) commit(); };
-  const onPaste = (): void => { caught.held = true; };
+  // a paste is the terminal's to bracket once the program says it takes one: refused here, the keys around it held
+  const onPaste = (event: ClipboardEvent): void => {
+    event.preventDefault();
+    caught.held = true;
+    caught.pasteRefused = true;
+  };
   const onCompositionStart = (): void => { caught.composing = true; };
   const onCompositionEnd = (): void => {
     caught.composing = false;
@@ -166,7 +175,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   };
 }
 
-/** Whether the keys typed for a new tab are being caught now: what closes behind the choice (a menu) leaves the focus be. */
+/** Whether the keys typed for a new tab are being caught now: what closes behind the choice (a menu), and a pick's own focus, leave the focus be; only the hand-over moves it. */
 export function typeAheadFocused(): boolean {
   return pending !== null && document.activeElement === pending.field;
 }
@@ -182,8 +191,8 @@ export function takeTypeAhead(pane: string, later: TypeAheadLater): TypeAhead | 
   const items = caught.items.splice(0);
   if (caught.composing && document.activeElement === caught.field) {
     caught.later = later;
-    return { items, since: caught.since, at: caught.at, held: caught.held, focused: false };
+    return { items, since: caught.since, at: caught.at, held: caught.held, pasteRefused: caught.pasteRefused, focused: false };
   }
   const focused = caught.end();
-  return { items: [...items, ...caught.items.splice(0)], since: caught.since, at: caught.at, held: caught.held, focused };
+  return { items: [...items, ...caught.items.splice(0)], since: caught.since, at: caught.at, held: caught.held, pasteRefused: caught.pasteRefused, focused };
 }
