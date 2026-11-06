@@ -45,7 +45,6 @@ export const SETTINGS_ACCESS_JA: Record<string, string> = {
   "The code that PC shows under Connect a device.": "その PC の「デバイスを接続」に表示されるコードです。",
   "ID {id}": "ID {id}",
   "My devices": "マイデバイス",
-  "Remove PC {name}": "PC {name} を削除",
   "Sign out of this PC": "この PC からサインアウト",
   "This app": "このアプリ",
   "Use the relay": "リレーを使う",
