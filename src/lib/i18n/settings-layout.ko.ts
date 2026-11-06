@@ -12,4 +12,5 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "More settings": "설정 더 보기",
   "Experimental": "실험 기능",
   "{count} changed": "{count}개 바꿈",
+  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC는 설정 → 기기와 PC(이전 Ovis에서는 폰 및 기기)의 코드 아래에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
 };

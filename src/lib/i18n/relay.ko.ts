@@ -84,4 +84,5 @@ export const RELAY_KO: Record<string, string> = {
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "이 기기를 계정에서 뺐습니다. 계정 목록에 없는 이 PC들에는 아직 남아 있으니 거기서 취소하세요: {pcs}",
   "{name} has not added this device yet": "{name}에 아직 이 기기가 추가되지 않았습니다",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "계정에 새 기기가 들어오면 몇 분 안에 추가됩니다. 잠시 뒤 다시 시도하세요.",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "PC는 설정 → 폰 및 기기의 코드 아래에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
 };

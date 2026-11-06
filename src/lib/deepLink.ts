@@ -75,7 +75,7 @@ export function slugOf(label: string | null | undefined): string {
 }
 
 /** Settings pages merged into another: a link or history entry naming one opens the page it went to. */
-const MOVED_SETTINGS: Readonly<Record<string, string>> = { usage: "agents", integrations: "agents" };
+const MOVED_SETTINGS: Readonly<Record<string, string>> = { usage: "agents", integrations: "agents", voice: "chat", remote: "devices" };
 
 /** The Settings page a link or history entry names, as this version calls it. */
 export function currentSettingsPage(page: string): string;

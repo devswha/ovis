@@ -33,6 +33,9 @@ describe("deep links", () => {
   it("lands a link to the pages Agents replaced on Agents, keeping the group it names", () => {
     expect(readLink("?settings=usage&section=accounts-claude")).toMatchObject({ settings: "agents", section: "accounts-claude" });
     expect(readLink("?settings=integrations&section=guide")).toMatchObject({ settings: "agents", section: "guide" });
+    // Voice input became Chat's group and Remote PCs a group of Devices and PCs
+    expect(readLink("?settings=voice&section=openai-key")).toMatchObject({ settings: "chat", section: "openai-key" });
+    expect(readLink("?settings=remote&section=sidebar-pcs")).toMatchObject({ settings: "devices", section: "sidebar-pcs" });
     expect(readLink("?settings=chat")).toMatchObject({ settings: "chat" });
   });
 

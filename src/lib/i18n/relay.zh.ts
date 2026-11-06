@@ -84,4 +84,5 @@ export const RELAY_ZH: Record<string, string> = {
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "此设备已离开账户。账户未列出的以下 PC 上仍保留它，请在那里撤销：{pcs}",
   "{name} has not added this device yet": "{name} 尚未添加此设备",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "账户中的新设备会在几分钟内被添加。请稍后重试。",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "电脑会在“设置 → 手机和设备”中代码下方显示它的 ID。只有每一组都一致时才配对。",
 };

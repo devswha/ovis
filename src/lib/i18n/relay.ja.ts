@@ -84,4 +84,5 @@ export const RELAY_JA: Record<string, string> = {
   "This device left the account. These PCs the account does not list still have it, so revoke it on them: {pcs}": "このデバイスをアカウントから外しました。アカウントにない次の PC にはまだ残っているので、そこで取り消してください: {pcs}",
   "{name} has not added this device yet": "{name} にはまだこのデバイスが追加されていません",
   "It adds the devices of your account a few minutes after they join. Try again in a moment.": "アカウントに参加したデバイスは数分以内に追加されます。少ししてからもう一度お試しください。",
+  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "PC は「設定 → スマートフォンとデバイス」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
 };
