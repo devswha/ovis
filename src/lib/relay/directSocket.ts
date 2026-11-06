@@ -229,23 +229,27 @@ export function directSocketFactory(bridge: DirectBridge): (url: string) => Rela
 }
 
 let shared: ((url: string) => RelaySocket) | undefined;
-let tailnet: Promise<boolean> | undefined;
+let tailnet: (() => boolean) | undefined;
 
 /**
- * Whether the app's plugin also opens a carrier on the PC's Tailscale address (100.64.0.0/10), as its
- * `features` answers; an app built before that has no `features`, and one that does not answer at once is
- * taken for such an app.
+ * Whether the plugin behind `call` also opens a carrier on the PC's Tailscale address (100.64.0.0/10): false
+ * until its `features` answers `tailnet: true`, so nobody waits on it. Asked once; an app built before that
+ * has no `features` and may never answer, which leaves it false.
  */
-export function nativeDirectTailnet(): Promise<boolean> {
+export function directTailnetSupport(call: (plugin: string, method: string) => Promise<unknown>): () => boolean {
+  let supported = false;
+  call(DIRECT_PLUGIN, "features").then(
+    (answer) => { supported = (answer as { tailnet?: unknown } | null)?.tailnet === true; },
+    () => { /* an app without `features`: home-network carriers only */ },
+  );
+  return () => supported;
+}
+
+/** directTailnetSupport for the app's own plugin, asked when the shell starts; always false without the app. */
+export function nativeDirectTailnet(): () => boolean {
   const call = (globalThis as { Capacitor?: CapacitorEvents }).Capacitor?.nativePromise;
-  if (!call) return Promise.resolve(false);
-  tailnet ??= new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), 1_000);
-    call(DIRECT_PLUGIN, "features").then(
-      (answer) => (answer as { tailnet?: unknown } | null)?.tailnet === true,
-      () => false,
-    ).then((supported) => { clearTimeout(timer); resolve(supported); });
-  });
+  if (!call) return () => false;
+  tailnet ??= directTailnetSupport(call);
   return tailnet;
 }
 

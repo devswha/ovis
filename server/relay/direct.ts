@@ -71,8 +71,10 @@ function routedAddress(): Promise<string | null> {
   });
 }
 
-/** Tailscale's adapter: tailscale0 on Linux, "Tailscale" on Windows, a utun on macOS. */
-const TAILSCALE_INTERFACE = /^(tailscale|utun)/i;
+/** Tailscale's own adapter by name: tailscale0 on Linux, "Tailscale" on Windows. */
+const TAILSCALE_INTERFACE = /^tailscale/i;
+/** macOS gives Tailscale a utun, as it does every other VPN: one counts only with the address tailscale names. */
+const TUNNEL_INTERFACE = /^utun\d*$/i;
 
 /** A Tailscale IPv4 address (100.64.0.0/10), in any spelling a socket gives it. */
 export function tailnetPeer(address: string | null | undefined): boolean {
@@ -81,14 +83,18 @@ export function tailnetPeer(address: string | null | undefined): boolean {
 }
 
 /**
- * This PC's Tailscale IPv4 address to listen on, when it is on one of its adapters: the one `tailscale
- * status` names (`known`), or with none known an address in Tailscale's range on Tailscale's adapter, so an
- * ISP's shared address space on a real adapter is never taken for it. At most one.
+ * This PC's Tailscale IPv4 address to listen on: an address in Tailscale's range on Tailscale's own adapter,
+ * or on a macOS utun only when it is the one `tailscale status` names (`named`); with a named address on an
+ * adapter, only that one. Never one on a real adapter (an ISP's shared address space) or another VPN's tunnel, whatever a
+ * stale status says. At most one.
  */
-export function tailnetAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, known: string | null): string[] {
+export function tailnetAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, named: string | null): string[] {
+  // an address the status named that is on no adapter is stale (Tailscale moved it): Tailscale's own adapter still counts
+  const known = Object.values(interfaces).some((list) => list?.some((entry) => entry.address === named)) ? named : null;
   const found = Object.entries(interfaces).flatMap(([name, list]) => (list ?? [])
     .filter((entry) => entry.family === "IPv4" && !entry.internal && tailnetPeer(entry.address)
-      && (known === null ? TAILSCALE_INTERFACE.test(name) : entry.address === known))
+      && (known === null || entry.address === known)
+      && (TAILSCALE_INTERFACE.test(name) || (TUNNEL_INTERFACE.test(name) && entry.address === known)))
     .map((entry) => entry.address));
   return found.slice(0, 1);
 }

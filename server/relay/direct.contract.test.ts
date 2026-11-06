@@ -321,15 +321,18 @@ describe("addresses listened on", () => {
     expect(rankLanAddresses(interfaces, "192.168.0.10")).toEqual(["192.168.0.10", "10.0.0.2", "10.0.1.2", "10.0.2.2"]);
   });
 
-  it("takes the Tailscale address on Tailscale's adapter, or the one tailscale names, never a shared address on a real adapter", () => {
+  it("takes the Tailscale address only on Tailscale's adapter, never a shared address on a real adapter or another VPN's tunnel", () => {
     const cases: [string, NodeJS.Dict<NetworkInterfaceInfo[]>, string | null, string[]][] = [
       ["Linux tailscale0", { eth0: [nic("192.168.0.10")], tailscale0: [nic("100.101.102.103")] }, null, ["100.101.102.103"]],
       ["Windows adapter", { Tailscale: [nic("100.64.0.2")] }, null, ["100.64.0.2"]],
-      ["macOS utun", { utun4: [nic("100.127.255.254")] }, null, ["100.127.255.254"]],
+      ["macOS utun with the address tailscale names", { utun4: [nic("100.127.255.254")] }, "100.127.255.254", ["100.127.255.254"]],
+      ["a utun while tailscale names none (another VPN's, maybe)", { utun4: [nic("100.72.1.2")] }, null, []],
+      ["another utun than the one tailscale names", { utun3: [nic("100.70.0.1")], utun5: [nic("100.80.0.9")] }, "100.80.0.9", ["100.80.0.9"]],
       ["ISP shared address space on a real adapter", { eth0: [nic("100.72.1.2")] }, null, []],
+      ["a stale status naming a real adapter's shared address", { eth0: [nic("100.72.1.2")] }, "100.72.1.2", []],
       ["outside Tailscale's range", { tailscale0: [nic("100.128.0.1")] }, null, []],
-      ["the one tailscale names, on any adapter", { utun3: [nic("100.70.0.1")], wg0: [nic("100.80.0.9")] }, "100.80.0.9", ["100.80.0.9"]],
-      ["tailscale names one that is not on an adapter (stopped)", { tailscale0: [nic("100.90.0.1")] }, "100.90.0.2", []],
+      ["tailscale names an address no adapter has (it moved): Tailscale's adapter still counts", { tailscale0: [nic("100.90.0.1")] }, "100.90.0.2", ["100.90.0.1"]],
+      ["tailscale names an address no adapter has, and only another VPN's utun is up", { utun4: [nic("100.96.0.3")] }, "100.90.0.2", []],
     ];
     for (const [name, interfaces, known, expected] of cases) expect(tailnetAddresses(interfaces, known), name).toEqual(expected);
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { directSocketFactory, EARLY_SEND_BYTES, EARLY_SEND_MESSAGES, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
+import { directSocketFactory, directTailnetSupport, EARLY_SEND_BYTES, EARLY_SEND_MESSAGES, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
 
 const CARRIER = "ws://192.168.0.10:7319/v1/ws?v=1";
 
@@ -46,6 +46,23 @@ describe("isDirectSocketUrl", () => {
       "ws://pc.local:7319/v1/ws?v=1",
       "ws://user@192.168.0.10:7319/v1/ws?v=1",
     ]) expect(isDirectSocketUrl(url)).toBe(false);
+  });
+});
+
+describe("directTailnetSupport", () => {
+  it("says yes only once the plugin answered tailnet, and never waits for an answer", async () => {
+    // Given plugins that answer yes, answer no, have no `features` (reject), or never answer
+    const answer = Promise.withResolvers<unknown>();
+    const yes = directTailnetSupport(() => answer.promise);
+    const no = directTailnetSupport(async () => ({}));
+    const missing = directTailnetSupport(async () => { throw new Error("not implemented"); });
+    const silent = directTailnetSupport(() => new Promise<never>(() => {}));
+    // When nothing has answered yet, then after the answers
+    expect(yes()).toBe(false);
+    answer.resolve({ tailnet: true });
+    await settle();
+    // Then only the plugin that said tailnet counts
+    expect([yes(), no(), missing(), silent()]).toEqual([true, false, false, false]);
   });
 });
 

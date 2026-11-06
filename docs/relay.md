@@ -771,9 +771,10 @@ While the relay is on, the PC also listens on its private IPv4 addresses (RFC 19
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
 ([`server/relay/direct.ts`](../server/relay/direct.ts)). It also listens on the PC's Tailscale IPv4
-address (100.64.0.0/10) on the same port, when one is up: the one `tailscale status` names, or with
-none known, a Tailscale-range address on Tailscale's own adapter (`tailscale0`, `Tailscale`, a
-macOS `utun`), never one on a real adapter (an ISP's shared address space). It keeps one of the four
+address (100.64.0.0/10) on the same port, when one is up: a Tailscale-range address on Tailscale's
+own adapter (`tailscale0`, Windows' `Tailscale`), or on a macOS `utun` only when it is the address
+`tailscale status` names (with one named, only that one); never one on a real adapter (an ISP's
+shared address space) or another VPN's tunnel. It keeps one of the four
 places. A phone that can reach one of them opens
 it there instead of through `relay.ovis.sh`. The iOS and Android apps open it through their OvisDirect
 plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser stays on the relay.
