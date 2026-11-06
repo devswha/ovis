@@ -240,7 +240,7 @@ describe("enrolling a PC this device brings into the account", () => {
     expect((await (await pcFetch(await connect(y, onY))("/api/account/status")).json() as { enrolling: boolean }).enrolling).toBe(true);
   });
 
-  it("sends no add, but ends the new PC's wait, when the only PC it read could not read its mailbox", async () => {
+  it("sends no add and holds every one, but ends the new PC's wait, when the only PC it read could not read its mailbox", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     await approve("Mac app");
     const onY = await linkY();
@@ -252,6 +252,8 @@ describe("enrolling a PC this device brings into the account", () => {
     const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: stale }] });
     expect([enrolled.finished, enrolled.checked, enrolled.admitted]).toEqual([true, 0, []]);
     expect(y.f.app.context.services.accountHolds.enrolling()).toBe(false);
+    // what that PC could not vouch for stays out of every later add there too
+    expect(y.f.app.context.services.accountHolds.full()).toBe(true);
   });
 
   it("relays its removes but sends no add when only PCs from before enrollments answered, and ends the new PC's wait", async () => {

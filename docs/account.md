@@ -211,8 +211,8 @@ may not name every key it keeps out, and a client enrolling another PC sends tha
 `held_full`. A client trusts none of them before it checks it (below).
 With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the request), so a remove
 waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
-without an error, for the PC's current account and relay identity. A PC with no account service
-(`off`) has no mailbox and answers `fresh: true`.
+without an error, for the PC's current account and relay identity. A PC whose account service is
+turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -283,8 +283,9 @@ its link brings a PC that had no account into it, it first reads every other PC 
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
 none of them answers it sends nothing and tries again on its next connection. A PC whose answer
 is not `fresh` (its mailbox read failed, or it is from before enrollments) counts for its removals
-only: while any such PC answers, the client sends the removals but no add, and ends the new PC's
-wait: the account's devices
+only: while any such PC answers, the client sends the removals but no add, with `held_full`, and
+ends the new PC's wait (that PC then takes no account add at all, as a key no list names may be
+out): the account's devices
 then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
 `enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:

@@ -28,8 +28,16 @@ function scope(account: string, serverId: string, key: string): string {
 /** Pages one pull reads at most; the rest waits for the next pull. */
 const MAX_PAGES = 20;
 
+/** The account service was turned off on purpose (OVIS_ACCOUNT_SERVICE_URL=off): no mailbox exists, unlike one that is only unusable. */
+export class AccountServiceOff extends Error {
+  constructor() {
+    super("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
+    this.name = "AccountServiceOff";
+  }
+}
+
 export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string {
-  if (value.trim().toLowerCase() === "off") throw new Error("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
+  if (value.trim().toLowerCase() === "off") throw new AccountServiceOff();
   const url = new URL(value);
   const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("The account service must be https");
@@ -174,9 +182,10 @@ export class AccountMailbox {
    */
   async freshen(): Promise<boolean> {
     // with no account service there is no mailbox, so nothing can wait unread in one
-    if (this.options.service instanceof Error) return this.pendingError === null;
+    if (this.options.service instanceof AccountServiceOff) return this.pendingError === null;
     const asked = Date.now();
-    // a pull under way may have read the mailbox before this request: the answer waits for one that starts after it
+    // a pull under way may have read the mailbox before this request: the answer waits for one that starts after it,
+    // which every request waiting meanwhile shares (pull)
     if (this.pulling) await this.pulling;
     await this.pull();
     if (this.drainedAt === null || this.drainedAt < asked) return false;

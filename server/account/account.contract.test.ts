@@ -462,6 +462,24 @@ test("a PC with no account service says its status is fresh: no mailbox can hold
   expect((await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean }).fresh).toBe(true);
 });
 
+test("a PC whose account service address is unusable, not turned off, is never fresh", async () => {
+  const f = fixture({ accountService: { url: "http://account.example" } });
+  const { link } = await member(f);
+  expect((await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean }).fresh).toBe(false);
+});
+
+test("fresh requests at the same time share one mailbox pull", async () => {
+  const service = new FakeAccountService();
+  let pulls = 0;
+  const counting = async (request: Request) => { if (new URL(request.url).pathname === "/v1/pc/challenge") pulls++; return service.fetch(request); };
+  const f = fixture();
+  const identity = rotateRelayIdentity(f.stateDir);
+  await member(f);
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test", fetch: counting });
+  expect(await Promise.all(Array.from({ length: 5 }, () => mailbox.freshen()))).toEqual([true, true, true, true, true]);
+  expect(pulls).toBe(1);
+});
+
 test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {
   const f = fixture();
   const first = await relayDevice(f);
