@@ -6,8 +6,7 @@
 export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "Paste and send button": "붙여넣고 보내기 버튼",
   "A button in the empty message box sends the text copied on this device as a message.": "빈 입력창의 버튼으로 이 기기에서 복사한 글을 메시지로 보냅니다.",
-  "Split into rows and columns": "행과 열로 나누기",
-  "Drop a pane on the edge of another in the split view to open it beside, above or below that pane, up to four at once, and drag the line between two panes to resize them. Off: the split view keeps two halves side by side.": "분할 보기에서 패널을 다른 패널의 가장자리에 놓으면 그 패널의 옆, 위, 아래에 열립니다. 한 번에 넷까지 열 수 있고, 두 패널 사이의 선을 끌어 크기를 바꿉니다. 끄면 분할 보기는 좌우 두 칸으로 나뉩니다.",
+
   "Background workspaces apart": "백그라운드 워크스페이스 따로 두기",
   "On this device, workspaces a tool tagged role=background (herdr workspace report-metadata --token role=background) stand after the others under a folded Background workspaces heading. The open one, and one whose agent asks a question, stay in sight.": "이 기기에서, 도구가 role=background 태그를 단 워크스페이스(herdr workspace report-metadata --token role=background)를 다른 워크스페이스 뒤의 접힌 백그라운드 워크스페이스 머리글 아래에 둡니다. 열려 있는 워크스페이스와 에이전트가 질문 중인 워크스페이스는 계속 보입니다.",
   "Go to tab 1-9": "1~9번 탭으로 이동",
@@ -27,4 +26,5 @@ export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.": "입력창 위의 칩을 누르면 Claude Code가 제안한 다음 프롬프트가 입력창에 들어갑니다. 키보드에서는 Tab으로 넣습니다.",
   "A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.": "Claude Code 패널의 입력창에 세션이 Artifact 도구로 게시한 페이지 목록을 여는 칩을 표시합니다.",
   "The site in that tab can see and navigate this Ovis tab.": "그 탭의 사이트가 이 Ovis 탭을 보고 이동시킬 수 있습니다.",
+  "Split into rows and columns": "행과 열로 나누기",
 };
