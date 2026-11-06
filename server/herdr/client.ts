@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ConnectionDiagnostics, transportFailureCode } from "../connection-diagnostics.ts";
@@ -50,15 +50,15 @@ export function sameSocket(path: string): string {
 /**
  * A process that names a test session never reaches herdr's default socket, the user's own session:
  * a script whose scripts/test-herdr.ts import Bun dropped (its binding unused) would otherwise create,
- * type into and close panes there. Every home counts (HOME may be changed for a fixture after the
- * socket was chosen; the account's own home stays the user's), and every spelling of the same socket.
+ * type into and close panes there. Both homes count (HOME may be changed for a fixture after the
+ * socket was chosen), and every spelling of the same socket.
  * The XDG_CONFIG_HOME that counts is the one the test run started with (scripts/test-herdr.ts records
  * it in OVIS_TEST_USER_XDG_CONFIG_HOME, and children inherit it), not one a test gave a child of its
  * own: refusing that would refuse the test's own herdr. Without the record, this process's own counts.
  */
 function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
   if (!liveSessionsRefused(env)) return;
-  const homes = [...new Set([env["HOME"], homedir(), accountHome()].filter((home): home is string => Boolean(home)))];
+  const homes = [...new Set([env["HOME"], homedir()].filter((home): home is string => Boolean(home)))];
   const config = env["OVIS_TEST_USER_XDG_CONFIG_HOME"] ?? env["XDG_CONFIG_HOME"];
   const defaults = [
     ...homes.map((home) => join(home, ".config", "herdr", "herdr.sock")),
@@ -68,11 +68,6 @@ function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefi
   if (defaults.includes(sameSocket(socketPath))) {
     throw new HerdrError("live_herdr_refused", `HERDR_TEST_SESSION=${env["HERDR_TEST_SESSION"]} is set, but this call would reach the user's own herdr at ${socketPath}: import scripts/test-herdr.ts for its effect (import "./test-herdr.ts"), or set OVIS_ALLOW_LIVE_HERDR=1`);
   }
-}
-
-/** The home the account database names, whatever HOME says. */
-function accountHome(): string | undefined {
-  try { return userInfo().homedir; } catch { return undefined; }
 }
 
 /**
