@@ -20,6 +20,13 @@ const LEFT_FILES_KEPT = 10;
 const paneKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
 
 /**
+ * The viewer's React key: a path is read from its pane's folder, so two panes' files of the same path
+ * are two files, and a switch from one to the other must not keep the first one's loaded content.
+ */
+export const fileViewerKey = (preview: { machineId: string; paneId: string | null; path: string }): string =>
+  `${preview.machineId}\n${preview.paneId ?? ""}\n${preview.path}`;
+
+/**
  * The Files dialog, the file viewer, a repository diff and the web panel, which share the place beside
  * the pane and the history entries over it; and, with Reopen files on return, the files tab switches left.
  */

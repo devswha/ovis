@@ -87,6 +87,18 @@ writeFileSync(transcript, [
 const db = new Database(join(codexHome, "state_5.sqlite"));
 db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, archived INTEGER, agent_role TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, first_user_message TEXT)");
 db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(thread, transcript, root, "Show me the demo video.");
+// a second folder with a notes.txt of its own: its pane's ./notes.txt is a file of the same path as the first pane's
+const side = join(root, "side");
+mkdirSync(side);
+writeFileSync(join(side, "notes.txt"), "Side pane notes\n");
+const sideThread = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc12";
+const sideTranscript = join(codexHome, "sessions", `rollout-2026-09-28T00-00-01-${sideThread}.jsonl`);
+writeFileSync(sideTranscript, [
+  { type: "session_meta", payload: { id: sideThread, cwd: side } },
+  { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Where are the side notes?" }] } },
+  { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Open [side notes](./notes.txt)." }] } },
+].map((row) => JSON.stringify(row)).join("\n"));
+db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(sideThread, sideTranscript, side, "Where are the side notes?");
 db.close();
 const standIn = join(root, "codex");
 writeFileSync(standIn, "#!/bin/sh\nsleep 600\n");
@@ -172,6 +184,8 @@ writeFileSync(join(root, "broken.png"), "not PNG bytes");
 let workspace: string | undefined;
 // a second workspace, for the pane moves of the docked block alone
 let otherWorkspace: string | undefined;
+// a third, in a folder of its own, for two files of the same path on two panes
+let sideWorkspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 
@@ -896,6 +910,50 @@ try {
   await setReopen(false);
   assert.equal(await fileEntry(), null, "back on the pane's own entry, which holds no file");
   console.log("PASS Reopen files on return: Back and a sidebar switch show the file again; one closed on its tab stays closed");
+
+  // two panes with a file of the same path (each pane's ./notes.txt): coming back to one shows its own
+  // file, never the other pane's content kept by a viewer the switch reused (#3185 review)
+  const sideCreated = await workspaceCreate({ cwd: side, label: "ovis-test-file-back-side" });
+  sideWorkspace = sideCreated.workspace.workspace_id;
+  const sidePane = sideCreated.root_pane.pane_id;
+  await herdrRpc("pane.send_text", { pane_id: sidePane, text: `${standIn} resume ${sideThread}\n` });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const info = await herdrRpc<{ process_info?: { foreground_processes?: { argv?: string[] }[] } }>("pane.process_info", { pane_id: sidePane });
+    if (info.process_info?.foreground_processes?.some((process) => process.argv?.includes(standIn))) break;
+    if (attempt === 99) throw new Error("side test Codex process did not start");
+    await Bun.sleep(50);
+  }
+  await herdrRpc("pane.report_agent", { pane_id: sidePane, source: "manual", agent: "codex", state: "idle", agent_session_path: sideTranscript });
+  await setReopen(true);
+  await rowOf(sidePane).waitFor();
+  const sameStart = await entryIndex();
+  const sideNotes = page.getByRole("button", { name: "side notes", exact: true });
+  await rowOf(sidePane).click();
+  await onPane(sidePane);
+  await sideNotes.press("Enter");
+  await panel.getByText("Side pane notes", { exact: true }).waitFor();
+  await rowOf(pane).click();
+  await onPane(pane);
+  await notesLink.press("Enter");
+  await panel.getByText("File preview history regression", { exact: true }).waitFor();
+  // the viewer showing the first pane's file is marked: a viewer the switch reused would keep that
+  // file's loaded content, and show it for the side pane's file until it read its own
+  await panel.evaluate((element) => { (element as HTMLElement & { firstPaneViewer?: boolean }).firstPaneViewer = true; });
+  await rowOf(sidePane).click();
+  await onPane(sidePane);
+  await panel.getByText("Side pane notes", { exact: true }).waitFor();
+  assert.equal(await panel.evaluate((element) => (element as HTMLElement & { firstPaneViewer?: boolean }).firstPaneViewer === true), false, "the side pane's file of the same path opens in a viewer of its own");
+  assert.equal(await panel.getByText("File preview history regression", { exact: true }).count(), 0, "the side pane's file shows none of the first pane's content");
+  await panel.getByRole("button", { name: "Close file", exact: true }).click();
+  await panel.waitFor({ state: "detached" });
+  await page.evaluate((steps) => { history.go(steps); }, sameStart - await entryIndex());
+  await page.waitForFunction((index) => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index === index, sameStart);
+  await onPane(pane);
+  await setReopen(false);
+  await workspaceClose(sideWorkspace);
+  sideWorkspace = undefined;
+  await rowOf(sidePane).waitFor({ state: "detached" });
+  console.log("PASS two panes with a file of the same path: coming back to one shows its own file");
 
   // a Forward onto a file's entry whose pane has closed since selects no pane of the file's: the file
   // is left behind at once, not kept over a pane it is not from (#3185 review)
@@ -1982,6 +2040,7 @@ try {
   reportServer.stop(true);
   server?.stop();
   if (otherWorkspace) await workspaceClose(otherWorkspace);
+  if (sideWorkspace) await workspaceClose(sideWorkspace);
   if (workspace) await workspaceClose(workspace);
   rmSync(root, { recursive: true, force: true });
 }
