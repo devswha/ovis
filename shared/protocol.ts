@@ -591,7 +591,9 @@ export interface SkillActivity {
 }
 
 export type ConversationPart =
-  | { kind: "text"; text: string; phase?: "commentary" | "final_answer" }
+  /** `failed`: a request the agent recorded as failed (pi-family `stopReason: "error"`); `text` is "Error: " and its error.
+   *  A later part of the same turn is a later request; nothing records whether it was an automatic retry. */
+  | { kind: "text"; text: string; phase?: "commentary" | "final_answer"; failed?: true }
   /** the agent's reasoning block; the client folds it and shows it only on request */
   | { kind: "thinking"; text: string }
   | { kind: "skill"; skill: SkillActivity }
@@ -617,8 +619,9 @@ export type ConversationPart =
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }
-  /** the summary a compaction left; the conversation before it is what it sums up */
-  | { kind: "compact"; text: string }
+  /** the summary a compaction left; the conversation before it is what it sums up. The token counts are present only
+   *  where the record states them (pi-family `tokensBefore`/`tokensAfter`, OmO's `details.structuralYield.savedTokens`). */
+  | { kind: "compact"; text: string; tokens_before?: number; tokens_after?: number; tokens_saved?: number }
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
   | { kind: "notice"; text: string; source?: string }
@@ -744,6 +747,12 @@ export interface ConversationResponse {
    * read again on the pane's next activity rather than on a timer.
    */
   recovery?: "waiting";
+  /**
+   * On a scrollback answer for a Copilot pane on Linux: its one Copilot process was not started with
+   * `--ui-server`, and Chat could not bind its session from the files and herdr's report; starting it
+   * with the flag may help.
+   */
+  hint?: "copilot_ui_server";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or

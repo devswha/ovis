@@ -77,9 +77,8 @@ const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, str
   ["en", "phone", "devices", "-"],
   ["en", "OpenAI API key", "voice", "openai-key"],
   ["en", "Return inserts a new line", "chat", "composer"],
-  ["en", "Send queued messages automatically", "chat", "composer"],
-  ["en", "New tab button", "chat", "composer"],
-  ["en", "Suggestion chip", "chat", "composer"],
+  ["en", "Send queued messages automatically", "chat", "composer-more"],
+  ["en", "Suggestion chip", "chat", "composer-more"],
   ["en", "Show above the message box", "chat", "quick-replies"],
   ["ko", "인터페이스 글자 크기", "appearance", "typography"],
   ["ko", "채팅 글자 크기", "chat", "-"],
@@ -89,7 +88,7 @@ const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, str
   ["ko", "OpenAI API 키", "voice", "openai-key"],
   ["ko", "단축키", "shortcuts", "-"],
   ["ko", "알림", "alerts", "-"],
-  ["ko", "대기 메시지 자동 전송", "chat", "composer"],
+  ["ko", "대기 메시지 자동 전송", "chat", "composer-more"],
   ["ko", "입력창 위에 표시", "chat", "quick-replies"],
   ["ja", "インターフェースの文字サイズ", "appearance", "typography"],
   ["ja", "チャットのフォントサイズ", "chat", "-"],
@@ -99,7 +98,7 @@ const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, str
   ["ja", "OpenAI API キー", "voice", "openai-key"],
   ["ja", "ショートカット", "shortcuts", "-"],
   ["ja", "通知", "alerts", "-"],
-  ["ja", "送信待ちメッセージを自動で送信", "chat", "composer"],
+  ["ja", "送信待ちメッセージを自動で送信", "chat", "composer-more"],
   ["ja", "入力欄の上に表示", "chat", "quick-replies"],
   ["zh", "界面字号", "appearance", "typography"],
   ["zh", "聊天字号", "chat", "-"],
@@ -109,7 +108,7 @@ const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, str
   ["zh", "OpenAI API 密钥", "voice", "openai-key"],
   ["zh", "快捷键", "shortcuts", "-"],
   ["zh", "提醒", "alerts", "-"],
-  ["zh", "自动发送排队消息", "chat", "composer"],
+  ["zh", "自动发送排队消息", "chat", "composer-more"],
   ["zh", "显示在输入框上方", "chat", "quick-replies"],
 ];
 
@@ -384,7 +383,8 @@ interface HeldVoice { voiceAsked: () => number; releaseVoice: () => void; groupO
  * they scrolled.
  */
 async function heldGroupLanding(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
+  // short enough that the OpenAI key's group starts below the fold, so a landing has to scroll to it
+  const context = await browser.newContext({ viewport: { width: 390, height: 480 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -455,6 +455,148 @@ const checkSelectArrows = async (page: Page): Promise<void> => {
     for (const key of ["centered", "textClear", "nativeArrowHidden", "clickThrough", "decorative"] as const) assert.equal(control[key], true, key);
   }
 };
+
+/**
+ * Settings' own search, at 1440 and 390: the settings of every page that hold all the words typed,
+ * each under its page's name and changed right there; a group named by the words shows its settings;
+ * a page's name opens it; no match says so; and Escape empties the search before it closes Settings.
+ */
+async function dialogSearch(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  for (const width of [1440, 390] as const) {
+    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    try {
+      await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(url);
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      await openSettings(page);
+      const dialog = dialogOf(page);
+      const search = dialog.getByRole("searchbox", { name: "Search settings", exact: true });
+      const results = dialog.getByRole("region", { name: "Search results", exact: true });
+      // the pages drawn with what each shows: its name and the labels of the settings in sight
+      const shown = () => results.evaluate((region) => [...region.querySelectorAll<HTMLElement>(".settings-search-page")].filter((section) => section.checkVisibility())
+        .map((section) => [section.getAttribute("aria-label"), [...section.querySelectorAll<HTMLElement>("[data-setting]")].filter((row) => row.checkVisibility()).map((row) => row.querySelector(".settings-label")?.textContent ?? "")] as const));
+
+      await search.fill("Font SIZE");
+      const found = await shown();
+      assert.deepEqual(found.map(([name]) => name), ["Appearance", "Chat", "Terminal"], `${width}px: "font size" finds settings on those pages only`);
+      for (const [name, label] of [["Appearance", "Interface font size"], ["Chat", "Chat font size"], ["Terminal", "Terminal font size"]] as const) {
+        assert.ok(found.find(([page]) => page === name)?.[1].includes(label), `${width}px: ${label} is found under ${name}`);
+      }
+      assert.equal(await dialog.getByRole("tablist").isVisible(), width !== 390, `${width}px: a phone's results take the list's place`);
+
+      // a setting found is changed where it is shown
+      await results.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
+      assert.equal(await results.getByRole("group", { name: "Terminal font size", exact: true }).locator("output").textContent(), "14px");
+
+      // a group named by the words shows each of its settings, and one with a form but no setting row shows the form
+      await search.fill("quick replies");
+      assert.deepEqual(await shown(), [["Chat", ["Show above the message box"]]], `${width}px: the Quick replies group's setting is found by the group's name`);
+      await search.fill("openai api key");
+      await results.locator('input[aria-label="OpenAI API key"]').waitFor();
+
+      // Escape empties a search from a result too, not only from the field
+      await search.fill("sound");
+      await results.getByRole("switch", { name: "Sound", exact: true }).focus();
+      await page.keyboard.press("Escape");
+      assert.equal(await search.inputValue(), "", `${width}px: Escape on a result empties the search`);
+      assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: the field takes the focus back`);
+
+      // a row a found row opens is found with it: Custom from a description match shows its field
+      await search.fill("menus dialogs");
+      await results.getByRole("combobox", { name: "Interface font", exact: true }).selectOption("custom");
+      await results.getByRole("textbox", { name: "Custom interface font", exact: true }).waitFor();
+      await results.getByRole("combobox", { name: "Interface font", exact: true }).selectOption("default");
+      assert.equal(await page.locator(".settings-dialog").count(), 1, `${width}px: and keeps Settings open`);
+
+      // the key bar editor opened from a search sits over the Terminal page: Back steps out to it, not out of Settings
+      if (width === 390) {
+        await search.fill("key bar");
+        await results.getByRole("button", { name: "Edit key bar", exact: true }).click();
+        await page.getByRole("dialog", { name: "Key bar", exact: true }).waitFor();
+        await historyHolds(page, "the key bar opened from a search", () => (history.state as { "ovis:settings"?: { page: string | null; keyBar: boolean } } | null)?.["ovis:settings"]?.keyBar === true);
+        await page.goBack();
+        await dialog.getByRole("tabpanel", { name: "Terminal", exact: true }).waitFor();
+        await page.goBack();
+        await dialog.getByRole("tablist").waitFor();
+        assert.equal(await page.locator(".settings-dialog").count(), 1, "390px: Back from the key bar opened by a search leaves Settings open");
+      }
+
+      await search.fill("zzqxv nothing");
+      await dialog.getByRole("status").filter({ hasText: "No settings match." }).waitFor();
+      assert.deepEqual(await shown(), [], `${width}px: no page is drawn when nothing matches`);
+
+      // the first Escape empties the search and keeps Settings; the next one closes it
+      await search.press("Escape");
+      assert.equal(await search.inputValue(), "");
+      assert.equal(await results.count(), 0);
+      assert.equal(await dialog.getByRole("tablist").isVisible(), true, `${width}px: the list of pages is back`);
+      assert.equal(await page.locator(".settings-dialog").count(), 1, `${width}px: Escape on a search does not close Settings`);
+
+      // a page's name opens the page and ends the search
+      await search.fill("sound");
+      await results.getByRole("button", { name: "Open Alerts", exact: true }).click();
+      await dialog.getByRole("tabpanel", { name: "Alerts", exact: true }).waitFor();
+      assert.equal(await search.count() === 0 || await search.inputValue() === "", true, `${width}px: opening a page ends the search`);
+      if (width === 1440) {
+        await search.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
+      }
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS Settings' search at 1440 and 390px: settings of every page found and changed in place, groups by name, pages opened, nothing matching said, Escape empties first");
+}
+
+/**
+ * The folded part of a page (SettingsFold), at 1440 and 390: closed on opening, with the count of what this
+ * device changed in it on its line; a link to a group inside opens it on that group; a search finds its rows.
+ */
+async function foldedGroups(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  for (const width of [1440, 390] as const) {
+    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    try {
+      await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, sidebarPeek: true }));
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(url);
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      await openSettings(page);
+      const dialog = dialogOf(page);
+      await dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
+      const panel = dialog.getByRole("tabpanel", { name: "Appearance", exact: true });
+      const more = panel.locator("details.settings-fold[data-fold='more']");
+      assert.equal(await more.evaluate((fold) => (fold as HTMLDetailsElement).open), false, `${width}px: More settings starts folded`);
+      assert.equal(await panel.getByRole("switch", { name: "Show the sidebar on hover", exact: true }).isVisible(), false, `${width}px: its rows are out of the first view`);
+      assert.equal(await more.locator(".settings-fold-changed").textContent(), "1 changed", `${width}px: the line counts what this device changed inside`);
+      await more.locator("> summary").click();
+      await panel.getByRole("switch", { name: "Show the sidebar on hover", exact: true }).waitFor();
+
+      // a search finds a folded row with the rest
+      await closeSettings(page);
+      await openSettings(page);
+      await dialog.getByRole("searchbox", { name: "Search settings", exact: true }).fill("sidebar on hover");
+      await dialog.getByRole("region", { name: "Search results", exact: true }).getByRole("switch", { name: "Show the sidebar on hover", exact: true }).waitFor();
+      await closeSettings(page);
+
+      // a link to a group inside a fold opens it on that group
+      await page.goto(`${url}?settings=chat&section=composer-more`);
+      const queued = page.getByRole("switch", { name: "Send queued messages automatically", exact: true });
+      await queued.waitFor();
+      assert.equal(await page.locator(".settings-body:not([hidden]) [data-section='composer-more']").evaluate((group) => group.closest("details")?.open === true && document.activeElement === group), true, `${width}px: the link opened the fold and focused its group`);
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS folded groups at 1440 and 390px: closed on opening with a count of what changed, opened by a click, a link to a group inside and a search");
+}
 
 try {
   await buildDemoApp(app);
@@ -1039,6 +1181,8 @@ try {
 
       await lateCloseStep(browser, url);
       await settingsSearch(browser, url);
+      await dialogSearch(browser, url);
+      await foldedGroups(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();
