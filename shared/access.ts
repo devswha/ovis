@@ -39,6 +39,11 @@ export interface HealthAuth {
 export interface LanExposure {
   /** the address the server is bound to, so the warning can name where it is reachable */
   readonly host: string;
+  /**
+   * Only from the 0.4.23 betas, which named the relay's direct carrier here: `host` is then that
+   * carrier's address, and the client words it as DirectExposure. This server sends DirectExposure instead.
+   */
+  readonly direct?: true;
 }
 
 /**
