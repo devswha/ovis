@@ -133,6 +133,12 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, detail
     const first = surface.current?.querySelector<HTMLElement>(sheet ? SHEET_ITEMS : POPOVER_ITEMS);
     window.requestAnimationFrame(() => first?.focus());
   }, [sheet]);
+  // the sheet is modal: an item that went from under the focus (a tab closed elsewhere) gives it to the first one left
+  useLayoutEffect(() => {
+    const node = surface.current;
+    if (!sheet || !node || (document.activeElement !== null && document.activeElement !== document.body)) return;
+    node.querySelector<HTMLElement>(SHEET_ITEMS)?.focus({ preventScroll: true });
+  });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {

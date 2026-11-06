@@ -106,8 +106,8 @@
 
 /* a working agent's dot turns, as the Herdr app's tab does: a ring with a gap, a little larger than
    the dot so the turn reads, drawn in steps like the other spinners (styles.css --dur-spin). Under
-   reduced motion it is the plain dot. */
-.tab-strip-dot[data-status="working"] {
+   reduced motion it is the plain dot. Dots and Symbols keep their glyph, held still. */
+.tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
   width: calc(var(--dot-size) + 3px);
   height: calc(var(--dot-size) + 3px);
   background: transparent;
@@ -121,7 +121,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tab-strip-dot[data-status="working"] {
+  .tab-strip-dot:not(.tab-strip-glyph)[data-status="working"] {
     width: var(--dot-size);
     height: var(--dot-size);
     background: var(--status-working);

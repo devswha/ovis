@@ -656,7 +656,7 @@ export function App() {
   const paletteKeys = keyboardLikely ? formatKeys(shortcutDisplayKeys("palette", settings.shortcutOverrides)).join("+") : "";
   // a phone (the sheets' width) draws no tab row: the header's title lists the tabs (TabStrip's sheet),
   // as the Codex and Claude apps title a thread and list the others from it
-  const { tabsInHeader, sheet: tabSheet, toggle: toggleTabSheet, close: closeTabSheet } = useTabSheet(selectedPane !== null);
+  const { tabsInHeader, sheet: tabSheet, toggle: toggleTabSheet, close: closeTabSheet } = useTabSheet(selectedPane !== null && !guideShown ? JSON.stringify([selectedMachineId, selectedPane.workspace_id]) : null);
   // there, and for a lone tab on a cramped phone, the row and its pane's ellipsis are not drawn (TabStrip,
   // PaneCanvas): the header's own ellipsis is the one menu, so it carries the pane's and the tab's actions too.
   // They come from the canvas's last render; each runs as the canvas's latest one has it, and does
@@ -774,7 +774,7 @@ export function App() {
         </div>
         <HeaderNote note={note} />
         {note !== null ? null : selectedPane && crumb ? (
-          <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace ? " has-tabs" : ""}`} title={crumb.tooltip}>
+          <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
               {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
               <span className="context-title-text">{selectedTitle}</span>
@@ -783,7 +783,7 @@ export function App() {
                 <span className="visually-hidden">{position.words}</span>
               </span>}
               {/* the whole title is its target (styles.css .context-tabs::after) */}
-              {tabsInHeader && selectedWorkspace && <button type="button" className="context-tabs" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
+              {tabsInHeader && selectedWorkspace && !guideShown && <button type="button" className="context-tabs" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
                 aria-haspopup="dialog" aria-expanded={tabSheet !== null} onClick={(event) => toggleTabSheet(event.currentTarget)}>
                 <ChevronDown aria-hidden="true" />
               </button>}
