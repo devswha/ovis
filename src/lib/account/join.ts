@@ -456,15 +456,20 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
       else sent = false;
     }
   }
-  await options.store.update("enrolls", (current) => {
-    const entry = current?.[options.serverId];
-    if (current === undefined || entry === undefined) return current;
-    const rest = { ...current };
-    if (sent) delete rest[options.serverId];
+  let finished = false;
+  // checked in the same write that ends the plan: a removal signed meanwhile keeps it for the next call
+  await options.store.updateMany(["enrolls", "devices", "removals"], (current) => {
+    const entry = current.enrolls?.[options.serverId];
+    if (current.enrolls === undefined || entry === undefined) return current;
+    const signed = [...Object.values(current.devices ?? {}).filter((record): record is RemoveRecord => record.kind === "remove"), ...Object.values(current.removals ?? {})]
+      .filter((record) => record.account === options.account && !entry.done.includes(record.id));
+    finished = sent && signed.every((record) => done.includes(record.id));
+    const rest = { ...current.enrolls };
+    if (finished) delete rest[options.serverId];
     else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
-    return Object.keys(rest).length === 0 ? undefined : rest;
+    return { devices: current.devices, removals: current.removals, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
-  return { finished: sent, checked: 0, of: options.others?.length ?? 0, admitted: [] };
+  return { finished, checked: 0, of: options.others?.length ?? 0, admitted: [] };
 }
 
 /** Each PC that answered tells the devices just let in about the new PC (docs/account.md, "Introductions"); one that does not know a device skips it. */

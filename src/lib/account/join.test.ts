@@ -320,6 +320,24 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
   });
 
+  it("keeps the plan for a new PC from before enrollments when a removal is signed while it runs", async () => {
+    const { y, accountStore, approve, disconnect, linkY } = await setUp();
+    const [mac, lost] = [await approve("Mac app"), await approve("Lost phone")];
+    await disconnect(lost);
+    const onY = await linkY();
+    const link = await connect(y, onY);
+    let removed = false;
+    const older = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (path === "/api/account/records" && !removed) { removed = true; await disconnect(mac); }
+      if (!path.startsWith("/api/account/status")) return answer;
+      const { enrolling: _enrolling, ...rest } = await answer.json() as Record<string, unknown>;
+      return Response.json(rest);
+    };
+    expect((await enrollOnPc({ fetch: older, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id }))?.finished).toBe(false);
+    expect(await accountStore.get("enrolls")).not.toBeUndefined();
+  });
+
   it("sends no add, and holds every one, when a PC it read lost removal evidence", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");
