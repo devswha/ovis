@@ -85,6 +85,8 @@ export interface DirectCarrierOptions {
   /** Whether a peer may connect; private IPv4 only by default. Tests on loopback widen it. */
   readonly peerAllowed?: (address: string | undefined) => boolean;
   readonly refreshMs?: number;
+  /** What AUTH_OK names for the port listened on, in place of the addresses: tests on loopback name a private one. */
+  readonly advertise?: (port: number) => readonly string[];
 }
 
 interface SocketData {
@@ -141,7 +143,8 @@ export class DirectCarrier {
   advertised(): readonly string[] {
     if (!this.bound) return [];
     const { addresses, port } = this.bound;
-    return addresses.map((address) => `ws://${address}:${port}`).filter(isDirectCarrier).slice(0, MAX_DIRECT_CARRIERS);
+    const named = this.options.advertise?.(port) ?? addresses.map((address) => `ws://${address}:${port}`);
+    return named.filter(isDirectCarrier).slice(0, MAX_DIRECT_CARRIERS);
   }
 
   /** The port listened on, or null while nothing is. */
@@ -277,7 +280,9 @@ export class DirectCarrier {
     if (this.stopped) return;
     this.stopped = true;
     this.cancelRefresh?.();
-    for (const listener of this.listeners.splice(0)) void listener.stop(true);
+    // no new connections; the carriers' GOAWAY goes out before their sockets close
+    const listeners = this.listeners.splice(0);
+    for (const listener of listeners) void listener.stop(false);
     this.bound = null;
     await Promise.all([...this.carriers.values()].map(async (carrier) => {
       carrier.cancelTimeout();
@@ -291,5 +296,6 @@ export class DirectCarrier {
       carrier.release?.();
     }));
     this.carriers.clear();
+    for (const listener of listeners) void listener.stop(true);
   }
 }

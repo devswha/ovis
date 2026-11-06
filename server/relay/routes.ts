@@ -93,6 +93,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         setRequestRoute("/api/relay/direct");
         const body = await readJsonObject(request);
         if (body instanceof Response) return body;
+        if (!service.directAvailable) return fail("direct_unavailable", "This server does not take direct connections.", 409);
         if (typeof body.on !== "boolean") return fail("invalid_relay_direct", "Send { on: true } or { on: false }.", 400);
         return reply(await service.setDirect(body.on));
       }

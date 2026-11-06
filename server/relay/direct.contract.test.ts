@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openRelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
@@ -7,11 +7,11 @@ import { DIRECT_CARRIER, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier, rankLanAddresses } from "./direct.ts";
-import { writeFileSync, mkdirSync } from "node:fs";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture } from "./test-helpers.ts";
+import { startBunRelay } from "../../relay/bun.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
@@ -260,5 +260,66 @@ describe("direct connections setting, read back", () => {
     const response = await fetch(`${base}/api/relay/direct`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ on: "yes" }) });
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe("invalid_relay_direct");
+  });
+});
+
+describe("direct connections with the relay", () => {
+  /** A PC on a local relay, direct connections on loopback named as a private address. */
+  async function liveFixture() {
+    const relay = startBunRelay({ port: 0 });
+    const holder = relayFixture();
+    holder.close();
+    const synced = deferred<void>();
+    const service = new RelayService({
+      stateDir: holder.stateDir, relay: "wss://relay.test",
+      connect: (url) => {
+        const target = new URL(url);
+        const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+        socket.addEventListener("message", (event) => { if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve(); });
+        return socket;
+      },
+      direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise: (port) => [`ws://10.0.0.7:${port}`] },
+    });
+    const fixture = relayFixture(false, { stateDir: holder.stateDir, relay: service });
+    cleanup.push(() => relay.stop(), () => fixture.close(), () => service.shutdown());
+    service.start();
+    await bounded(synced.promise);
+    await service.setDirect(true);
+    const identity = loadRelayIdentity(holder.stateDir);
+    const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.test" };
+    const port = (): string => service.status().direct!.carriers[0]!.split(":").at(-1)!;
+    return { fixture, service, offer, port };
+  }
+
+  it("listen while the relay is on, end their sessions when turned off, and come back when turned on", async () => {
+    // Given a PC with the relay on and a phone signed in directly
+    const { fixture, service, offer, port } = await liveFixture();
+    expect(service.status().direct?.carriers).toHaveLength(1);
+    const device = await relayDevice(fixture);
+    const closed = deferred<Error>();
+    const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`), onClose: (error) => closed.resolve(error) }));
+    cleanup.push(() => channel.close());
+    expect(service.status().sessions).toBe(1);
+    // When direct connections are turned off, the session ends and nothing is named
+    await service.setDirect(false);
+    await bounded(closed.promise);
+    expect(service.status().direct).toEqual({ on: false, carriers: [] });
+    // When they are turned on again, the listener is back
+    await service.setDirect(true);
+    expect(service.status().direct?.carriers).toHaveLength(1);
+  });
+
+  it("stop with the relay", async () => {
+    const { service } = await liveFixture();
+    await service.stop();
+    expect(service.status().direct).toEqual({ on: true, carriers: [] });
+  });
+
+  it("refuse the switch on a server without them", async () => {
+    const fixture = relayFixture();
+    cleanup.push(() => fixture.close());
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const response = await fetch(`${base}/api/relay/direct`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ on: false }) });
+    expect(response.status).toBe(409);
   });
 });

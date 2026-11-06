@@ -44,7 +44,7 @@ export interface RelayServiceOptions {
    * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), unless
    * turned off: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
    */
-  readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs">;
+  readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs" | "advertise">;
 }
 
 /** A regional relay is advertised only when it answers in at most this share of the global one's round trip. */
@@ -111,6 +111,8 @@ export class RelayService {
   readonly approvals = new RelayPairingApprovals();
   private pairCodes: RelayPairCodes | undefined;
   private directCarrier: DirectCarrier | undefined;
+  /** the current direct carrier's first bind */
+  private directStarting: Promise<void> = Promise.resolve();
   /** signed-in sessions over the relay links and the direct carriers alike, against one set of limits */
   private readonly signedIn = new SignedInSessions();
   /** whether direct connections are on, read once from `relay/direct.json`: on unless turned off */
@@ -187,13 +189,19 @@ export class RelayService {
     return this.directOn;
   }
 
+  /** Whether this server takes direct connections at all (the `direct` option). */
+  get directAvailable(): boolean { return this.options.direct !== undefined; }
+
   /** Turns direct connections on this PC's networks on or off, kept across restarts; off ends every direct session. */
   async setDirect(on: boolean): Promise<RelayStatus> {
     if (!this.options.direct) throw new Error("Direct connections are not available on this server.");
     writePrivateState(this.directPath(), { on });
     this.directOn = on;
     if (!on) await this.stopDirect();
-    else if (this.link && this.identity && this.services) this.startDirect(this.services, this.identity);
+    else if (this.link && this.identity && this.services) {
+      this.startDirect(this.services, this.identity);
+      await this.directStarting;
+    }
     return this.status();
   }
 
@@ -201,7 +209,7 @@ export class RelayService {
     if (!this.options.direct || this.directCarrier || !this.directEnabled()) return;
     this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
       ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
-    void this.directCarrier.start();
+    this.directStarting = this.directCarrier.start();
   }
 
   private stopDirect(): Promise<void> {
