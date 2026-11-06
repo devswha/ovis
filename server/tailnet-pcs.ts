@@ -92,7 +92,7 @@ interface Health { web_ui?: { server_id?: string }; auth?: { authenticated?: boo
 export class TailnetPcs {
   private found = new Map<string, { name: string; dnsName: string; at: number }>();
   /** the list in flight: windows asking at once share one round of probes */
-  private listing: Promise<TailnetPc[]> | null = null;
+  private listing: Promise<(TailnetPc & { server_id: string | null })[]> | null = null;
   private readonly readStatus: () => Promise<string | null>;
   private readonly ports: readonly number[];
   private readonly origin: (dnsName: string, port: number) => string;
@@ -118,26 +118,26 @@ export class TailnetPcs {
   }
 
   /** The PCs found now, each at the first port its Ovis answers on, leaving out those whose relay ID is in `added`. */
-  list(added: ReadonlySet<string>): Promise<TailnetPc[]> {
-    this.listing ??= this.discover(added).finally(() => { this.listing = null; });
-    return this.listing;
+  async list(added: ReadonlySet<string>): Promise<TailnetPc[]> {
+    this.listing ??= this.discover().finally(() => { this.listing = null; });
+    // filtered after the shared round: a PC added while it ran is left out for every window
+    return (await this.listing).filter((pc) => pc.server_id === null || !added.has(pc.server_id)).map(({ name, url, relay }) => ({ name, url, relay }));
   }
 
-  private async discover(added: ReadonlySet<string>): Promise<TailnetPc[]> {
+  private async discover(): Promise<(TailnetPc & { server_id: string | null })[]> {
     const peers = tailnetPeers(await this.readStatus());
-    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<(TailnetPc & { dnsName: string }) | null> => {
+    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<(TailnetPc & { dnsName: string; server_id: string | null }) | null> => {
       const answers = await Promise.all(this.ports.map(async (port) => {
         const url = this.origin(dnsName, port);
         const health = await this.probe(url);
-        const known = health?.web_ui?.server_id !== undefined && added.has(health.web_ui.server_id);
-        return health !== null && TailnetPcs.drivable(health) && !known ? { name, dnsName, url, relay: health.relay?.phase ?? null } : null;
+        return health !== null && TailnetPcs.drivable(health) ? { name, dnsName, url, relay: health.relay?.phase ?? null, server_id: health.web_ui?.server_id ?? null } : null;
       }));
       return answers.find((answer) => answer !== null) ?? null;
     }));
     const listed = pcs.filter((pc) => pc !== null);
     // a fresh list replaces the last: a PC gone from it is no longer addable
     this.found = new Map(listed.map((pc) => [pc.url, { name: pc.name, dnsName: pc.dnsName, at: Date.now() }]));
-    return listed.map(({ name, url, relay }) => ({ name, url, relay }));
+    return listed.map(({ name, url, relay, server_id }) => ({ name, url, relay, server_id }));
   }
 
   /** the name a recent list found at this address, or null: no other address is ever asked for a code */
@@ -171,14 +171,6 @@ export class TailnetPcs {
       throw new TailnetPcError("no_code", `That PC gave no code: ${message}`);
     }
     return { code: body.code, server_id: body.server_id };
-  }
-
-  /** Takes the code this PC asked for off that PC's relay, when adding stopped after it was given; best effort. */
-  async cancelCode(url: string): Promise<void> {
-    try {
-      const response = await fetch(`${url}/api/relay/code/cancel`, { method: "POST", headers: { "x-herdr-update": "1" }, signal: AbortSignal.timeout(PROBE_MS), redirect: "error" });
-      void response.body?.cancel();
-    } catch { /* that PC's code then ends at its own expiry */ }
   }
 }
 

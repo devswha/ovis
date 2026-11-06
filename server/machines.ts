@@ -1752,23 +1752,18 @@ export class MachineManager {
   /**
    * Settings → Connect a device → PCs on your Tailscale → Add: asks that PC for its code over the tailnet and adds it
    * as a typed code would. The ID the relay found must be the one that PC named, which the person compares for a
-   * code typed by hand. Stopped after the code was given, the code is taken off that PC again.
+   * code typed by hand. A code left unspent ends at its own expiry: cancelling it could end a newer one that PC shows.
    */
   async addTailnet(url: unknown): Promise<Machine> {
     const name = this.tailnet.foundAt(url);
     if (name === null) throw new TailnetPcError("not_found", "That PC is not among those found on Tailscale. Look again.");
     const asked = await this.tailnet.code(url as string, this.relayServerIds());
-    try {
-      const found = await this.relayFoundByCode(asked.code);
-      if (found.server_id !== asked.server_id) {
-        this.foundByCode.delete(found.ticket);
-        throw new TailnetPcError("mismatch", "The relay found a different PC than the one asked. Nothing was added.");
-      }
-      return await this.addRelay(undefined, name, found.ticket);
-    } catch (error) {
-      await this.tailnet.cancelCode(url as string);
-      throw error;
+    const found = await this.relayFoundByCode(asked.code);
+    if (found.server_id !== asked.server_id) {
+      this.foundByCode.delete(found.ticket);
+      throw new TailnetPcError("mismatch", "The relay found a different PC than the one asked. Nothing was added.");
     }
+    return this.addRelay(undefined, name, found.ticket);
   }
 
   /**

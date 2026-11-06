@@ -126,14 +126,13 @@ it("adds a PC of the same Tailscale login through the relay with one tap, after 
   expect(await (await ask("GET")).json()).toEqual({ pcs: [] });
 });
 
-it("adds nothing when the relay finds another PC than the one that gave the code, and takes that code back", async () => {
-  const { serveUrl, local, asked } = await pcB("me@example.com", { codeServerId: "f".repeat(43) });
+it("adds nothing when the relay finds another PC than the one that gave the code", async () => {
+  const { serveUrl, local } = await pcB("me@example.com", { codeServerId: "f".repeat(43) });
   const { ask, base } = await pcA([{ name: "pc-b", user: "9007199254740993" }], { "pc-b.tail.ts.net": serveUrl }, local);
   await ask("GET");
   const added = await ask("POST", { url: serveUrl });
   expect(added.status).toBe(409);
   expect((await added.json() as { error: { code: string } }).error.code).toBe("tailnet_mismatch");
-  expect(asked).toContain("POST /api/relay/code/cancel");
   const { machines } = await (await fetch(`${base}/api/machines`, { headers: { origin: base } })).json() as { machines: Machine[] };
   expect(machines.filter((machine) => machine.kind === "relay")).toEqual([]);
 });
