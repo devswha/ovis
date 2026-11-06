@@ -160,7 +160,11 @@ function previewText(lines: string[], box: { top: number; column: number; inner:
 }
 
 function withoutPreview(lines: string[], from: number, to: number): string[] {
-  const column = previewBox(lines, from, to)?.column ?? -1;
+  // Claude opens the box on the first option's row: a box drawn higher up (a diagram in its answer)
+  // stands at a column of its own
+  const first = menuRows(lines, from, to)[0]?.lineIndex;
+  const box = (first === undefined ? null : previewBox(lines, first, first)) ?? previewBox(lines, from, to);
+  const column = box?.column ?? -1;
   return lines.map((line) => {
     const at = column >= 2 ? indexAtColumn(line, column) : -1;
     const edge = at >= 0 ? line[at] : undefined;
