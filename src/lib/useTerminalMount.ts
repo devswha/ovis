@@ -1204,10 +1204,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const adoptTypeAhead = (pane: string): void => {
         let at = 0;
         let held = false;
-        // keys were typed ahead (before the hand-over, or a composition's text after it): a keyboard is in use
-        let typed = false;
         const take = (items: TypeAheadItem[], heldNow: boolean): void => {
-          typed ||= items.length > 0;
           held ||= heldNow || !socket.connected || (socket.connectedSince ?? Infinity) > at;
           for (const item of items) {
             // as typing here: a masked prompt on screen now makes it secret (never held, never kept for a receipt),
@@ -1220,9 +1217,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             else if (paneRef.current === pane) sendTyped(pane, typed);
           }
         };
-        // on a touch screen only keys typed ahead move it on: focusing the terminal there unasked would bring up
-        // the on-screen keyboard
-        const takeKeyboard = (focused: boolean): void => {
+        // on a touch screen only keys typed ahead (a keyboard is in use) move it on: focusing the terminal
+        // there unasked would bring up the on-screen keyboard
+        const takeKeyboard = (focused: boolean, typed = true): void => {
           if (focused && paneRef.current === pane && activeRef.current && !chatViewRef.current && (!coarseRef.current || typed)) term.focus();
         };
         const ahead = takeTypeAhead(paneStorageId(machineId, pane), { more: take, done: takeKeyboard });
@@ -1231,8 +1228,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         held = ahead.held || !socket.connected || (socket.connectedSince ?? Infinity) > at;
         if (ahead.pasteRefused) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
         if (!held) startResume(pane, ahead.since);
+        const typed = ahead.items.length > 0;
         take(ahead.items, ahead.held);
-        takeKeyboard(ahead.focused);
+        takeKeyboard(ahead.focused, typed);
         if (!held && socket.canInput(pane)) flushResume();
       };
       typeAheadRef.current = adoptTypeAhead;
