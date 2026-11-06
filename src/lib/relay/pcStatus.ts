@@ -10,6 +10,7 @@ import type { RelayDevice } from "../../../shared/relay-device.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { isTailnetCarrier } from "../../../shared/relay-mux.ts";
 import { relayFallback } from "../../../shared/relay-regions.ts";
+import { keyIdOf } from "./shellState.ts";
 
 export type PcStatus =
   | { readonly kind: "checking" }
@@ -29,6 +30,17 @@ export interface PcCheckSockets {
   readonly direct?: (url: string) => RelaySocket;
 }
 
+/**
+ * The saved PCs one sweep probes: paired ones whose key is the one their id names (a mismatch is the
+ * identity-changed screen's to handle), at most `max`, starting at `cursor` so that past `max` every
+ * PC gets its turn. The rows marked as being checked are exactly these.
+ */
+export function sweepOf(devices: readonly RelayDevice[], cursor: number, max: number): RelayDevice[] {
+  const paired = devices.filter((device) => device.device_id !== null && keyIdOf(device.server_public_key) === device.server_id);
+  const start = paired.length > max && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor % paired.length : 0;
+  return [...paired.slice(start), ...paired.slice(0, start)].slice(0, max);
+}
+
 export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, probe: typeof probePc = probePc): Promise<Exclude<PcStatus, { kind: "checking" }>> {
   const offer: RelayOffer = { v: 1, server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay };
   const carriers = sockets.direct ? device.direct ?? [] : [];
@@ -44,11 +56,11 @@ export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, prob
   // whether the regional relay failed or had nobody for the PC (openRelayChannelWithFallback)
   const fallback = relayFallback(relay);
   if (found.kind !== "answered" && fallback !== null) {
-    const first = found;
+    const first: PcProbe = found;
     found = await probe(offer, { relay: fallback }, sockets.relay, RELAY_PROBE_MS);
     if (found.kind === "answered") relay = fallback;
-    // a PC the regional relay had nobody for, behind a global relay this device cannot reach, is still a silent PC
-    else if (first.kind === "silent") found = first;
+    // silent on both: the PC is on neither; a global relay this device cannot reach leaves the PC unknown, so the relay is the reason
+    else if (first.kind === "silent" && found.kind === "silent") found = first;
   }
   return found.kind === "answered" ? { kind: "connected", route: "relay", relay, rttMs: found.ms }
     : { kind: "offline", reason: found.kind === "silent" ? "pc" : "relay" };

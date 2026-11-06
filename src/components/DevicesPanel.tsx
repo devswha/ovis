@@ -22,6 +22,9 @@ import { getTransport } from "../lib/transport.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 
 const POLL_MS = 3000;
+/** a device seen this recently is not called offline, whatever its sessions: it may be in by its cookie */
+const SEEN_LATELY_MS = 2 * 60_000;
+const seenLately = (at: string | null): boolean => at !== null && Date.now() - Date.parse(at) < SEEN_LATELY_MS;
 /** how often the open list is read again, for the round trips the PC measured since */
 const REFRESH_MS = 30_000;
 
@@ -298,7 +301,8 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                       ? <ConnectionLine state={{ kind: "connected", route: d.connection.route, ...(d.connection.relay === undefined ? {} : { relay: d.connection.relay }), rttMs: d.connection.rtt_ms }} />
                       // a device with a relay key connects through an encrypted session, which the PC sees come and go; a browser's cookie does not
                       // a device that watches, or a Portal visitor, is not told how the others are connected: for them no row says offline
-                      : d.via_relay && !watching && !guest
+                      // nor one seen in the last minutes, which may be reaching this PC another way (its browser cookie)
+                      : d.via_relay && !watching && !guest && !seenLately(d.last_seen_at)
                         ? <ConnectionLine state={{ kind: "offline", text: t("Offline · last seen {when}", { when: lastSeen(d.last_seen_at) }) }} reason={t("The app is closed, or its network is off.")} />
                         : <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>}
                   </div>

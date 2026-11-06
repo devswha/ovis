@@ -38,11 +38,11 @@ import { RelayUnreachableError } from "./channel.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
-import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyIdOf, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry } from "./shellState.ts";
+import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry } from "./shellState.ts";
 import type { AccountView, PcUpdate, RelayShellState } from "./shellState.ts";
 import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
-import { checkPc } from "./pcStatus.ts";
+import { checkPc, sweepOf } from "./pcStatus.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import { openRelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
@@ -240,6 +240,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /** the sweep under way: another waits for it, so CHECK_AT_ONCE holds across sweeps */
   let sweeping: Promise<void> | undefined;
   const redraw = (): void => { if (shown?.kind === "list") show(shown); };
+  const cursorNow = (): number => Number(localStorageGet(CHECK_CURSOR_KEY) ?? "0");
   const checkPcs = async (): Promise<void> => {
     if (sweeping) return;
     const stored = Number(localStorageGet(CHECK_KEY) ?? "");
@@ -247,11 +248,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // too soon after the last sweep (a reload, or Check now again): this one runs once the gap is over,
     // and the rows say a check is on its way meanwhile
     if (wait > 0) {
-      if (deferred === undefined) {
-        deferred = setTimeout(() => { deferred = undefined; if (shown?.kind === "list") void checkPcs(); }, wait);
-        for (const device of await store.list()) if (device.device_id !== null && !pcStatus.has(device.server_id)) pcStatus.set(device.server_id, { kind: "checking" });
-        redraw();
-      }
+      deferred ??= setTimeout(() => { deferred = undefined; if (shown?.kind === "list") void checkPcs(); }, wait);
+      for (const device of sweepOf(await store.list(), cursorNow(), CHECK_PCS)) pcStatus.set(device.server_id, { kind: "checking" });
+      redraw();
       return;
     }
     lastCheck = Date.now();
@@ -260,13 +259,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await sweeping;
   };
   const sweepPcs = async (): Promise<void> => {
-    // a saved key that is not the one its PC's id names is the identity-changed screen's to handle, never probed
-    const paired = (await store.list()).filter((device) => device.device_id !== null && keyIdOf(device.server_public_key) === device.server_id);
     // past CHECK_PCS, each sweep starts where the last one stopped (kept across reloads), so every saved PC gets its turn
-    const cursor = Number(localStorageGet(CHECK_CURSOR_KEY) ?? "0");
-    const start = paired.length > CHECK_PCS && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor % paired.length : 0;
-    localStorageSet(CHECK_CURSOR_KEY, String(start + CHECK_PCS));
-    const saved = [...paired.slice(start), ...paired.slice(0, start)].slice(0, CHECK_PCS);
+    const cursor = cursorNow();
+    const saved = sweepOf(await store.list(), cursor, CHECK_PCS);
+    localStorageSet(CHECK_CURSOR_KEY, String(cursor + CHECK_PCS));
     for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
     redraw();
     const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
