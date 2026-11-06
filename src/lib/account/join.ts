@@ -395,8 +395,9 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
-    // a PC that could not vouch for what it keeps out may hold a key no list names: the new PC then holds every add back
-    const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX || blind ? { held_full: true } : {}) } : {};
+    // only a PC that lost removal evidence for good latches every add off; one that could not read its mailbox this time
+    // (or is older) only keeps this enrollment's adds home, so a passing failure never spreads a permanent hold
+    const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX || seen.some((status) => status.blockedAll === true) ? { held_full: true } : {}) } : {};
     // a part with a remove the PC could not decide keeps its wait: this enrollment is sent again on the next connection
     let response: Response;
     try { response = await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, last: sent && start + ACCOUNT_ENROLL_MAX >= records.length, ...first }); } catch (error) {

@@ -117,6 +117,7 @@ export class AccountMailbox {
     return {
       enrolling: () => this.options.holds?.enrolling() ?? false,
       held: (key) => this.pendingError !== null || this.waiting().some((record) => removedKey(record) === key) || (this.options.holds?.holds(key) ?? false),
+      removing: (key) => this.pendingError !== null || this.waiting().some((record) => removedKey(record) === key),
     };
   }
 

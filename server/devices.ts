@@ -811,7 +811,7 @@ export class DeviceStore {
    * list it for a client to pass on.
    */
   keepAccountAdd(record: AddRecord, signerId: string): void {
-    const device = this.devices.find((d) => d.relay_public_key === record.key && d.added_by === signerId && d.account_add === undefined && !this.stale(d));
+    const device = this.devices.find((d) => d.relay_public_key === record.key && d.added_by === signerId && (d.account_add === undefined || (d.account_add as { key?: unknown }).key !== d.relay_public_key) && !this.stale(d));
     if (!device) return;
     const next = this.devices.map((d) => d === device ? { ...d, account_add: record } : d);
     this.save(next);

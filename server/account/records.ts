@@ -15,6 +15,8 @@ export interface AddGates {
   enrolling(): boolean;
   /** a waiting remove or a held key names `key`, or what waits cannot be trusted to be complete */
   held(key: string): boolean;
+  /** a remove waiting here names `key` (an add it signed waits until that settles) */
+  removing?(key: string): boolean;
 }
 export type RecordOutcome = { id: string | null; outcome: "applied" | "unchanged" } | { id: string | null; outcome: "refused"; code: RecordRefusal };
 
@@ -50,7 +52,7 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   }
   if (gates?.enrolling()) return refused("enrolling");
   // a key this PC holds back, or a signer it holds back (a remove for it waits here): the add waits for that to settle
-  if (gates?.held(record.key) || gates?.held(record.signer)) return refused("removal_pending");
+  if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
   // the new row's id is derived from this PC's relay id (docs/account.md), so without one there is no row to make
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
@@ -74,7 +76,7 @@ function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, w
 
 /** `gates` with the keys of this batch's removes that could not be kept: an add for one is held back too. */
 function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<string>): AddGates {
-  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false) };
+  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
 /** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */

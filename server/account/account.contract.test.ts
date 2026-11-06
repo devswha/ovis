@@ -505,6 +505,15 @@ test("an add signed by a member that a waiting remove names waits too", async ()
   expect(f.app.context.services.devices.hasKey(t.spki)).toBe(false);
 });
 
+test("a member whose key an enrollment held, but who is here, still signs adds", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const [b, t] = [await accountKey(), await accountKey()];
+  await post(link, "/api/account/records", { records: [await add(key, b.spki)] });
+  await post(link, "/api/account/enroll", { account: ACCOUNT, records: [], held: [b.spki] });
+  expect((await post(link, "/api/account/records", { records: [await add(b, t.spki)] })).body.results?.[0]?.outcome).toBe("applied");
+});
+
 test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {
   const f = fixture();
   const first = await relayDevice(f);
