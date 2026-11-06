@@ -1004,7 +1004,8 @@ const markedDisplay = (text: string): string => text.normalize("NFKC").replace(/
  */
 /** The input box's row: the last row Codex starts with `›` or `»`. Only there is `»` the box (at Ultra), never in an answer above it. */
 function codexBoxAt(lines: readonly string[]): number {
-  return lines.findLastIndex((line) => /^[\u203a\u00bb](?:[ \t]|$)/.test(line));
+  for (let index = lines.length - 1; index >= 0; index--) if (/^[\u203a\u00bb](?:[ \t]|$)/.test(lines[index]!)) return index;
+  return -1;
 }
 
 function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text: string }[] {

@@ -561,7 +561,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // as the card's own reader decides it: Claude's grey text under a hint left behind is no held message
     const waits = prompt !== null && !(pasted && isClaudeHeld(prompt)) && !(await claudeHeldIsGrey(paneId, prompt));
     if (current.agent && (waits || registry.holdsInput(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
-      if (pane.agent_status === "idle" || pane.agent_status === "done") throw new ScreenHeldError(pane.agent_status);
+      if (pane.agent_status === "idle" || pane.agent_status === "done") throw new ScreenHeldError(pane.agent_status === "idle" ? "idle" : "done");
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
