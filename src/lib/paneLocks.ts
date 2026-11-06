@@ -7,7 +7,7 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useSettings } from "./settings.ts";
-import { currentSidebarPins, sidebarPinKey, subscribeSidebarPins } from "./sidebarPins.ts";
+import { currentSidebarPins, movedSidebarPins, sidebarPinKey, subscribeSidebarPins } from "./sidebarPins.ts";
 
 /** The locks that hold: those of rows still pinned, and none while Settings -> Lock pinned agents is off. */
 export function lockedPinKeys(locks: readonly string[], pins: readonly string[], enabled = true): ReadonlySet<string> {
@@ -31,6 +31,16 @@ export function toggleAgentLock(locks: readonly string[], pins: readonly string[
 export function locksAfterPinToggle(locks: readonly string[], pins: readonly string[], key: string): string[] {
   const pinned = new Set(pins);
   return locks.filter((held) => held !== key && pinned.has(held));
+}
+
+/**
+ * The locks after herdr moved a pane under a new ID (#1503): its lock goes with it. `held` is what this tab holds, which
+ * a blocked storage leaves the only copy (#2977); `stored` is storage's, where another tab of this browser may have
+ * saved the pane's lock before this tab heard of it.
+ */
+export function movedPaneLocks(held: readonly string[], stored: readonly string[], machineId: string, from: string, to: string): string[] {
+  const before = sidebarPinKey(machineId, from);
+  return [...movedSidebarPins(!held.includes(before) && stored.includes(before) ? [...held, before] : held, machineId, from, to)];
 }
 
 /** Whether this PC's pane is a locked pinned agent, for the menus that close panes and tabs. */

@@ -49,10 +49,11 @@ import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
 import { adjacentTabPane, adjacentWorkspacePane, numberedTabPane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
-import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
+import { currentSidebarPins, pinnedWorkspaceIds, sidebarPinKey } from "./lib/sidebarPins.ts";
+import { movedPaneLocks } from "./lib/paneLocks.ts";
 import { liveGroupKeys, movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { pcLoadOn, useSettings } from "./lib/settings.ts";
+import { loadSettings, pcLoadOn, useSettings } from "./lib/settings.ts";
 import { useHiddenMachines, useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
 import { useHerdrPrefixKeys } from "./lib/herdrKeys.ts";
@@ -366,11 +367,16 @@ export function App() {
     carryMovedPane(machineId, from, to);
     // its lock goes with its pin (lib/paneLocks.ts), and its named group the same way (lib/namedAgentGroups.ts): read from
     // what this tab holds when the change applies, as this call may come from an older render's event, and storage may
-    // refuse writes (#2977)
-    updateSettings(({ lockedAgents, agentGroupOf }) => ({
-      lockedAgents: [...movedSidebarPins(lockedAgents, machineId, from, to)],
-      agentGroupOf: { ...movedAgentGroup(agentGroupOf, machineId, from, to) },
-    }));
+    // refuse writes (#2977); what another tab of this browser saved for the pane before this one heard of it goes too
+    const stored = loadSettings();
+    const before = sidebarPinKey(machineId, from);
+    updateSettings(({ lockedAgents, agentGroupOf }) => {
+      const group = agentGroupOf[before] ?? stored.agentGroupOf[before];
+      return {
+        lockedAgents: movedPaneLocks(lockedAgents, stored.lockedAgents, machineId, from, to),
+        agentGroupOf: { ...movedAgentGroup(group === undefined ? agentGroupOf : { ...agentGroupOf, [before]: group }, machineId, from, to) },
+      };
+    });
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);
