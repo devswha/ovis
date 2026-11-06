@@ -657,6 +657,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
       await stillInFront(paneId, context.identity.processPid, identity, agentOnly);
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
+      // the last reads awaited too: a message past its deadline is not typed
+      if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
@@ -744,10 +746,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let statusAtRead = pending.current(paneId);
       await interruptCodexSteering(interruptWorkingCodex, closeMention(text), { agent: beforeEnter.identity.agent, working: beforeEnter.working, screen: beforeEnter.screen }, {
         read: async () => {
+          // the status from before the screen was read: one that changed during the reads after it stales the Escape
+          const status = pending.current(paneId);
           const current = await pendingContext(owner, paneId, lease, identity, true);
           // no Escape into a masked prompt that came up during the read's last process check
           await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
-          statusAtRead = pending.current(paneId);
+          statusAtRead = status;
           return { agent: current.identity.agent, working: current.working, screen: current.screen };
         },
         restarting: () => committing(true, true),

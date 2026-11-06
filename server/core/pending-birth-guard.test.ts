@@ -1,4 +1,4 @@
-import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, expect, it, mock, setSystemTime, spyOn } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import * as composer from "./composer.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 
-afterEach(() => { mock.restore(); });
+afterEach(() => { mock.restore(); setSystemTime(); });
 
 const PROMPT = "Enter passphrase for key '/tmp/key': ";
 
@@ -39,7 +39,7 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   const selected = readFileSync(join(import.meta.dir, "../fixtures/opencode-autocomplete-2.0.32-ansi-first-selected.ansi"), "utf8");
   spyOn(client, "paneRead").mockImplementation(async (options) => {
     if (mode !== "skill" || options.source !== "visible") return { text: shown.screen } as Awaited<ReturnType<typeof client.paneRead>>;
-    if (++visible === 2 && tabRace === "birth") shown.birth = 2_000;
+    if (++visible === 2 && tabRace === "birth") shown.birth = 5_000;
     // the visible viewport, scrolled, still shows the row while the live screen has a masked prompt
     if (visible === 2 && tabRace === "live") shown.screen = PROMPT;
     return { text: tabRace === "masked" && visible >= 2 ? `${selected}\n${PROMPT}` : selected } as Awaited<ReturnType<typeof client.paneRead>>;
@@ -96,7 +96,7 @@ type Mode = "gjc" | "claude" | "pi" | "codex" | "skill" | "missing";
 interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void }
 
 it("types nothing into another process that took the agent's PID before the paste", async () => {
-  expect(await drain({ after: (pane) => { pane.birth = 2_000; } })).toEqual([]);
+  expect(await drain({ after: (pane) => { pane.birth = 5_000; } })).toEqual([]);
 });
 
 it("types nothing once the agent's known start can no longer be read at its PID", async () => {
@@ -104,7 +104,7 @@ it("types nothing once the agent's known start can no longer be read at its PID"
 });
 
 it("withholds the Enter from another process that took the agent's PID after the paste", async () => {
-  expect(await drain({ afterPaste: (pane) => { pane.birth = 2_000; } })).toEqual(["paste"]);
+  expect(await drain({ afterPaste: (pane) => { pane.birth = 5_000; } })).toEqual(["paste"]);
 });
 
 it("types nothing into a masked prompt that appears during the last process check before the paste", async () => {
@@ -122,11 +122,11 @@ it("types nothing once the bound process is no longer in front", async () => {
 });
 
 it("types nothing into Claude when another process took its PID during the last session check", async () => {
-  expect(await drain({ mode: "claude", after: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 2) pane.birth = 2_000; }; } })).toEqual([]);
+  expect(await drain({ mode: "claude", after: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 2) pane.birth = 5_000; }; } })).toEqual([]);
 });
 
 it("withholds Pi's Enter from another process that took its PID during the last check after the receipt anchor", async () => {
-  expect(await drain({ mode: "pi", afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 7) pane.birth = 2_000; }; } })).toEqual(["paste"]);
+  expect(await drain({ mode: "pi", afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 7) pane.birth = 5_000; }; } })).toEqual(["paste"]);
 });
 
 it("types no OpenCode skill into a masked prompt that comes up during the check before it", async () => {
@@ -212,9 +212,14 @@ it("keeps a first message waiting, not held, while its launched agent's start re
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
   expect(codes()).not.toContain("pending_target_changed");
-  birth = 2_000;
+  birth = 5_000;
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
   // a start read as another one is still a replacement
   expect(codes().at(-1)).toBe("pending_target_changed");
+});
+
+it("types nothing once the message's deadline passed during the last reads before the paste", async () => {
+  // the last process check before the paste runs past the deadline
+  expect(await drain({ after: (pane) => { pane.onProcessRead = () => { setSystemTime(new Date(Date.now() + 60_000)); }; } })).toEqual([]);
 });
