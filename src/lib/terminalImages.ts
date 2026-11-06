@@ -135,12 +135,21 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       const feed = iipFeed(addon);
       const limits: PictureLimits = { sizeLimit: options.iipSizeLimit ?? 20_000_000, pixelLimit: options.pixelLimit ?? 16_777_216 };
       const pictures = feed && itermPictures(feed, () => limits);
-      if (pictures && !registerOscStream(terminal, 1337, pictures.stream)) terminal.parser.registerOscHandler(1337, pictures.handle);
+      const entry: Loaded = { addon, windowOptions, enabled: true, resetPictures: () => pictures?.reset() };
+      // xterm feeds every handler each piece and asks only at the end who takes it: while off, a payload
+      // that began then is not held here
+      let taking = false;
+      const stream: OscStreamHandler | null = pictures && {
+        start: () => { taking = entry.enabled; pictures.stream.start(); },
+        put: (data, start, end) => { if (taking) pictures.stream.put(data, start, end); },
+        end: (success) => pictures.stream.end(success && taking),
+      };
+      if (pictures && stream && !registerOscStream(terminal, 1337, stream)) terminal.parser.registerOscHandler(1337, pictures.handle);
       // XTSMGRAPHICS goes unanswered, as without the addon: hc leaves it to its viewers, and two
       // browsers on one pane answered it late, into the program's next read (measured on hc 0.1.17).
       // xterm disposes the handler with the terminal, as it does the addon.
       terminal.parser.registerCsiHandler({ prefix: "?", final: "S" }, () => true);
-      loaded.set(terminal, { addon, windowOptions, enabled: true, resetPictures: () => pictures?.reset() });
+      loaded.set(terminal, entry);
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && terminal.element) {
         // browser scripts ask which picture a cell holds (never in a release build)
         Object.assign(terminal.element, { imageAt: (col: number, row: number) => pictureColour(addon.getImageAtBufferCell(col, row)) });

@@ -25,8 +25,8 @@ export interface OscStreamHandler {
   end(success: boolean): boolean | Promise<boolean>;
 }
 
-/** room for a payload's command and arguments ahead of its base64 */
-const ARGS_ROOM = 4096;
+/** the most of a payload's command and arguments held to tell what it is, and room for them ahead of the base64 */
+const ARGS_ROOM = 65536;
 
 function textOf(data: Uint32Array, start: number, end: number): string {
   let out = "";
@@ -305,9 +305,14 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
     put: (data, start, end) => {
       if (state !== "hold") return;
       const text = textOf(data, start, end);
-      if (head.length < ARGS_ROOM + 16) head += text.slice(0, ARGS_ROOM + 16 - head.length);
+      // the start up to the colon and a few characters of base64 after it
+      const colon = head.indexOf(":");
+      const room = colon >= 0 ? colon + 16 : ARGS_ROOM;
+      if (head.length < room) head += text.slice(0, room - head.length);
       heldLength += text.length;
-      if (heldLength > base64Length(limits().sizeLimit) + ARGS_ROOM) { release(); state = "over"; return; }
+      // the cap is on the base64 after the arguments, as the addon's is on the file
+      const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ARGS_ROOM;
+      if (heldLength - argsLength > base64Length(limits().sizeLimit)) { release(); state = "over"; return; }
       if (leftToAddon(head)) { release(); state = "addon"; return; }
       // a piece of no multipart picture coming in is dropped by handle: nothing to hold for it
       if (head.startsWith("FilePart=") && multipart === null) { release(); state = "drop"; return; }

@@ -195,6 +195,22 @@ test("reads a payload fed in small pieces as the whole of it, long arguments and
   expect(readPng(bytes).rgba).toEqual(PIXELS);
 });
 
+test("holds the cap to the base64 alone: long arguments do not push a picture at the cap past it", () => {
+  const { fed, stream } = handler({ sizeLimit: 30, pixelLimit: LIMITS.pixelLimit });
+  const feed = (payload: string) => {
+    const points = Uint32Array.from([...payload].map((c) => c.codePointAt(0)!));
+    stream.start();
+    for (let i = 0; i < points.length; i += 500) stream.put(points, i, Math.min(points.length, i + 500));
+    return stream.end(true);
+  };
+  const args = `inline=1;size=30${";width=1".repeat(1000)}`;
+  // a PNG of 30 bytes with its size: the addon's to read
+  expect(feed(`File=${args}:iVBORw0KGgo${"A".repeat(29)}`)).toBe(false);
+  // one past the cap: dropped here, as the addon drops it
+  expect(feed(`File=inline=1${";width=1".repeat(1000)}:${"A".repeat(44)}`)).toBe(true);
+  expect(fed).toEqual([]);
+});
+
 test("does not decode a TIFF larger than the pixel cap", () => {
   const tiff = chafaTiff(3, 2, PIXELS);
   expect(decodeTiff(tiff, 6)).toEqual({ width: 3, height: 2, rgba: null });
