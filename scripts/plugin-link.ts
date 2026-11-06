@@ -17,7 +17,7 @@ import qrcode from "qrcode-generator";
 import { isLoopbackHost } from "../server/access.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
-import { startDeviceSignIn } from "../src/lib/account/deviceSignIn.ts";
+import { startDeviceSignIn, startLinkPageSignIn } from "../src/lib/account/deviceSignIn.ts";
 import { NEW_PC_MS } from "../src/lib/account/myPcs.ts";
 import { AccountService, DEVICE_PROVIDERS, offeredProviders, type DeviceProvider } from "../src/lib/account/service.ts";
 import { memoryAccountStore, memoryLock } from "../src/lib/account/store.ts";
@@ -256,8 +256,10 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const lock = memoryLock();
   const serviceFetch = options.serviceFetch ?? fetch;
   // the Ovis link page where the service has it (one code, GitHub or Google picked there); a provider's own device page otherwise, or when named
-  const provider = forced ?? ((await offeredProviders(options.accountService, ["github"], { fetch: serviceFetch })).page.length > 0 ? "ovis" : "github");
-  const signIn = await startDeviceSignIn({ service: options.accountService, store, lock, fetch: serviceFetch, now, wait, provider });
+  const offer = forced === undefined ? await offeredProviders(options.accountService, ["github"], { fetch: serviceFetch }) : null;
+  const startOptions = { service: options.accountService, store, lock, fetch: serviceFetch, now, wait };
+  const signIn = offer !== null && offer.page.length > 0 ? await startLinkPageSignIn(startOptions, offer.device[0] ?? "github") : await startDeviceSignIn({ ...startOptions, provider: forced ?? "github" });
+  const provider = signIn.provider;
   out((provider === "ovis"
     ? [
       "",

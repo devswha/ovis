@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEVICE_CODE_TTL_S, FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
-import { startDeviceSignIn } from "./deviceSignIn.ts";
+import { startDeviceSignIn, startLinkPageSignIn } from "./deviceSignIn.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { myPcs, OFFLINE_AFTER_MS } from "./myPcs.ts";
 import { accountProvidersOf, AccountService, AccountServiceError, accountServiceOf, pcAccountServiceOf, SignedOutError } from "./service.ts";
@@ -296,6 +296,25 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
     fake.approveOnLinkPage(started.userCode, "acct_page", "google");
     expect(await finishing).toMatchObject({ account: "acct_page", provider: "google" });
     expect((await store.get("session"))?.provider).toBe("google");
+  });
+
+  it("falls back to the provider's device page when the link page is busy or down", async () => {
+    const { fake, options } = setup();
+    for (const answer of [
+      () => Response.json({ error: { code: "rate_limited", message: "" } }, { status: 429, headers: { "retry-after": "60" } }),
+      () => Response.json({ error: { code: "internal", message: "" } }, { status: 503 }),
+      () => { throw new TypeError("offline"); },
+    ]) {
+      const fetch = async (input: Request | string | URL, init?: RequestInit) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        return new URL(request.url).pathname === "/v1/signin/ovis/device" ? answer() : fake.fetch(request);
+      };
+      const started = await startLinkPageSignIn({ ...options, fetch }, "google");
+      expect(started.provider).toBe("google");
+      expect(started.verificationUri).toBe("https://www.google.com/device");
+    }
+    const working = await startLinkPageSignIn(options, "google");
+    expect(working.provider).toBe("ovis");
   });
 
   it("refuses a link page on another address, and shows no QR code for a link carrying another code", async () => {

@@ -10,7 +10,7 @@
  * where the person picks GitHub or Google; the polls are the same.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { failure, sessionOf, type DeviceProvider } from "./service.ts";
+import { AccountServiceError, failure, sessionOf, type DeviceProvider } from "./service.ts";
 import { SignInError } from "./signin.ts";
 import { accountLock } from "./store.ts";
 import type { AccountLock, AccountSession, AccountStore } from "./store.ts";
@@ -28,6 +28,8 @@ export const DEVICE_PAGES: Readonly<Record<DeviceProvider, string>> = { github: 
 export type DeviceSignInProvider = DeviceProvider | "ovis";
 
 export interface DeviceSignIn {
+  /** where the code is typed: the link page, or that provider's own device page */
+  readonly provider: DeviceSignInProvider;
   /** the code the person types at GitHub */
   readonly userCode: string;
   /** the provider's device page, or the service's link page, and never another address */
@@ -124,6 +126,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   }
 
   return {
+    provider,
     userCode,
     verificationUri,
     verificationUriComplete,
@@ -177,4 +180,22 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
       }
     },
   };
+}
+
+/**
+ * The link page's sign-in, or `fallback`'s own device flow when the link page cannot start one: busy
+ * (429, its global attempt budget can be spent by others), down (5xx), unreachable, or answering
+ * something this client does not take. The person then types the provider's code instead.
+ */
+export async function startLinkPageSignIn(options: DeviceSignInOptions, fallback: DeviceProvider): Promise<DeviceSignIn> {
+  try {
+    return await startDeviceSignIn({ ...options, provider: "ovis" });
+  } catch (error) {
+    const unusable = error instanceof TypeError
+      || (error instanceof AccountServiceError && (error.status === 429 || error.status === 404 || error.status >= 500))
+      || (error instanceof SignInError && error.code === "unsupported");
+    if (!unusable) throw error;
+    console.warn("Ovis: the link page could not start a sign-in; using the provider's device page", error instanceof AccountServiceError ? error.status : error.name);
+    return await startDeviceSignIn({ ...options, provider: fallback });
+  }
 }
