@@ -46,6 +46,19 @@ describe("xterm erase above (ESC[1J) from a row's last column", () => {
     }
   });
 
+  it("keeps the row below wrapped when a selective erase (DECSED) leaves the cursor's row protected", async () => {
+    const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
+    try {
+      // abcde is protected (DECSCA), so ESC[?1J leaves it, and fgh still continues it
+      await write(term, "p\r\nq\r\nr\r\ns\r\n\x1b[1\"qabcde\x1b[0\"qfgh\x1b[2;5H\x1b[?1J");
+      const buffer = term.buffer.active;
+      expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("abcde");
+      expect(buffer.getLine(buffer.baseY + 2)?.isWrapped).toBe(true);
+    } finally {
+      term.dispose();
+    }
+  });
+
   it("leaves nothing to unwrap from the screen's last row", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
     try {

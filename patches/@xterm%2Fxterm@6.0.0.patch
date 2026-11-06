@@ -847,7 +847,7 @@ index 90e27a5d9905ae036a0ac0a18e298adf782c923b..13a26d01f96d5b2eb1578ad9f3ed0d54
    public registerEscHandler(id: IFunctionIdentifier, callback: () => boolean | Promise<boolean>): IDisposable {
      return this._inputHandler.registerEscHandler(id, callback);
 diff --git a/src/common/InputHandler.ts b/src/common/InputHandler.ts
-index ba53941a7a27a2f65e668c2c5d0b4e3a213e09b8..585fed086dfbbf624a8d9dd73b6c0f6ea8515ffa 100644
+index ba53941a7a27a2f65e668c2c5d0b4e3a213e09b8..0fdb464c17738bacd315642669f6c52899790228 100644
 --- a/src/common/InputHandler.ts
 +++ b/src/common/InputHandler.ts
 @@ -593,6 +593,8 @@ export class InputHandler extends Disposable implements IInputHandler {
@@ -883,14 +883,15 @@ index ba53941a7a27a2f65e668c2c5d0b4e3a213e09b8..585fed086dfbbf624a8d9dd73b6c0f6e
    /**
     * BEL
     * Bell (Ctrl-G).
-@@ -1215,7 +1227,9 @@ export class InputHandler extends Disposable implements IInputHandler {
+@@ -1215,7 +1227,10 @@ export class InputHandler extends Disposable implements IInputHandler {
          this._eraseInBufferLine(j, 0, this._activeBuffer.x + 1, true, respectProtect);
          if (this._activeBuffer.x + 1 >= this._bufferService.cols) {
            // Deleted entire previous line. This next line can no longer be wrapped.
 -          this._activeBuffer.lines.get(j + 1)!.isWrapped = false;
-+          // Ovis: j is a screen row (the buffer's row is ybase + j), and the last row has none below it
++          // Ovis: j is a screen row (the buffer's row is ybase + j), and the last row has none below it;
++          // a selective erase (DECSED) may leave protected cells, which the next row still continues
 +          const next = this._activeBuffer.lines.get(this._activeBuffer.ybase + j + 1);
-+          if (next && j + 1 < this._bufferService.rows) next.isWrapped = false;
++          if (next && j + 1 < this._bufferService.rows && !respectProtect) next.isWrapped = false;
          }
          while (j--) {
            this._resetBufferLine(j, respectProtect);
