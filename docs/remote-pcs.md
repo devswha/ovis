@@ -92,12 +92,15 @@ channel on each sign-in (this server always offers `direct-tailnet`, so a Tailsc
 too) and are kept with the key, so they follow it to another network. A sign-in
 tries them within 1.5 s, then the relay. While a later route carries it, this server checks the
 earlier ones (a Noise handshake to the pinned key, no session) after each sign-in, then at most every
-5 minutes, and at once when its own addresses change or it wakes from sleep; it reads its addresses
-every 30 s and sends nothing for that. Once one proves to be that PC and no request or terminal input
+5 minutes, and at once when its own addresses change or a read comes a minute or more late (it slept);
+it reads its addresses every 30 s and sends nothing for that. Once one proves to be that PC and no request or terminal input
 is under way for 3 s, it signs in there first and only then closes the old session: requests that
 start meanwhile wait for it and go on the new route, and input on an open terminal in that window
-keeps the old session for a later try. The PC stays connected, its status socket reopens on the new
-route, and open terminals reconnect as after any drop. `GET /api/machines` names the route of a connected relay PC as `route`: `direct` or `relay`.
+keeps the old session for a later try. The PC stays connected (unless that PC already holds as many
+sessions of this key as it allows, when letting the new one in can end the old one first and the PC
+shows `reconnecting` for a moment), its status socket reopens on the new route, and open terminals
+reconnect as after any drop. `GET /api/machines` names the route of a connected relay PC as `route`:
+`direct` or `relay`.
 
 **Revoke** under Phone & devices on the other PC ends this PC's access: the PC turns to an error
 that says so and is not tried again. **Remove PC** here forgets the PC and its key; revoke it on
