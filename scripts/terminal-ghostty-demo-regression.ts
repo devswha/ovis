@@ -15,6 +15,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { readableColor } from "../src/lib/terminalFold.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; text?: string; features?: string[] }
 interface GhosttyFixture { inputs: Frame[]; print(data: string): void }
@@ -284,6 +285,59 @@ try {
 
         await print(page, "\x1b_Ga=d,d=I,i=7,q=2\x1b\\", "RED-DELETED");
         assert.equal(await picture(page), null, "core: a picture the program deletes goes");
+
+        // Latin keeps xterm's cell through a narrower grid and every font size: each fit spaces the layer from the font's
+        // own advance, so a spacing measured while xterm's screen was still the old width is not carried on (Latin drawn
+        // squashed over itself or spread apart, Hangul in its boxes untouched)
+        await print(page, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\uAC00~\r\n", "RULER");
+        const ruler = () => page.evaluate(() => {
+          const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
+          const cw = parseFloat(getComputedStyle(layer).getPropertyValue("--ghostty-cw"));
+          const row = [...layer.querySelectorAll<HTMLElement>(".ghostty-row")].find((r) => r.textContent?.startsWith("ABCDEFGHIJ"))!;
+          const at = (char: string) => {
+            const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const index = node.textContent?.indexOf(char) ?? -1;
+              if (index < 0) continue;
+              const range = document.createRange();
+              range.setStart(node, index);
+              range.setEnd(node, index + 1);
+              return (range.getBoundingClientRect().left - row.getBoundingClientRect().left) / cw;
+            }
+            throw new Error(`no ${char} in the ruler`);
+          };
+          return { latin: at("j"), hangul: at("\uAC00"), after: at("~") };
+        });
+        const columnsKept = async (when: string) => {
+          const columns = await ruler();
+          assert.ok(Math.abs(columns.latin - 35) < 0.2 && Math.abs(columns.hangul - 36) < 0.2 && Math.abs(columns.after - 38) < 0.2, `core, ${when}: Latin keeps xterm's cells, and the Hangul and Latin after it their columns (${JSON.stringify(columns)})`);
+        };
+        for (const width of [1100, 1137, 1174, 1211]) {
+          await page.setViewportSize({ width, height: 900 });
+          await settled(page);
+          await columnsKept(`a ${width}px window`);
+        }
+        for (const view of ["Chat", "Terminal", "Chat", "Terminal"]) {
+          await page.getByRole("radio", { name: view, exact: true }).or(page.getByRole("button", { name: view, exact: true })).first().click();
+          if (view === "Terminal") {
+            await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
+            await settled(page);
+            await settled(page);
+            await columnsKept("back from Chat");
+          }
+        }
+        await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+        await openSettingsPage(page, "Appearance");
+        for (const step of ["Increase", "Increase", "Increase", "Decrease", "Decrease"]) {
+          const size = await page.evaluate(() => getComputedStyle(document.querySelector(".pane-frame.is-current .ghostty-layer")!).fontSize);
+          await page.getByRole("button", { name: `${step} terminal font size`, exact: true }).click();
+          await page.waitForFunction((size) => getComputedStyle(document.querySelector(".pane-frame.is-current .ghostty-layer")!).fontSize !== size, size);
+          await settled(page);
+          await settled(page);
+          await columnsKept(`${step} terminal font size`);
+        }
+        await page.keyboard.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
 
         // typing still goes through xterm, to the pane
         await page.locator(".pane-frame.is-current .pane-terminal").click();
