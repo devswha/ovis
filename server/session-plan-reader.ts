@@ -1,8 +1,10 @@
 import type { ConversationMetadata, PlanStep } from "../shared/protocol.ts";
 import { parseTodoAnswer, type TodoStatus } from "../shared/todos.ts";
 import { plain, readLines, remember } from "./claude-subagents.ts";
+import { withoutPictureBytes } from "./claude-transcript.ts";
 import { contextOf, parseConversationMetadata } from "./conversation-metadata.ts";
-import { type ClaudeBranch, claudeForks, followClaudeBranch } from "./transcript-turns.ts";
+import { isContextClear } from "./transcript-records.ts";
+import { claudeCommandEchoRecord, opensTurn } from "./transcript-turns.ts";
 
 /**
  * The plan an agent keeps for its session, read back from the session's transcript, for the
@@ -25,10 +27,11 @@ import { type ClaudeBranch, claudeForks, followClaudeBranch } from "./transcript
  *
  * The same read follows how much of its context a Claude Code or Codex session's last request
  * filled, for the sidebar's ring: the lines that can say it are folded as the chat's metadata folds them.
- * A Claude rewind leaves the answers it went back over in the file: the branch is followed as the
- * chat follows it (followClaudeBranch), and once it forks, the figure and the model are folded over
- * the records still on it. A line too long to read can be the prompt that forked it: no figure is
- * told from then until the next request.
+ * A Claude rewind leaves the answers it went back over in the file, and the next prompt hangs from
+ * the record it went back to (followClaudeBranch, which the chat follows). A prompt that hangs from
+ * a record before the last answer forks the session: from then on, no figure is told until the next
+ * request, and requests are folded afresh from the fork. Only the records since the last answer are
+ * kept to tell it.
  */
 export const PLAN_BUDGET = 32 * 1024 * 1024;
 const LINE_BUDGET = 8 * 1024 * 1024;
@@ -57,11 +60,19 @@ interface Read {
   calls: Map<string, { name: string; input: Row }>;
   /** the model and the context the lines read so far report */
   metadata: ConversationMetadata;
-  /**
-   * Claude: the session's branch; each record since the last /clear that made a request (`used`) or
-   * changed the model, where it starts; and whether a line was given up since the last request
-   */
-  claude?: { branch: ClaudeBranch; records: { start: number; model: string | null; used: number | null }[]; blind: boolean };
+  claude?: ClaudeChain;
+}
+
+/** a Claude record longer than this, its pictures' bytes left out, is not read for its links (as the chat's branch reader) */
+const CHAIN_LINE = 1024 * 1024;
+/** the most records since an answer that are kept: past it, as after a record too long to read, no fork is told until the next answer */
+const MAX_SINCE = 10_000;
+
+interface ClaudeChain {
+  /** the uuids of the main chain's records since its last answer (null: the start), or null when one of them could not be read */
+  since: Set<string | null> | null;
+  /** since a rewind, or a line too long to read (which may have been one): the context of the requests made after it */
+  forked: { context?: ConversationMetadata["context"] } | null;
 }
 const reads = new Map<string, Read>();
 
@@ -80,17 +91,17 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   let state = reads.get(key);
   if (!state || state.id !== stat.id || state.offset > stat.size) {
     state = { id: stat.id, offset: 0, skipping: false, catching: true, behind: true, steps: new Map(), calls: new Map(), metadata: { model: null, reasoning_effort: null } };
-    if (source === "claude-transcript") state.claude = { branch: { last: null, ends: new Map(), answers: [], forks: [] }, records: [], blind: false };
+    if (source === "claude-transcript") state.claude = { since: new Set([null]), forked: null };
   }
   remember(reads, key, state, MAX_FILES);
   const read = state;
   const readers = { "claude-transcript": claudeLine, "codex-transcript": codexLine, "omo-session": omoLine } satisfies Record<PlanSource, (read: Read, line: string) => void>;
-  const each = (line: string, end: number) => { readers[source](read, line); contextLine(read, source, line, end); };
+  const each = (line: string) => { readers[source](read, line); contextLine(read, source, line); };
   read.behind = read.offset < stat.size;
   while (read.offset < stat.size && budget.left > 0) {
     const done = readLines(path, read.offset, stat.size, LINE_BUDGET, each, read.skipping);
-    // a line given up is not followed: what hangs from it forks nothing, and it may have forked the branch itself
-    if (done.skipping && read.claude) { read.claude.branch.last = null; read.claude.blind = true; }
+    // a line given up may have been a prompt that forked the session
+    if (done.skipping && read.claude) read.claude = { since: null, forked: {} };
     // the file could not be read this time (gone, out of descriptors): not caught up, tried again at the next poll
     if (done.failed) { read.behind = true; break; }
     const consumed = done.offset - read.offset;
@@ -105,29 +116,32 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   return { steps: read.catching || read.steps.size === 0 ? null : [...read.steps.values()].map((step) => ({ ...step, blocked_by: [...step.blocked_by] })), behind: read.behind, metadata: read.catching ? null : onBranch(read) };
 }
 
-/** The metadata with the model and context of the records on the session's branch, when a Claude rewind forked it. */
+/** The metadata, its context the one of the requests since the fork when a Claude session forked. */
 function onBranch(read: Read): ConversationMetadata {
-  const claude = read.claude;
-  const forks = claude ? claudeForks(claude.branch) : [];
-  if (!claude || (forks.length === 0 && !claude.blind)) return read.metadata;
-  // the forks in order, those that overlap or adjoin made one, so the records (which ascend) pass them in one walk
-  const hidden: [number, number][] = [];
-  for (const [from, to] of [...forks].sort((a, b) => a[0] - b[0])) {
-    const last = hidden.at(-1);
-    if (last !== undefined && from <= last[1]) last[1] = Math.max(last[1], to);
-    else hidden.push([from, to]);
-  }
-  let model: string | null = null;
-  let context: ConversationMetadata["context"];
-  let at = 0;
-  for (const record of claude.records) {
-    while (at < hidden.length && hidden[at]![1] <= record.start) at++;
-    if (at < hidden.length && hidden[at]![0] <= record.start) continue;
-    model = record.model;
-    if (record.used !== null) context = contextOf(record.used, record.model, null, context);
-  }
+  const forked = read.claude?.forked;
+  if (!forked) return read.metadata;
   const { context: _, ...metadata } = read.metadata;
-  return context === undefined || claude.blind ? { ...metadata, model } : { ...metadata, model, context };
+  return forked.context === undefined ? metadata : { ...metadata, context: forked.context };
+}
+
+/** Follows a Claude record on the session's chain: a prompt or a command's echo that hangs from before the last answer forks it. */
+function followChain(chain: ClaudeChain, line: string): void {
+  if (!line.includes('"uuid"')) return;
+  const text = line.length > CHAIN_LINE ? withoutPictureBytes(line) : line;
+  let entry: Row | null = null;
+  if (text.length <= CHAIN_LINE) try { entry = row(JSON.parse(text)); } catch { /* not a record: its uuid is not known */ }
+  if (entry === null) { chain.since = null; return; }
+  const uuid = entry["uuid"];
+  if (typeof uuid !== "string" || entry["isSidechain"] === true) return;
+  if (isContextClear(entry, "claude-transcript")) { chain.since = new Set([null, uuid]); chain.forked = null; return; }
+  if (entry["type"] === "assistant") { chain.since = new Set([uuid]); return; }
+  // a compaction's boundary starts a chain of its own, and names the record it continues
+  const parent = entry["parentUuid"] === null ? typeof entry["logicalParentUuid"] === "string" ? entry["logicalParentUuid"] : null
+    : typeof entry["parentUuid"] === "string" ? entry["parentUuid"] : undefined;
+  if (chain.since === null) return;
+  if (parent !== undefined && !chain.since.has(parent) && (opensTurn("claude-transcript", text, null) !== false || claudeCommandEchoRecord(entry))) chain.forked = {};
+  chain.since.add(uuid);
+  if (chain.since.size > MAX_SINCE) chain.since = null;
 }
 
 /** The lines that can say what a request filled, or reset or change the model: only these are parsed for the context. */
@@ -138,21 +152,15 @@ const CONTEXT_MARKS: Record<PlanSource, readonly string[]> = {
   "omo-session": [],
 };
 
-function contextLine(read: Read, source: PlanSource, line: string, end: number): void {
-  const claude = read.claude;
-  // only a record with a uuid is on a chain (followClaudeBranch)
-  const bytes = claude && line.includes('"uuid"') ? Buffer.from(line) : null;
-  if (claude && bytes !== null) followClaudeBranch(claude.branch, bytes, end - bytes.length - 1, end, 0);
+function contextLine(read: Read, source: PlanSource, line: string): void {
+  if (read.claude) followChain(read.claude, line);
   if (source === "omo-session" || !CONTEXT_MARKS[source].some((mark) => line.includes(mark))) return;
-  const start = end - (bytes?.length ?? Buffer.byteLength(line)) - 1;
-  const before = read.metadata;
+  const before = read.metadata.context;
   read.metadata = parseConversationMetadata(line, source, read.metadata);
-  if (!claude) return;
-  // the fold says what the line was: a new figure is a request, a figure or a model gone a /clear
+  const forked = read.claude?.forked;
+  // a new figure is a request: after a fork it is folded from the fork on, not from the answers it left
   const { context, model } = read.metadata;
-  if ((context === undefined && before.context !== undefined) || (model === null && before.model !== null)) claude.records = [];
-  else if (context !== undefined && context !== before.context) { claude.records.push({ start, model, used: context.used }); claude.blind = false; }
-  else if (model !== before.model) claude.records.push({ start, model, used: null });
+  if (forked && context !== undefined && context !== before) forked.context = contextOf(context.used, model, null, forked.context);
 }
 
 /** Forgets every read (tests). */

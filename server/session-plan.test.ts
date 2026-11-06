@@ -221,7 +221,7 @@ describe("SessionPlans", () => {
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toBeUndefined();
   });
 
-  it("tells the figure of the answer a Claude rewind went back to, then the next answer's", async () => {
+  it("tells no figure after a Claude rewind until the next answer, then that answer's", async () => {
     // Given two answered prompts.
     const f = file();
     const user = (uuid: string, parentUuid: string | null, content: string) => f.add({ type: "user", uuid, parentUuid, isSidechain: false, message: { role: "user", content } });
@@ -230,35 +230,39 @@ describe("SessionPlans", () => {
     answer("a1", "u1", 10_000);
     user("u2", "a1", "two");
     answer("a2", "u2", 50_000);
+    f.add({ type: "system", subtype: "turn_duration", uuid: "s2", parentUuid: "a2", isSidechain: false });
     const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: () => 200_000 });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 50_000, window: 200_000 });
-    // When a prompt is sent again from the first answer, the second is off the branch.
-    user("u3", "a1", "two again");
+    // A prompt sent on from the last record forks nothing.
+    user("u3", "s2", "three");
     plans.poll();
-    expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: 200_000 });
+    expect(plans.contextOf("p1")).toEqual({ used: 50_000, window: 200_000 });
+    // When a prompt is sent again from the first answer, the second answer's figure goes.
+    user("u4", "a1", "two again");
+    plans.poll();
+    expect(plans.contextOf("p1")).toBeNull();
     // Then its own answer is the figure.
-    answer("a3", "u3", 12_000);
+    answer("a4", "u4", 12_000);
     plans.poll();
     expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 200_000 });
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 12_000, window: null });
   });
 
-  it("asks for the window of the model on the branch a Claude rewind went back to", async () => {
-    // Given an Opus answer, then a Sonnet one, then a prompt sent again from the Opus answer.
+  it("does not carry the 1M window of an answer a Claude rewind left", async () => {
+    // Given a request past 200k (so in the 1M window), then a prompt sent again from before it, and its answer.
     const f = file();
     f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
-    f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 10_000 } } });
-    f.add({ type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "two" } });
-    f.add({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", model: "claude-sonnet-5-5", content: [], usage: { input_tokens: 30_000 } } });
-    f.add({ type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "two again" } });
-    const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: (_path, model) => model === "claude-opus-5-5" ? 200_000 : null });
+    f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 250_000 } } });
+    f.add({ type: "user", uuid: "u2", parentUuid: null, message: { role: "user", content: "again" } });
+    f.add({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 10_000 } } });
+    const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {} });
     await plans.refresh([pane("p1", "claude")]);
     plans.poll();
-    // Then the window is the Opus one, as the chat names Opus.
-    expect(transcriptPage("claude-transcript", f.path).metadata.model).toBe("claude-opus-5-5");
-    expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: 200_000 });
+    // Then the window is not known, as the chat does not know it.
+    expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 10_000, window: null });
+    expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: null });
   });
 
   it("tells no Claude figure after a line too long to read, until the next request", async () => {
