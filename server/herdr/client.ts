@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ConnectionDiagnostics, transportFailureCode } from "../connection-diagnostics.ts";
 import type {
@@ -52,16 +52,17 @@ export function sameSocket(path: string): string {
  * a script whose scripts/test-herdr.ts import Bun dropped (its binding unused) would otherwise create,
  * type into and close panes there. Every home counts (HOME may be changed for a fixture after the
  * socket was chosen; the account's own home stays the user's), and every spelling of the same socket.
- * An XDG_CONFIG_HOME inside the temp folder is a test's own (a child it spawned with a temp config),
- * never the user's: refusing it would refuse the test's own herdr.
+ * The XDG_CONFIG_HOME that counts is the one the test run started with (scripts/test-herdr.ts records
+ * it in OVIS_TEST_USER_XDG_CONFIG_HOME, and children inherit it), not one a test gave a child of its
+ * own: refusing that would refuse the test's own herdr. Without the record, this process's own counts.
  */
 function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
   if (!liveSessionsRefused(env)) return;
   const homes = [...new Set([env["HOME"], homedir(), accountHome()].filter((home): home is string => Boolean(home)))];
-  const config = env["XDG_CONFIG_HOME"];
+  const config = env["OVIS_TEST_USER_XDG_CONFIG_HOME"] ?? env["XDG_CONFIG_HOME"];
   const defaults = [
     ...homes.map((home) => join(home, ".config", "herdr", "herdr.sock")),
-    ...(config && !insideTemp(config) ? [join(config, "herdr", "herdr.sock")] : []),
+    ...(config ? [join(config, "herdr", "herdr.sock")] : []),
     ...(process.platform === "win32" && env["APPDATA"] ? [`${env["APPDATA"]}\\herdr\\herdr.sock`] : []),
   ].map(sameSocket);
   if (defaults.includes(sameSocket(socketPath))) {
@@ -72,13 +73,6 @@ function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefi
 /** The home the account database names, whatever HOME says. */
 function accountHome(): string | undefined {
   try { return userInfo().homedir; } catch { return undefined; }
-}
-
-/** Whether `path` lies inside this process's temp folder (through the folder's links). */
-function insideTemp(path: string): boolean {
-  const folder = (dir: string) => dirname(sameSocket(join(dir, "x")));
-  const inside = relative(folder(tmpdir()), folder(path));
-  return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
 }
 
 /**
