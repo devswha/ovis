@@ -78,7 +78,10 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
  * (older copies move to .2, .3, …) and truncates the open file in place. The newest copy that
  * starts with every byte already consumed holds the lines written since; the newer copies, then
  * the truncated file, follow it. Without that copy the lines in between are unknown, so ownership
- * stays rejected until the open file registers a session again.
+ * stays rejected until the open file registers a session again. Copilot 1.0 moves the copies up by
+ * rename, oldest first, before it renames the new copy into place: a missing copy while an older
+ * one is still there is that moment, so this lookup alone answers unavailable and the next one
+ * compares with the same bytes read.
  */
 function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | null {
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
@@ -91,8 +94,9 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: num
       let fd: number;
       try { fd = openSync(`${target.slice(0, -".log".length)}.${index}.log`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
-        throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (olderLogCopy(target, index)) return LOG_READ_CHANGED;
+        break;
       }
       const archive = { fd, size: 0, dev: 0n, ino: 0n };
       archives.push(archive);
@@ -123,6 +127,18 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: num
     }
     return selected;
   } finally { for (const { fd } of archives) closeSync(fd); }
+}
+
+function olderLogCopy(target: string, missing: number): boolean {
+  for (let index = missing + 1; index <= MAX_LOG_ARCHIVES; index++) {
+    try {
+      lstatSync(`${target.slice(0, -".log".length)}.${index}.log`);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return false;
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
