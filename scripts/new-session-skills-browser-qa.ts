@@ -48,12 +48,12 @@ async function openChat(page: Page, url: string): Promise<void> {
   await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
 }
 
-/** The New tab dialog on the pane's workspace: the composer's button with a mouse; on a phone, whose card has no row to spare for it, the tab's own menu. */
+/** The New tab dialog on the pane's workspace: the composer's button with a mouse; on a phone, whose card has no row to spare for it, the header's list of the tabs. */
 async function openDialog(page: Page, via: "composer" | "tab-menu" = "composer") {
   if (via === "composer") await page.locator(".pane-frame.is-current .composer-new-session").click();
   else {
     assert.equal(await page.locator(".pane-frame.is-current .composer-new-session").count(), 0, "a phone's card carries no new-tab button, even with the setting on");
-    await page.locator(".tab-strip-menu").tap();
+    await page.locator(".app-header .context-tabs").tap();
     // the menu is a sheet on a phone (RowMenu): its items are buttons there
     await page.getByRole("button", { name: "New tab with agent…", exact: true }).tap();
   }
