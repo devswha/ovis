@@ -304,13 +304,18 @@ const DOTNET_WHITESPACE = /[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u2
 /**
  * What cmd reads in a line outside its quotes. An agent PowerShell starts through a `.cmd` file alone
  * has its arguments read by cmd again, where `&` would end the agent's line and run the rest as a
- * command. Both PowerShells put an argument holding a space or a tab and no `"` in one pair of
- * quotes, where cmd reads these as text (live-verified, 5.1.26100 and 7.6 to an npm-style shim);
- * one with a `"` toggles cmd's quotes where PowerShell's do not go. A `%` is not among them: cmd
- * expands `%NAME%` inside its quotes too.
+ * command.
  */
-const CMD_SPECIAL = /[&|<>^]/;
-const cmdQuoted = (arg: string): boolean => /[ \t]/.test(arg) && !arg.includes('"');
+const CMD_SPECIAL = /[&|<>^%]/;
+/**
+ * Whether cmd reads `arg`'s `&`, `|`, `<` and `>` as text: both PowerShells put an argument holding a
+ * space in one pair of quotes, where cmd does (live-verified, 5.1.26100 and 7.6 to npm's shim), as
+ * long as no `"` in any argument of the line toggles cmd's quotes, which runs across arguments
+ * (#3092). Not with a `%` (cmd expands `%NAME%` inside quotes too), a `^` (a shim's `call` doubles
+ * it) or a `!` (delayed expansion reads it inside quotes).
+ */
+const cmdQuotedText = (arg: string, args: readonly string[]): boolean =>
+  arg.includes(" ") && !/[%^!]/.test(arg) && !args.some((other) => other.includes('"'));
 
 /**
  * `args` as a PowerShell line must give them for the native program it starts to read them back
@@ -321,13 +326,13 @@ const cmdQuoted = (arg: string): boolean => /[ \t]/.test(arg) && !arg.includes('
  * (live-verified, 5.1.26100 to node.exe). One whose whitespace all follows an odd number of `"`
  * (`"fix the bug"`, `x="a b"`) would go unquoted, split at its spaces: it throws. PowerShell 7 (`pwsh`)
  * escapes them itself from 7.3 and passes them as 5.1 does before that: they go as they are, and
- * one the two would pass differently throws. So does one holding a `%`, or what cmd reads outside its
- * quotes (CMD_SPECIAL) where PowerShell does not quote it: which file the agent's name finds is the
- * pane's PowerShell's to say, not this one's.
+ * one the two would pass differently throws. So does one holding what cmd reads outside its quotes
+ * (CMD_SPECIAL) but where it reads it as text (cmdQuotedText): which file the agent's name finds is
+ * the pane's PowerShell's to say, not this one's.
  */
 export function powershellNativeArgs(program: "powershell" | "pwsh", args: readonly string[]): string[] {
   return args.map((arg) => {
-    if (arg.includes("%") || (CMD_SPECIAL.test(arg) && !cmdQuoted(arg))) throw new Error("cmd would read this argument again if the agent starts through a .cmd file");
+    if (CMD_SPECIAL.test(arg) && !cmdQuotedText(arg, args)) throw new Error("cmd would read this argument again if the agent starts through a .cmd file");
     const spaced = DOTNET_WHITESPACE.test(arg);
     if (program === "pwsh") {
       if (arg === "" || arg.includes('"') || (spaced && arg.endsWith("\\"))) throw new Error("PowerShell 7 may not pass this argument unchanged");
