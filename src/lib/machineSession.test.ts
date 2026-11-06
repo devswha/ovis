@@ -71,7 +71,13 @@ describe("PC connection ownership", () => {
     expect(pasteFolder("local")).toBeUndefined();
     socket.receive({ type: "features", features: ["pending-input"], connection: "c2" });
     expect(pasteFolder("paste-folder-pc")).toBeUndefined();
+    // a lost connection forgets it: an older bridge behind the next one names none, only its snapshot
+    socket.receive({ type: "features", features: ["pending-input"], connection: "c3", paste_dir: "/tmp/shots.png backup" });
+    socket.disconnect();
+    expect(pasteFolder("paste-folder-pc")).toBeUndefined();
+    socket.receive({ type: "features", features: ["pending-input"], connection: "c4", paste_dir: "/tmp/shots.png backup" });
     session.close();
+    expect(pasteFolder("paste-folder-pc")).toBeUndefined();
   });
   it.each(["sent", "discarded"] as const)("settles a reloaded copy after the snapshot proves an early resumed %s receipt's lifetime", (outcome) => {
     const { session, socket, store } = setup(`reload-receipt-${outcome}`);

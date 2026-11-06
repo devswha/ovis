@@ -51,6 +51,8 @@ describe("tab labels from the first message", () => {
     expect(shortTabLabel("@C:\\Shots\\v2.webp old\\paste-20261104-101500-0a1b2c3d.png Fix footer", "C:\\Shots\\v2.webp old")).toBe("Fix footer");
     // only that folder: the words after another mention stay the user's (#2682)
     expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png for me", "/tmp/shots.png backup")).toBe("Please review\u2026");
+    // the folder as its server wrote it: another case is another folder
+    expect(shortTabLabel("@/tmp/a.png Please review docs/paste-20261104-101500-0a1b2c3d.png now", "/tmp/A.png Please review docs")).toBe("Please review\u2026");
     // the label a message teaches the PC that named the folder, and only that PC
     setPasteFolder("local", "/tmp/shots.png backup");
     try {

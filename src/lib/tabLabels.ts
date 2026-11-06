@@ -100,26 +100,23 @@ const NOT_A_NAME = /^(?:\/|~\/|\.\.?\/|[A-Za-z]:[\\/]|```|~~~)/;
  * ~/Library), so one in the shape an upload takes (server/paste.ts: `<name>-<YYYYMMDD>-<HHMMSS>-
  * <8 hex>.<ext>`, a name with no space) is taken whole up to the next path or mention, as
  * lib/chatImages.ts reads it; any other path ends at a space. Only one in an upload folder `.ovis` (or
- * the folder its PC's `OVIS_PASTE_DIR` names, attachmentPattern) may run past a word ending in an image's extension, so the words after another mention never read as an
- * upload's path (#2682). A folder's " @" or " ~" followed by a space is part of it.
+ * the folder its PC's `OVIS_PASTE_DIR` names, uploadPattern) may run past a word ending in an image's
+ * extension, so the words after another mention never read as an upload's path (#2682). A folder's " @" or " ~" followed by a space is part of it.
  */
-const ATTACHMENT_PATH = String.raw`(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[A-Za-z]:[\\/])).){0,1024}?[\\/]\.ovis[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[A-Za-z]:[\\/])|\.(?:png|jpe?g|gif|webp)\s).){0,1024}?[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|\S*)`;
-const ATTACHMENT = new RegExp(String.raw`(^|\s)@${ATTACHMENT_PATH}`, "giu");
+const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[A-Za-z]:[\\/])).){0,1024}?[\\/]\.ovis[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[A-Za-z]:[\\/])|\.(?:png|jpe?g|gif|webp)\s).){0,1024}?[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)|\S*)/giu;
 
-/** An upload's name (server/paste.ts), right under a folder its PC named (lib/pasteFolders.ts). */
-const UPLOAD_NAME = String.raw`[\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)`;
-const attachmentsUnder = new Map<string, RegExp>();
+const uploadsUnder = new Map<string, RegExp>();
 
 /**
- * ATTACHMENT, and before it an upload's path in the folder `OVIS_PASTE_DIR` names on the message's PC,
- * taken whole even where that folder holds a word ending in an image's extension (#2771).
+ * An upload's mention right in the folder `OVIS_PASTE_DIR` names on the message's PC (lib/pasteFolders.ts),
+ * taken whole even where that folder holds a word ending in an image's extension (#2771). The folder is
+ * matched as its server wrote it, case and all: ATTACHMENT's `i` would let a different folder in.
  */
-function attachmentPattern(folder: string | undefined): RegExp {
-  if (!folder) return ATTACHMENT;
-  let pattern = attachmentsUnder.get(folder);
+function uploadPattern(folder: string): RegExp {
+  let pattern = uploadsUnder.get(folder);
   if (pattern === undefined) {
-    pattern = new RegExp(String.raw`(^|\s)@(?:${folderPattern(folder)}[\\/]${UPLOAD_NAME}|${ATTACHMENT_PATH})`, "giu");
-    attachmentsUnder.set(folder, pattern);
+    pattern = new RegExp(String.raw`(^|\s)@${folderPattern(folder)}[\\/][\p{L}\p{N}._-]*-\d{8}-\d{6}-[0-9a-f]{8}(?:\.[a-z0-9]{1,10})?(?=\s|$)`, "gu");
+    uploadsUnder.set(folder, pattern);
   }
   return pattern;
 }
@@ -139,8 +136,7 @@ export function attachmentTabLabel(label: string): boolean {
  * was cut; null for a message with nothing to name a tab by.
  */
 export function shortTabLabel(text: string, uploadFolder?: string): string | null {
-  const attachment = attachmentPattern(uploadFolder);
-  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => part.replace(attachment, "$1").replace(/\s+/g, " ").trim()).find((part) => part !== "" && !NOT_A_NAME.test(part));
+  const line = text.split(/\r\n|[\n\r\u2028\u2029]/).map((part) => (uploadFolder ? part.replace(uploadPattern(uploadFolder), "$1") : part).replace(ATTACHMENT, "$1").replace(/\s+/g, " ").trim()).find((part) => part !== "" && !NOT_A_NAME.test(part));
   if (line === undefined) return null;
   const head: string[] = [];
   let columns = 0;

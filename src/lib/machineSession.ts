@@ -132,6 +132,8 @@ export class MachineSession {
     if (this.currentScope !== null) this.store.suspendScope(this.currentScope);
     this.currentScope = null;
     this.announcedLifetime = undefined;
+    // the next connection's features frame names its own folder; an older bridge's snapshot names none
+    setPasteFolder(this.machineId, undefined);
     this.resumedReceipts = [];
     this.going.clear();
     this.currentConnection = null;

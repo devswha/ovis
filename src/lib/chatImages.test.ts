@@ -78,6 +78,10 @@ describe("mentioned chat images", () => {
       expect(images(`@${path} Fix footer`).map((image) => image.name)).toEqual([path]);
       // only that folder: the words after another mention stay the user's
       expect(images("@/tmp/a.png Please review docs/paste-20261103-065352-8f69b25b.png now").map((image) => image.name)).toEqual(["/tmp/a.png"]);
+      // the folder as its server wrote it: another case is another folder
+      expect(images(`@${path.replace("shots", "Shots")} Fix footer`).map((image) => image.name)).toEqual(["/tmp/Shots.png"]);
+      // in the message's order among the other mentions
+      expect(images(`@/a/one.png @${path} @/b/two.gif`).map((image) => image.name)).toEqual(["/a/one.png", path, "/b/two.gif"]);
       // only that PC's
       expect(userGalleryImages("other pc", "w1:p1", [], `@${path} Fix footer`, t).map((image) => image.name)).toEqual(["/tmp/shots.png"]);
       setPasteFolder("fixture pc", "C:\\Shots\\v2.webp old");
