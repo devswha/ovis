@@ -1176,13 +1176,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [settings, resolvedEntry, resolvedLanguage]);
 
   const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
+    // StrictMode runs the updater twice on the same state: the first run's save must not change what the second one reads
+    let made: Partial<Settings> | undefined;
     setSettings((current) => {
       const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
       // storage that no longer reads, or holds no record, has nothing newer: this tab's own copy stands
       const readable = (): boolean => { try { return window.localStorage.getItem(SETTINGS_STORAGE_KEY) !== null; } catch { return false; } };
       const latest = (): Settings => !readable() ? current
         : sanitizeSettings({ ...loadSettings(), ...Object.fromEntries(Object.entries(current).filter(([key, value]) => differs(key, value, stored.current))) });
-      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? patch(latest()) : patch) });
+      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? made ??= patch(latest()) : patch) });
       // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));
       if (saveSettings(sanitizeSettings({ ...loadSettings(), ...changed }))) stored.current = next;

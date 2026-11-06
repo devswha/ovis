@@ -290,9 +290,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     const next = toggleSidebarPin(pruneSidebarPins(pinned, live, machines, hidden), key);
     setSidebarPins(next);
-    // a lock leaves with its pin, so a pane that later takes the same id is not locked by it; a fresh pin starts unlocked
-    const locks = locksAfterPinToggle(settings.lockedAgents, next, key);
-    if (locks.length !== settings.lockedAgents.length) updateSettings({ lockedAgents: locks });
+    // a lock leaves with its pin, so a pane that later takes the same id is not locked by it; a fresh pin starts unlocked,
+    // also of a lock only another tab of this browser saved (lib/settings.ts: a change made from the stored settings)
+    updateSettings(({ lockedAgents }) => ({ lockedAgents: locksAfterPinToggle(lockedAgents, next, key) }));
   };
   const toggleMute = (machineId: string, paneId: string): void => {
     // as the pins: the mutes of panes a connected PC no longer has leave with this change, and no other PC's

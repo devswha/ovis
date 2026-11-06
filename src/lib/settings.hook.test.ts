@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, StrictMode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { COMPOSER_ARTIFACTS_STORAGE_KEY, DEFAULT_SETTINGS, ENTER_SENDS_STORAGE_KEY, enterSendsOn, SettingsProvider, useSettings, VOICE_ENGINE_STORAGE_KEY, type Settings } from "./settings.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
@@ -52,12 +52,13 @@ describe("settings across tabs", () => {
     descriptors.clear();
   });
 
-  async function open(): Promise<void> {
+  async function open(strict = false): Promise<void> {
     function Probe() {
       ({ settings, update } = useSettings());
       return null;
     }
-    await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Probe))); });
+    const tree = createElement(SettingsProvider, null, createElement(Probe));
+    await act(async () => { renderer = create(strict ? createElement(StrictMode, null, tree) : tree); });
   }
 
   async function storage(key: string | null): Promise<void> {
@@ -159,9 +160,9 @@ describe("settings across tabs", () => {
 
   const move = (current: Settings): Partial<Settings> => ({ lockedAgents: current.lockedAgents.map((key) => key === "pc:w1:p1" ? "pc:w2:p1" : key) });
 
-  it("makes a change from what another tab saved since this one heard, keeping the rest of it (#2977)", async () => {
+  it.each([false, true])("makes a change from what another tab saved since this one heard, keeping the rest of it (#2977), StrictMode %p", async (strict) => {
     // Given a tab opened before another tab of this browser locked two panes.
-    await open();
+    await open(strict);
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
 
     // When this tab moves one pane's lock.
