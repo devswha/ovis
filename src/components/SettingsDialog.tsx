@@ -41,7 +41,7 @@ import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts,
 import { codeFailureText, typedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { addFoundRelayPc, addRelayPc, ApiError, findRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
@@ -547,7 +547,7 @@ function ChatPage() {
 
       <VoiceMain />
 
-      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "chatFontFamily", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", "voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"]}>
+      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "chatFontFamily", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", ...(settings.voiceInput === "off" ? [] : ["voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"] as const)]}>
         <SettingsGroup title={t("Chat")} section="chat-more">
           <SettingsRow label={t("Collapse work")} description={t("A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message")}>
             <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
@@ -682,7 +682,8 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     {/* a destination's last failed post is said in its group, so the group stays in sight */}
     <AlertWebhookGroup />
     {/* which alerts come: nearly everyone keeps the defaults, so they wait in the fold */}
-    <SettingsFold kind="more" keys={["alertInput", "alertDone", "alertInApp"]}>
+    <SettingsFold kind="more" keys={["alertInput", "alertDone", "alertInApp"]}
+      elsewhere={alertFiltersChanged(filters, settings.alertInput)}>
       <SettingsGroup title={t("Alert me when")} section="alert-kinds">
         <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
           <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
@@ -1167,7 +1168,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, pcs, pcsMore }: 
       {pcs}
 
       <SettingsFold kind="more" keys={["keepScreenOn", "pcLoad"]}>
-        <SettingsGroup title={t("Phone")} section="phone-more">
+        <SettingsGroup section="phone-more">
           <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
             <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
           </SettingsRow>
