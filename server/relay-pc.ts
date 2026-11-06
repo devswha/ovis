@@ -99,7 +99,7 @@ export class RelayPcKey implements RelayDeviceStore {
     if (saved?.v !== 1 || typeof saved.device_id !== "string" || typeof saved.private_pkcs8 !== "string"
       || typeof saved.public_spki !== "string" || typeof saved.label !== "string") throw new Error("Invalid relay PC key");
     const offer = validateOffer(saved.offer);
-    // only what an AUTH_OK could have named: anything else in the file is not an address to dial
+    // only carriers this server dials (serverDialable): anything else in the file is not an address to dial
     const direct = Array.isArray(saved.direct) ? saved.direct.filter((carrier) => typeof carrier === "string" && serverDialable(carrier)).slice(0, MAX_DIRECT_CARRIERS) : [];
     return new RelayPcKey(path, {
       server_id: offer.server_id, server_public_key: offer.server_public_key, relay: offer.relay,
@@ -539,6 +539,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       }
       // from the relay, and no carrier answered at all: a sign-in skips them until the next check is due. Not when a
       // later direct route carries the channel (it works), nor when one answered but the move had to wait.
+      // a check whose tunnel closed or moved meanwhile proves nothing (its probe was cut off): the state is not its to set
+      if (!still()) return;
       if (from?.direct === undefined && !answered) probes.failed = true;
       // a carrier that proved to be the PC is one a sign-in tries, whatever an earlier try found
       if (answered) probes.failed = false;

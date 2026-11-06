@@ -546,3 +546,24 @@ it("lets a sign-in try the direct routes again once a check found one answering,
   expect(tunnel.route).toBe("relay");
   expect(probes.failed).toBe(false);
 }, 60_000);
+
+it("records nothing for a PC when its tunnel closes in the middle of a check", async () => {
+  // Given a check whose probe of B's address is under way (held there, dial 1)
+  const holding = deferred<void>();
+  const { link, local, onLan } = await twoPcs({ direct: { reachable: () => true, held: (dial) => {
+    if (dial !== 1) return undefined;
+    holding.resolve();
+    return new Promise<void>(() => {});
+  } } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const probes = newRouteProbes();
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+  await bounded(holding.promise);
+  // When the tunnel closes (a relay that ends the connection, say) before the probe can answer
+  tunnel.close();
+  // the cut-off probe settles in this turn's microtasks; the check would record its result right after
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Then the next sign-in is not held back from the PC's direct routes
+  expect(probes.failed).toBe(false);
+}, 60_000);
