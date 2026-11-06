@@ -75,9 +75,10 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     if (session === undefined || request.intent !== "account") { await decideRelayPairing(request.id, "approve", digits); return; }
     const transport = getTransport();
     try {
-      const shownAdmission = asker?.id === request.id ? asker.admission ?? undefined : undefined;
+      // what the card showed, or null when it showed no admission: approveJoin takes no other
+      const shown = asker?.id === request.id ? asker.admission : null;
       await approveJoin({
-        request, digits, through: serverId, service, ...(shownAdmission === undefined ? {} : { shown: shownAdmission }),
+        request, digits, through: serverId, service, shown,
         decide: (answer, picked) => decideRelayPairing(request.id, answer, picked),
         admit: async (admission) => admitToAccount({
           fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session.account,
@@ -88,6 +89,8 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
       if (error instanceof AdmissionChangedError) {
+        // Approve waits again until the new details are read (and the card's pick is cleared with them)
+        setAsker(null);
         setReads((count) => count + 1);
         throw new Error(t("This device asked again with other details. Check them, then pick the number again."));
       }

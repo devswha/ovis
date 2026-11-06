@@ -681,6 +681,25 @@ describe("approving a device that asks to join the account", () => {
     expect(decisions).toEqual([]);
   });
 
+  it("refuses to approve when the card showed no admission but one turned up since", async () => {
+    const { service, mac, X } = await setUp();
+    const decisions: string[] = [];
+    const outcome = approveJoin({
+      request: { id: "r1", label: "Mac app", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: mac.public_spki },
+      digits: "111111", through: X, service, shown: null, decide: async (decision) => { decisions.push(decision); }, admit: async () => {},
+    });
+    await expect(outcome).rejects.toBeInstanceOf(AdmissionChangedError);
+    expect(decisions).toEqual([]);
+  });
+
+  it("keeps the newest admission even when its name has nothing left once made plain", async () => {
+    const { service, mac, X } = await setUp();
+    await service.postAdmission(X, "\u202E\u2066", mac.public_spki, "windows");
+    const newest = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now());
+    expect(newest?.os).toBe("windows");
+    expect(newest?.label).toBe("Device");
+  });
+
   it("reads a device's name as one plain line a signed add takes: no bidi or control characters, single spaces", async () => {
     const { service, X } = await setUp();
     const phone = await accountKey();
@@ -701,6 +720,8 @@ describe("approving a device that asks to join the account", () => {
     expect(vouchedAdmission(listed, "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([...listed].reverse(), "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([admission("stale", 11)], "pc-x", "k", now)).toBeUndefined();
+    // the same millisecond: the row the service lists later is its newer one
+    expect(vouchedAdmission([admission("first", 2), admission("second", 2)], "pc-x", "k", now)?.label).toBe("second");
   });
 
   it("approves a request for this PC only without adding the device to the account", async () => {

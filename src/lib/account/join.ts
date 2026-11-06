@@ -183,8 +183,8 @@ export async function approveJoin(options: {
   decide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
   /** with the admission that vouched for the device: its name is the one the device gave the account service, not the PC's */
   admit: (admission: Admission) => Promise<unknown>; now?: () => number;
-  /** the admission the card showed: approval goes ahead only for exactly that one */
-  shown?: Admission;
+  /** the admission the card showed, null when it showed none: approval goes ahead only for exactly that one */
+  shown?: Admission | null;
 }): Promise<void> {
   const { request } = options;
   if (request.intent !== "account") { await options.decide("approve", options.digits); return; }
@@ -195,7 +195,7 @@ export async function approveJoin(options: {
   }
   // the device asked again with another name, system or place since the card was drawn: nothing is
   // answered, and the card shows the new details before anyone approves them
-  if (options.shown !== undefined && !sameAdmission(options.shown, vouched)) throw new AdmissionChangedError();
+  if (options.shown !== undefined && (options.shown === null || !sameAdmission(options.shown, vouched))) throw new AdmissionChangedError();
   await options.decide("approve", options.digits);
   await options.admit(vouched);
 }

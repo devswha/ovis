@@ -121,6 +121,9 @@ export class SignedOutError extends Error {
   }
 }
 
+/** The name an admission is shown and signed under when its own has nothing left once made plain. */
+export const UNNAMED_DEVICE = "Device";
+
 /** A device of the account waiting at a PC (`GET /v1/admissions`), and who is asking. */
 export interface Admission extends AccountAsker { readonly key: string; readonly label: string; readonly server_id: string; readonly at: string }
 
@@ -251,9 +254,9 @@ export class AccountService {
     const list = isRecord(body) && Array.isArray(body.admissions) ? body.admissions : [];
     return list.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.label !== "string" || typeof entry.server_id !== "string" || typeof entry.at !== "string") return [];
-      // shown on the approval card and signed into the add: one plain line, or no admission at all
-      const label = accountLabel(entry.label);
-      if (label === "") return [];
+      // shown on the approval card and signed into the add: one plain line; a name with nothing left
+      // keeps its row (it may be the newest) under a plain stand-in
+      const label = accountLabel(entry.label) || UNNAMED_DEVICE;
       const city = typeof entry.city === "string" ? accountLabel(entry.city) : "";
       const place = typeof entry.country === "string" && /^[A-Z]{2}$/.test(entry.country)
         ? { country: entry.country, city: city === "" ? null : city }

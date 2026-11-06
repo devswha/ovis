@@ -62,6 +62,12 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // who-is-asking is read again (the device asked anew): a number picked against the old details goes
+  const [readFor, setReadFor] = useState(asker);
+  if (readFor !== asker) {
+    setReadFor(asker);
+    if (asker === undefined) setPicked(null);
+  }
 
   const decide = async (decision: "approve" | "decline"): Promise<void> => {
     setBusy(true);
