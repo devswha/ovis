@@ -69,6 +69,12 @@ export async function checkTabOverflow(browser: Browser, origin: string): Promis
         await page.locator(`${HEADER} [role="tab"][aria-selected="true"]`, { hasText: new RegExp(`^${open}$`) }).waitFor({ timeout: 15_000 });
         await page.locator(".header-tabs .tab-strip-more").waitFor({ timeout: 5_000 })
           .catch(() => { throw new Error(`${when}: 20 tabs that do not fit show no More button in the header's row`); });
+        // the row draws fewer tabs once it has measured its new width (a resize, a split closed)
+        await page.waitForFunction((selector) => {
+          const node = document.querySelector(selector);
+          return !!node && node.scrollWidth - node.clientWidth <= 1;
+        }, HEADER, { timeout: 5_000 })
+          .catch(() => { throw new Error(`${when}: the header's row still scrolls past its end`); });
         const row = await headerRow(page);
         const narrow = row.tabs.filter((tab) => tab.width < TAB_MIN - 0.5);
         assert.deepEqual(narrow, [], `${when}: no tab in the header's row is narrower than ${TAB_MIN}px`);
