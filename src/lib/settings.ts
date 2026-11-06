@@ -1121,7 +1121,8 @@ interface SettingsContextValue {
   resolvedEntry: ThemeEntry;
   /** the language after resolving `system` against the browser's */
   resolvedLanguage: Language;
-  update: (patch: Partial<Settings>) => void;
+  /** a change, or one made from the settings this tab holds when it applies (never storage's copy, which a blocked storage lacks) */
+  update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -1170,9 +1171,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     applyToDocument(settings, resolvedEntry, resolvedLanguage);
   }, [settings, resolvedEntry, resolvedLanguage]);
 
-  const update = useCallback((patch: Partial<Settings>) => {
+  const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
     setSettings((current) => {
-      const next = sanitizeSettings({ ...current, ...patch });
+      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? patch(current) : patch) });
       // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));

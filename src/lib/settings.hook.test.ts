@@ -10,7 +10,7 @@ describe("settings across tabs", () => {
   let events: EventTarget;
   let renderer: ReactTestRenderer | undefined;
   let settings: Settings;
-  let update: (patch: Partial<Settings>) => void;
+  let update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
   let writes: number;
   let full: boolean;
 
@@ -137,6 +137,22 @@ describe("settings across tabs", () => {
     // Then both changes are stored.
     const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.terminalFontSize, stored.chatWidth]).toEqual([20, "wide"]);
+  });
+
+  it("reads what this tab holds for a change made from it, while storage refuses every write (#2977)", async () => {
+    // Given a tab whose storage refuses writes, and a lock it holds only in memory.
+    await open();
+    full = true;
+    await act(async () => { update({ lockedAgents: ["pc:w1:p1"] }); });
+
+    // When two changes are made from what it holds, in one turn.
+    await act(async () => {
+      update((current) => ({ lockedAgents: current.lockedAgents.map((key) => key === "pc:w1:p1" ? "pc:w2:p1" : key) }));
+      update((current) => ({ lockedAgents: [...current.lockedAgents, "pc:w1:p3"] }));
+    });
+
+    // Then each reads the one before it: the lock moved, and the second one is kept with it.
+    expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p3"]);
   });
 
   it("breaks the line on Return on a touch screen until this device chooses, and Enter still sends on a desk", async () => {
