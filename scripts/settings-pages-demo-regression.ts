@@ -697,8 +697,8 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
               case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
               case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
               case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [
-                { provider: "github", label: "octocat", added_at: "2026-11-01T00:00:00Z" },
-                { provider: "google", label: "octocat@example.com", added_at: "2026-11-06T00:00:00Z" },
+                { provider: "github", added_at: "2026-11-01T00:00:00Z" },
+                { provider: "google", added_at: "2026-11-06T00:00:00Z" },
               ] } });
               default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
             }

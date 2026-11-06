@@ -16,7 +16,7 @@ import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
-import { useT } from "../lib/i18n.ts";
+import { currentLocale, useT } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
@@ -101,6 +101,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
   const [view, setView] = useState<View>({ kind: "loading" });
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
+  /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
+  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | null>(null);
   const deviceSignIn = useRef<AbortController | null>(null);
   const service = bridge?.service ?? pcService;
   const fallbackKey = fallback.join(",");
@@ -196,6 +198,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     });
   };
 
+  const needsReauth = (error: unknown): boolean => error instanceof AccountServiceError && error.code === "reauth_required";
+
   /**
    * Adds `provider` to the signed-in account on purpose, from the desktop app only: a link goes
    * through a redirect sign-in, never a device code someone else could have typed.
@@ -207,8 +211,9 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
       .then(() => load(), async (error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.warn("Ovis: the sign-in method was not added", error instanceof SignInError || error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-        const message = failureText(error, provider);
         await load();
+        if (needsReauth(error)) { setReauth({ action: "add", provider }); return; }
+        const message = failureText(error, provider);
         setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
       });
   };
@@ -216,9 +221,32 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
   const removeMethod = (provider: AccountProvider): void => {
     new AccountService({ store: indexedAccountStore }).removeIdentity(provider).then(() => load(), (error: unknown) => {
       console.warn("Ovis: the sign-in method was not removed", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      if (needsReauth(error)) { setReauth({ action: "remove", provider }); return; }
       const message = error instanceof AccountServiceError && error.code === "last_identity"
         ? t("Add another way to sign in before removing this one.") : t("The sign-in method could not be removed. Try again.");
       setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
+    });
+  };
+
+  /**
+   * The service wants a sign-in from the last ten minutes to change the ways in: sign in again
+   * with the method this device uses, then repeat the change, on the same account only.
+   */
+  const signInAgain = (): void => {
+    if (reauth === null || view.kind !== "signed-in") return;
+    const { action, provider } = reauth;
+    const { account, provider: current } = view;
+    setReauth(null);
+    runSignIn(current)?.then(async (session) => {
+      await load();
+      if (session.account !== account) return;
+      if (action === "add") addMethod(provider);
+      else removeMethod(provider);
+    }, async (error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
+      await load();
+      setView((now) => now.kind === "signed-in" ? { ...now, error: failureText(error, current) } : now);
     });
   };
 
@@ -265,7 +293,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
                     <ProviderMark provider={method.provider} />
                     <span className="account-method-text">
                       <span>{PROVIDER_NAMES[method.provider]}</span>
-                      <span className="settings-description">{method.label}</span>
+                      <span className="settings-description">{t("Added {date}", { date: new Date(method.added_at).toLocaleDateString(currentLocale()) })}</span>
                     </span>
                     {/* the method this device signed in with stays: removing it would end this sign-in */}
                     {view.methods !== null && view.methods.length > 1 && method.provider !== view.provider && (
@@ -274,6 +302,12 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
                   </li>
                 ))}
               </ul>
+              {reauth !== null && (
+                <div className="account-reauth" role="alert">
+                  <p className="settings-description">{t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+                  {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
+                </div>
+              )}
               {bridge === null && <p className="settings-description">{t("Add another way to sign in from the Ovis desktop app.")}</p>}
               {unlinked.length > 0 && (
                 <div className="account-method-add">

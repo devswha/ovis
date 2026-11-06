@@ -33,6 +33,8 @@ const SIGN_IN_PROVIDERS: readonly string[] = ["github", "google", "apple"];
 /** The providers with a device flow, and the page each one's code is typed at. */
 const DEVICE_PAGES: Readonly<Record<string, string>> = { github: "https://github.com/login/device", google: "https://www.google.com/device" };
 export const LINK_TOKEN_TTL_S = 600;
+/** How recent a sign-in must be to add or remove a sign-in method. */
+export const REAUTH_MS = 10 * 60_000;
 
 /** The web app's redirect: the code comes back in the fragment there, so it never reaches the host's logs. */
 export const WEB_REDIRECT = "https://app.ovis.sh/";
@@ -70,16 +72,18 @@ interface Mail { seq: number; record: AccountRecord; at: number }
 
 export class FakeAccountService {
   private readonly tokens = new Map<string, Session>();
-  /** `link`: the account a linking sign-in adds this identity to, once the code is redeemed by that account */
-  private readonly codes = new Map<string, { account: string; provider: SignInProvider; challenge: string; redirect: string; expires: number; link: string | null }>();
+  /** `link`: the sign-in (account and refresh family) a linking sign-in adds this identity to, once that sign-in redeems the code */
+  private readonly codes = new Map<string, { account: string; provider: SignInProvider; challenge: string; redirect: string; expires: number; link: { account: string; family: string } | null }>();
   private readonly refreshTokens = new Map<string, { account: string; provider: SignInProvider; family: string; used: boolean }>();
   private readonly revokedFamilies = new Set<string>();
   private readonly appleTokens = new Map<string, { account: string; nonce: string }>();
   private readonly signIns = new Map<SignInProvider, string>();
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null }>();
   /** by account: its sign-in methods, one per provider */
-  private readonly identityList = new Map<string, Map<SignInProvider, { label: string; added_at: string }>>();
-  private readonly linkTokens = new Map<string, { account: string; provider: SignInProvider; expires: number }>();
+  private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
+  private readonly linkTokens = new Map<string, { account: string; family: string; provider: SignInProvider; expires: number }>();
+  /** by refresh family: when that sign-in was made (a refresh keeps it), for what needs a recent one */
+  private readonly signedInAt = new Map<string, number>();
   private offered: { providers: SignInProvider[]; device: SignInProvider[] } = { providers: ["github", "google", "apple"], device: ["github", "google"] };
   private readonly pushes = new Map<string, { account: string; endpoint: string }>();
   private readonly counters = new Map<string, { start: number; count: number }>();
@@ -97,7 +101,9 @@ export class FakeAccountService {
   /** A bearer token for `account`, as if its owner had just signed in. */
   issueToken(account: string): string {
     const token = randomHex(32);
-    this.tokens.set(token, { account, provider: "test", family: randomHex(16), expires: Number.POSITIVE_INFINITY });
+    const family = randomHex(16);
+    this.tokens.set(token, { account, provider: "test", family, expires: Number.POSITIVE_INFINITY });
+    this.signedInAt.set(family, this.now());
     return token;
   }
 
@@ -110,7 +116,7 @@ export class FakeAccountService {
 
   private addIdentity(account: string, provider: SignInProvider): void {
     const methods = this.identityList.get(account) ?? new Map();
-    if (!methods.has(provider)) methods.set(provider, { label: `${provider}-person`, added_at: this.iso() });
+    if (!methods.has(provider)) methods.set(provider, { added_at: this.iso() });
     this.identityList.set(account, methods);
   }
 
@@ -149,7 +155,11 @@ export class FakeAccountService {
 
   revokeToken(token: string): void { this.tokens.delete(token); }
 
-  private grant(account: string, provider: SignInProvider, family = randomHex(16)) {
+  private grant(account: string, provider: SignInProvider, family?: string) {
+    if (family === undefined) {
+      family = randomHex(16);
+      this.signedInAt.set(family, this.now());
+    }
     const access = randomHex(32);
     const refresh = randomHex(32);
     this.tokens.set(access, { account, provider, family, expires: this.now() + ACCESS_TOKEN_TTL_S * 1000 });
@@ -178,7 +188,7 @@ export class FakeAccountService {
     if (link !== null) this.linkTokens.delete(link);
     const valid = link === null || (linking !== undefined && linking.provider === provider && this.now() < linking.expires);
     const code = randomHex(32);
-    if (valid) this.codes.set(code, { account: this.signIns.get(provider as SignInProvider) ?? `acct_${provider}`, provider: provider as SignInProvider, challenge, redirect, expires: this.now() + SIGNIN_CODE_TTL_MS, link: linking?.account ?? null });
+    if (valid) this.codes.set(code, { account: this.signIns.get(provider as SignInProvider) ?? `acct_${provider}`, provider: provider as SignInProvider, challenge, redirect, expires: this.now() + SIGNIN_CODE_TTL_MS, link: linking ? { account: linking.account, family: linking.family } : null });
     const back = new URL(redirect);
     const answer = new URLSearchParams(valid ? { code, state } : { error: "invalid_link", state });
     if (mode === "fragment") back.hash = answer.toString();
@@ -199,14 +209,14 @@ export class FakeAccountService {
           this.addIdentity(code.account, code.provider);
           return this.grant(code.account, code.provider);
         }
-        // a link commits only here, redeemed by the account it adds to
+        // a link commits only here, redeemed by the very sign-in that asked for it
         const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
         const holder = bearer === undefined ? undefined : this.tokens.get(bearer);
-        if (holder === undefined || holder.account !== code.link || this.now() >= holder.expires || this.revokedFamilies.has(holder.family)) return invalid("Redeem a link with the account it adds to");
-        if (code.account !== code.link && this.identityList.get(code.account)?.has(code.provider)) return problem(409, "identity_in_use", "That identity belongs to another account");
-        this.signIns.set(code.provider, code.link);
-        this.addIdentity(code.link, code.provider);
-        return this.grant(code.link, code.provider);
+        if (holder === undefined || holder.family !== code.link.family || this.now() >= holder.expires || this.revokedFamilies.has(holder.family)) return invalid("Redeem a link with the sign-in that asked for it");
+        if (code.account !== code.link.account && this.identityList.get(code.account)?.has(code.provider)) return problem(409, "identity_in_use", "That identity belongs to another account");
+        this.signIns.set(code.provider, code.link.account);
+        this.addIdentity(code.link.account, code.provider);
+        return this.grant(code.link.account, code.provider);
       }
       case "refresh_token": {
         const refresh = typeof body.refresh_token === "string" ? this.refreshTokens.get(body.refresh_token) : undefined;
@@ -325,14 +335,18 @@ export class FakeAccountService {
       return new Response(null, { status: 204 });
     }
     if (path === "/v1/identities" && request.method === "GET") {
-      return json({ identities: [...this.identityList.get(account) ?? []].map(([provider, { label, added_at }]) => ({ provider, label, added_at })) });
+      return json({ identities: [...this.identityList.get(account) ?? []].map(([provider, { added_at }]) => ({ provider, added_at })) });
+    }
+    const recent = this.now() - (this.signedInAt.get(session.family) ?? Number.NEGATIVE_INFINITY) <= REAUTH_MS;
+    if ((path === "/v1/identities/link" && request.method === "POST") || (path.startsWith("/v1/identities/") && request.method === "DELETE")) {
+      if (!recent) return problem(403, "reauth_required", "Sign in again first");
     }
     if (path === "/v1/identities/link" && request.method === "POST") {
       const body = await request.json() as { provider?: unknown };
       if (typeof body.provider !== "string" || !this.offered.providers.includes(body.provider as SignInProvider)) return problem(400, "invalid_provider", "Name a provider this service offers");
       if (this.identityList.get(account)?.has(body.provider as SignInProvider)) return problem(409, "identity_exists", "The account already signs in with it");
       const token = randomHex(32);
-      this.linkTokens.set(token, { account, provider: body.provider as SignInProvider, expires: this.now() + LINK_TOKEN_TTL_S * 1000 });
+      this.linkTokens.set(token, { account, family: session.family, provider: body.provider as SignInProvider, expires: this.now() + LINK_TOKEN_TTL_S * 1000 });
       return json({ link_token: token, expires_in: LINK_TOKEN_TTL_S });
     }
     const removed = /^\/v1\/identities\/([a-z]+)$/.exec(path)?.[1] as SignInProvider | undefined;

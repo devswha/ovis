@@ -88,10 +88,9 @@ export async function offeredProviders(service: string, fallback: readonly Accou
   return { providers, device: DEVICE_PROVIDERS.filter((provider) => device.has(provider) && named.has(provider)) };
 }
 
-/** One way the account signs in (`GET /v1/identities`): `label` is what the person knows it by. */
+/** One way the account signs in (`GET /v1/identities`); the service keeps no email or login to name it by. */
 export interface AccountIdentity {
   readonly provider: AccountProvider;
-  readonly label: string;
   readonly added_at: string;
 }
 
@@ -245,8 +244,8 @@ export class AccountService {
     const body = await this.call("GET", "/v1/identities");
     const list = isRecord(body) && Array.isArray(body.identities) ? body.identities : [];
     return list.filter((entry): entry is AccountIdentity => isRecord(entry) && ACCOUNT_PROVIDERS.includes(entry.provider as AccountProvider)
-      && typeof entry.label === "string" && typeof entry.added_at === "string")
-      .map(({ provider, label, added_at }) => ({ provider, label, added_at }));
+      && typeof entry.added_at === "string")
+      .map(({ provider, added_at }) => ({ provider, added_at }));
   }
 
   /**
@@ -256,6 +255,8 @@ export class AccountService {
    * does the service link it. Its session replaces the one this client had, which then ends at the
    * service. An answer for any other account is ended and refused, and the session stays as it was;
    * an identity another account already has is refused (SignInError `in_use`) and nothing changes.
+   * A sign-in older than ten minutes gets 403 `reauth_required` before anything starts: the caller
+   * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
    */
   async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string) => Promise<AccountSession>): Promise<AccountSession> {
     const body = await this.call("POST", "/v1/identities/link", { provider });
@@ -267,16 +268,38 @@ export class AccountService {
     const end = (session: AccountSession, what: string) => this.fetch(new URL("/v1/signout", session.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
       .catch((error: unknown) => console.warn(`Ovis: ${what} was not ended at the account service`, error instanceof Error ? error.name : error));
     if (after.account !== before.account) {
-      await this.options.store.update("session", (current) => current?.refresh_token === after.refresh_token ? before : current);
       await end(after, "a sign-in for another account");
       throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
+    // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
+    const outcome = await this.lock(async () => {
+      let result: "kept" | "moved-on" | "signed-out" = "signed-out";
+      await this.options.store.update("session", (current) => {
+        if (current?.refresh_token === before.refresh_token) { result = "kept"; return after; }
+        // refreshed by another tab, or signed in again there: the link holds at the service, and that session stays
+        if (current !== undefined && current.account === before.account) result = "moved-on";
+        return current;
+      });
+      return result;
+    });
+    if (outcome === "signed-out") {
+      // signed out (or into another account) meanwhile: the new sign-in must not outlive that
+      await end(after, "a link that finished after a sign-out");
+      throw new SignedOutError();
+    }
+    if (outcome === "moved-on") {
+      await end(after, "a link's sign-in no tab keeps");
+      return (await this.session()) ?? after;
+    }
     // the old sign-in's tokens would otherwise live on at the service until they expire
-    if (before.refresh_token !== after.refresh_token) await end(before, "the replaced sign-in");
+    await end(before, "the replaced sign-in");
     return after;
   }
 
-  /** Removes a sign-in method; the service refuses the account's last one (409 `last_identity`). */
+  /**
+   * Removes a sign-in method; the service refuses the account's last one (409 `last_identity`), and
+   * like a link wants a sign-in made in the last ten minutes (403 `reauth_required`).
+   */
   async removeIdentity(provider: AccountProvider): Promise<void> {
     await this.call("DELETE", `/v1/identities/${provider}`);
   }

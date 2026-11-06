@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { desktopSignIn } from "./desktop.ts";
 import { startDeviceSignIn } from "./deviceSignIn.ts";
-import { AccountService, offeredProviders } from "./service.ts";
+import { AccountService, offeredProviders, SignedOutError } from "./service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import type { AccountProvider, AccountStore } from "./store.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
@@ -135,7 +135,7 @@ describe("sign-in methods", () => {
     const store = memoryAccountStore();
     const before = await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
-    await expect(service.addMethod("google", () => redirectSignIn(fake, "google", store))).rejects.toMatchObject({ code: "invalid_answer" });
+    await expect(service.addMethod("google", () => redirectSignIn(fake, "google", memoryAccountStore()))).rejects.toMatchObject({ code: "invalid_answer" });
     expect(await store.get("session")).toEqual(before);
     expect(fake.requests.filter((request) => request === "POST /v1/signout")).toHaveLength(1);
   });
@@ -162,4 +162,48 @@ describe("sign-in methods", () => {
     }
   });
 
+
+  it("redeems a link only with the very sign-in that asked for it, not another sign-in of the same account", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const asking = await redirectSignIn(fake, "github", memoryAccountStore());
+    const other = await redirectSignIn(fake, "github", memoryAccountStore());
+    const token = await linkToken(fake, asking.access_token, "google");
+    await expect(redirectSignIn(fake, "google", memoryAccountStore(), { linkToken: token, bearer: other.access_token })).rejects.toMatchObject({ code: "invalid_grant" });
+  });
+
+  it("asks for a fresh sign-in to add or remove a method once the sign-in is over ten minutes old, and lists methods with no name", async () => {
+    let now = Date.now();
+    const fake = new FakeAccountService(() => now);
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock(), now: () => now });
+    await service.addMethod("google", (token, bearer) => redirectSignIn(fake, "google", store, { linkToken: token, bearer }));
+    expect(await service.identities()).toEqual([{ provider: "github", added_at: expect.any(String) }, { provider: "google", added_at: expect.any(String) }]);
+    now += 11 * 60_000;
+    await expect(service.removeIdentity("github")).rejects.toMatchObject({ status: 403, code: "reauth_required" });
+    await expect(service.addMethod("apple", async () => { throw new Error("no sign-in should start"); })).rejects.toMatchObject({ code: "reauth_required" });
+    await redirectSignIn(fake, "google", store);
+    await service.removeIdentity("github");
+    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["google"]);
+  });
+
+  it("stores nothing and ends the new sign-in when the account was signed out while the link finished", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const lock = memoryLock();
+    const service = new AccountService({ store, fetch: fake.fetch, lock });
+    let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
+    await expect(service.addMethod("google", async (token, bearer) => {
+      linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
+      // another tab signs out while the token answer is still on its way
+      await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
+      return linked;
+    })).rejects.toBeInstanceOf(SignedOutError);
+    expect(await store.get("session")).toBeUndefined();
+    expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${linked?.access_token}` } }))).status).toBe(401);
+  });
 });

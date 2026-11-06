@@ -71,7 +71,10 @@ export interface FinishOptions {
   readonly store: AccountStore;
   readonly fetch?: Fetch;
   readonly now?: () => number;
-  /** the signed-in account's access token: a linking sign-in is redeemed by the account it adds to */
+  /**
+   * the signed-in session's access token: a linking sign-in is redeemed by the sign-in that asked for
+   * it, and is not stored here; AccountService.addMethod keeps it only if that sign-in is still current
+   */
   readonly bearer?: string;
 }
 
@@ -97,7 +100,7 @@ export async function finishSignIn(returned: SignInReturn, options: FinishOption
     if (error instanceof AccountServiceError && error.code === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
     throw error;
   }
-  await options.store.set("session", session);
+  if (options.bearer === undefined) await options.store.set("session", session);
   return session;
 }
 

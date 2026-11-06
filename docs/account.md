@@ -487,9 +487,9 @@ OAuth's authorization code flow with PKCE, `S256` only:
 keeps the sign-ins its build names (GitHub alone by default), so a Google button never leads to a
 service that has no Google client.
 
-Google asks for `openid email profile` and nothing else, and the service keeps none of Google's
-tokens past the sign-in: it reads the identity token's `sub` (the account's key for that Google
-user), checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
+Google asks for `openid` and nothing else, and the service keeps none of Google's tokens, and no
+email or name, past the sign-in: it reads the identity token's `sub` (the account's key for that
+Google user), checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
 device flow carries none), and drops the rest.
 
 #### Sign-in methods
@@ -501,15 +501,19 @@ account). A signed-in person adds another method on purpose, from Settings:
 
 | request | body | answer |
 |---|---|---|
-| `GET /v1/identities` | | `{ "identities": [{ "provider", "label", "added_at" }] }`: this account's sign-in methods; `label` is what the person knows it by (GitHub login, Google email), shown only to the account's own clients |
-| `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this account and that provider. The client starts a redirect sign-in (step 1) carrying it. 409 `identity_exists` when the account already has that provider |
-| `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one |
+| `GET /v1/identities` | | `{ "identities": [{ "provider", "added_at" }] }`: this account's sign-in methods. Nothing names the person behind one: the service keeps no email or GitHub login |
+| `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this sign-in and that provider. The client starts a redirect sign-in (step 1) carrying it. 409 `identity_exists` when the account already has that provider; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
+| `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
+
+A refresh keeps a sign-in's time: only signing in again makes it recent. On `reauth_required` the
+client asks the person to sign in again, then repeats what they asked for.
 
 A link takes effect only when its code is redeemed: `POST /v1/token` (`authorization_code`) with the
-PKCE verifier and `Authorization: Bearer` of the account the link token was issued to, which then
+PKCE verifier and `Authorization: Bearer` of the same sign-in (refresh family) the link token was
+issued to, not just the same account, which then
 answers a session of that account with `provider` the added one. Starting a sign-in links nothing,
 so a link token in someone else's sign-in URL, whose code never comes back to its owner, adds
-nothing; a redemption without that account's token answers 400 `invalid_grant`. A link token that
+nothing; a redemption without that sign-in's token answers 400 `invalid_grant`. A link token that
 is unknown, spent, expired or for another provider sends the browser back with `error=invalid_link`
 and never falls back to a plain sign-in. A linking sign-in whose identity already belongs to
 another account answers 409 `identity_in_use` at redemption, and neither account changes. The
