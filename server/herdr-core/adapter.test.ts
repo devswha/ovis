@@ -233,12 +233,15 @@ describe("herdr-core adapter", () => {
 
   it("reads no history of a terminal on the alternate screen, which hc would scroll and repaint for every viewer (#3128)", async () => {
     const preamble = "\u0018\u001b[!p\u001b[?2026l\u001b[?1004l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
-    for (const full of [true, false]) {
+    for (const shown of ["alternate", "main", "refused"] as const) {
+      const full = shown !== "main";
       // as hc 0.1.14 paints with no history: its reset, the alternate screen if the program is on it, the screen
-      const paint = `${preamble}${full ? "\u001b[?1049h" : ""}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
+      const paint = `${preamble}${shown === "alternate" ? "\u001b[?1049h" : ""}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
       const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
         "terminal.read": (params) => ({ text: params["lines"] ? "older\n\u203a Ask Codex" : "\u203a Ask Codex", complete: true, how: params["lines"] ? "history" : "screen" }),
         "terminal.attach": () => {
+          // a kept terminal whose program is lost: hc refuses its attach, yet reads its stored screen
+          if (shown === "refused") throw Object.assign(new Error("lost"), { kind: "lost" });
           const core = cores.at(-1)!;
           const channel = core.channel();
           core.replyTail = encodeFrame(channel, FRAME_DATA, paint);
