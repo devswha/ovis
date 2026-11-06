@@ -107,8 +107,12 @@ export function herdrCoreInstaller(): HcInstaller {
   return {
     offer: () => hcInstallTarget() !== null && herdrCoreFacts()?.version === null ? { version: HC_RELEASE.version } : null,
     install: async () => {
-      await installHc({ home: userHome() });
-      if ((await rediscoverHc()) === null) throw new Error("herdr-core was installed, but does not answer");
+      const installed = await installHc({ home: userHome() });
+      // one Ovis's own look does not find: taken out again, so the row offers the install once more
+      if ((await rediscoverHc()) === null) {
+        installed.undo();
+        throw new Error("herdr-core was installed, but Ovis does not find it; it was taken out again");
+      }
     },
   };
 }

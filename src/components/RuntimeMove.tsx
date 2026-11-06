@@ -73,6 +73,8 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
         if (next.available) openDialog();
       } catch (reason: unknown) {
         setInstallError(said(reason));
+        // an install that went in while its answer was lost: the row follows what the server offers now
+        void fetchMovePlan().then(setAnswer, () => {});
       } finally {
         setInstalling(false);
       }

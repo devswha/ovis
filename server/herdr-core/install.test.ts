@@ -44,7 +44,7 @@ describe.skipIf(process.platform === "win32")("installing herdr-core for the mov
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   it("installs the pinned archive into ~/.local/bin as herdr-core, with hc linked beside it", async () => {
-    const dest = await installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: serve(archive) });
+    const { path: dest } = await installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: serve(archive) });
     expect(dest).toBe(join(bin(), "herdr-core"));
     expect(fetched).toEqual([ARCHIVE_URL]);
     expect(lstatSync(dest).mode & 0o777).toBe(0o755);
@@ -79,6 +79,28 @@ describe.skipIf(process.platform === "win32")("installing herdr-core for the mov
     await expect(installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: serve(archive) })).rejects.toThrow(/already there/);
     expect(fetched).toEqual([]);
     expect(readFileSync(join(bin(), "herdr-core"), "utf8")).toBe("mine");
+    expect(readdirSync(bin())).toEqual(["herdr-core"]);
+  });
+
+  it("stops reading a download past the size cap, without holding it all", async () => {
+    let sent = 0;
+    const endless = (async () => {
+      fetched.push(ARCHIVE_URL);
+      return new Response(new ReadableStream({ pull(controller) { sent += 1 << 20; controller.enqueue(new Uint8Array(1 << 20)); } }));
+    }) as unknown as typeof fetch;
+    await expect(installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: endless })).rejects.toThrow(/far larger/);
+    expect(sent).toBeLessThan(80 << 20);
+    expect(existsSync(bin())).toBe(false);
+  });
+
+  it("takes out only what it installed when undone", async () => {
+    const installed = await installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: serve(archive) });
+    installed.undo();
+    expect(readdirSync(bin())).toEqual([]);
+    const again = await installHc({ home, env: { PATH: "/nonexistent" }, release: release(archive), fetch: serve(archive) });
+    rmSync(again.path);
+    writeFileSync(again.path, "mine");
+    again.undo();
     expect(readdirSync(bin())).toEqual(["herdr-core"]);
   });
 

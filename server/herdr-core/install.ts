@@ -10,7 +10,7 @@
  * one that does not answer, refuses the install. A failure leaves ~/.local/bin as it was.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hcVersion } from "./discovery.ts";
@@ -52,8 +52,14 @@ export function hcInstallTarget(release: HcRelease = HC_RELEASE, platform: NodeJ
   return release.targets[`${platform}-${arch}`] ?? null;
 }
 
-/** Installs herdr-core into `<home>/.local/bin/herdr-core` and answers that path; throws, leaving the folder as it was, on any failure. */
-export async function installHc(options: InstallHcOptions): Promise<string> {
+export interface InstalledHc {
+  path: string;
+  /** takes out what this install put in ~/.local/bin, and only that: a file there that is no longer the one installed stays */
+  undo: () => void;
+}
+
+/** Installs herdr-core into `<home>/.local/bin/herdr-core`; throws, leaving the folder as it was, on any failure. */
+export async function installHc(options: InstallHcOptions): Promise<InstalledHc> {
   const release = options.release ?? HC_RELEASE;
   const env = options.env ?? process.env;
   const target = hcInstallTarget(release, options.platform, options.arch);
@@ -65,11 +71,11 @@ export async function installHc(options: InstallHcOptions): Promise<string> {
 
   const response = await (options.fetch ?? fetch)(target.url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`downloading herdr-core failed (HTTP ${response.status})`);
-  const archive = new Uint8Array(await response.arrayBuffer());
-  if (archive.length > ARCHIVE_LIMIT) throw new Error("the herdr-core download is far larger than a release");
+  const archive = await boundedBody(response, ARCHIVE_LIMIT);
   if (createHash("sha256").update(archive).digest("hex") !== target.sha256) throw new Error("the herdr-core download does not match its checksum");
 
   const work = mkdtempSync(join(tmpdir(), "ovis-hc-"));
+  let mark: string;
   try {
     // unzipped here: GNU tar would need a gzip on the PATH
     writeFileSync(join(work, "hc.tar"), Bun.gunzipSync(archive));
@@ -82,16 +88,21 @@ export async function installHc(options: InstallHcOptions): Promise<string> {
     const unpacked = join(work, "herdr-core");
     chmodSync(unpacked, 0o755);
     // `--version` is the only hc command that never starts a core
+    const answered = (version: string | null) => `it answered ${version === null ? "nothing" : `hc ${version}`}`;
     const version = await hcVersion(unpacked, env, 10_000);
-    if (version !== release.version) throw new Error(`the downloaded herdr-core does not run here (it answered ${version === null ? "nothing" : `hc ${version}`})`);
+    if (version !== release.version) throw new Error(`the downloaded herdr-core does not run here (${answered(version)})`);
 
     mkdirSync(bin, { recursive: true, mode: 0o755 });
-    // copied in beside its place, then linked there: a herdr-core that appeared meanwhile is never replaced
+    // copied in beside its place and asked again there (a home mounted noexec runs nothing), then linked
+    // there: a herdr-core that appeared meanwhile is never replaced
     const staged = join(bin, `.herdr-core.ovis-${randomUUID().slice(0, 8)}`);
     try {
       writeFileSync(staged, await Bun.file(unpacked).bytes(), { mode: 0o755 });
       chmodSync(staged, 0o755);
+      const there = await hcVersion(staged, env, 10_000);
+      if (there !== release.version) throw new Error(`herdr-core does not run from ${bin} (${answered(there)})`);
       linkSync(staged, dest);
+      mark = identity(dest);
     } finally {
       try { unlinkSync(staged); } catch { /* not written */ }
     }
@@ -99,10 +110,46 @@ export async function installHc(options: InstallHcOptions): Promise<string> {
     rmSync(work, { recursive: true, force: true });
   }
   // `hc` beside it, as hc's installer links it, only where no `hc` is (some window managers ship one)
-  if (!present(join(bin, "hc")) && Bun.which("hc", { PATH: env["PATH"] ?? "" }) === null) {
-    try { symlinkSync("herdr-core", join(bin, "hc")); } catch { /* herdr-core is found by its own name */ }
+  let linked = false;
+  const hc = join(bin, "hc");
+  if (!present(hc) && Bun.which("hc", { PATH: env["PATH"] ?? "" }) === null) {
+    try { symlinkSync("herdr-core", hc); linked = true; } catch { /* herdr-core is found by its own name */ }
   }
-  return dest;
+  return {
+    path: dest,
+    undo: () => {
+      try { if (identity(dest) === mark) unlinkSync(dest); } catch { /* gone already */ }
+      try { if (linked && readlinkSync(hc) === "herdr-core") unlinkSync(hc); } catch { /* gone already */ }
+    },
+  };
+}
+
+/** The whole body, refused as soon as it passes `limit`: a server that sends more is never held in memory. */
+async function boundedBody(response: Response, limit: number): Promise<Uint8Array<ArrayBuffer>> {
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > limit) {
+      void reader.cancel().catch(() => {});
+      throw new Error("the herdr-core download is far larger than a release");
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) { body.set(chunk, at); at += chunk.length; }
+  return body;
+}
+
+/** an inode number alone is reused by the next file made: with its size and mtime it names this one file (its ctime moves as the staged link goes) */
+function identity(path: string): string {
+  const { dev, ino, size, mtimeMs } = lstatSync(path);
+  return `${dev}:${ino}:${size}:${mtimeMs}`;
 }
 
 function present(path: string): boolean {
