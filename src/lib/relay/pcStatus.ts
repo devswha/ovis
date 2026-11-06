@@ -8,6 +8,7 @@ import { probePc } from "../../../shared/relay-channel.ts";
 import type { PcProbe, RelaySocket } from "../../../shared/relay-channel.ts";
 import type { RelayDevice } from "../../../shared/relay-device.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import { isTailnetCarrier } from "../../../shared/relay-mux.ts";
 import { relayFallback } from "../../../shared/relay-regions.ts";
 
 export type PcStatus =
@@ -28,18 +29,12 @@ export interface PcCheckSockets {
   readonly direct?: (url: string) => RelaySocket;
 }
 
-/** A direct carrier on Tailscale's address range (100.64.0.0/10), told apart from one on the local network. */
-function tailnetCarrier(carrier: string): boolean {
-  const [first, second] = new URL(carrier).hostname.split(".").map(Number);
-  return first === 100 && second !== undefined && second >= 64 && second < 128;
-}
-
 export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, probe: typeof probePc = probePc): Promise<Exclude<PcStatus, { kind: "checking" }>> {
   const offer: RelayOffer = { v: 1, server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay };
   const carriers = sockets.direct ? device.direct ?? [] : [];
   for (const direct of carriers) {
     const found = await probe(offer, { direct }, sockets.direct!, DIRECT_PROBE_MS / carriers.length);
-    if (found.kind === "answered") return { kind: "connected", route: tailnetCarrier(direct) ? "tailscale" : "lan", rttMs: found.ms };
+    if (found.kind === "answered") return { kind: "connected", route: isTailnetCarrier(direct) ? "tailscale" : "lan", rttMs: found.ms };
   }
   let relay = device.relay;
   let found: PcProbe = await probe(offer, { relay }, sockets.relay, RELAY_PROBE_MS);
