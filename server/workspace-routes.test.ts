@@ -3,7 +3,7 @@ import type { PendingMessage, ServerMessage } from "../shared/protocol.ts";
 import { MAX_INVENTORY_WORKSPACES } from "../shared/workspace-lifecycle.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
 import * as herdr from "./herdr/client.ts";
-import { handleWorkspaceRequest, MAX_ENV_BYTES, MAX_ENV_VARS } from "./workspace-routes.ts";
+import { handleWorkspaceRequest, INVENTORY_BUDGET_MS, MAX_ENV_BYTES, MAX_ENV_VARS } from "./workspace-routes.ts";
 
 /** each herdr create, launch, queued message and broadcast a create makes, in the order made */
 const calls: string[] = [];
@@ -49,6 +49,16 @@ describe("GET /api/worktree/inventory reads several workspaces' checkouts in one
       { workspace_id: "w3", error: { status: 502, code: "timeout", message: "herdr did not answer" } },
     ] });
     expect(list.mock.calls.map(([workspaceId]) => workspaceId).sort()).toEqual(["w1", "w2", "w3"]);
+  });
+
+  it("stops asking herdr once the read's budget is spent, answering the rest as timed out", async () => {
+    let now = 1_000_000;
+    spyOn(Date, "now").mockImplementation(() => now);
+    // a herdr that answers, slowly: each call takes most of the budget
+    const list = spyOn(herdr, "worktreeList").mockImplementation(async (workspaceId) => { now += INVENTORY_BUDGET_MS * 0.6; return { source: { repo_key: workspaceId }, worktrees: [] } as never; });
+    const body = (await (await inventory(["w1", "w2", "w3"])).json()) as { entries: { workspace_id: string; listing?: unknown; error?: { status: number; code: string } }[] };
+    expect(body.entries.map((entry) => [entry.workspace_id, entry.listing ? "listing" : `${entry.error?.status} ${entry.error?.code}`])).toEqual([["w1", "listing"], ["w2", "listing"], ["w3", "502 timeout"]]);
+    expect(list.mock.calls.map(([workspaceId]) => workspaceId)).toEqual(["w1", "w2"]);
   });
 
   it.each([

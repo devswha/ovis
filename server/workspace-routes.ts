@@ -60,6 +60,11 @@ export const MAX_ENV_VARS = 64;
 export const MAX_ENV_BYTES = 32 * 1024;
 /** an environment variable's name as a shell takes it in `NAME=value` */
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * How long one inventory read keeps asking herdr: a workspace still unread then is answered as a timed-out
+ * read, so a stalled herdr (10 s per call) cannot hold the answer past the request's 60 s idle limit.
+ */
+export const INVENTORY_BUDGET_MS = 30_000;
 
 /**
  * What is wrong with a create request's `env`, in the API's words; null when herdr can set it (or there
@@ -287,7 +292,13 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     const workspaceIds = [...new Set(asked)];
     if (workspaceIds.length > MAX_INVENTORY_WORKSPACES) return badRequest("too_many_workspaces", `at most ${MAX_INVENTORY_WORKSPACES} workspaces per read`);
     const entries: WorktreeInventoryEntry[] = [];
+    const deadline = Date.now() + INVENTORY_BUDGET_MS;
     for (const workspaceId of workspaceIds) {
+      // a client that left, or a herdr too slow to finish in time: the rest is not asked (the client keeps their last branches)
+      if (request.signal.aborted || Date.now() >= deadline) {
+        entries.push({ workspace_id: workspaceId, error: { status: 502, code: "timeout", message: "not read: the inventory ran out of time" } });
+        continue;
+      }
       try {
         const listing = await worktreeList(workspaceId);
         entries.push({ workspace_id: workspaceId, listing: { source: listing.source, worktrees: listing.worktrees } });

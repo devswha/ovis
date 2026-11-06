@@ -28,7 +28,7 @@ describe("useWorktreeBranches", () => {
   function Probe({ watching = false }: { watching?: boolean }) { useWorktreeBranches(snapshot, true, false, undefined, watching); return null; }
   let shown: ReadonlyMap<string, WorkspaceBranch> = new Map();
   const unmarked = new Set(["w3"]);
-  function Wide() { shown = useWorktreeBranches(wide, true, false, unmarked).branches; return null; }
+  function Wide({ online = true }: { online?: boolean }) { shown = useWorktreeBranches(wide, online, false, unmarked).branches; return null; }
   const words = () => [...shown].map(([id, branch]) => `${id}:${branch.branch}`).sort();
   /** Lets the read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
@@ -119,6 +119,29 @@ describe("useWorktreeBranches", () => {
     ]);
   });
 
+  it("applies the reads that answered when a later inventory read of the same poll fails (#2661)", async () => {
+    // an unmarked id this long is read alone, after the repository's read
+    const long = "l".repeat(2100);
+    listings[long] = listings["w3"];
+    const fetched = fetchSpy.getMockImplementation()!;
+    fetchSpy.mockImplementation(Object.assign(async (input: string | URL | Request) => {
+      const url = new URL(String(input), "http://pc");
+      if (url.searchParams.getAll("workspace_id").includes(long)) return Response.json({ error: { code: "machine_offline", message: "This PC is disconnected" } }, { status: 503 });
+      return fetched(input);
+    }, { preconnect: globalThis.fetch.preconnect }));
+    const twoReads = { ...snapshot, workspaces: [repository, { workspace_id: long } as WorkspaceInfo] } as SessionSnapshot;
+    const longUnmarked = new Set([long]);
+    function Two() { shown = useWorktreeBranches(twoReads, true, false, longUnmarked).branches; return null; }
+    try {
+      await act(async () => { renderer = create(createElement(Two)); });
+      await settle(() => words().length === 1);
+      await settle(() => false);
+      expect(words()).toEqual(["w1:main"]);
+      // the failed read is not asked again workspace by workspace
+      expect(asked().map((url) => url.pathname)).toEqual(["/api/worktree/inventory", "/api/worktree/inventory"]);
+    } finally { delete listings[long]; }
+  });
+
   it("reads a PC from before the inventory one workspace at a time, without asking it for the inventory again (#2661)", async () => {
     before = true;
     await act(async () => { renderer = create(createElement(Wide)); });
@@ -131,5 +154,17 @@ describe("useWorktreeBranches", () => {
       "inventory w2,w1,w3", "list w2", "list w1", "list w3",
       "list w2", "list w1", "list w3",
     ]);
+  });
+
+  it("asks a PC that read one workspace at a time for the inventory again once it reconnects, as after an update (#2661)", async () => {
+    before = true;
+    await act(async () => { renderer = create(createElement(Wide)); });
+    await settle(() => fetchSpy.mock.calls.length >= 4);
+    before = false;
+    await act(async () => { renderer!.update(createElement(Wide, { online: false })); });
+    await act(async () => { renderer!.update(createElement(Wide, { online: true })); });
+    await settle(() => fetchSpy.mock.calls.length >= 5);
+    await settle(() => false);
+    expect(asked().map((url) => url.pathname.split("/").pop())).toEqual(["inventory", "list", "list", "list", "inventory"]);
   });
 });
