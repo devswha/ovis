@@ -311,11 +311,12 @@ const CMD_SPECIAL = /[&|<>^%]/;
  * Whether cmd reads `arg`'s `&`, `|`, `<` and `>` as text: both PowerShells put an argument holding a
  * space in one pair of quotes, where cmd does (live-verified, 5.1.26100 and 7.6 to npm's shim), as
  * long as no `"` in any argument of the line toggles cmd's quotes, which runs across arguments
- * (#3092). Not with a `%` (cmd expands `%NAME%` inside quotes too), a `^` (a shim's `call` doubles
- * it) or a `!` (delayed expansion reads it inside quotes).
+ * (#3092), and no `!` names a variable delayed expansion would put there, one holding a `"` for a
+ * shim's `call` to read again. Not with a `%` (cmd expands `%NAME%` inside quotes too) or a `^` (a
+ * shim's `call` doubles it).
  */
 const cmdQuotedText = (arg: string, args: readonly string[]): boolean =>
-  arg.includes(" ") && !/[%^!]/.test(arg) && !args.some((other) => other.includes('"'));
+  arg.includes(" ") && !/[%^]/.test(arg) && !args.some((other) => /["!]/.test(other));
 
 /**
  * `args` as a PowerShell line must give them for the native program it starts to read them back

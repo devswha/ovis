@@ -61,8 +61,9 @@ it("gives a native program its arguments through Windows PowerShell 5.1 as they 
     const settings = "C:\\Users\\R&D\\AppData\\Local\\ovis\\claude settings\\a.json";
     const quoted = [settings, "fix A & B", "x | y", "a < b > c"];
     expect(powershellNativeArgs(program, quoted)).toEqual(quoted);
-    // but a `"` in any argument of the line toggles cmd's quotes, which run across arguments (#3092)
-    for (const args of [['x"', "a & calc & rem"], ['"', " & echo INJECTED & rem "], ["--append-system-prompt", 'a 12" screen', "--settings", settings]]) {
+    // but a `"` in any argument of the line toggles cmd's quotes, which run across arguments, and so
+    // does a `!Q!` delayed expansion turns into one (#3092)
+    for (const args of [['x"', "a & calc & rem"], ['"', " & echo INJECTED & rem "], ["--append-system-prompt", 'a 12" screen', "--settings", settings], ["!Q!", "a & calc & rem"]]) {
       expect(() => powershellNativeArgs(program, args)).toThrow();
     }
   }
