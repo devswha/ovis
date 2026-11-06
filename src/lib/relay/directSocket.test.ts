@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { directSocketFactory, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
+import { directSocketFactory, EARLY_SEND_BYTES, EARLY_SEND_MESSAGES, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
 
 const CARRIER = "ws://192.168.0.10:7319/v1/ws?v=1";
 
@@ -130,6 +130,26 @@ describe("directSocketFactory", () => {
     plugin.opens[0]!.answer("s1");
     await settle();
     expect(plugin.calls.filter((call) => call.method !== "open")).toEqual([{ method: "close", id: "s1", code: 4000, reason: "probe done" }]);
+  });
+
+  it.each([
+    ["bytes", () => [new ArrayBuffer(EARLY_SEND_BYTES), new ArrayBuffer(1)]],
+    ["messages", () => Array.from({ length: EARLY_SEND_MESSAGES + 1 }, () => "")],
+  ] as const)("closes with 1009 when more %s wait for the plugin to name the socket than it holds", async (_kind, sends) => {
+    const plugin = fakePlugin();
+    const socket = directSocketFactory(plugin.bridge)(CARRIER);
+    const closed: number[] = [];
+    socket.onclose = (event) => closed.push(event.code);
+    // Given a socket the plugin has not named yet, sent more than the cap.
+    for (const data of sends()) socket.send(data);
+    await settle();
+    // Then the page hears it closed, and nothing it sent goes out.
+    expect(closed).toEqual([1009]);
+    expect(socket.readyState).toBe(3);
+    // When the plugin names it, it is closed there too.
+    plugin.opens[0]!.answer("s1");
+    await settle();
+    expect(plugin.calls.filter((call) => call.method !== "open")).toEqual([{ method: "close", id: "s1", code: 1009, reason: "send queue full" }]);
   });
 
   it("ends a socket whose queue in the plugin overflowed, and takes nothing more from it", async () => {

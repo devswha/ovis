@@ -84,6 +84,10 @@ const CONNECTING = 0;
 const OPEN = 1;
 const CLOSING = 2;
 const CLOSED = 3;
+/** At most this much waits here for the plugin to name a socket, as the plugin's own queues: beyond it the socket closes with 1009. */
+export const EARLY_SEND_BYTES = 4 * 1024 * 1024;
+export const EARLY_SEND_MESSAGES = 16_384;
+const encoder = new TextEncoder();
 
 class DirectSocket implements RelaySocket {
   binaryType: BinaryType = "arraybuffer";
@@ -94,6 +98,7 @@ class DirectSocket implements RelaySocket {
   id: string | undefined;
   /** sends asked for before the plugin named the socket, in order */
   private early: DirectFrame[] = [];
+  private earlyBytes = 0;
   private closeAsked: { code?: number; reason?: string } | undefined;
   private unacked = 0;
 
@@ -119,8 +124,17 @@ class DirectSocket implements RelaySocket {
   send(data: string | ArrayBuffer): void {
     if (this.readyState === CLOSING || this.readyState === CLOSED) return;
     const frame: DirectFrame = typeof data === "string" ? { kind: "text", data } : { kind: "binary", data: arrayBufferToBase64(data) };
-    if (this.id === undefined) this.early.push(frame);
-    else this.forward(frame);
+    if (this.id !== undefined) { this.forward(frame); return; }
+    this.earlyBytes += typeof data === "string" ? encoder.encode(data).byteLength : data.byteLength;
+    if (this.early.length + 1 > EARLY_SEND_MESSAGES || this.earlyBytes > EARLY_SEND_BYTES) {
+      // the plugin closes the socket once it names it (closeAsked); the page hears of it now
+      this.early = [];
+      this.readyState = CLOSED;
+      this.closeAsked = { code: 1009, reason: "send queue full" };
+      queueMicrotask(() => this.onclose?.(new CloseEvent("close", { code: 1009, reason: "send queue full", wasClean: false })));
+      return;
+    }
+    this.early.push(frame);
   }
 
   close(code?: number, reason?: string): void {
@@ -135,7 +149,9 @@ class DirectSocket implements RelaySocket {
       case "message": {
         if (this.readyState === CLOSED) return;
         const data = event.kind === "text" ? event.data : base64ToArrayBuffer(event.data);
-        // taken off the plugin's queue once handled; the acks of one turn go as one call
+        // taken off the plugin's queue once handled; the acks of one turn go as one call. A known limit: the
+        // ack follows onmessage, while the relay channel may still have asynchronous work queued for it, so the
+        // plugin's cap bounds what waits to reach the page, not that work.
         if (this.unacked++ === 0) queueMicrotask(() => this.flushAck());
         this.onmessage?.(new MessageEvent("message", { data }));
         return;

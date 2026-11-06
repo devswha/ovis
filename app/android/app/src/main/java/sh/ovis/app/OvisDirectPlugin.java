@@ -3,6 +3,7 @@ package sh.ovis.app;
 import android.net.Uri;
 import android.util.Base64;
 import android.webkit.WebView;
+import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -38,9 +39,12 @@ public class OvisDirectPlugin extends Plugin {
     }
 
     private final Map<String, Entry> sockets = new HashMap<>();
+    /** Whether Capacitor's bridge runs on the WebView's message listener (main frame, origin rule only); null until known */
+    private volatile Boolean listenerBridge;
 
     @Override
     public void load() {
+        getActivity().runOnUiThread(() -> listenerBridge = provenListenerBridge());
         // a new page: the old one's sockets would hold both places and nobody reads them
         bridge.addWebViewListener(new WebViewListener() {
             @Override
@@ -56,14 +60,30 @@ public class OvisDirectPlugin extends Plugin {
     }
 
     /**
-     * Whether the page calling is the app's own: Capacitor's bridge reaches only its origin rule's pages and
-     * only their main frame (MessageHandler), and that rule is the hosted shell's origin only while a relay PC
-     * is open. Without the WebView's message listener Capacitor falls back to an interface every frame and
-     * origin can call: refused then.
+     * Capacitor's MessageHandler puts its bridge on a WebView message listener for its origin rules, and when
+     * the feature is missing, the legacy bridge is configured, or adding the listener throws, on a JavaScript
+     * interface that every frame of every origin can call. The plugin cannot see which happened, so it adds a
+     * listener of its own with the same rules on the same WebView: if that works, Capacitor's did too. UI thread.
+     */
+    private boolean provenListenerBridge() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) || bridge.getConfig().isUsingLegacyBridge()) return false;
+        try {
+            WebViewCompat.addWebMessageListener(bridge.getWebView(), "ovisDirectProbe", bridge.getAllowedOriginRules(), (view, message, origin, mainFrame, reply) -> {});
+            WebViewCompat.removeWebMessageListener(bridge.getWebView(), "ovisDirectProbe");
+            return true;
+        } catch (RuntimeException refused) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the page calling is the app's own. Capacitor's listener bridge takes calls only from the main frame of
+     * its origin rules (a PluginCall does not name the caller's frame or origin), and those rules are the hosted
+     * shell's origin and the app's bundled pages only while a relay PC is open; `open` then checks the page on screen.
+     * Without a proven listener bridge every call is refused.
      */
     private boolean allowed(PluginCall call) {
-        boolean bridged = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge();
-        if (!bridged || !APP_ORIGIN.equals(bridge.getServerUrl())) {
+        if (!Boolean.TRUE.equals(listenerBridge) || !APP_ORIGIN.equals(bridge.getServerUrl())) {
             call.reject("OvisDirect answers only the app's own page", "not_allowed");
             return false;
         }
@@ -120,40 +140,52 @@ public class OvisDirectPlugin extends Plugin {
             public void onClose(int code, String reason, boolean failed) {
                 synchronized (OvisDirectPlugin.this) {
                     if (sockets.remove(id) == null) return;
+                }
+                if (failed) {
                     JSObject event = new JSObject();
                     event.put("id", id);
-                    if (failed) notifyListeners("error", event);
-                    JSObject closed = new JSObject();
-                    closed.put("id", id);
-                    closed.put("code", code);
-                    closed.put("reason", reason);
-                    notifyListeners("close", closed);
+                    emit("error", event);
                 }
+                JSObject closed = new JSObject();
+                closed.put("id", id);
+                closed.put("code", code);
+                closed.put("reason", reason);
+                emit("close", closed);
             }
         };
     }
 
+    /**
+     * To the page on the bridge's plugin thread, where Capacitor adds and removes listeners: one thread, so the
+     * events of a socket keep the order its reader thread gave them.
+     */
+    private void emit(String event, JSObject data) {
+        bridge.execute(() -> notifyListeners(event, data));
+    }
+
     /** One message to the page, unless the page is that far behind: then the socket ends with 1009. */
-    private synchronized void deliver(String id, String kind, String data, int size) {
-        Entry entry = sockets.get(id);
-        if (entry == null) return;
-        if (entry.unacked.size() + 1 > MAX_QUEUED_MESSAGES || entry.unackedBytes + size > MAX_QUEUED_BYTES) {
-            entry.socket.close(1009, "receive queue full");
-            sockets.remove(id);
-            JSObject closed = new JSObject();
-            closed.put("id", id);
-            closed.put("code", 1009);
-            closed.put("reason", "receive queue full");
-            notifyListeners("close", closed);
+    private void deliver(String id, String kind, String data, int size) {
+        Entry entry;
+        boolean overflow;
+        synchronized (this) {
+            entry = sockets.get(id);
+            if (entry == null) return;
+            overflow = entry.unacked.size() + 1 > MAX_QUEUED_MESSAGES || entry.unackedBytes + size > MAX_QUEUED_BYTES;
+            if (!overflow) {
+                entry.unacked.add(size);
+                entry.unackedBytes += size;
+            }
+        }
+        if (overflow) {
+            // its close event comes through onClose, with 1009
+            entry.socket.abort(1009, "receive queue full");
             return;
         }
-        entry.unacked.add(size);
-        entry.unackedBytes += size;
         JSObject event = new JSObject();
         event.put("id", id);
         event.put("kind", kind);
         event.put("data", data);
-        notifyListeners("message", event);
+        emit("message", event);
     }
 
     @PluginMethod

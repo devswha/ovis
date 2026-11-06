@@ -7,6 +7,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -14,6 +17,8 @@ import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,12 +26,24 @@ import java.util.regex.Pattern;
  * A plain `ws://` WebSocket client (RFC 6455) for one direct carrier (OvisDirectPlugin): the app has no
  * WebSocket library, and a carrier is never TLS (Noise inside the relay channel proves the PC). No
  * Android types, so it runs in JVM tests. Messages arrive in order on its reader thread; sends go out in
- * order on its writer thread. A message over MAX_MESSAGE ends the socket with 1009.
+ * order on its writer thread. Bounded both ways: a message over MAX_MESSAGE, or more than MAX_MESSAGE
+ * bytes or MAX_QUEUED frames waiting to go out (pongs included), ends the socket with 1009; a peer that
+ * does not finish the upgrade within the handshake time ends it too.
  */
 final class DirectSocket {
     static final int MAX_MESSAGE = 4 * 1024 * 1024;
+    static final int MAX_QUEUED = 16_384;
+    static final int HANDSHAKE_MS = 5_000;
     private static final int CONNECT_MS = 10_000;
+    /** how long a close waits for the peer's answer before the socket is let go */
+    private static final int CLOSE_WAIT_MS = 5_000;
     private static final Pattern CARRIER = Pattern.compile("^ws://((?:0|[1-9]\\d{0,2})(?:\\.(?:0|[1-9]\\d{0,2})){3}):([1-9]\\d{0,4})/v1/ws\\?v=1$");
+    private static final Pattern UPGRADED = Pattern.compile("^HTTP/1\\.1 101(?: .*)?$");
+    private static final ScheduledExecutorService TIMERS = Executors.newSingleThreadScheduledExecutor((task) -> {
+        Thread thread = new Thread(task, "ovis-direct-timer");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     interface Listener {
         void onText(String text);
@@ -49,26 +66,40 @@ final class DirectSocket {
         return privateAddress ? new String[] { match.group(1), match.group(2) } : null;
     }
 
+    /** Whether a peer may close with `code` (RFC 6455 7.4): the defined ones it may send, and 3000-4999. */
+    static boolean validCloseCode(int code) {
+        return (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
+    }
+
     private final String host;
     private final int port;
     private final Listener listener;
+    private final int handshakeMs;
     private final Socket socket = new Socket();
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private final SecureRandom random = new SecureRandom();
     /** counted down once the handshake is done or the socket ended: no frame goes out before */
-    private final CountDownLatch upgraded = new CountDownLatch(1);
+    private final CountDownLatch upgradedLatch = new CountDownLatch(1);
+    private boolean upgraded;
     private boolean ended;
-    private boolean closeSent;
+    private boolean closeQueued;
+    private long queuedBytes;
+    private int queuedFrames;
 
     DirectSocket(String host, int port, Listener listener) {
+        this(host, port, listener, HANDSHAKE_MS);
+    }
+
+    DirectSocket(String host, int port, Listener listener, int handshakeMs) {
         this.host = host;
         this.port = port;
         this.listener = listener;
+        this.handshakeMs = handshakeMs;
     }
 
     void start() {
         writer.execute(() -> {
-            try { upgraded.await(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            try { upgradedLatch.await(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         });
         Thread reader = new Thread(this::run, "ovis-direct");
         reader.setDaemon(true);
@@ -76,40 +107,87 @@ final class DirectSocket {
     }
 
     void sendText(String text) {
-        write(0x1, text.getBytes(StandardCharsets.UTF_8));
+        enqueue(0x1, text.getBytes(StandardCharsets.UTF_8), false);
     }
 
     void sendBinary(byte[] bytes) {
-        write(0x2, bytes);
+        enqueue(0x2, bytes, false);
     }
 
-    /** Starts the closing handshake; the peer's answer, or the socket's end, gives onClose. */
+    /**
+     * Ends the socket with `code`: before the upgrade at once, closing the TCP socket under a pending connect or
+     * handshake; after it with a close frame, then onClose when the peer answers or CLOSE_WAIT_MS passed.
+     */
     void close(int code, String reason) {
+        boolean beforeUpgrade;
+        synchronized (this) {
+            if (ended || closeQueued) return;
+            beforeUpgrade = !upgraded;
+            if (beforeUpgrade) closeQueued = true;
+        }
+        if (beforeUpgrade) {
+            end(code, reason, false);
+            return;
+        }
+        sendClose(code, reason);
+        TIMERS.schedule(() -> end(code, reason, false), CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** Ends the socket now, without a closing handshake: the page fell too far behind. */
+    void abort(int code, String reason) {
+        end(code, reason, false);
+    }
+
+    /** A close frame, once; data frames asked for after it are dropped. */
+    private void sendClose(int code, String reason) {
         byte[] text = reason.getBytes(StandardCharsets.UTF_8);
         byte[] payload = new byte[2 + Math.min(text.length, 123)];
         payload[0] = (byte) (code >> 8);
         payload[1] = (byte) code;
         System.arraycopy(text, 0, payload, 2, payload.length - 2);
-        writer.execute(() -> {
-            synchronized (this) { if (closeSent || ended) return; closeSent = true; }
-            try { frame(0x8, payload); } catch (IOException error) { end(1006, "", true); }
-        });
-        // a peer that never answers the close is let go
-        writer.execute(() -> {
-            try { Thread.sleep(5_000); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            end(code, reason, false);
-        });
+        synchronized (this) {
+            if (ended || closeQueued) return;
+            closeQueued = true;
+        }
+        enqueue(0x8, payload, true);
     }
 
-    private void write(int opcode, byte[] payload) {
-        writer.execute(() -> {
-            synchronized (this) { if (closeSent || ended) return; }
-            try { frame(opcode, payload); } catch (IOException error) { end(1006, "", true); }
-        });
+    /** Puts one frame on the writer's queue, or ends the socket with 1009 when the queue is full. */
+    private void enqueue(int opcode, byte[] payload, boolean control) {
+        boolean overflow;
+        synchronized (this) {
+            if (ended || (closeQueued && !control)) return;
+            overflow = queuedFrames + 1 > MAX_QUEUED || queuedBytes + payload.length > MAX_MESSAGE;
+            if (!overflow) {
+                queuedFrames++;
+                queuedBytes += payload.length;
+            }
+        }
+        if (overflow) {
+            end(1009, "send queue full", false);
+            return;
+        }
+        try {
+            writer.execute(() -> {
+                try {
+                    frame(opcode, payload);
+                } catch (IOException error) {
+                    end(1006, "", true);
+                } finally {
+                    synchronized (this) {
+                        queuedFrames--;
+                        queuedBytes -= payload.length;
+                    }
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException gone) {
+            // ended meanwhile: nothing goes out any more
+        }
     }
 
     /** One masked frame, as a client must send. Only the writer thread calls it. */
     private void frame(int opcode, byte[] payload) throws IOException {
+        synchronized (this) { if (ended) return; }
         ByteArrayOutputStream out = new ByteArrayOutputStream(payload.length + 14);
         out.write(0x80 | opcode);
         if (payload.length < 126) {
@@ -135,12 +213,30 @@ final class DirectSocket {
         try {
             socket.connect(new InetSocketAddress(host, port), CONNECT_MS);
             socket.setTcpNoDelay(true);
+            socket.setSoTimeout(handshakeMs);
             DataInputStream in = new DataInputStream(socket.getInputStream());
             handshake(in);
-            upgraded.countDown();
+            socket.setSoTimeout(0);
+            synchronized (this) {
+                if (ended) return;
+                upgraded = true;
+            }
+            upgradedLatch.countDown();
             read(in);
+        } catch (ProtocolError error) {
+            failProtocol(error.code, error.getMessage());
         } catch (IOException error) {
             end(1006, "", true);
+        }
+    }
+
+    private static final class ProtocolError extends IOException {
+        private static final long serialVersionUID = 1L;
+        final int code;
+
+        ProtocolError(int code, String message) {
+            super(message);
+            this.code = code;
         }
     }
 
@@ -154,7 +250,7 @@ final class DirectSocket {
         out.write(request.getBytes(StandardCharsets.US_ASCII));
         out.flush();
         String status = line(in);
-        if (!status.startsWith("HTTP/1.1 101")) throw new IOException("not upgraded: " + status);
+        if (!UPGRADED.matcher(status).matches()) throw new IOException("not upgraded: " + status);
         String expected;
         try {
             expected = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
@@ -163,11 +259,22 @@ final class DirectSocket {
             throw new IOException(error);
         }
         boolean accepted = false;
+        boolean websocket = false;
+        boolean connectionUpgrade = false;
+        int headers = 0;
         for (String header = line(in); !header.isEmpty(); header = line(in)) {
+            if (++headers > 64) throw new IOException("too many headers");
             int colon = header.indexOf(':');
-            if (colon > 0 && header.substring(0, colon).trim().equalsIgnoreCase("Sec-WebSocket-Accept")) accepted = header.substring(colon + 1).trim().equals(expected);
+            if (colon <= 0) continue;
+            String name = header.substring(0, colon).trim();
+            String value = header.substring(colon + 1).trim();
+            if (name.equalsIgnoreCase("Sec-WebSocket-Accept")) accepted = value.equals(expected);
+            else if (name.equalsIgnoreCase("Upgrade")) websocket = value.equalsIgnoreCase("websocket");
+            else if (name.equalsIgnoreCase("Connection")) {
+                for (String token : value.split(",")) if (token.trim().equalsIgnoreCase("upgrade")) connectionUpgrade = true;
+            }
         }
-        if (!accepted) throw new IOException("bad Sec-WebSocket-Accept");
+        if (!accepted || !websocket || !connectionUpgrade) throw new IOException("not a WebSocket upgrade");
     }
 
     /** One header line, at most 8 KiB. */
@@ -181,6 +288,15 @@ final class DirectSocket {
         throw new IOException("closed during the handshake");
     }
 
+    private static String utf8(byte[] bytes, int offset, int length) throws ProtocolError {
+        try {
+            return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes, offset, length)).toString();
+        } catch (CharacterCodingException error) {
+            throw new ProtocolError(1007, "invalid UTF-8");
+        }
+    }
+
     private void read(DataInputStream in) throws IOException {
         ByteArrayOutputStream message = null;
         int messageType = 0;
@@ -189,55 +305,81 @@ final class DirectSocket {
             int second = in.readUnsignedByte();
             boolean fin = (first & 0x80) != 0;
             int opcode = first & 0x0f;
-            if ((second & 0x80) != 0) throw new IOException("a server frame is never masked");
+            boolean control = opcode >= 0x8;
+            if ((first & 0x70) != 0) throw new ProtocolError(1002, "reserved bits set");
+            if ((second & 0x80) != 0) throw new ProtocolError(1002, "a server frame is never masked");
             long length = second & 0x7f;
-            if (length == 126) length = in.readUnsignedShort();
-            else if (length == 127) length = in.readLong();
-            if (length < 0 || length > MAX_MESSAGE || (opcode >= 0x8 && length > 125)) {
-                close(1009, "message too big");
-                end(1009, "message too big", false);
+            if (length == 126) {
+                length = in.readUnsignedShort();
+                if (length < 126) throw new ProtocolError(1002, "length not minimal");
+            } else if (length == 127) {
+                length = in.readLong();
+                if (length >= 0 && length < 65536) throw new ProtocolError(1002, "length not minimal");
+            }
+            if (control && (!fin || length > 125)) throw new ProtocolError(1002, "invalid control frame");
+            if (length < 0 || length > MAX_MESSAGE) {
+                failProtocol(1009, "message too big");
                 return;
             }
             byte[] payload = new byte[(int) length];
             in.readFully(payload);
             switch (opcode) {
                 case 0x8: {
+                    if (payload.length == 1) throw new ProtocolError(1002, "invalid close payload");
                     int code = payload.length >= 2 ? ((payload[0] & 0xff) << 8) | (payload[1] & 0xff) : 1005;
-                    String reason = payload.length > 2 ? new String(payload, 2, payload.length - 2, StandardCharsets.UTF_8) : "";
-                    close(code == 1005 ? 1000 : code, "");
-                    end(code, reason, false);
+                    if (payload.length >= 2 && !validCloseCode(code)) throw new ProtocolError(1002, "invalid close code");
+                    String reason = payload.length > 2 ? utf8(payload, 2, payload.length - 2) : "";
+                    peerClosed(code, reason);
                     return;
                 }
                 case 0x9:
-                    writer.execute(() -> { try { frame(0xA, payload); } catch (IOException error) { end(1006, "", true); } });
+                    enqueue(0xA, payload, true);
                     continue;
                 case 0xA:
                     continue;
                 case 0x1:
                 case 0x2:
-                    if (message != null) throw new IOException("a new message inside a fragmented one");
+                    if (message != null) throw new ProtocolError(1002, "a new message inside a fragmented one");
                     message = new ByteArrayOutputStream();
                     messageType = opcode;
                     break;
                 case 0x0:
-                    if (message == null) throw new IOException("a continuation without a message");
+                    if (message == null) throw new ProtocolError(1002, "a continuation without a message");
                     break;
                 default:
-                    throw new IOException("unknown opcode " + opcode);
+                    throw new ProtocolError(1002, "unknown opcode " + opcode);
             }
             if (message.size() + payload.length > MAX_MESSAGE) {
-                close(1009, "message too big");
-                end(1009, "message too big", false);
+                failProtocol(1009, "message too big");
                 return;
             }
             message.write(payload);
             if (!fin) continue;
             byte[] whole = message.toByteArray();
             message = null;
+            String text = messageType == 0x1 ? utf8(whole, 0, whole.length) : null;
             synchronized (this) { if (ended) return; }
-            if (messageType == 0x1) listener.onText(new String(whole, StandardCharsets.UTF_8));
+            if (text != null) listener.onText(text);
             else listener.onBinary(whole);
         }
+    }
+
+    /** The peer closed: its close is answered (unless ours went first), and the socket ends once that is written. */
+    private void peerClosed(int code, String reason) {
+        sendClose(code == 1005 ? 1000 : code, "");
+        afterWrites(() -> end(code, reason, false));
+    }
+
+    /** The peer broke the protocol: a close with `code`, written before the socket ends. */
+    private void failProtocol(int code, String reason) {
+        sendClose(code, reason);
+        afterWrites(() -> end(code, reason, code != 1009));
+    }
+
+    /** Runs `then` once the frames queued before it are written, or after CLOSE_WAIT_MS should the writer be stuck. */
+    private void afterWrites(Runnable then) {
+        TIMERS.schedule(then, CLOSE_WAIT_MS, TimeUnit.MILLISECONDS);
+        try { writer.execute(then); } catch (java.util.concurrent.RejectedExecutionException gone) { then.run(); }
     }
 
     private void end(int code, String reason, boolean failed) {
@@ -245,7 +387,7 @@ final class DirectSocket {
             if (ended) return;
             ended = true;
         }
-        upgraded.countDown();
+        upgradedLatch.countDown();
         try { socket.close(); } catch (IOException ignored) { /* already gone */ }
         writer.shutdownNow();
         listener.onClose(code, reason, failed);

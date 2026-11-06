@@ -28,6 +28,9 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         /// sizes of the messages sent to the page and not acknowledged yet, oldest first
         var unacked: [Int] = []
         var unackedBytes = 0
+        /// sends handed to the task and not completed yet: bounded as the page's queue is
+        var pendingSends = 0
+        var pendingBytes = 0
         var finished = false
         init(task: URLSessionWebSocketTask) { self.task = task }
     }
@@ -111,10 +114,27 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("A frame is text or binary", "invalid_frame")
             return
         }
+        let size: Int
+        switch message {
+        case .string(let text): size = text.utf8.count
+        case .data(let bytes): size = bytes.count
+        @unknown default: size = 0
+        }
         queue.async {
             guard let socket = self.sockets[id], !socket.finished else { call.reject("That socket is closed", "closed"); return }
-            // a failed send ends the socket, which its receive reports
-            socket.task.send(message) { _ in }
+            if socket.pendingSends + 1 > Self.maxQueuedMessages || socket.pendingBytes + size > Self.maxQueuedBytes {
+                call.resolve()
+                socket.task.cancel(with: .messageTooBig, reason: nil)
+                self.finish(id, code: 1009, reason: "send queue full", error: false)
+                return
+            }
+            socket.pendingSends += 1
+            socket.pendingBytes += size
+            // a failed send ends the socket, which its receive reports; completions come on this queue
+            socket.task.send(message) { _ in
+                socket.pendingSends -= 1
+                socket.pendingBytes -= size
+            }
             call.resolve()
         }
     }
@@ -175,7 +195,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
                 socket.unacked.append(size)
                 socket.unackedBytes += size
-                self.notifyListeners("message", data: event)
+                self.emit("message", event)
                 self.receive(id)
             case .failure:
                 let code = socket.task.closeCode
@@ -194,8 +214,15 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         socket.finished = true
         sockets[id] = nil
         socket.task.cancel()
-        if error { notifyListeners("error", data: ["id": id]) }
-        notifyListeners("close", data: ["id": id, "code": code, "reason": reason])
+        if error { emit("error", ["id": id]) }
+        emit("close", ["id": id, "code": code, "reason": reason])
+    }
+
+    /// To the page on the bridge's queue, where Capacitor adds and removes listeners; one serial queue, so a
+    /// socket's events keep their order.
+    private func emit(_ event: String, _ data: [String: Any]) {
+        let target = (bridge as? CapacitorBridge)?.dispatchQueue ?? DispatchQueue.main
+        target.async { self.notifyListeners(event, data: data) }
     }
 
     fileprivate func finish(task: URLSessionTask, code: Int, reason: String, error: Bool) {
@@ -206,6 +233,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
     /// A new page in the web view: the old page's sockets would hold both places and nobody reads them.
     public override func load() {
         NotificationCenter.default.addObserver(forName: .ovisPageCommitted, object: nil, queue: nil) { [weak self] _ in
+            DirectCallGate.clear()
             guard let self else { return }
             self.queue.async {
                 for id in Array(self.sockets.keys) { self.finish(id, code: 1001, reason: "page left", error: false) }
@@ -226,6 +254,12 @@ private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         plugin?.finish(task: webSocketTask, code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) } ?? "", error: false)
+    }
+
+    /// A carrier is the address the page named and nothing else: a redirect of the upgrade fails it.
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -251,6 +285,16 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
         handler.contentController.add(DirectCallGate(inner: handler), name: "bridge")
     }
 
+    /// The calls the gate guards; Capacitor's own listener methods go on as they are, as events reach only the main frame.
+    static let guarded: Set<String> = ["open", "send", "close", "ack"]
+
+    /// A new page: approvals left by the old one are dropped.
+    static func clear() {
+        lock.lock()
+        approved.removeAll()
+        lock.unlock()
+    }
+
     static func take(_ callbackId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -263,7 +307,8 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let body = message.body as? [String: Any], body["pluginId"] as? String == "OvisDirect" {
+        if let body = message.body as? [String: Any], body["pluginId"] as? String == "OvisDirect",
+           let method = body["methodName"] as? String, Self.guarded.contains(method) {
             guard Self.fromApp(message.frameInfo), let callbackId = body["callbackId"] as? String else { return }
             Self.lock.lock()
             Self.approved.insert(callbackId)
