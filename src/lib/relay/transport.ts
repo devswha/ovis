@@ -1,7 +1,7 @@
 import type { MuxClock, WsStream } from "../../../shared/relay-mux-engine.ts";
 import { MuxStreamError } from "../../../shared/relay-mux-engine.ts";
 import { LIMITS_V1, REQUEST_HEADERS } from "../../../shared/relay-mux.ts";
-import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { isTailnetCarrier, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
 import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
@@ -29,6 +29,8 @@ export interface RelayTransportOptions extends RelayChannelOptions {
 export const DIRECT_BUDGET_MS = 1_500;
 /** How long the direct carriers have alone before the relay is opened too, and the first channel up is kept (happy eyeballs). */
 export const DIRECT_HEAD_START_MS = 300;
+/** Direct carriers tried at once: the apps' plugins open at most two sockets (OvisDirectPlugin MAX_SOCKETS). */
+export const DIRECT_SOCKETS = 2;
 /** A probe of the direct carriers at most this often while the relay carries the channel, unless the network changed. */
 const DIRECT_PROBE_EVERY_MS = 5 * 60_000;
 /** A switch to a direct carrier waits for no request to be under way, checking this often, this many times. */
@@ -315,7 +317,7 @@ export class RelayTransport implements Transport {
   }
 
   /**
-   * The channel on one of the PC's direct carriers, all tried at once, each within DIRECT_BUDGET_MS; undefined when
+   * The channel on one of the PC's direct carriers, DIRECT_SOCKETS at a time within DIRECT_BUDGET_MS; undefined when
    * none answered (off this network, or the PC names none) or `ended` fired (the relay won), and the relay is used.
    * Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay.
    */
@@ -327,37 +329,52 @@ export class RelayTransport implements Transport {
       // a relay channel that won meanwhile may have brought the PC's newer list
       this.directCarriers ??= saved;
     }
-    const carriers = this.directCarriers;
+    const carriers = [...new Set(this.directCarriers)];
     if (ended.aborted || carriers.length === 0) return undefined;
-    // every carrier at once (a silent LAN address must not keep the PC's Tailscale one out of the race), each within
-    // the budget; the first admitted is kept, and only it may report its loss
+    // at most DIRECT_SOCKETS at once (the apps' plugins open no more): the first LAN carrier and the first Tailscale one
+    // first, so a silent LAN address never keeps the PC's Tailscale one out of the race, then the rest as places free,
+    // all within the budget. The first admitted is kept, and only it may report its loss.
+    const lan = carriers.find((carrier) => !isTailnetCarrier(carrier));
+    const tailnet = carriers.find((carrier) => isTailnetCarrier(carrier));
+    const queue = [...[lan, tailnet].filter((carrier) => carrier !== undefined), ...carriers.filter((carrier) => carrier !== lan && carrier !== tailnet)];
+    const ends = performance.now() + DIRECT_BUDGET_MS;
     let kept: string | undefined;
     const attempts = new Map<string, AbortController>();
     // the admitted channel keeps its signal for good (closing the transport ends it): only the others are ended
     const endOthers = (than?: string): void => { for (const [carrier, attempt] of attempts) if (carrier !== than) attempt.abort(); };
     const offerTailnet = this.options.directTailnet?.() === true;
     return new Promise((resolve, reject) => {
-      let left = carriers.length;
-      for (const direct of carriers) {
-        const attempt = new AbortController();
-        attempts.set(direct, attempt);
-        const timer = setTimeout(() => attempt.abort(), DIRECT_BUDGET_MS);
-        // closing the transport ends an admitted channel too; the budget only an attempt under way
-        const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
-        const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
-        (this.options.openChannel ?? openRelayChannel)(offer, { ...options, onClose, signal, direct, socket, offerDirect: true, offerTailnet }).then((channel) => {
-          if (kept !== undefined || ended.aborted) { channel.close(); return; }
-          kept = direct;
-          endOthers(direct);
-          resolve(channel);
-        }, (error: unknown) => {
-          // only a refusal by the PC itself, after Noise proved it is the PC, is final
-          if (kept === undefined && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { endOthers(); reject(error); }
-        }).finally(() => {
-          clearTimeout(timer);
-          if (--left === 0) resolve(undefined);
-        });
-      }
+      let running = 0;
+      const next = (): void => {
+        while (running < DIRECT_SOCKETS && queue.length > 0 && kept === undefined && !ended.aborted && !this.stopped) {
+          const left = ends - performance.now();
+          if (left <= 0) break;
+          const direct = queue.shift()!;
+          running++;
+          const attempt = new AbortController();
+          attempts.set(direct, attempt);
+          const timer = setTimeout(() => attempt.abort(), left);
+          // closing the transport ends an admitted channel too; the budget only an attempt under way
+          const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
+          const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
+          (this.options.openChannel ?? openRelayChannel)(offer, { ...options, onClose, signal, direct, socket, offerDirect: true, offerTailnet }).then((channel) => {
+            if (kept !== undefined || ended.aborted) { channel.close(); return; }
+            kept = direct;
+            endOthers(direct);
+            resolve(channel);
+          }, (error: unknown) => {
+            // only a refusal by the PC itself, after Noise proved it is the PC, is final
+            if (kept === undefined && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { endOthers(); reject(error); }
+          }).finally(() => {
+            clearTimeout(timer);
+            running--;
+            next();
+            if (running === 0) resolve(undefined);
+          });
+        }
+      };
+      next();
+      if (running === 0) resolve(undefined);
     });
   }
 

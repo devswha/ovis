@@ -382,6 +382,44 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.size).toBe(8);
   });
 
+  it("let a carrier an app may still drop make none of its device's sessions give way until it is used", () => {
+    // Given a device with three sessions, and an app racing two more carriers that both sign in
+    const sessions = new SignedInSessions(8, 4);
+    const closed: string[] = [];
+    for (const name of ["s1", "s2", "s3"]) sessions.admit("phone", () => closed.push(name));
+    const lanCarrier = sessions.candidate("phone", () => closed.push("lan"));
+    const tailnetCarrier = sessions.candidate("phone", () => closed.push("tailnet"));
+    // Then neither makes an older session give way
+    expect(closed).toEqual([]);
+    // When the app drops one and uses the other
+    lanCarrier.release();
+    tailnetCarrier.chosen();
+    // Then the device holds its four, and only a fifth it uses makes the oldest give way
+    expect(closed).toEqual([]);
+    sessions.admit("phone", () => closed.push("s5"));
+    expect(closed).toEqual(["s1"]);
+  });
+
+  it("close the oldest carrier past a device's racing ones, never a session it uses", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    sessions.admit("phone", () => closed.push("s1"));
+    for (const name of ["c1", "c2", "c3", "c4"]) sessions.candidate("phone", () => closed.push(name));
+    expect(closed).toEqual(["c1"]);
+  });
+
+  it("hold never-used carriers past every place to one device's racing ones", () => {
+    // Given every place taken by two devices at their share
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    // When both sign in three carriers each and never use them
+    for (const device of ["a", "b"]) for (let index = 1; index <= 3; index++) sessions.candidate(device, () => closed.push(`${device}-c${index}`));
+    // Then only three get past every place
+    expect(sessions.size).toBe(11);
+    expect(closed).toEqual(["b-c1", "b-c2", "b-c3"]);
+  });
+
   it("close a session past every place, and give places back", () => {
     const sessions = new SignedInSessions(2, 4);
     const closed: string[] = [];

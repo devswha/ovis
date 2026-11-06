@@ -257,6 +257,34 @@ describe("racing the relay at the start", () => {
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
 
+  it("keeps a native socket for the PC's Tailscale carrier behind two silent LAN addresses", async () => {
+    // Given a phone away from home whose plugin opens two sockets at most (OvisDirectPlugin MAX_SOCKETS), and a PC
+    // that names two LAN addresses, silent from here, before its Tailscale one
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const { pc, store, saved } = await paired();
+    const port = pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1);
+    const tailscale = `ws://100.64.0.7:${port}`;
+    store.saved = { ...store.saved!, direct: [`ws://${LAN}:9`, "ws://10.0.0.8:9", tailscale] };
+    let open = 0;
+    const refused: string[] = [];
+    const socketFor = (url: string): WebSocket => {
+      // a third socket at once is refused, as the plugin answers too_many
+      if (open >= 2) { refused.push(url); return new WebSocket("ws://127.0.0.1:1/v1/ws?v=1"); }
+      open++;
+      const socket = new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+      socket.addEventListener("close", () => { open--; }, { once: true });
+      return socket;
+    };
+    // When it opens the PC
+    const transport = await transportFor(pc, store, saved, { directTailnet: () => true, directSocket: socketFor });
+    // Then the Tailscale carrier got a socket and carries the channel
+    expect(refused).toEqual([]);
+    expect(transport.route).toBe("direct");
+    expect(pc.channels.at(-1)!.direct).toBe(tailscale);
+  });
+
   it("gives a switch a probe just earned the direct carriers' whole budget, without racing the relay again", async () => {
     // Given a phone pairing through the relay, whose PC's direct carrier then admits it only slowly
     const pc = await pcFixture();
