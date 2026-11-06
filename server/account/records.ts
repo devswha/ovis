@@ -15,6 +15,8 @@ export interface AddGates {
   enrolling(): boolean;
   /** a waiting remove or a held key names `key`, or what waits cannot be trusted to be complete */
   held(key: string): boolean;
+  /** a remove waiting here names `key` (an add it signed waits until that settles) */
+  removing?(key: string): boolean;
 }
 export type RecordOutcome = { id: string | null; outcome: "applied" | "unchanged" } | { id: string | null; outcome: "refused"; code: RecordRefusal };
 
@@ -49,7 +51,8 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
     return { id: record.id, outcome: "unchanged" };
   }
   if (gates?.enrolling()) return refused("enrolling");
-  if (gates?.held(record.key)) return refused("removal_pending");
+  // a key this PC holds back, or a signer it holds back (a remove for it waits here): the add waits for that to settle
+  if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
   // the new row's id is derived from this PC's relay id (docs/account.md), so without one there is no row to make
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
@@ -73,7 +76,7 @@ function waited(outcome: RecordOutcome, record: AccountRecord, value: unknown, w
 
 /** `gates` with the keys of this batch's removes that could not be kept: an add for one is held back too. */
 function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<string>): AddGates {
-  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false) };
+  return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
 /** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */
@@ -144,7 +147,7 @@ export type LinkRefusal = RecordRefusal | "key_in_use";
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
  * member: the session is its authority, which is how a PC gets its first one.
  */
-export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
+export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, gates?: AddGates): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
   const { deviceId, serverId, sessionKey, sessionId } = session;
   const record = await read(value);
   if ("refused" in record) return { refused: record.refused };
@@ -156,6 +159,8 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   if (store.isTombstoned(link.key)) return { refused: "tombstoned" };
+  // a row moving to a key this PC holds back would let that key in without anyone approving it here
+  if (link.key !== link.old_key && gates?.held(link.key)) return { refused: "removal_pending" };
   if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
   const device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId);
   return device ? { device } : { refused: "link_not_owner" };

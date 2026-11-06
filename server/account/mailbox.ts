@@ -28,8 +28,16 @@ function scope(account: string, serverId: string, key: string): string {
 /** Pages one pull reads at most; the rest waits for the next pull. */
 const MAX_PAGES = 20;
 
+/** The account service was turned off on purpose (OVIS_ACCOUNT_SERVICE_URL=off): no mailbox exists, unlike one that is only unusable. */
+export class AccountServiceOff extends Error {
+  constructor() {
+    super("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
+    this.name = "AccountServiceOff";
+  }
+}
+
 export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string {
-  if (value.trim().toLowerCase() === "off") throw new Error("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
+  if (value.trim().toLowerCase() === "off") throw new AccountServiceOff();
   const url = new URL(value);
   const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("The account service must be https");
@@ -82,8 +90,9 @@ export class AccountMailbox {
   /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
-  /** When a pull last read the mailbox to its end without an error. */
+  /** When a pull last read the mailbox to its end without an error, and for which account and relay identity (`scope`). */
   private drainedAt: number | null = null;
+  private drainedScope: string | null = null;
   error: string | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pulling: Promise<number> | undefined;
@@ -108,6 +117,7 @@ export class AccountMailbox {
     return {
       enrolling: () => this.options.holds?.enrolling() ?? false,
       held: (key) => this.pendingError !== null || this.waiting().some((record) => removedKey(record) === key) || (this.options.holds?.holds(key) ?? false),
+      removing: (key) => this.pendingError !== null || this.waiting().some((record) => removedKey(record) === key),
     };
   }
 
@@ -158,22 +168,32 @@ export class AccountMailbox {
       return at !== undefined && now - at < ADMISSION_TTL_MS && at <= now + 60_000;
     };
     if (fresh()) return true;
-    await this.freshen();
-    return fresh();
-  }
-
-  /**
-   * A pull a request asked for: waits for one under way, else pulls, at most once every 10 seconds.
-   * True only when a pull read the whole mailbox without an error within those 10 seconds, so nothing
-   * the service holds for this PC is left unread (docs/account.md, "PC API" `?fresh=1`).
-   */
-  async freshen(): Promise<boolean> {
     if (this.pulling) await this.pulling;
     else if (Date.now() - this.lastAskedPull >= ASKED_PULL_MS) {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
-    return this.error === null && this.drainedAt !== null && Date.now() - this.drainedAt < ASKED_PULL_MS;
+    return fresh();
+  }
+
+  /**
+   * A pull a drive member's `?fresh=1` asked for: one that starts after the request. True only when it
+   * read the whole mailbox without an error, so nothing the service holds for this PC is left unread
+   * (docs/account.md, "PC API"); true with no account service at all, as there is no mailbox to read.
+   */
+  async freshen(): Promise<boolean> {
+    // with no account service there is no mailbox, so nothing can wait unread in one
+    if (this.options.service instanceof AccountServiceOff) return this.pendingError === null;
+    const asked = Date.now();
+    // a pull under way may have read the mailbox before this request: the answer waits for one that starts after it,
+    // which every request waiting meanwhile shares (pull)
+    if (this.pulling) await this.pulling;
+    await this.pull();
+    if (this.drainedAt === null || this.drainedAt < asked) return false;
+    const account = this.options.devices.account();
+    const identity = this.options.identity();
+    const current = account === null || !identity ? null : scope(account, identity.server_id, "");
+    return this.error === null && current !== null && this.drainedScope === current;
   }
 
   /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
@@ -231,7 +251,12 @@ export class AccountMailbox {
     // full: a waiting add makes room (it can come again); with none, the remove is undecided and its sender tries again
     if (waiting.length >= PENDING_MAX) {
       const add = next.findIndex((kept) => removedKey(kept) === null);
-      if (add === -1) return false;
+      if (add === -1) {
+        // nowhere to keep it: its key stays out of every add until a pairing here settles it
+        const key = removedKey(record);
+        if (key !== null) this.options.holds?.hold([key]);
+        return false;
+      }
       next.splice(add, 1);
     }
     // on disk first, with the ones a pull is retrying, so a stop (or a failed write) loses none of them
@@ -306,7 +331,7 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
-      if (complete) this.drainedAt = Date.now();
+      if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }

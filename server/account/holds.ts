@@ -22,6 +22,8 @@ export class AccountHolds {
   /** Why the holds could not be read: every add waits until it is fixed. */
   readonly error: string | null = null;
   private enrollingBy: string | null = null;
+  /** the barrier names a device whose link succeeded: no later link takes it over */
+  private confirmed = false;
   private keys = new Set<string>();
   private overflowed = false;
 
@@ -40,16 +42,30 @@ export class AccountHolds {
     else if (enrolling !== "missing") {
       const by = (enrolling.value as { by?: unknown } | null)?.by;
       if (typeof by !== "string") problems.push(`${options.enrollingPath} is not an enrollment barrier`);
-      else this.enrollingBy = by;
+      else { this.enrollingBy = by; this.confirmed = (enrolling.value as { confirmed?: unknown }).confirmed === true; }
     }
     if (problems.length > 0) this.error = `${problems.join("; ")}: account adds wait until it is restored or removed.`;
   }
 
-  /** The PC waits for the member `by` that linked it first to enroll it: account adds wait meanwhile. */
-  startEnrolling(by: string): void {
+  /**
+   * A link while the PC has no account. `stale`: the PC has no account (its first member left before
+   * enrolling it), so a barrier an earlier link confirmed is taken over.
+   */
+  startEnrolling(by: string, options: { stale?: boolean } = {}): void {
     this.assertReadable();
+    if (options.stale) this.confirmed = false;
+    if (this.confirmed) return;
     if (this.options.enrollingPath) writePrivateState(this.options.enrollingPath, { by });
     this.enrollingBy = by;
+  }
+
+  /** The link of `by` succeeded: it ends the wait, unless an earlier successful link already holds it. */
+  confirmEnrolling(by: string): void {
+    this.assertReadable();
+    if (this.confirmed) return;
+    if (this.options.enrollingPath) writePrivateState(this.options.enrollingPath, { by, confirmed: true });
+    this.enrollingBy = by;
+    this.confirmed = true;
   }
 
   /** A file that cannot be read is never written over: what it held would be lost. */
@@ -61,6 +77,7 @@ export class AccountHolds {
     this.assertReadable();
     if (this.options.enrollingPath) rmSync(this.options.enrollingPath, { force: true });
     this.enrollingBy = null;
+    this.confirmed = false;
   }
 
   enrolling(): boolean { return this.enrollingBy !== null; }

@@ -63,11 +63,12 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // (with no account here no add applies anyway, and the next first member takes the barrier over)
       if (context.services.accountHolds.error !== null) return fail("account_unavailable", context.services.accountHolds.error, 503);
       const first = devices.account() === null;
-      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
-      const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId });
+      // a barrier confirmed by a member who has since left (the PC has no account again) is this link's to take over
+      if (first) context.services.accountHolds.startEnrolling(peer.device.id, { stale: true });
+      const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId }, context.services.accountMailbox.gates());
       if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
-      // the wait is this device's to end: a link refused meanwhile may have named another
-      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
+      // the wait is this device's to end: a link refused meanwhile may have named another; the first link that succeeds keeps it
+      if (first) context.services.accountHolds.confirmEnrolling(peer.device.id);
       return reply({ device: linked.device });
     }
     case "/api/account/records": {
@@ -84,6 +85,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       setRequestRoute(pathname);
       const { records, held, held_full: heldFull, last } = body;
       if (!Array.isArray(records) || records.length > ACCOUNT_ENROLL_MAX) return fail("record_invalid", `Send at most ${ACCOUNT_ENROLL_MAX} records`, 400);
+      if ((last !== undefined && typeof last !== "boolean") || (heldFull !== undefined && typeof heldFull !== "boolean")) return fail("record_invalid", "last and held_full are true or false", 400);
       if (held !== undefined && (!Array.isArray(held) || held.length > ACCOUNT_HELD_MAX || !held.every(isAccountKey))) return fail("record_invalid", `Hold at most ${ACCOUNT_HELD_MAX} account keys`, 400);
       // what a member hands a PC it brought into the account: the caller is a member of that account here already
       if (peer.kind !== "relay" || !devices.isAccountApproverSession(peer.device.id, peer.key) || typeof body.account !== "string" || devices.account() !== body.account) {
@@ -97,10 +99,14 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // more keys than one enrollment carries: every add is held back from now on, rather than one let in by the cut
       if (heldFull === true) holds.overflow();
       const gates = mailbox.gates();
-      const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => false, held: gates.held }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
+      // only the member whose link brought this PC in hands over its adds during the wait; another member's wait with the mailbox's
+      // the member whose link brought this PC in, or any member once that one is no longer a drive member here (revoked, say)
+      const named = holds.enrollingMember();
+      const linker = named === peer.device.id || (named !== null && !devices.isAccountApprover(named));
+      const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => !linker && holds.enrolling(), held: gates.held, ...(gates.removing ? { removing: gates.removing } : {}) }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
-      if (last !== false && !undecided && holds.enrollingMember() === peer.device.id) {
+      if (last !== false && !undecided && linker) {
         holds.endEnrolling();
         // adds the barrier held back now pass every gate in their turn
         await mailbox.settle();

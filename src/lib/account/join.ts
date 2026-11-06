@@ -56,6 +56,8 @@ export interface PcAccountStatus {
   readonly fresh?: boolean;
   /** it holds every add back: it lost removal evidence, so `blocked` may not name every key it keeps out */
   readonly blockedAll?: boolean;
+  /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
+  readonly enrolling?: boolean;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -71,6 +73,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     // an Ovis from before enrollments sends no `fresh` at all
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
+    ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
   };
 }
 
@@ -343,26 +346,37 @@ export interface Enrollment { readonly finished: boolean; readonly checked: numb
  * and the plan waits for the next connection. Then each PC that answered introduces `pc` to the
  * devices let in, so they sign in there. `finished` once nothing is left to send.
  */
-export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc }): Promise<Enrollment> {
+export async function enrollPc(options: {
+  fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc;
+  /** how many other PCs the account's directory lists: some this client cannot read keep its adds home */
+  listed?: number;
+  /** the new PC is from before enrollments (its status has no `enrolling`): removes only, through records */
+  legacyTarget?: boolean;
+}): Promise<Enrollment> {
   const others = options.others ?? [];
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
+  // enrolled already: only introductions some PCs did not take are left
+  if (planned.introduce !== undefined) return { finished: await introduceLeft(options.store, options.serverId, others), checked: 0, of: others.length, admitted: [] };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
-  /** PCs from before enrollments: their removals are relayed, but they cannot say they read their mailbox */
+  /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
   let legacy = 0;
+  let unvouched = 0;
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
       if (status.account !== options.account) return;
+      // from before enrollments: its removals count, but it cannot vouch for its mailbox
       if (status.fresh === undefined) { legacy++; seen.push(status); return; }
-      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet
-      if (!status.fresh) return;
+      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet: its removals
+      // go, no add does, and the new PC keeps its wait until a later connection finds that PC read whole
+      if (status.fresh !== true) { unvouched++; seen.push(status); return; }
       answered.push(peer);
       seen.push(status);
     } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
   }));
-  if (others.length > 0 && answered.length === 0 && legacy === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
+  if (others.length > 0 && answered.length === 0 && legacy === 0 && unvouched === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
   await keepRemovals({ store: options.store, account: options.account, removals: seen.flatMap((status) => status.removals) });
   const collected = await verified(seen.flatMap((status) => [...status.removals, ...status.adds]), options.account);
   /** the removals to send: this client's own and the ones it kept, not answered yet */
@@ -383,18 +397,25 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   ]);
   // a PC that lost removal evidence may keep out a key it cannot name: then no add goes, and the new PC holds every one
   // only older PCs answered: no add goes, as before enrollments, and the account's devices ask this PC once each
-  const blind = seen.some((status) => status.blockedAll === true) || (others.length > 0 && answered.length === 0);
+  // a PC that cannot vouch for what it keeps out (older, or its mailbox read failed): while one answers, no add goes
+  // the directory lists PCs this client has no way to read: one of them may hold a removal it never saw
+  const unread = others.length === 0 && (options.listed ?? 0) > 0;
+  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0 || unvouched > 0 || unread;
   const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))
     .filter((record, index, all) => all.findIndex((other) => other.id === record.id) === index);
+  if (options.legacyTarget) return enrollLegacy({ ...options, removes });
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
   const done: string[] = [];
   const admitted: string[] = [];
-  let sent = true;
+  // an unvouched PC keeps the new PC waiting: this enrollment is sent, but not as the last part
+  let sent = unvouched === 0;
   // through the enrollment, which also ends the PC's wait for this client: sent even with nothing in it
   // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
+    // only a PC that lost removal evidence for good latches every add off; one that could not read its mailbox this time
+    // (or is older) only keeps this enrollment's adds home, so a passing failure never spreads a permanent hold
     const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX || seen.some((status) => status.blockedAll === true) ? { held_full: true } : {}) } : {};
     // a part with a remove the PC could not decide keeps its wait: this enrollment is sent again on the next connection
     let response: Response;
@@ -420,12 +441,42 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
     if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
     finished = sent && pending(current.devices, current.removals).every((record) => done.includes(record.id));
     const rest = { ...current.enrolls };
-    if (finished) delete rest[options.serverId];
-    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
+    // enrolled: the plan stays only for the introductions, until every PC that answered took them
+    const pc = options.pc;
+    // with the devices an earlier, unfinished attempt let in
+    const keys = [...new Set([...entry.admitted ?? [], ...admitted])];
+    if (finished && pc !== undefined && keys.length > 0 && answered.length > 0) rest[options.serverId] = { account: entry.account, done: [], introduce: { keys, pc, to: answered.map((peer) => peer.serverId) } };
+    else if (finished) delete rest[options.serverId];
+    else rest[options.serverId] = { ...entry, done: [...entry.done, ...done], admitted: keys };
     return { devices: current.devices, removals: current.removals, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
-  if (options.pc !== undefined) await introduce(answered, admitted, options.pc);
+  if (finished) finished = await introduceLeft(options.store, options.serverId, answered);
   return { finished, checked: answered.length, of: others.length, admitted };
+}
+
+/**
+ * Sends the introductions a plan still holds through each of `peers` it names, and drops each PC that
+ * took them all (a device a PC does not know is skipped there). True once none is left.
+ */
+async function introduceLeft(store: AccountStore, serverId: string, peers: readonly AccountPeer[]): Promise<boolean> {
+  const left = (await store.get("enrolls"))?.[serverId]?.introduce;
+  if (left === undefined) return true;
+  const took: string[] = [];
+  for (const peer of peers.filter((candidate) => left.to.includes(candidate.serverId))) {
+    if (await introduce(peer, left.keys, left.pc)) took.push(peer.serverId);
+  }
+  let none = false;
+  await store.update("enrolls", (current) => {
+    const entry = current?.[serverId];
+    if (current === undefined || entry?.introduce === undefined) { none = true; return current; }
+    const to = entry.introduce.to.filter((id) => !took.includes(id));
+    const rest = { ...current };
+    none = to.length === 0;
+    if (none) delete rest[serverId];
+    else rest[serverId] = { ...entry, introduce: { ...entry.introduce, to } };
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+  return none;
 }
 
 /** A new PC from before enrollments: the removes as they were sent then, through records, and no add. */
@@ -442,27 +493,36 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
       else sent = false;
     }
   }
-  await options.store.update("enrolls", (current) => {
-    const entry = current?.[options.serverId];
-    if (current === undefined || entry === undefined) return current;
-    const rest = { ...current };
-    if (sent) delete rest[options.serverId];
+  let finished = false;
+  // checked in the same write that ends the plan: a removal signed meanwhile keeps it for the next call
+  await options.store.updateMany(["enrolls", "devices", "removals"], (current) => {
+    const entry = current.enrolls?.[options.serverId];
+    if (current.enrolls === undefined || entry === undefined) return current;
+    const signed = [...Object.values(current.devices ?? {}).filter((record): record is RemoveRecord => record.kind === "remove"), ...Object.values(current.removals ?? {})]
+      .filter((record) => record.account === options.account && !entry.done.includes(record.id));
+    finished = sent && signed.every((record) => done.includes(record.id));
+    const rest = { ...current.enrolls };
+    if (finished) delete rest[options.serverId];
     else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
-    return Object.keys(rest).length === 0 ? undefined : rest;
+    return { devices: current.devices, removals: current.removals, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
-  return { finished: sent, checked: 0, of: options.others?.length ?? 0, admitted: [] };
+  return { finished, checked: 0, of: options.others?.length ?? 0, admitted: [] };
 }
 
-/** Each PC that answered tells the devices just let in about the new PC (docs/account.md, "Introductions"); one that does not know a device skips it. */
-async function introduce(peers: readonly AccountPeer[], keys: readonly string[], pc: IntroducedPc): Promise<void> {
-  for (const peer of peers) {
-    for (const key of keys) {
-      try { await post(peer.fetch, "/api/account/introduce", { key, pcs: [pc] }); } catch (error) {
-        if (!(error instanceof AccountPcError)) throw error;
-        if (error.code !== "introduction_unknown_key") console.warn("Ovis: a PC did not introduce the new PC", error.code);
-      }
+/**
+ * PC `peer` tells the devices just let in about the new PC (docs/account.md, "Introductions"); a
+ * device it does not know is skipped. True when it answered for every one, so nothing is left to send.
+ */
+async function introduce(peer: AccountPeer, keys: readonly string[], pc: IntroducedPc): Promise<boolean> {
+  let all = true;
+  for (const key of keys) {
+    try { await post(peer.fetch, "/api/account/introduce", { key, pcs: [pc] }); } catch (error) {
+      if (error instanceof AccountPcError && error.code === "introduction_unknown_key") continue;
+      console.warn("Ovis: a PC did not introduce the new PC yet", error instanceof AccountPcError ? error.code : error instanceof Error ? error.name : error);
+      all = false;
     }
   }
+  return all;
 }
 
 /**
@@ -470,10 +530,10 @@ async function introduce(peers: readonly AccountPeer[], keys: readonly string[],
  * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
  * signed in with the account key there. The PC's status gives this client no record to sign.
  */
-export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc }): Promise<Enrollment | null> {
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc; listed?: number }): Promise<Enrollment | null> {
   const status = await pcAccountStatus(options.fetch);
   if (status.account !== options.account) return null;
-  return enrollPc(options);
+  return enrollPc({ ...options, legacyTarget: status.enrolling === undefined });
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */
