@@ -2098,6 +2098,7 @@ button {
   position: relative;
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
+  column-gap: 2px;
   flex: 0 0 auto;
   height: 28px;
   padding: 2px;
@@ -2110,7 +2111,7 @@ button {
   top: 2px;
   bottom: 2px;
   left: 2px;
-  width: calc(50% - 2px);
+  width: calc(50% - 3px);
   background: var(--bg-panel);
   border-radius: var(--radius-sm);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 0 0 var(--hairline) color-mix(in srgb, var(--text) 10%, transparent);
@@ -2118,7 +2119,7 @@ button {
 }
 
 .view-switch[data-view="terminal"] .lens-thumb {
-  transform: translateX(100%);
+  transform: translateX(calc(100% + 2px));
 }
 
 @media (prefers-reduced-motion: reduce) {

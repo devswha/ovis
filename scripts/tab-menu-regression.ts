@@ -123,7 +123,9 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     const stripMenu = strip.locator(".tab-strip-item.is-active .tab-strip-menu");
     const opacity = (locator: Locator) => locator.evaluate((node) => getComputedStyle(node).opacity);
     const pointerOffStrip = () => page.mouse.move(640, 600);
-    assert.equal(await strip.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "tabs render neither close buttons nor chevrons");
+    assert.equal(await strip.locator(".tab-strip-panes").count(), 0, "tabs render no chevrons");
+    // the header's row is a browser's tab strip: only the open tab shows its close at rest
+    assert.equal(await strip.locator(".tab-strip-close:visible").count(), 1, "only the open tab shows its close at rest");
     // The selected tab's menu button holds its place hidden until the pointer is over the strip or
     // the tab has keyboard focus, and opens the trimmed menu a touch screen's button does.
     await pointerOffStrip();
