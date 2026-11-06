@@ -99,7 +99,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // more keys than one enrollment carries: every add is held back from now on, rather than one let in by the cut
       if (heldFull === true) holds.overflow();
       const gates = mailbox.gates();
-      const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => false, held: gates.held }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
+      // only the member whose link brought this PC in hands over its adds during the wait; another member's wait with the mailbox's
+      const linker = holds.enrollingMember() === peer.device.id;
+      const results = await applyEnrollment(devices, records, serverId, { gates: { enrolling: () => !linker && holds.enrolling(), held: gates.held }, wait: (record) => mailbox.wait(record), settle: () => mailbox.settle() });
       // only the member that linked this PC ends its wait, with the last part of its enrollment, once every remove was decided
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
       if (last !== false && !undecided && holds.enrollingMember() === peer.device.id) {

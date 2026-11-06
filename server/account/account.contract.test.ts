@@ -477,7 +477,32 @@ test("fresh requests at the same time share one mailbox pull", async () => {
   await member(f);
   const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test", fetch: counting });
   expect(await Promise.all(Array.from({ length: 5 }, () => mailbox.freshen()))).toEqual([true, true, true, true, true]);
-  expect(pulls).toBe(1);
+  // the first starts a pull; the four that came while it ran share the one after it
+  expect(pulls).toBe(2);
+});
+
+test("another member's enrollment during the barrier lets no add in; the linker's does", async () => {
+  const f = fixture();
+  const first = await relayDevice(f);
+  const firstKey = await accountKey();
+  expect((await post(await signedIn(f, first), "/api/account/link", { record: await linkRecord(first, firstKey) })).status).toBe(200);
+  const second = await relayDevice(f);
+  const secondKey = await accountKey();
+  expect((await post(await signedIn(f, second), "/api/account/link", { record: await linkRecord(second, secondKey) })).status).toBe(200);
+  const other = await signedIn(f, { keys: secondKey.keys, publicKey: secondKey.spki, id: second.id });
+  const mac = await accountKey();
+  expect((await post(other, "/api/account/enroll", { account: ACCOUNT, records: [await add(secondKey, mac.spki)] })).body.results?.[0]).toMatchObject({ outcome: "refused", code: "enrolling" });
+  expect(f.app.context.services.devices.hasKey(mac.spki)).toBe(false);
+});
+
+test("an add signed by a member that a waiting remove names waits too", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const [stranger, b, t] = [await accountKey(), await accountKey(), await accountKey()];
+  await post(link, "/api/account/records", { records: [await add(key, b.spki)] });
+  const results = (await post(link, "/api/account/records", { records: [await remove(stranger, b.spki), await add(b, t.spki)] })).body.results;
+  expect(results?.map(({ outcome, code }) => code ?? outcome)).toEqual(["signer_not_member", "removal_pending"]);
+  expect(f.app.context.services.devices.hasKey(t.spki)).toBe(false);
 });
 
 test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {

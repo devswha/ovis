@@ -252,7 +252,8 @@ A link sent while the PC has no account starts its **enrollment barrier**
 (`account-enrolling.json`, written before the link, naming the linking device): until that device's
 last `enroll` part answers every remove (none `account_unavailable`), no `add` applies here from
 `records` or the mailbox. One from the mailbox waits in `account-pending.json` and is tried again
-after the enrollment. An `enroll` from any other member applies its records but ends no wait. A
+after the enrollment. An `enroll` from any other member applies its removes, but its adds wait
+like any other (`enrolling`), and it ends no wait. A
 refused link leaves the barrier (with no account here no add applies anyway); the next first link
 takes it over. The first link that succeeds keeps it, unless the PC has no account again (its
 first member was revoked before enrolling it): then the next first link takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,
@@ -268,7 +269,7 @@ An enrollment applies, whatever the order sent:
    became a member applies before the next round's adds;
 4. then the barrier lifts, and the adds that waited for it are tried in turn.
 
-At every step an `add` is refused `removal_pending` when its key is held: a waiting remove names it
+At every step an `add` is refused `removal_pending` when its key or its signer is held: a waiting remove names it
 (whatever that remove's signer, including one earlier in the same batch), an enrollment held it,
 the waiting queue cannot be read, or waiting removes were ever pushed out of a full queue. A key already on a row is not affected (its
 add is `unchanged`), so a pairing done on this PC settles it.

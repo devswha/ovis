@@ -49,7 +49,8 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
     return { id: record.id, outcome: "unchanged" };
   }
   if (gates?.enrolling()) return refused("enrolling");
-  if (gates?.held(record.key)) return refused("removal_pending");
+  // a key this PC holds back, or a signer it holds back (a remove for it waits here): the add waits for that to settle
+  if (gates?.held(record.key) || gates?.held(record.signer)) return refused("removal_pending");
   // the new row's id is derived from this PC's relay id (docs/account.md), so without one there is no row to make
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
