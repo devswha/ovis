@@ -28,10 +28,29 @@ export function herdrSocketPath(): string {
 }
 
 /**
+ * A process that names a test session (HERDR_TEST_SESSION) never reaches herdr's default socket, the
+ * user's own session: a script whose scripts/test-herdr.ts import Bun dropped (its binding unused)
+ * would otherwise create, type into and close panes there. OVIS_ALLOW_LIVE_HERDR=1 (or the tests'
+ * own HERDR_TEST_LIVE=1) says the live session is meant.
+ */
+function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
+  if (!env["HERDR_TEST_SESSION"] || env["OVIS_ALLOW_LIVE_HERDR"] === "1" || env["HERDR_TEST_LIVE"] === "1") return;
+  const defaults = [
+    `${env["HOME"] ?? ""}/.config/herdr/herdr.sock`,
+    ...(env["XDG_CONFIG_HOME"] ? [`${env["XDG_CONFIG_HOME"]}/herdr/herdr.sock`] : []),
+    ...(process.platform === "win32" ? [`${env["APPDATA"] ?? ""}\\herdr\\herdr.sock`] : []),
+  ];
+  if (defaults.includes(socketPath)) {
+    throw new HerdrError("live_herdr_refused", `HERDR_TEST_SESSION=${env["HERDR_TEST_SESSION"]} is set, but this call would reach the user's own herdr at ${socketPath}: import scripts/test-herdr.ts for its effect (import "./test-herdr.ts"), or set OVIS_ALLOW_LIVE_HERDR=1`);
+  }
+}
+
+/**
  * On Windows herdr.sock is a marker file (`pid:start`), and the server listens on a named
  * pipe of the same name: `\\.\pipe\C:\Users\…\herdr.sock` (live-verified, herdr 0.9.3).
  */
 export function socketAddress(socketPath: string): string {
+  refuseLiveHerdr(socketPath);
   return process.platform === "win32" && !socketPath.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 }
 
