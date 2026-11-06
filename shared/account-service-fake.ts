@@ -118,7 +118,10 @@ export class FakeAccountService {
 
   /** The person typed `userCode` on the link page and confirmed a sign-in with `provider`. */
   approveOnLinkPage(userCode: string, account: string, provider: SignInProvider): void {
-    for (const entry of this.deviceSignIns.values()) if (entry.userCode === userCode && entry.page) { entry.account = account; entry.provider = provider; }
+    // one approval, as the service: an approved request's code names nothing any more
+    for (const entry of this.deviceSignIns.values()) {
+      if (entry.userCode === userCode && entry.page && entry.account === null && this.now() < entry.expires) { entry.account = account; entry.provider = provider; entry.userCode = ""; }
+    }
   }
 
 

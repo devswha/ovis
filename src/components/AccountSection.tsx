@@ -189,12 +189,15 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     })().finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
   };
 
-  /** Runs one provider's sign-in the way this page can; null when it cannot here. */
-  const runSignIn = (provider: AccountProvider): Promise<AccountSession> | null => {
+  /**
+   * Runs one provider's sign-in the way this page can; null when it cannot here. `viaLinkPage`: the
+   * link page, where the person picks GitHub or Google; a sign-in again for this same account passes
+   * false, so it stays with the provider the account signed in with.
+   */
+  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage): Promise<AccountSession> | null => {
     if (bridge !== null) return desktopSignIn(provider, bridge, indexedAccountStore);
     if (pcService === null) return null;
-    // the link page signs in with whichever of GitHub or Google the person picks there
-    if (linkPage) return signInWithCode(pcService, "ovis");
+    if (viaLinkPage) return signInWithCode(pcService, "ovis");
     return isDeviceProvider(provider) ? signInWithCode(pcService, provider) : null;
   };
 
@@ -247,7 +250,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     const { action, provider } = reauth;
     const { account, provider: current } = view;
     setReauth(null);
-    runSignIn(current)?.then(async (session) => {
+    runSignIn(current, false)?.then(async (session) => {
       await load();
       if (session.account !== account) return;
       if (action === "add") addMethod(provider);
