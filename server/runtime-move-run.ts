@@ -162,7 +162,8 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       if (!now || now.agent !== verdict.agent || (now.status !== "idle" && now.status !== "done") || source.holdsPending(pane.pane_id)) throw new MoveAbort("agent_busy");
       // the conversation shown is the one ended: one switched to since would be reopened as the wrong one
       if (verdict.kind === "resume" && now.session !== verdict.session_id) throw new MoveAbort("plan_changed");
-      if (await source.inputEmpty(pane.pane_id, verdict.agent) === false) throw new MoveAbort("input_left");
+      // only into an input box read empty: unreadable is not empty
+      if (await source.inputEmpty(pane.pane_id, verdict.agent) !== true) throw new MoveAbort("input_left");
       const command = EXIT_COMMANDS[verdict.agent];
       if (command === undefined) throw new MoveAbort("no_exit_command");
       journal.ended.push({ pane_id: pane.pane_id, agent: verdict.agent, argv: verdict.kind === "resume" ? verdict.argv : [verdict.agent], session: verdict.kind === "resume" ? verdict.session_id : null });
@@ -230,10 +231,11 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
   } catch (error) {
     journal.reason = error instanceof MoveAbort ? error.message : `failed: ${error instanceof Error ? error.message : String(error)}`;
     journal.state = "rolling_back";
-    save();
+    // a journal that cannot be written (the reason we are here, maybe) never stops the rollback
+    try { save(); } catch { /* the rollback runs all the same */ }
     await rollBack(journal, source, destination, id, pause, options.settleMs ?? 5_000);
     journal.state = "rolled_back";
-    save();
+    try { save(); } catch { /* the status still says what happened */ }
     return journal;
   }
   // the launcher took the switch: whatever happens now, nothing is rolled back (the next server settles it)
@@ -252,7 +254,7 @@ async function rollBack(journal: MoveJournal, source: MoveSource, destination: M
     try {
       // an agent typed its exit a moment ago may still be leaving: its shell gets a moment to come back
       let now = await source.pane(entry.pane_id);
-      for (const deadline = Date.now() + settleMs; now && now.agent === null && now.shellInFront !== true && Date.now() < deadline;) {
+      for (const deadline = Date.now() + settleMs; now && !(now.agent === null && now.shellInFront === true) && Date.now() < deadline;) {
         await pause(200);
         now = await source.pane(entry.pane_id);
       }

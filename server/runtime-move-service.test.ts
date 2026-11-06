@@ -16,4 +16,8 @@ it("lets a waiting move go only when what was shown is what moves", () => {
   expect(sameShape(shown, plan([{ ...done.panes[0]!, verdict: { kind: "fresh", agent: "claude" } }, shown.panes[1]!]))).toBe(false);
   expect(sameShape(shown, plan([{ ...done.panes[0]!, cwd: "/elsewhere" }, shown.panes[1]!]))).toBe(false);
   expect(sameShape(shown, plan([...done.panes, { pane_id: "c", cwd: "/c", name: null, verdict: { kind: "shell" } }]))).toBe(false);
+  // the person ended an agent that waited for them: a shell now, or its conversation to reopen
+  const waited = plan([{ pane_id: "a", cwd: "/a", name: null, verdict: { kind: "needs_you", agent: "copilot" } }, shown.panes[1]!]);
+  expect(sameShape(waited, plan([{ ...waited.panes[0]!, verdict: { kind: "shell" } }, shown.panes[1]!]))).toBe(true);
+  expect(sameShape(waited, plan([{ ...waited.panes[0]!, verdict: { kind: "resume", agent: "copilot" as never, session_id: "s", argv: ["copilot"], ended: true } }, shown.panes[1]!]))).toBe(true);
 });

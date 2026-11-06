@@ -52,8 +52,10 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
     return () => { live = false; };
   }, [bootId]);
 
-  if (answer === null || !answer.available) return null;
+  if (answer === null) return null;
   const { state } = answer.status;
+  // a move that just finished is answered by a server no longer offering one: its dialog stays to follow the restart
+  if (!answer.available && !open) return null;
   const openDialog = (): void => {
     // the bridge answering now (its boot id needs no herdr): the move's own switch restarts it
     void fetchBridgeHealth().then((health) => { from.current = health.web_ui?.boot_id ?? bootId; }, () => { from.current = bootId; });
@@ -61,7 +63,7 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
   };
   return (
     <>
-      {!hidden && (
+      {!hidden && answer.available && (
         <SettingsRow label={t("Move everything to herdr-core")} description={t("Every workspace, tab and agent reopens on herdr-core, all at once.")}>
           <button type="button" className="btn" onClick={openDialog}>{state === "waiting" ? t("Waiting…") : state === "moving" ? t("Moving…") : t("Move…")}</button>
         </SettingsRow>
@@ -110,16 +112,16 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, pending]);
+  // read again all the while the dialog is open: another browser may start or cancel the move
   useEffect(() => {
-    if (!moveInProgress(status)) return;
     let live = true;
     const timer = setInterval(() => {
       void fetchMovePlan().then((next) => { if (live) { onAnswer(next); setError(null); } }, (reason: unknown) => { if (live) setError(said(reason)); });
     }, POLL_MS);
     return () => { live = false; clearInterval(timer); };
-  }, [status.state, onAnswer]);
+  }, [onAnswer]);
   useEffect(() => { if (status.state === "done") follow(); }, [status.state, follow]);
-  useEffect(() => { if (!answer.available) onClose(); }, [answer.available, onClose]);
+  useEffect(() => { if (!answer.available && status.state !== "done" && !moveInProgress(status)) onClose(); }, [answer.available, status, onClose]);
 
   const act = async (deed: () => Promise<void>): Promise<void> => {
     setPending(true);

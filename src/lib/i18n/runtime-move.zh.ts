@@ -33,7 +33,7 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "Switching Ovis to herdr-core": "正在把 Ovis 切换到 herdr-core",
 
   "Now running on herdr-core. To go back to herdr, switch the runtime again.": "现在运行在 herdr-core 上。要回到 herdr，再次切换运行时即可。",
-  "Could not move, so everything was put back as it was.": "迁移失败，已全部恢复原样。",
+  "Could not move. Ovis put back what it could; anything it could not is listed below.": "迁移失败。能恢复的已恢复，未能恢复的列在下方。",
   "Not reopened in herdr:": "未能在 herdr 中重新打开：",
 
   "A server stopped partway; nothing was put back. Check the agents listed below.": "服务器中途停止，未做任何恢复。请检查下方列出的代理。",

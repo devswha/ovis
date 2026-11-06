@@ -66,7 +66,7 @@ function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?:
     endMove: async () => { world.calls.push(`core end ${world.core.size}`); world.core.clear(); },
   };
   const switchRuntime = () => { world.calls.push("switch"); return options.refuseSwitch ? "locked" : null; };
-  return { world, source, destination, options: { switchRuntime, exitMs: 1_000, pause: async () => undefined } };
+  return { world, source, destination, options: { switchRuntime, exitMs: 1_000, settleMs: 50, pause: async () => undefined } };
 }
 
 describe("runMove", () => {

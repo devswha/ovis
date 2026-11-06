@@ -33,7 +33,7 @@ export const RUNTIME_MOVE_JA: Record<string, string> = {
   "Switching Ovis to herdr-core": "Ovis を herdr-core に切り替え中",
 
   "Now running on herdr-core. To go back to herdr, switch the runtime again.": "herdr-core で動いています。herdr に戻すには、ランタイムをもう一度切り替えてください。",
-  "Could not move, so everything was put back as it was.": "移せなかったため、元の状態に戻しました。",
+  "Could not move. Ovis put back what it could; anything it could not is listed below.": "移せませんでした。戻せるものは戻し、戻せなかったものは下に示します。",
   "Not reopened in herdr:": "herdr で開き直せなかったもの:",
 
   "A server stopped partway; nothing was put back. Check the agents listed below.": "サーバーが途中で止まったため、何も戻していません。下のエージェントを確認してください。",

@@ -82,7 +82,7 @@ export function ResultView({ t, plan, status, leadId }: { t: Translate; plan: Mo
   const byId = new Map(plan.panes.map((pane) => [pane.pane_id, pane]));
   return (
     <>
-      {status.state === "rolled_back" && <p className="runtime-move-lead" id={leadId} role="status">{t("Could not move, so everything was put back as it was.")}</p>}
+      {status.state === "rolled_back" && <p className="runtime-move-lead" id={leadId} role="status">{t("Could not move. Ovis put back what it could; anything it could not is listed below.")}</p>}
       <p className="runtime-move-reason" {...(status.state === "interrupted" ? { id: leadId, role: "status" } : {})}>{moveReasonText(t, status.reason)}</p>
       {status.left.length > 0 && (
         <>

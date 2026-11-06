@@ -43,4 +43,6 @@ conversation, unless the pane has an agent again or the conversation runs elsewh
 names those). Each step is written to `runtime-move-<port>.json` in the state folder before it is
 taken; a server that stops mid-move leaves the move `interrupted`, and nothing is retried by itself.
 
-To go back after a move, switch the runtime to herdr in Settings: herdr's session is where it was.
+To go back after a move, switch the runtime to herdr in Settings: herdr's workspaces, tabs and
+shells are where they were, but the agents the move ended there stay ended (their conversations
+run on herdr-core); end those on herdr-core first, then reopen them in herdr from Earlier sessions.

@@ -242,7 +242,9 @@ export function sameShape(shown: MovePlan, now: MovePlan): boolean {
     const was = before.get(pane.pane_id);
     if (!was || was.cwd !== pane.cwd || was.name !== pane.name) return false;
     const agentOf = (verdict: typeof pane.verdict): string | null => verdict.kind === "shell" ? null : verdict.kind === "busy" ? verdict.agent : verdict.agent;
-    if (was.verdict.kind === "busy" || was.verdict.kind === "needs_you") return agentOf(was.verdict) === agentOf(pane.verdict);
+    // one that was busy or waited for the person may be done now: its own agent (or shell) again, or a
+    // shell because the person ended it
+    if (was.verdict.kind === "busy" || was.verdict.kind === "needs_you") return pane.verdict.kind === "shell" || agentOf(was.verdict) === agentOf(pane.verdict);
     return JSON.stringify(was.verdict) === JSON.stringify(pane.verdict);
   });
 }

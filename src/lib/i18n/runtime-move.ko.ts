@@ -33,7 +33,7 @@ export const RUNTIME_MOVE_KO: Record<string, string> = {
   "Switching Ovis to herdr-core": "Ovis를 herdr-core로 전환하는 중",
 
   "Now running on herdr-core. To go back to herdr, switch the runtime again.": "이제 herdr-core에서 돌고 있습니다. herdr로 돌아가려면 런타임을 다시 바꾸면 됩니다.",
-  "Could not move, so everything was put back as it was.": "옮기지 못해 원래대로 되돌렸습니다.",
+  "Could not move. Ovis put back what it could; anything it could not is listed below.": "옮기지 못했습니다. 되돌릴 수 있는 것은 되돌렸고, 못 한 것은 아래에 있습니다.",
   "Not reopened in herdr:": "herdr에서 다시 열지 못한 것:",
 
   "A server stopped partway; nothing was put back. Check the agents listed below.": "서버가 도중에 멈춰 아무것도 되돌리지 않았습니다. 아래 에이전트를 확인해 주세요.",
