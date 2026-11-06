@@ -73,7 +73,7 @@ it("moves QR pairings into the account one PC at a time, and calls a PC it has n
   expect(needsLink(await pcAccountStatus(pcFetch(link)), onA, ACCOUNT)).toBe(true);
   const linked = await linkThisDevice({ fetch: pcFetch(link), device: onA, key, account: ACCOUNT, store });
   expect(linked.public_spki).toBe(key.public_spki);
-  expect(await pcAccountStatus(pcFetch(link))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [] });
+  expect(await pcAccountStatus(pcFetch(link))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [], enrolling: true });
   // the linked pairing signs in with the account key from now on
   await connect(a, linked);
   const listed = [a, b].map((at) => ({ server_id: at.identity.server_id, label: "pc", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: null }));
@@ -287,6 +287,36 @@ describe("enrolling a PC this device brings into the account", () => {
     const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id,
       others: [{ serverId: x.identity.server_id, fetch: pcFetch(await connect(x, onX)) }, { serverId: "e".repeat(32), fetch: older }] });
     expect(enrolled.admitted).toEqual([]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+  });
+
+  it("sends no add when the account lists other PCs this device cannot read", async () => {
+    const { y, accountStore, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [], listed: 1 });
+    expect([enrolled.finished, enrolled.admitted]).toEqual([true, []]);
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+  });
+
+  it("sends a new PC from before enrollments its removes through records and no add", async () => {
+    const { y, accountStore, approve, disconnect, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const lost = await approve("Lost phone");
+    await disconnect(lost);
+    const onY = await linkY();
+    const link = await connect(y, onY);
+    const paths: string[] = [];
+    const older = async (path: string, init?: RequestInit) => {
+      paths.push(path);
+      const answer = await pcFetch(link)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const { enrolling: _enrolling, ...rest } = await answer.json() as Record<string, unknown>;
+      return Response.json(rest);
+    };
+    expect((await enrollOnPc({ fetch: older, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id }))?.admitted).toEqual([]);
+    expect(paths).not.toContain("/api/account/enroll");
+    expect(y.f.app.context.services.devices.isTombstoned(lost.public_spki)).toBe(true);
     expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
   });
 
@@ -587,7 +617,7 @@ it("links a device that just paired over a connection of its own, as the session
   await expect(linkThisDevice({ fetch: pcFetch(pairing), device, key, account: ACCOUNT, store })).rejects.toMatchObject({ code: "link_not_owner" });
   // a connection that signs in with the saved key links it
   await linkThisDevice({ fetch: pcFetch(await connect(x, device)), device, key, account: ACCOUNT, store });
-  expect(await pcAccountStatus(pcFetch(await connect(x, device)))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [] });
+  expect(await pcAccountStatus(pcFetch(await connect(x, device)))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [], enrolling: true });
 });
 it("leaves the account from this device: every PC revokes it from its mailbox, and this device forgets the key and its pairings", async () => {
   const [a, b] = [pc(), pc()];

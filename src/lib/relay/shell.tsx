@@ -422,8 +422,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
             return { serverId: other.server_id, fetch: (path: string, init?: RequestInit) => peer.fetch(path, init) };
           }));
           const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
+          // PCs the directory lists that this device cannot read: their removals are unknown here
+          // the directory unread counts as one more PC this device cannot read
+          const listed = await account.listPcs().then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
           await enrollOnPc({
-            fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc,
+            fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc, listed,
             // a PC that could not be opened is one more that was not checked
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });

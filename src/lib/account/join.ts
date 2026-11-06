@@ -56,6 +56,8 @@ export interface PcAccountStatus {
   readonly fresh?: boolean;
   /** it holds every add back: it lost removal evidence, so `blocked` may not name every key it keeps out */
   readonly blockedAll?: boolean;
+  /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
+  readonly enrolling?: boolean;
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
@@ -71,6 +73,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     // an Ovis from before enrollments sends no `fresh` at all
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
+    ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
   };
 }
 
@@ -343,7 +346,13 @@ export interface Enrollment { readonly finished: boolean; readonly checked: numb
  * and the plan waits for the next connection. Then each PC that answered introduces `pc` to the
  * devices let in, so they sign in there. `finished` once nothing is left to send.
  */
-export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc }): Promise<Enrollment> {
+export async function enrollPc(options: {
+  fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc;
+  /** how many other PCs the account's directory lists: some this client cannot read keep its adds home */
+  listed?: number;
+  /** the new PC is from before enrollments (its status has no `enrolling`): removes only, through records */
+  legacyTarget?: boolean;
+}): Promise<Enrollment> {
   const others = options.others ?? [];
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
@@ -383,10 +392,13 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   // a PC that lost removal evidence may keep out a key it cannot name: then no add goes, and the new PC holds every one
   // only older PCs answered: no add goes, as before enrollments, and the account's devices ask this PC once each
   // a PC that cannot vouch for what it keeps out (older, or its mailbox read failed): while one answers, no add goes
-  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0;
+  // the directory lists PCs this client has no way to read: one of them may hold a removal it never saw
+  const unread = others.length === 0 && (options.listed ?? 0) > 0;
+  const blind = seen.some((status) => status.blockedAll === true) || legacy > 0 || unread;
   const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))
     .filter((record, index, all) => all.findIndex((other) => other.id === record.id) === index);
+  if (options.legacyTarget) return enrollLegacy({ ...options, removes });
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
   const done: string[] = [];
   const admitted: string[] = [];
@@ -472,10 +484,10 @@ async function introduce(peers: readonly AccountPeer[], keys: readonly string[],
  * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
  * signed in with the account key there. The PC's status gives this client no record to sign.
  */
-export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc }): Promise<Enrollment | null> {
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc; listed?: number }): Promise<Enrollment | null> {
   const status = await pcAccountStatus(options.fetch);
   if (status.account !== options.account) return null;
-  return enrollPc(options);
+  return enrollPc({ ...options, legacyTarget: status.enrolling === undefined });
 }
 
 /** How long a kept add is sent again: the account service's mailbox keeps a record no longer. */

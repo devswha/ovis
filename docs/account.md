@@ -282,7 +282,9 @@ signed by a key the PC made up, and it signs nothing for any of them.
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it first reads every other PC of the account it
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
-none of them answers it sends nothing and tries again on its next connection. A PC whose answer
+none of them answers it sends nothing and tries again on its next connection. When it reads no other
+PC at all while the account's directory lists others, it sends no add either. A new PC from
+before enrollments (its status has no `enrolling`) gets the removes through `records` and no add. A PC whose answer
 is not `fresh` (its mailbox read failed, or it is from before enrollments) counts for its removals
 only: while any such PC answers, the client sends the removals but no add, and ends the new PC's
 wait (a passing failure leaves no lasting hold; only a PC that says `blocked_all` makes the client
