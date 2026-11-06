@@ -186,6 +186,22 @@ describe("a phone's sheet in the history", () => {
     expect(h.state).toMatchObject({ "ovis:web-panel-below": 3 });
   });
 
+  it("leaves a retired entry copied from a plain file's or a diff's as one more under it, so closing it goes past it (#3101)", async () => {
+    const under = h.state;
+    for (const own of [
+      { "ovis:file-preview": { path: "/r/README.md", machineId: "local", paneId: "p" } },
+      { "ovis:repo-diff": { machineId: "local", paneId: "p", directory: "/r", scope: "workspace", base: null, head: null, comparison: null, path: "a.ts", oldPath: null } },
+    ]) {
+      h.replaceState(own, "");
+      hooks.enter(() => {});
+      h.back(); await settled();
+      h.forward(); await settled();
+      expect(h.state).toEqual({ ...own, "ovis:sheet-under": expect.any(String), "ovis:web-panel-below": 1 });
+      h.back(); await settled();
+    }
+    h.replaceState(under, "");
+  });
+
   it("keeps a sheet that opens while the step off a closed sheet's entry is on its way", async () => {
     const start = fake.at();
     let closed = 0;

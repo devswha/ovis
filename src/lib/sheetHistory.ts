@@ -13,7 +13,7 @@
  * own close, does not close it. Any other sheet still up under a new one closes with it, as before.
  */
 import { useEffect, useRef } from "react";
-import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedWebPanel, sheetStep } from "./historyKeys.ts";
+import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
@@ -67,10 +67,10 @@ function without(state: unknown): unknown {
   return rest;
 }
 
-/** A sheet's entry left as an ordinary one: what it copied of a web page's entry counts as one more of the page's. */
+/** A sheet's entry left as an ordinary one: a copy of a web page's, a file's or a diff's entry counts as one more of theirs. */
 function ordinary(state: unknown): unknown {
   const rest = without(state);
-  return rest !== null && typeof rest === "object" ? overCopiedWebPanel(rest as Record<string, unknown>) : rest;
+  return rest !== null && typeof rest === "object" ? overCopiedEntry(rest as Record<string, unknown>) : rest;
 }
 
 /** whether the entry the state names belongs to a sheet that is up, or just closed and not yet stepped off */
