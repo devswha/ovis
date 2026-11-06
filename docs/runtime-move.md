@@ -37,6 +37,21 @@ input line, or one Ovis has no exit command for, waits for the person to end it:
 those input lines, and its exit command, sent as a message, would send what is typed there. Once
 the person ends it, its conversation reopens on herdr-core.
 
+While it waits, the dialog lets the person end a shell's command where they would with Ctrl+C
+(`POST /api/runtime/move/stop`, only while the move waits and only for a shell running a command):
+
+- End sends Ctrl+C to that pane through its input lane, behind anything typed or sent before it,
+  once the same process group is still in front of the same shell.
+- Force end is offered only when Ctrl+C was sent at least 3 s earlier and that same group still
+  runs; it sends SIGTERM to the pane's foreground process group (the group herdr names in
+  `pane.process_info`), never to a process found by name. A pane running this Ovis server or its
+  launcher is refused.
+- End all and move now asks once ("Ends N running commands. Unsaved work may be lost."), then
+  sends Ctrl+C to each running command in turn.
+
+Agents are never ended from the wait: their row opens the agent's pane, where the person ends it.
+A pane that does not end keeps the move waiting, as before.
+
 ## How it runs
 
 1. Each agent Ovis ends is sent its own exit command (`/exit`, through herdr's agent.prompt) only

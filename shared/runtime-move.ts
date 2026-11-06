@@ -70,7 +70,7 @@ export type MoveUnavailable = "not_herdr" | "no_herdr_core" | "runtime_locked" |
  */
 export type MoveStatus =
   | { state: "idle" }
-  | { state: "waiting"; revision: string }
+  | { state: "waiting"; revision: string; stopping?: MoveStopping[] }
   | { state: "moving"; step: "ending_agents" | "building" | "starting_agents" | "switching"; done: number; total: number }
   | { state: "done" }
   | { state: "rolled_back" | "interrupted"; reason: string; left: { pane_id: string; agent: string; why: string }[] };
@@ -80,6 +80,24 @@ export type MoveStatus =
  * (POST /api/runtime/move/install); once it is in, the move is offered.
  */
 export type MovePlanResponse = ({ available: true; plan: MovePlan } | { available: false; reason: MoveUnavailable; install?: { version: string } }) & { status: MoveStatus };
+
+/**
+ * A shell pane the waiting move sent Ctrl+C to (POST /api/runtime/move/stop) whose command still runs;
+ * `force`: a few seconds have passed since, so SIGTERM to that pane's foreground process group may follow.
+ */
+export interface MoveStopping {
+  pane_id: string;
+  force: boolean;
+}
+
+/**
+ * POST /api/runtime/move/stop, only while the move waits and only for a shell pane running a command:
+ * Ctrl+C into that pane's input lane, or with `force`, once offered, SIGTERM to its foreground process group.
+ */
+export interface MoveStopRequest {
+  pane_id: string;
+  force?: boolean;
+}
 
 /** POST /api/runtime/move: the plan's revision as shown. Busy panes make it wait; DELETE cancels a wait. */
 export interface MoveStartRequest {

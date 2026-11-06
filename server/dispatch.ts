@@ -624,6 +624,31 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     }
   }
 
+  if (pathname === `${RUNTIME_MOVE_PATH}/stop`) {
+    setRequestRoute(pathname);
+    // ends a command in a pane of this PC: the move's own boundary, and only from this app's page
+    if (!(access.level === "full" && access.role === "drive" && access.via !== "open")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can end a pane's command" } }, 403);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
+    if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "a stop must come from this app's own page" } }, 403);
+    const move = ctx.services.runtimeMove;
+    if (!move) return jsonResponse({ error: { code: "runtime_locked", message: "this server cannot switch its runtime" } }, 409);
+    let body: unknown;
+    try { body = await request.json(); } catch { return badRequest("invalid_json", "send { \"pane_id\": \"...\", \"force\"?: true }"); }
+    const fields = body !== null && typeof body === "object" ? body as Record<string, unknown> : {};
+    const paneId = fields["pane_id"];
+    if (typeof paneId !== "string" || paneId === "") return badRequest("invalid_pane", "pane_id must name a pane of the plan");
+    if (fields["force"] !== undefined && typeof fields["force"] !== "boolean") return badRequest("invalid_force", "force must be true or false");
+    try {
+      const refused = await move.stopPane(paneId, fields["force"] === true);
+      if (refused === null) return jsonResponse({ ok: true });
+      const message = refused === "not_waiting" ? "no move is waiting" : refused === "not_running" ? "that pane is not a shell running a command"
+        : refused === "own_server" ? "that pane runs this Ovis server" : "send Ctrl+C first, and force only once it has had a few seconds";
+      return jsonResponse({ error: { code: refused, message } }, 409);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
   if (pathname === RUNTIME_MOVE_PATH) {
     setRequestRoute(pathname);
     // folders and conversation ids of every pane, and agents ended and started: the runtime switch's own boundary

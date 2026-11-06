@@ -7,7 +7,7 @@ import type { ConversationSearchResponse } from "../../shared/conversation-searc
 import { resumeConnectionTraces } from "./connectionTrace.ts";
 import type { PullRequestCheckLog, PullRequestMergeRequest, PullRequestView } from "../../shared/pull-request.ts";
 import type { SystemReport } from "../../shared/system.ts";
-import type { MovePlanResponse, MoveStartRequest } from "../../shared/runtime-move.ts";
+import type { MovePlanResponse, MoveStartRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
@@ -232,6 +232,14 @@ export function fetchMovePlan(): Promise<MovePlanResponse> {
 export async function startMove(revision: string): Promise<void> {
   const url = "/api/runtime/move";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ revision } satisfies MoveStartRequest) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** While the move waits: Ctrl+C to a shell pane running a command, or once the wait offers it, `force` (SIGTERM to its command). */
+export async function stopMovePane(paneId: string, force = false): Promise<void> {
+  const url = "/api/runtime/move/stop";
+  const body: MoveStopRequest = force ? { pane_id: paneId, force: true } : { pane_id: paneId };
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
   if (!response.ok) throw await errorFrom(url, response);
 }
 

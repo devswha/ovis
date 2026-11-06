@@ -3,10 +3,11 @@ import { chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HerdrRuntimeFacts } from "../shared/machines.ts";
+import type { PaneProcessInfo } from "../shared/herdr-api.generated.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { freeAgentName } from "./agent-name.ts";
-import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
+import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
 import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
 import { findHc } from "./herdr-core/discovery.ts";
@@ -18,6 +19,8 @@ import type { SessionHistoryOptions } from "./session-history.ts";
 
 /** How often a waiting move looks whether every pane is done. */
 const WAIT_LOOK_MS = 2_000;
+/** How long Ctrl+C has to end a shell's command before the wait offers to force it. */
+const FORCE_AFTER_MS = 3_000;
 
 export interface MoveServiceOptions {
   stateDir: string;
@@ -52,6 +55,12 @@ export interface MoveService {
   /** starts the move, or waits for every pane to be done first; an error code when it cannot */
   start: (revision: string) => Promise<"plan_changed" | "unavailable" | "already_moving" | "runtime_switching" | null>;
   cancel: () => void;
+  /**
+   * Ends the command a shell pane runs while the move waits, as the person would: Ctrl+C in the pane's
+   * input lane, or with `force`, only after that Ctrl+C left the same command running FORCE_AFTER_MS,
+   * SIGTERM to the pane's foreground process group. An error code when it does nothing.
+   */
+  stopPane: (paneId: string, force: boolean) => Promise<"not_waiting" | "not_running" | "not_tried" | "own_server" | null>;
   /** installs herdr-core where only that keeps the move from being offered; an error code when it is not offered, throws when the install fails */
   install: () => Promise<"unavailable" | "installing" | null>;
   /** a move waits or runs: no other runtime switch meanwhile */
@@ -165,6 +174,14 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   };
 }
 
+/** The shell and the process group in front of it, when that group is a command's and not the shell's own. */
+function commandGroup(info: PaneProcessInfo | undefined): { shell: number; group: number } | null {
+  const shell = info?.shell_pid;
+  const group = info?.foreground_process_group_id;
+  if (shell == null || group == null || group === shell || group <= 1) return null;
+  return { shell, group };
+}
+
 /**
  * The move of herdr's whole session to herdr-core (runtime-move-run.ts), one at a time per server:
  * started now when every pane is done, else waiting and looking every WAIT_LOOK_MS until it is (or
@@ -184,6 +201,8 @@ export function moveService(options: MoveServiceOptions): MoveService {
   let generation = 0;
   /** what the person was shown when they asked to wait */
   let confirmed: MovePlan | null = null;
+  /** each shell pane this wait sent Ctrl+C to: its shell, the group then in front, and when */
+  const tries = new Map<string, { shell: number; group: number; at: number }>();
   const facts: MoveFacts = {
     findResume: storeResume(options.stores),
     processInfo: async (paneId) => { try { return await paneProcessInfo(paneId); } catch { return undefined; } },
@@ -245,7 +264,45 @@ export function moveService(options: MoveServiceOptions): MoveService {
         const install = reason === "no_herdr_core" ? installOffer() : null;
         return { available: false, reason, ...(install ? { install } : {}), status };
       }
-      return { available: true, plan: await plan(), status };
+      const current = await plan();
+      if (status.state !== "waiting" || tries.size === 0) return { available: true, plan: current, status };
+      // a pane whose command ended, or that runs another now, is no longer being stopped
+      const stopping = [...tries].filter(([paneId]) => {
+        const verdict = current.panes.find((pane) => pane.pane_id === paneId)?.verdict;
+        return verdict?.kind === "busy" && verdict.reason === "command_running";
+      }).map(([paneId, tried]) => ({ pane_id: paneId, force: Date.now() - tried.at >= FORCE_AFTER_MS }));
+      return { available: true, plan: current, status: stopping.length === 0 ? status : { ...status, stopping } };
+    },
+    stopPane: async (paneId, force) => {
+      if (status.state !== "waiting") return "not_waiting";
+      const wait = generation;
+      const verdict = (await plan()).panes.find((pane) => pane.pane_id === paneId)?.verdict;
+      if (verdict?.kind !== "busy" || verdict.reason !== "command_running") return "not_running";
+      const info = await facts.processInfo(paneId);
+      const front = commandGroup(info);
+      if (front === null) return "not_running";
+      // this server (or the launcher it runs under) in front of that shell: ending it would end the move
+      if (info?.foreground_processes?.some((entry) => entry.pid === process.pid || entry.pid === process.ppid)) return "own_server";
+      if (wait !== generation || status.state !== "waiting") return "not_waiting";
+      if (!force) {
+        // behind anything typed or sent before it, checked again there: the same command still in front
+        const sent = await options.lane(paneId, async () => {
+          const now = commandGroup(await facts.processInfo(paneId));
+          if (now === null || now.group !== front.group || now.shell !== front.shell) return false;
+          await paneSendKeys(paneId, ["ctrl+c"]);
+          return true;
+        });
+        if (!sent) return "not_running";
+        if (wait === generation) tries.set(paneId, { ...front, at: Date.now() });
+        return null;
+      }
+      const tried = tries.get(paneId);
+      if (!tried || tried.group !== front.group || tried.shell !== front.shell || Date.now() - tried.at < FORCE_AFTER_MS) return "not_tried";
+      try { process.kill(-front.group, "SIGTERM"); } catch (error) {
+        // the group ended meanwhile: what the force was for
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+      return null;
     },
     start: async (revision) => {
       if (moveUnavailable(options.serving(), options.facts()) !== null) return "unavailable";
@@ -259,6 +316,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
         if (current.revision !== revision) return "plan_changed";
         if (current.ready) { void go(current); return null; }
         confirmed = current;
+        tries.clear();
         const wait = ++generation;
         status = { state: "waiting", revision };
         timer = setTimeout(() => void look(wait), WAIT_LOOK_MS);
@@ -286,6 +344,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
       if (timer) clearTimeout(timer);
       timer = null;
       confirmed = null;
+      tries.clear();
       status = { state: "idle" };
     },
     busy: () => starting || running || status.state === "waiting" || status.state === "moving",
