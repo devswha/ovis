@@ -6,7 +6,7 @@
  */
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import { secretPrompt } from "../../shared/secret-prompt.ts";
+import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
@@ -306,7 +306,8 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
 function maskedPromptAtAnyWidth(screen: string): boolean {
   const rows = screen.split(/\r?\n/u);
   while (rows.length > 0 && !rows.at(-1)!.trim()) rows.pop();
-  const above = rows.at(-2)?.trimEnd().length ?? 0;
+  // in terminal columns, as secretPrompt measures it: a wide character fills two
+  const above = displayWidth(rows.at(-2)?.trimEnd() ?? "");
   return [Infinity, ...(above > 0 ? [above, above + 1] : [])].some((columns) => secretPrompt(screen, columns) !== null);
 }
 
