@@ -164,6 +164,24 @@ describe("probing a direct carrier", () => {
     expect(pc.service.status().sessions).toBe(0);
   });
 
+  it("leaves nothing running after a host that is not the PC never answers the handshake", async () => {
+    // Given a host at the address that assigns the connection and then stays silent
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const live = new Set<unknown>();
+    const { setInterval: realSet, clearInterval: realClear } = globalThis;
+    globalThis.setInterval = ((callback: () => void, ms?: number) => { const id = realSet(callback, ms); live.add(id); return id; }) as typeof setInterval;
+    globalThis.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
+    cleanup.push(() => { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; for (const id of live) realClear(id as never); });
+    // When the phone probes it
+    const offer: RelayOffer = { v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.test" };
+    const proven = await probeDirect(offer, `ws://${LAN}:${silent.port}`, (url) => new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:")), 300);
+    // Then it is not the PC, and the handshake's retries stopped with it
+    expect(proven).toBe(false);
+    expect(live.size).toBe(0);
+  });
+
   it("is never asked to pair", async () => {
     const pc = await pcFixture();
     const carrier = `ws://${LAN}:${pc.service.status().direct!.carriers[0]!.split(":").at(-1)}`;

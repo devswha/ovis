@@ -149,6 +149,12 @@ export class RelayTransport implements Transport {
   /** a probe or a wait to switch is under way, and when the latest probe began */
   private upgrading = false;
   private probedAt = -Infinity;
+  /** a network change came while a probe ran: probe again once it ends */
+  private reprobe = false;
+  /** the next periodic probe while the relay carries the channel */
+  private cancelProbe: (() => void) | undefined;
+  /** ends the probe or idle wait under way when its channel goes */
+  private upgradeAbort: AbortController | undefined;
   /** the relay channel is being closed to reconnect on a direct carrier, not lost */
   private switching: RelayChannel | undefined;
   private readonly stopResources: () => void;
@@ -157,7 +163,7 @@ export class RelayTransport implements Transport {
     // a carrier left closing while nothing used it is ended now, and its onClose reconnects
     if (!this.stopped && this.channel && !this.channel.carrierOpen) { this.channel.close(); return; }
     // back on a network: the PC may be on this one now
-    if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.upgrade(this.channel); }
+    if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.reprobe = this.upgrading; this.upgrade(this.channel); }
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
@@ -194,6 +200,7 @@ export class RelayTransport implements Transport {
         if (generation !== this.generation || this.stopped) return;
         const switching = this.switching !== undefined && this.switching === this.channel;
         this.switching = undefined;
+        this.endUpgrade();
         this.channel = undefined;
         this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
         this.options.onClose?.(error);
@@ -243,13 +250,13 @@ export class RelayTransport implements Transport {
       if (left <= 0 || this.stopped) return undefined;
       const attempt = new AbortController();
       const timer = setTimeout(() => attempt.abort(), left);
-      const stopped = (): void => attempt.abort();
-      this.abort.signal.addEventListener("abort", stopped, { once: true });
       try {
-        return await (this.options.openChannel ?? openRelayChannel)(offer, { ...options, signal: attempt.signal, direct, socket, offerDirect: true });
+        // closing the transport ends an admitted channel too; the budget only an attempt under way
+        const signal = AbortSignal.any([this.abort.signal, attempt.signal]);
+        const channel = await (this.options.openChannel ?? openRelayChannel)(offer, { ...options, signal, direct, socket, offerDirect: true });
+        clearTimeout(timer);
+        return channel;
       } catch (error) {
-        // a channel that opened keeps the listener: closing the transport ends it
-        this.abort.signal.removeEventListener("abort", stopped);
         if (this.stopped) throw error;
         if (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)) throw error;
       } finally {
@@ -269,13 +276,19 @@ export class RelayTransport implements Transport {
     const carriers = this.directCarriers ?? [];
     if (!socket || carriers.length === 0 || this.upgrading || performance.now() - this.probedAt < DIRECT_PROBE_EVERY_MS) return;
     this.upgrading = true;
+    this.reprobe = false;
     this.probedAt = performance.now();
-    const current = (): boolean => !this.stopped && this.channel === channel;
+    this.cancelProbe?.();
+    this.cancelProbe = undefined;
+    const ending = new AbortController();
+    this.upgradeAbort = ending;
+    const current = (): boolean => !this.stopped && this.channel === channel && !ending.signal.aborted;
+    const timers = this.options.clock ?? clock;
     void (async () => {
       let proven = false;
       for (const direct of carriers) {
         if (!current()) return;
-        if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS)) { proven = true; break; }
+        if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS, ending.signal)) { proven = true; break; }
       }
       if (!proven) return;
       for (let check = 0; check < DIRECT_IDLE_CHECKS; check++) {
@@ -285,9 +298,27 @@ export class RelayTransport implements Transport {
           channel.close();
           return;
         }
-        await new Promise<void>((resolve) => (this.options.clock ?? clock).setTimeout(resolve, DIRECT_IDLE_CHECK_MS));
+        await new Promise<void>((resolve) => {
+          const cancel = timers.setTimeout(resolve, DIRECT_IDLE_CHECK_MS);
+          ending.signal.addEventListener("abort", () => { cancel(); resolve(); }, { once: true });
+        });
       }
-    })().finally(() => { this.upgrading = false; });
+    })().finally(() => {
+      this.upgrading = false;
+      if (this.upgradeAbort === ending) this.upgradeAbort = undefined;
+      if (!current()) return;
+      // still on the relay: try again after a network change that came meanwhile, else in a while
+      if (this.reprobe) { this.probedAt = -Infinity; this.upgrade(channel); return; }
+      this.cancelProbe = timers.setTimeout(() => { this.cancelProbe = undefined; this.upgrade(channel); }, DIRECT_PROBE_EVERY_MS);
+    });
+  }
+
+  /** Ends the probe, idle wait and periodic probe of the channel that is going. */
+  private endUpgrade(): void {
+    this.upgradeAbort?.abort();
+    this.upgradeAbort = undefined;
+    this.cancelProbe?.();
+    this.cancelProbe = undefined;
   }
 
   /** What the PC said of itself on the latest admission: a reconnect after its update names the new version. */
@@ -421,9 +452,11 @@ export class RelayTransport implements Transport {
       return new Promise<Response>((resolve, reject) => {
         const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
         request.signal.addEventListener("abort", aborted, { once: true });
-        this.openHttp++;
+        // an event stream stays open for good and is reopened after any reconnect: it does not hold a switch back
+        const counted = request.headers.get("accept")?.includes("text/event-stream") !== true;
+        if (counted) this.openHttp++;
         stream.onDispose = (error) => {
-          this.openHttp--;
+          if (counted) this.openHttp--;
           request.signal.removeEventListener("abort", aborted);
           if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay request failed", { cause: error }));
         };
@@ -482,6 +515,7 @@ export class RelayTransport implements Transport {
     ++this.generation;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
+    this.endUpgrade();
     this.abort.abort();
     this.channel?.close();
     this.channel = undefined;

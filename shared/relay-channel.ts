@@ -422,8 +422,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
  * HELLO, so the PC holds no session for it. False for anything else within `ms`, a host at the
  * address that is not the PC included.
  */
-export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: string) => RelaySocket, ms: number): Promise<boolean> {
-  if (!isDirectCarrier(direct)) return Promise.resolve(false);
+export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: string) => RelaySocket, ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (!isDirectCarrier(direct) || signal?.aborted) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
     const url = new URL("/v1/ws", direct);
     url.searchParams.set("v", "1");
@@ -436,11 +436,16 @@ export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", aborted);
       secure?.close(4000, "probe done");
+      // a handshake that never finished keeps retrying until its carrier says it closed
+      transport.onclose?.(4000, "probe done");
       socket.close(4000, "probe done");
       resolve(answer);
     };
     const timer = setTimeout(() => settle(false), ms);
+    const aborted = (): void => settle(false);
+    signal?.addEventListener("abort", aborted, { once: true });
     const transport: Transport = {
       send: (data) => { if (socket.readyState === OPEN) socket.send(data); },
       close: () => settle(false),
