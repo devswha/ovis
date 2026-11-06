@@ -48,7 +48,10 @@ Var pid
 !macro customUnInstall
   ${ifNot} ${isUpdated}
     ${if} ${FileExists} "$APPDATA\${PRODUCT_NAME}\bin\herdr-core.exe"
+      ; the session alone names the core, as the app starts it (children.ts coreEnv drops HC_SOCKET):
+      ; an HC_SOCKET left in this process's environment would point the stop at another core
       System::Call 'kernel32::SetEnvironmentVariable(t "HC_SESSION", t "ovis")'
+      System::Call 'kernel32::SetEnvironmentVariable(t "HC_SOCKET", p 0)'
       nsExec::ExecToLog /TIMEOUT=15000 '"$APPDATA\${PRODUCT_NAME}\bin\herdr-core.exe" server stop'
       Pop $0
       DetailPrint "Stopping the herdr-core server: $0"

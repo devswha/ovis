@@ -74,7 +74,9 @@ and agents in it (`herdr-core server stop` for the `ovis` session, at most 15 se
 the uninstall): quitting leaves it running, but with the app gone nothing could stop or update it. It
 also removes `%LOCALAPPDATA%\ovis-desktop-updater`, where electron-builder keeps a copy of the
 installer for later updates (about 170 MB) and electron-updater its downloads. The old version's
-uninstall that an update runs does neither. Ovis's own data in `%APPDATA%\Ovis` stays.
+uninstall that an update runs does neither. Ovis's own data in `%APPDATA%\Ovis` stays. A core started
+under another `HC_SESSION` or from another `--user-data-dir` (the try-it setups below) is not found:
+stop it by hand.
 
 On Windows the core and the server start directly (Windows hands a child only the handles marked
 inheritable), without a console window. Windows has no SIGTERM: stopping the server ends its
