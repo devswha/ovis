@@ -1013,22 +1013,25 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           item.owner = client;
           rebound = true;
         }
+        const mine = completed.filter((item) => item.paneId === paneId && item.key === key);
         const removed = [
           ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
-          ...completed.filter((item) => item.paneId === paneId && item.key === key).map(({ id, outcome }) => ({ id, outcome, resumed: true as const })),
+          ...mine.flatMap(({ id, outcome }) => outcome === "held" ? [] : [{ id, outcome, resumed: true as const }]),
         ];
-        if (removed.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], removed });
+        const held = mine.flatMap(({ id, outcome }) => outcome === "held" ? [id] : []);
+        if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? { held } : {}) });
       } catch { /* failed authorization cannot resume even presentation */ }
     }
     return rebound;
   }
-  function pushResumed(owner: Client, paneId: string, kept: string, item: PendingRemoval): void {
+  /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
+  function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | { held: string[] }): void {
     for (const successor of clients) {
       if (successor === owner || !livePiOwner(successor) || !successor.data.attached.has(paneId)
         || resumeKey(successor, paneId) !== kept || connectionOf(successor).mode === "observe") continue;
       try {
         authorizeSocket(successor);
-        send(successor, { type: "pending-messages", pane_id: paneId, messages: [], removed: [item] });
+        send(successor, { type: "pending-messages", pane_id: paneId, messages: [], ...part });
       } catch { /* failed authorization cannot resume even presentation */ }
     }
   }
@@ -1052,9 +1055,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         continue;
       }
       if (existing >= 0 && completed[existing]!.outcome === "held" && completed[existing]!.paneId === paneId) continue;
+      // only once its connection is gone: while it lives, it alone may send the held copy, and another
+      // tab told it is held could offer it again after that send's outcome became uncertain
+      if (livePiOwner(owner)) continue;
       if (existing >= 0) completed.splice(existing, 1);
       completed.push({ paneId, key: kept, id: message.id, outcome: "held", at: Date.now() });
-      pushResumed(owner, paneId, kept, { id: message.id, outcome: "held", resumed: true });
+      pushResumed(owner, paneId, kept, { held: [message.id] });
     }
     for (const item of removed ?? []) {
       const kept = keys.get(item.id);
@@ -1064,7 +1070,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded")) continue;
       completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: Date.now() });
       // a reload can attach its successor before the Enter's reply settles the send
-      pushResumed(owner, paneId, kept, { id: item.id, outcome: item.outcome, resumed: true });
+      pushResumed(owner, paneId, kept, { removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
     }
     if (keys.size) receiptKeys.set(owner, keys); else receiptKeys.delete(owner);
     prunePi();
@@ -1241,8 +1247,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (heldAt >= 0) {
             if (answer.ok) {
               const [held] = completed.splice(heldAt, 1);
-              completed.push({ ...held!, paneId: message.pane_id, outcome: "sent", at: Date.now() });
-              pushResumed(client, message.pane_id, held!.key, { id: message.resend_id, outcome: "sent", resumed: true });
+              // its sent receipt only for the pane and browser the held one was kept for
+              if (held!.paneId === message.pane_id && held!.key === resumeKey(client, message.pane_id)) {
+                completed.push({ ...held!, outcome: "sent", at: Date.now() });
+                pushResumed(client, message.pane_id, held!.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
+              }
             } else if (!submitNotTyped(answer.code ?? "")) completed.splice(heldAt, 1);
             prunePi();
           }

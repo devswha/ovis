@@ -214,7 +214,9 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
     socket.send({ type: "submit", id, pane_id: pane, text, payload: "unused\r", delivery: "queue" });
     const answer = await socket.result(id); expect(answer.ok, JSON.stringify(answer)).toBe(true); expect(answer.pending?.request_id).toBe(id); return answer.pending;
   };
-  const removed = (id: string, outcome = "sent", reader = socket) => reader.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane && frame.removed?.some((entry: any) => entry.id === id && entry.outcome === outcome));
+  // a resumed held ID comes in the frame's own `held` field, never as a removal
+  const removed = (id: string, outcome = "sent", reader = socket) => reader.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane
+    && (outcome === "held" ? frame.held?.includes(id) : frame.removed?.some((entry: any) => entry.id === id && entry.outcome === outcome)));
   const another = async (attach = true, chat = false) => { const reader = new Socket(server.port); entry.sockets.push(reader); if (attach) await reader.attach(pane, chat); else await reader.wait((frame) => frame.type === "snapshot"); return reader; };
   return { screenFile, pane, port: server.port, server, socket, bytes, waitBytes, state, showScreen, queue, removed, another, replacementLog };
 }
@@ -332,12 +334,12 @@ describe("resumable follow-up receipts (#2421)", () => {
       const resender = await connect(resumeId);
       await f.state("idle", resender);
       const heldReplay = await f.removed(row.id, "held", resender);
-      expect(heldReplay.removed).toContainEqual({ id: row.id, outcome: "held", resumed: true });
+      expect(heldReplay.held).toContain(row.id);
       resender.send({ type: "ping", id: 987 });
       await resender.wait((frame) => frame.type === "pong" && frame.id === 987);
       expect(retained.store.list(retained.owner, f.pane)).toContainEqual(expect.objectContaining({ id: row.id, state: "held" }));
       expect(retained.store.outcome(retained.owner, f.pane, row.id)).toBeUndefined();
-      expect(resender.seen.some((frame) => frame.type === "pending-messages" && frame.removed?.some((item: { id: string; outcome: string }) => item.id === row.id && item.outcome !== "held"))).toBe(false);
+      expect(resender.seen.some((frame) => frame.type === "pending-messages" && frame.removed?.some((item: { id: string }) => item.id === row.id))).toBe(false);
       expect(f.bytes()).toBe("");
       expect(herdrWrites).toEqual(writes);
 
@@ -386,7 +388,8 @@ describe("resumable follow-up receipts (#2421)", () => {
     const resumed = await f.another(false);
     await resumed.attach(f.pane, false, token);
     const replay = await f.removed(row.id, outcome, resumed);
-    expect(replay.removed).toContainEqual({ id: row.id, outcome, resumed: true });
+    if (outcome === "held") expect(replay.held).toEqual([row.id]);
+    else expect(replay.removed).toContainEqual({ id: row.id, outcome, resumed: true });
     expect(f.bytes()).toBe(bytes);
   }, 20_000);
 

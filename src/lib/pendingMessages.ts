@@ -3,7 +3,11 @@ import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.
 
 export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-type Removal = PendingRemoval;
+/** a resumed `held` ID (the frame's own `held` field) travels with the removals */
+export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: true };
+/** a pending-messages frame's removals and its resumed `held` IDs, as `publish` takes them */
+export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: string[] }): Removal[] =>
+  [...frame.removed ?? [], ...(frame.held ?? []).map((id) => ({ id, outcome: "held" as const, resumed: true as const }))];
 const PREFIX = "ovis:pending:";
 const piReceipt = (message: PendingMessage): boolean => message.id.startsWith("pi:")
   && (message.error?.code === "pi_transcript_pending" || message.error?.code === "transcript_unconfirmed");
@@ -72,9 +76,9 @@ export class PendingMessageStore {
     return !message.serverOwned && this.scopes.get(owner)?.get(message.id) === undefined
       && !piReceipt(message) && !message.resendInFlight && !this.unconfirmed.has(`${owner}\0${message.id}`);
   }
+  /** A resumed held ID applies once, to the copy saved when it came: a later send of that copy (another tab's too) is never held again. */
   private applyHeldResumed(owner: string, message: PendingMessageView): PendingMessageView {
-    if (message.resendInFlight) { this.heldResumed.get(owner)?.delete(message.id); return message; }
-    if (!this.heldResumed.get(owner)?.has(message.id) || !this.canHoldResumed(owner, message) || message.state === "held") return message;
+    if (!this.heldResumed.get(owner)?.delete(message.id) || !this.canHoldResumed(owner, message) || message.state === "held") return message;
     const { sending_at: _, ...rest } = message;
     return { ...rest, state: "held" };
   }
@@ -83,17 +87,21 @@ export class PendingMessageStore {
     if (cached) return cached;
     let raw: string | null = null;
     try { raw = this.storage().getItem(PREFIX + owner); } catch { /* keep a memory-only copy */ }
-    const messages = this.restored(raw).map((message) => this.applyHeldResumed(owner, message));
+    const restored = this.restored(raw);
+    const messages = restored.map((message) => this.applyHeldResumed(owner, message));
     this.saved.set(owner, raw);
     this.rows.set(owner, messages);
+    // a copy held again is saved so: its ID applied once
+    if (messages.some((message, at) => message !== restored[at])) this.write(owner, messages);
     return messages;
   }
   refresh(owner: string): void {
     try {
       const raw = this.storage().getItem(PREFIX + owner);
       if (this.saved.get(owner) === raw) return;
-      const next = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id))
-        .map((message) => this.applyHeldResumed(owner, message));
+      const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id));
+      const next = loaded.map((message) => this.applyHeldResumed(owner, message));
+      const heldAgain = next.some((message, at) => message !== loaded[at]);
       // Another tab cannot alter or discard a live connection's authoritative rows.
       for (const own of this.read(owner).filter((message) => this.unsaved.has(owner) || message.serverOwned || this.isBusy(owner, message.id))) {
         const at = next.findIndex((message) => message.id === own.id);
@@ -106,6 +114,7 @@ export class PendingMessageStore {
           ? { ...own, resendGeneration: next[at]!.resendGeneration ?? own.resendGeneration, resendInFlight: true,
             state: this.unconfirmed.has(`${owner}\0${own.id}`) ? own.state : "uncertain" } : own;
       }
+      if (heldAgain) { this.write(owner, next); return; }
       this.saved.set(owner, raw);
       this.rows.set(owner, next);
       this.notify();
@@ -159,7 +168,7 @@ export class PendingMessageStore {
       ...(resendGeneration !== undefined ? { resendGeneration } : {}),
       state: resendInFlight ? "uncertain" : heldByReceipt ? "held"
         : scope === null && (message.state === "queued" || message.state === "sending") ? "uncertain" : message.state };
-    if (heldByReceipt) delete view.sending_at;
+    if (heldByReceipt) { delete view.sending_at; this.heldResumed.get(owner)?.delete(message.id); }
     const at = previous.findIndex((item) => item.id === message.id);
     const next = [...previous];
     if (at < 0) next.push(view); else next[at] = view;
@@ -221,8 +230,7 @@ export class PendingMessageStore {
     }
     // An empty new-connection snapshot is not evidence that saved text was delivered.
     const heldIds = this.heldResumed.get(owner);
-    const heldChanged = heldIds !== undefined && this.read(owner).some((message) =>
-      !deleted.has(message.id) && heldIds.has(message.id) && this.canHoldResumed(owner, message) && message.state !== "held");
+    const heldChanged = heldIds !== undefined && this.read(owner).some((message) => !deleted.has(message.id) && heldIds.has(message.id));
     if (deleted.size || heldChanged) {
       // another tab may have saved a message since this one last read the list: the write below keeps it
       this.refresh(owner);

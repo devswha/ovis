@@ -174,7 +174,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
-it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"] as const)(
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "live owner's sibling tab"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
     const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -197,7 +197,17 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
         clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
         omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
-      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null });
+      const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null }, scenario === "live owner's sibling tab");
+      if (scenario === "live owner's sibling tab") {
+        // the tab that holds it alone may send it while it lives: a sibling told it is held could offer it again later
+        const sibling = client("device", token);
+        delivery.attached(sibling, "p");
+        expect(item.message.state).toBe("held");
+        expect(frames.get(sibling)!.some((frame) => frame.type === "pending-messages"
+          && (frame.held?.includes(item.message.id) || frame.removed?.some((entry) => entry.id === item.message.id)))).toBe(false);
+        return;
+      }
       if (scenario === "held after reattach") expect(delivery.pending.claim(item, false)).toBe(true);
       if (scenario === "owner revoked") revoked.add(first);
       const overlap = scenario === "overlapping reload" ? client("device", token) : undefined;
@@ -208,9 +218,10 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       if (scenario === "revoked") revoked.add(resumed);
       if (!overlap) delivery.attached(resumed, "p");
       if (scenario === "held after reattach") delivery.pending.settle(item, { code: "disconnected", message: "The pending message's connection closed" }, false);
-      const removed = frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
-      expect(removed).toEqual(["held on close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"].includes(scenario)
-        ? [{ id: item.message.id, outcome: "held", resumed: true }] : []);
+      // its own field: a client that predates it reads any resumed removal as settled
+      expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
+      expect(heldIds(resumed)).toEqual(["held on close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"].includes(scenario)
+        ? [item.message.id] : []);
       if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry") {
         now += 60_001; delivery.pending.expire();
         failResend = scenario === "ambiguous resend after closed-owner expiry";
@@ -221,6 +232,7 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
         delivery.attached(later, "p");
         const laterRemoved = frames.get(later)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);
         expect(laterRemoved).toEqual(failResend ? [] : [{ id: item.message.id, outcome: "sent", resumed: true }]);
+        expect(heldIds(later)).toEqual([]);
       }
     } finally { clock.mockRestore(); }
   });

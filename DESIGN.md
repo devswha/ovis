@@ -3199,7 +3199,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
   `held` recovers an untyped queued copy as **Held message — review and send** (**Send now** /
   **Discard**): an uncertain copy, which ages out as `dismissed`, stays unconfirmed, and nothing is
-  typed again (#2421).
+  typed again (#2421). `held` is kept only once the connection that queued the message is gone
+  (while it lives, it alone sends the copy), travels in the frame's own `held` field (clients that
+  predate it remove a copy for any resumed removal), and applies once, to the copy saved when it
+  comes: a later send of that copy, from any tab, is never offered again.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and
