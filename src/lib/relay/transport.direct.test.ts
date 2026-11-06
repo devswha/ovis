@@ -285,6 +285,31 @@ describe("racing the relay at the start", () => {
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
 
+  it("gives the PC's Tailscale carrier its whole budget while LAN carriers queue in the other socket", async () => {
+    // Given a phone away from home: two silent LAN addresses, then a Tailscale one that answers late, and no relay
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const { pc, store, saved } = await paired();
+    const port = pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1);
+    const tailscale = `ws://100.64.0.7:${port}`;
+    store.saved = { ...store.saved!, direct: ["ws://10.0.0.8:9", "ws://10.0.0.9:9", tailscale] };
+    const secondLan = deferred<void>();
+    const openChannel = async (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> => {
+      if (options?.direct === undefined) throw new RelayUnreachableError(null, true);
+      if (options.direct === "ws://10.0.0.9:9") secondLan.resolve();
+      // the Tailscale carrier answers only once the first LAN one has used up its share and the second began
+      if (options.direct === tailscale) await secondLan.promise;
+      return pc.openChannel(channelOffer, options);
+    };
+    const socketFor = (url: string): WebSocket => new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+    // When it opens the PC
+    const transport = await transportFor(pc, store, saved, { openChannel, directTailnet: () => true, directSocket: socketFor });
+    // Then the Tailscale carrier was still in time
+    expect(transport.route).toBe("direct");
+    expect(pc.channels.at(-1)!.direct).toBe(tailscale);
+  });
+
   it("still tries a third LAN carrier behind two silent ones within the budget", async () => {
     // Given a phone whose PC names two LAN addresses that assign and stay silent, then its reachable one, and no relay
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),

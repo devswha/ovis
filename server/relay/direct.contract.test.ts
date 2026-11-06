@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PairedDevice } from "../../shared/access.ts";
 import { openRelayChannel, probePc } from "../../shared/relay-channel.ts";
+import type { RelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { DIRECT_CARRIER, DIRECT_TAILNET, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
@@ -546,6 +547,35 @@ describe("direct connections with the relay", () => {
     const port = (): string => service.status().direct!.carriers[0]!.split(":").at(-1)!;
     return { fixture, service, offer, port, relay };
   }
+
+  it("let a direct carrier signed in but never used close none of its device's sessions, until it opens a stream", async () => {
+    // Given a phone with four sessions in use on the PC
+    const { fixture, offer, port } = await liveFixture();
+    const device = await relayDevice(fixture);
+    const open = () => bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`) }));
+    const use = (channel: RelayChannel) => bounded(new Promise<number>((resolve, reject) => {
+      const stream = channel.mux.openHttp({ target: "/api/relay", method: "GET", headers: [], body: "none" });
+      stream.onHeaders = ({ status }) => { if (status >= 200) { resolve(status); void stream.body.cancel(); } };
+      stream.onDispose = (failure) => { if (failure) reject(failure); };
+    }));
+    const firstClosed = deferred<void>();
+    const first = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`), onClose: () => firstClosed.resolve() }));
+    // each used as it opens: an unused one is a carrier the app may still drop
+    expect(await use(first)).toBe(200);
+    const inUse = [first];
+    for (let index = 0; index < 3; index += 1) {
+      inUse.push(await open());
+      expect(await use(inUse.at(-1)!)).toBe(200);
+    }
+    // When a fifth carrier signs in, as one an app races and may drop
+    const racing = await open();
+    cleanup.push(...[...inUse, racing].map((channel) => () => channel.close()));
+    // Then every session in use is still served
+    for (const channel of inUse) expect(await use(channel)).toBe(200);
+    // and once the app uses it, the device's oldest gives way
+    expect(await use(racing)).toBe(200);
+    await bounded(firstClosed.promise);
+  });
 
   it("answer a probe through the relay with no session, and tell a silent PC from an unreachable relay", async () => {
     // Given a PC on a local relay

@@ -331,28 +331,31 @@ export class RelayTransport implements Transport {
     }
     const carriers = [...new Set(this.directCarriers)];
     if (ended.aborted || carriers.length === 0) return undefined;
-    // at most DIRECT_SOCKETS at once (the apps' plugins open no more): the first LAN carrier and the first Tailscale one
-    // first, so a silent LAN address never keeps the PC's Tailscale one out of the race, then the rest as places free,
-    // all within the budget. The first admitted is kept, and only it may report its loss.
-    const lan = carriers.find((carrier) => !isTailnetCarrier(carrier));
-    const tailnet = carriers.find((carrier) => isTailnetCarrier(carrier));
-    const queue = [...[lan, tailnet].filter((carrier) => carrier !== undefined), ...carriers.filter((carrier) => carrier !== lan && carrier !== tailnet)];
+    // at most DIRECT_SOCKETS at once (the apps' plugins open no more), in two lanes: the PC's Tailscale carriers and
+    // its LAN ones. With both, each lane has one socket, so a silent LAN address never keeps the Tailscale one out of
+    // the race, and the Tailscale one keeps its whole budget (away from home it is the slow one); a lane alone has both.
+    // In a lane, a silent carrier takes only its round's share, so the ones queued behind it still get a turn.
+    const lanes = [carriers.filter((carrier) => isTailnetCarrier(carrier)), carriers.filter((carrier) => !isTailnetCarrier(carrier))]
+      .map((queue) => ({ queue, running: 0 }));
     const ends = performance.now() + DIRECT_BUDGET_MS;
     let kept: string | undefined;
+    let settled = false;
     const attempts = new Map<string, AbortController>();
     // the admitted channel keeps its signal for good (closing the transport ends it): only the others are ended
     const endOthers = (than?: string): void => { for (const [carrier, attempt] of attempts) if (carrier !== than) attempt.abort(); };
     const offerTailnet = this.options.directTailnet?.() === true;
     return new Promise((resolve, reject) => {
-      let running = 0;
+      const running = (): number => lanes.reduce((sum, lane) => sum + lane.running, 0);
+      const slots = (): number => lanes.every((other) => other.queue.length + other.running > 0) ? 1 : DIRECT_SOCKETS;
       const next = (): void => {
-        while (running < DIRECT_SOCKETS && queue.length > 0 && kept === undefined && !ended.aborted && !this.stopped) {
+        for (;;) {
+          if (settled || ended.aborted || this.stopped || running() >= DIRECT_SOCKETS) return;
+          const lane = lanes.find((candidate) => candidate.queue.length > 0 && candidate.running < slots());
           const left = ends - performance.now();
-          if (left <= 0) break;
-          const direct = queue.shift()!;
-          // a silent carrier takes only its round's share, so the ones queued behind it still get a turn
-          const rounds = Math.ceil((queue.length + running + 1) / DIRECT_SOCKETS);
-          running++;
+          if (!lane || left <= 0) return;
+          const direct = lane.queue.shift()!;
+          const rounds = Math.ceil((lane.queue.length + lane.running + 1) / slots());
+          lane.running++;
           const attempt = new AbortController();
           attempts.set(direct, attempt);
           const timer = setTimeout(() => attempt.abort(), left / rounds);
@@ -360,23 +363,24 @@ export class RelayTransport implements Transport {
           const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
           (this.options.openChannel ?? openRelayChannel)(offer, { ...options, onClose, signal, direct, socket, offerDirect: true, offerTailnet }).then((channel) => {
-            if (kept !== undefined || ended.aborted) { channel.close(); return; }
+            if (settled || ended.aborted) { channel.close(); return; }
+            settled = true;
             kept = direct;
             endOthers(direct);
             resolve(channel);
           }, (error: unknown) => {
             // only a refusal by the PC itself, after Noise proved it is the PC, is final
-            if (kept === undefined && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { endOthers(); reject(error); }
+            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { settled = true; endOthers(); reject(error); }
           }).finally(() => {
             clearTimeout(timer);
-            running--;
+            lane.running--;
             next();
-            if (running === 0) resolve(undefined);
+            if (running() === 0) resolve(undefined);
           });
         }
       };
       next();
-      if (running === 0) resolve(undefined);
+      if (running() === 0) resolve(undefined);
     });
   }
 
