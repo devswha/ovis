@@ -696,11 +696,9 @@ export function App() {
   const paneMenuInMore = selectedPane !== null
     && tabRowHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0, tabsInHeader);
   // The header draws no session counts (the sidebar and each tab say every agent's state): More's first
-  // item jumps to the next session waiting for you, and on a phone, where the sidebar is a drawer, a
-  // waiting-coloured dot on its button says one is there
-  const phoneNarrow = useMediaQuery("(max-width: 480px)");
+  // item jumps to the next session waiting for you, and where no status bar says it, a waiting-coloured
+  // dot on its button says one is there
   const waitingInMore = sessionTally.waiting > 0;
-  const waitingDot = waitingInMore && phoneNarrow;
   const paneMoreItems = paneMenuInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
     ...item, divider: index === 0 || item.divider,
     run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),
@@ -729,7 +727,8 @@ export function App() {
   const stripInHeader = wideScreen && !splitOn && !tabsInHeader && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
-  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && !guideShown;
+  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown;
+  const waitingDot = waitingInMore && !statusBarShown;
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when

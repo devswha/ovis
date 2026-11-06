@@ -888,14 +888,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sidebar's seam, the status bar's rule, the tabs' rules; `--border` stays for lines inside a
   region.
 - From `769px` the header is two zones. Over the sidebar, `.header-side` is the sidebar's own top
-  row (toggle at its start, palette at its end) on `--bg-panel`, as wide as `--sidebar-w`, and the
-  sidebar's seam runs to the top of the window. Over the pane, the header takes the pane's
-  surface: under the chat lens `--bg` with no bottom rule, the transcript scrolling under a
-  `--space-5` fade from `--bg`; under the terminal lens, with no pane, or with a pane herdr could
-  not restore, `--term-bg` and the rule. A tab strip takes the same surface as the header over
-  it from `769px` (`--strip-bg`: `--bg` under the chat lens, `--term-bg` otherwise, `--bg-panel`
-  below `769px`) and keeps its hairline, under the chat the one line over the transcript (no
-  fade under it). The update notice, the alerts health notice, a PC's action banner and the pairing line (below) are drawn in
+  row (the wordmark, then the palette and the toggle) on `--bg-panel`, as wide as `--sidebar-w`, and
+  the sidebar's seam runs to the top of the window. Over the pane, with the tabs in the row, the
+  header is the accent-tinted strip and the open tab carries the pane's surface down into it;
+  without them (a split view, the setup guide, no pane), the header takes the pane's surface: under
+  the chat lens `--bg` with no bottom rule, the transcript scrolling under a `--space-5` fade from
+  `--bg`; under the terminal lens, with no pane, or with a pane herdr could not restore, `--term-bg`
+  and the rule. A split view's strips take the same surface as the header over them (`--strip-bg`:
+  `--bg` under the chat lens, `--term-bg` otherwise, `--bg-panel` below `769px`) and keep their
+  hairline, under the chat the one line over the transcript (no fade under it). The update notice, the alerts health notice, a PC's action banner and the pairing line (below) are drawn in
   the pane column, over the tab strip, never across the window: the sidebar and its top row stay
   one piece. A device pairing with this server while a window is open (`device-paired` on the
   machines event stream) is one `.update-notice.is-paired` line there: a `--accent` phone glyph

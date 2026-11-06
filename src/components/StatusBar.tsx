@@ -43,7 +43,9 @@ export function StatusBar({ machineId, workspaceId, machine, place, path, sessio
       {session !== null && <span className="status-bar-item status-bar-text">{session}</span>}
       <span className="status-bar-end">
         {watching && <span className="status-bar-item status-bar-watch">{t("View only")}</span>}
-        {waiting > 0 && <button type="button" className="status-bar-item status-bar-waiting" disabled={onNextWaiting === null} onClick={onNextWaiting ?? undefined}
+        {/* with no other session to open it stays a button (aria-disabled, not disabled), so the press that
+            opened the last one does not drop the keyboard's focus */}
+        {waiting > 0 && <button type="button" className="status-bar-item status-bar-waiting" aria-disabled={onNextWaiting === null || undefined} onClick={() => onNextWaiting?.()}
           title={t("Open the next session waiting for you")}>
           <CircleHelp aria-hidden="true" />
           {t("{count} waiting for you", { count: waiting })}

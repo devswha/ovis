@@ -61,7 +61,10 @@ it("offers the next waiting session as a button, inert when there is none to ope
   await act(async () => button.props.onClick());
   expect(opened).toBe(1);
   await act(async () => renderer!.unmount());
-  expect((await draw({ waiting: 1, onNextWaiting: null })).findByType("button").props.disabled).toBe(true);
+  const inert = (await draw({ waiting: 1, onNextWaiting: null })).findByType("button");
+  expect(inert.props["aria-disabled"]).toBe(true);
+  expect(inert.props.disabled).toBeUndefined();
+  await act(async () => inert.props.onClick());
 });
 
 it("says View only on a watching device and a lost connection in its own word", async () => {
