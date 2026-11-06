@@ -49,6 +49,8 @@ interface Conn {
   /** toward the peer */
   down: Side;
   counted: boolean;
+  /** the upstream answered 101: from here bytes flow both ways */
+  upgraded: boolean;
 }
 
 const total = (counts: Map<string, number>): number => [...counts.values()].reduce((sum, count) => sum + count, 0);
@@ -88,6 +90,8 @@ const refusal = (status: string): Uint8Array => new TextEncoder().encode(`HTTP/1
 
 /** The request head's line and headers, or null when it is not a request at all. */
 function parseHead(text: string): { line: string; headers: Map<string, string>; raw: string[] } | null {
+  // read exactly as an HTTP parser must: CRLF lines only, no other control characters, no folded lines
+  if (/[\x00-\x08\x0a-\x1f\x7f]/.test(text.replace(/\r\n/g, "")) || /\r\n[ \t]/.test(text)) return null;
   const lines = text.split("\r\n");
   const line = lines.shift() ?? "";
   if (!/^[A-Z]+ \S+ HTTP\/1\.1$/.test(line)) return null;
@@ -120,18 +124,29 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
     conn.up?.socket?.end();
     socket.end();
   };
-  const forward = async (socket: Socket<Conn>, head: string, after: Uint8Array): Promise<void> => {
+  const forward = async (socket: Socket<Conn>, head: string): Promise<void> => {
     const conn = socket.data;
-    // the head, then what came with it, then whatever arrives while connecting: in that order
-    const first = [new TextEncoder().encode(head), ...after.byteLength > 0 ? [after] : []];
-    const up: Side = { socket: undefined, pending: first, pendingBytes: head.length + after.byteLength };
+    const up: Side = { socket: undefined, pending: [new TextEncoder().encode(head)], pendingBytes: head.length };
     conn.up = up;
     try {
       up.socket = await Bun.connect({
         hostname: "127.0.0.1", port: options.upstreamPort,
         socket: {
           open: (upstream) => { up.socket = upstream; flush(up); },
-          data: (_upstream, chunk) => { if (!send(conn.down, chunk)) end(socket); },
+          data: (_upstream, chunk) => {
+            // anything but a switch to WebSocket is the whole answer: it goes to the peer and the connection ends,
+            // so no further request can ride on it past the head's deadline
+            if (!conn.upgraded) {
+              if (!Buffer.from(chunk.subarray(0, 13)).toString("latin1").startsWith("HTTP/1.1 101 ")) {
+                conn.down.socket?.write(chunk);
+                conn.down.socket?.flush();
+                end(socket);
+                return;
+              }
+              conn.upgraded = true;
+            }
+            if (!send(conn.down, chunk)) end(socket);
+          },
           drain: () => flush(up),
           close: () => end(socket),
           error: () => end(socket),
@@ -145,7 +160,7 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
     socket: {
       open: (socket) => {
         const source = socket.remoteAddress;
-        const conn: Conn = { source, head: [], headBytes: 0, deadline: undefined, up: undefined, down: { socket, pending: [], pendingBytes: 0 }, counted: false };
+        const conn: Conn = { source, head: [], headBytes: 0, deadline: undefined, up: undefined, down: { socket, pending: [], pendingBytes: 0 }, counted: false, upgraded: false };
         socket.data = conn;
         if (!options.allowed(source) || (counts.get(source) ?? 0) >= MAX_CONNECTIONS_PER_SOURCE || total(counts) >= MAX_CONNECTIONS) {
           socket.end();
@@ -158,7 +173,12 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
       data: (socket, chunk) => {
         const conn = socket.data;
         if (!conn.counted) return;
-        if (conn.up) { if (!send(conn.up, chunk)) end(socket); return; }
+        if (conn.up) {
+          // a client sends nothing between its upgrade request and the answer to it
+          if (!conn.upgraded) { end(socket); return; }
+          if (!send(conn.up, chunk)) end(socket);
+          return;
+        }
         conn.head.push(chunk);
         conn.headBytes += chunk.byteLength;
         const text = Buffer.concat(conn.head).toString("latin1");
@@ -185,7 +205,8 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
         const rebuilt = [head.line, ...kept, `${PEER_HEADER}: ${conn.source}`, `${GATE_HEADER}: ${options.secret}`, "", ""].join("\r\n");
         const after = Buffer.concat(conn.head).subarray(stop + 4);
         conn.head = [];
-        void forward(socket, rebuilt, new Uint8Array(after));
+        if (after.byteLength > 0) { end(socket); return; }
+        void forward(socket, rebuilt);
       },
       drain: (socket) => flush(socket.data.down),
       close: (socket) => end(socket),

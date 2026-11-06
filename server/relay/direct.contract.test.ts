@@ -472,3 +472,59 @@ describe("who gives way to a new client", () => {
     expect(admissionDrops(waiting, "10.0.0.1", 1_000)?.map((carrier) => carrier.order)).toEqual([0]);
   });
 });
+
+describe("the gate in front of the direct carrier", () => {
+  /** A raw TCP exchange: the gate's answer head (or "" when it closed without one), and its close. */
+  async function exchange(port: number, request: string): Promise<{ answer: string; closed: Promise<void> }> {
+    let answer = "";
+    const head = deferred<string>();
+    const closed = deferred<void>();
+    const socket = await Bun.connect({ hostname: "127.0.0.1", port, socket: {
+      data: (_socket, chunk) => { answer += Buffer.from(chunk).toString("latin1"); if (answer.includes("\r\n\r\n")) head.resolve(answer); },
+      close: () => { head.resolve(answer); closed.resolve(); }, error: () => { head.resolve(answer); closed.resolve(); } } });
+    cleanup.push(() => socket.end());
+    socket.write(request);
+    return { answer: await bounded(head.promise), closed: bounded(closed.promise) };
+  }
+  const upgrade = (extra = ""): string => `GET /v1/ws?v=1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n${extra}\r\n`;
+
+  it("ends the connection after any answer but a switch to WebSocket", async () => {
+    // Given an address whose two places are taken by clients still within their grace
+    const { direct, url } = await directFixture();
+    const first = new WebSocket(url());
+    const second = new WebSocket(url());
+    cleanup.push(() => first.close(), () => second.close());
+    await opened(first);
+    await opened(second);
+    // When a third upgrade from it is refused (503, which would keep the connection alive)
+    const { answer, closed } = await exchange(direct.port!, upgrade());
+    // Then that answer is the last thing on the connection
+    expect(answer.startsWith("HTTP/1.1 101")).toBe(false);
+    await closed;
+  });
+
+  it("names the peer it saw, whatever header the peer forged", async () => {
+    // Given a carrier that records the peers it is asked about
+    const fixture = relayFixture();
+    const seen: (string | undefined)[] = [];
+    const direct = new DirectCarrier({ identity: loadRelayIdentity(fixture.stateDir), services: fixture.app.context.services, port: fixture.app.port,
+      addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: (address) => { seen.push(address); return address === "127.0.0.1"; } });
+    await direct.start();
+    cleanup.push(() => fixture.close(), () => direct.stop());
+    // When a request claims to come from elsewhere and to carry the gate's secret
+    const { answer } = await exchange(direct.port!, upgrade("x-ovis-direct-peer: 10.0.0.66\r\nx-ovis-direct-gate: guess\r\n"));
+    // Then the carrier saw only the real peer, and let it upgrade
+    expect(answer.startsWith("HTTP/1.1 101")).toBe(true);
+    expect(seen.includes("10.0.0.66")).toBe(false);
+  });
+
+  it("answers 404 for any other path, 400 for a malformed head, and closes an oversized one", async () => {
+    const { direct } = await directFixture();
+    expect((await exchange(direct.port!, "GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n")).answer.startsWith("HTTP/1.1 404")).toBe(true);
+    expect((await exchange(direct.port!, upgrade("X-A: b\nX-Smuggled: c\r\n"))).answer.startsWith("HTTP/1.1 400")).toBe(true);
+    expect((await exchange(direct.port!, upgrade("X-A: b\r\n folded\r\n"))).answer.startsWith("HTTP/1.1 400")).toBe(true);
+    const big = await exchange(direct.port!, `GET /v1/ws HTTP/1.1\r\nX-Big: ${"a".repeat(9 * 1024)}`);
+    expect(big.answer).toBe("");
+    await big.closed;
+  });
+});
