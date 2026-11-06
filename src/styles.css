@@ -222,6 +222,12 @@
   --z-palette: 35;
   --z-droplet: 40;
 
+  /* the screen's safe-area insets, for script (lib/safeArea.ts): a custom property computes env() */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+
   /* in-app alert (components/Droplet.css): island black in either theme, so one set */
   --droplet-bg: #000;
   --droplet-text: #f5f5f7;
@@ -1721,6 +1727,19 @@ button {
   --sidebar-shown-w: 0px;
 }
 
+/* Settings → Show the sidebar on hover (lib/sidebarPeek.ts): the collapsed sidebar over the pane, under the
+   header, at the width it has when open; the pane keeps its width, so no pty is resized */
+.app.sidebar-collapsed .sidebar.is-peek {
+  display: flex;
+  position: fixed;
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-drawer);
+  width: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
+  box-shadow: var(--shadow-drawer);
+}
+
 .scrim {
   display: none;
 }
@@ -1756,9 +1775,9 @@ button {
   padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
-/* the pane area: one pane, or two side by side (lib/split.ts). Each half is a pane slot with its
-   own tab strip and terminal; slot b exists only while split, and the halves keep their slots
-   when they trade sides, drawn by order */
+/* the pane area: one pane, or several side by side and stacked (lib/split.ts). Each slot has its
+   own tab strip and terminal; split, every slot is placed at the share of the area its layout gives
+   it (App's style), and keeps its element, and its terminals, wherever the layout moves it */
 .pane-split {
   position: relative;
   display: flex;
@@ -1775,13 +1794,42 @@ button {
   min-height: 0;
 }
 
-.pane-slot[data-side="left"] {
-  order: 0;
+.pane-split.is-split > .pane-slot {
+  position: absolute;
+}
+
+.pane-slot.joins-right {
   border-right: var(--hairline) solid var(--border-strong);
 }
 
-.pane-slot[data-side="right"] {
-  order: 1;
+.pane-slot.joins-below {
+  border-bottom: var(--hairline) solid var(--border-strong);
+}
+
+/* a boundary between slots with rows and columns (SplitDividers): a band to the pointer, a line to the eye */
+.pane-split-divider {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.pane-split-divider[data-dir="row"] {
+  width: 8px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.pane-split-divider[data-dir="column"] {
+  height: 8px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.pane-split-divider:hover,
+.pane-split-divider:active,
+.pane-split-divider:focus-visible {
+  background: var(--accent-tint);
+  outline: none;
 }
 
 /* a half's close sits at the end of its tab strip (TabStrip.css); a half with no strip (its pane
@@ -2106,6 +2154,56 @@ button {
   font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
+}
+
+/* a phone's title lists its workspace's tabs (App.tsx, TabStrip's sheet): the caret after it is the
+   button, and its press area is stretched over the whole title and crumb, so the title is the target.
+   The box grows to a finger's height into the header around it, its line where it was. */
+.context.has-tabs {
+  --tabs-pad: max(0px, calc((var(--touch-target) - var(--context-line)) / 2));
+  position: relative;
+  max-height: calc(var(--context-line) + 2 * var(--tabs-pad));
+  margin-block: calc(-1 * var(--tabs-pad));
+  padding-block: var(--tabs-pad);
+}
+
+.context-tabs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-left: calc(-1 * var(--space-1));
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.context-tabs svg {
+  width: 16px;
+  height: 16px;
+}
+
+.context-tabs::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+}
+
+/* the ring goes round the whole target, inside the header's clipped box */
+.context-tabs:focus-visible {
+  outline: none;
+}
+
+.context-tabs:focus-visible::after {
+  outline: var(--ring);
+  outline-offset: calc(-1 * var(--ring-offset));
+}
+
+.context-tabs[aria-expanded="true"] {
+  color: var(--text-strong);
 }
 
 /* the PC's sessions by state (components/HeaderSessions.tsx): a figure per state that has any, in the
@@ -2723,7 +2821,9 @@ button.header-session-count[aria-disabled="true"] {
   line-height: 1;
 }
 
-/* modal dialog: scrim + centered card; mobile: bottom sheet */
+/* modal dialog: scrim + centered card; mobile: bottom sheet. The card keeps clear of the screen's
+   safe-area insets too: a landscape phone puts its notch on the left or right and its home
+   indicator below, where a card filling the scrim (Settings) would otherwise reach */
 .modal-scrim {
   position: fixed;
   inset: 0;
@@ -2731,7 +2831,8 @@ button.header-session-count[aria-disabled="true"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-4);
+  padding: max(var(--space-4), env(safe-area-inset-top, 0px)) max(var(--space-4), env(safe-area-inset-right, 0px))
+    max(var(--space-4), env(safe-area-inset-bottom, 0px)) max(var(--space-4), env(safe-area-inset-left, 0px));
   background: var(--scrim);
 }
 
@@ -2783,9 +2884,10 @@ button.header-session-count[aria-disabled="true"] {
     padding: 0;
   }
 
+  /* the sheet's top stays below the status bar or Dynamic Island, a short screen's (the keyboard up) too */
   .modal {
     width: 100%;
-    max-height: 92%;
+    max-height: min(92%, calc(100% - env(safe-area-inset-top, 0px) - var(--space-2)));
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }

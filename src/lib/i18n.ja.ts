@@ -1,6 +1,8 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { SETTINGS_AGENTS_JA } from "./i18n/settings-agents.ja.ts";
+import { SETTINGS_COMPOSER_JA } from "./i18n/settings-composer.ja.ts";
+import { SETTINGS_LAYOUT_JA } from "./i18n/settings-layout.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
 import { CHAT_JA } from "./i18n/chat.ja.ts";
@@ -77,7 +79,7 @@ const BASE: Record<string, string> = {
   "Settings": "設定",
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
-  "Phone & devices": "スマートフォンとデバイス",
+  "Devices and PCs": "デバイスと PC",
   "Access token": "アクセストークン",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
@@ -112,6 +114,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "ターミナルを表示",
   "Show the chat": "チャットを表示",
   "Close this half": "この半分を閉じる",
+  "Remove from the split": "分割から外す",
+  "Resize the split": "分割のサイズを変更",
   "Toggle sidebar (⌘⇧B)": "サイドバーの切り替え (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "チャット履歴 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "ライブターミナル (⌘⇧J)",
@@ -195,6 +199,7 @@ const BASE: Record<string, string> = {
   "{count} done": "完了 {count} 件",
   "Open the next session waiting for you": "応答を待っている次のセッションを開く",
   "Tab {index} of {count}": "タブ {index}/{count}",
+  "Tabs of {workspace}": "{workspace} のタブ",
   "Reconnecting…": "再接続しています…",
   "Add PC": "PC を追加",
   "Connect": "接続",
@@ -221,6 +226,7 @@ const BASE: Record<string, string> = {
   "No matching folders": "一致するフォルダーはありません",
   "This folder cannot be opened.": "このフォルダーは開けません。",
   "Folders could not be loaded.": "フォルダーを読み込めませんでした。",
+  "Unlock agent": "エージェントのロックを解除",
 
   // ---- files ----
   "Files": "ファイル",
@@ -240,13 +246,13 @@ const BASE: Record<string, string> = {
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
+  "Show {name}": "{name} を表示",
   "Check again": "再確認",
   "Setup guide": "セットアップガイド",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
   "New code": "新しいコード",
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
-  "Connect a phone": "スマートフォンを接続",
   "Pairing code": "ペアリングコード",
   "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
   "{agent} is ready": "{agent} の準備ができました",
@@ -277,7 +283,7 @@ const BASE: Record<string, string> = {
   "Microphone permission was denied": "マイクの使用が許可されませんでした",
   "Voice input needs HTTPS": "音声入力には HTTPS が必要です",
   // ---- errors (lib/userError.ts) ----
-  "This browser is not signed in to this PC any more. Pair it again in Settings → Phone & devices.": "このブラウザーはもうこの PC にサインインしていません。設定 → スマートフォンとデバイスでもう一度ペアリングしてください。",
+  "This browser is not signed in to this PC any more. Pair it again in Settings → Devices and PCs.": "このブラウザーはもうこの PC にサインインしていません。設定 → デバイスと PCでもう一度ペアリングしてください。",
   "That item no longer exists on the PC. Refresh and try again.": "その項目は PC にもうありません。更新してからもう一度お試しください。",
   "It changed on the PC while you were acting. Check it and try again.": "操作中に PC 側で変更されました。確認してからもう一度お試しください。",
   "The PC took too long to answer. Try again.": "PC の応答に時間がかかりすぎました。もう一度お試しください。",
@@ -292,7 +298,7 @@ const BASE: Record<string, string> = {
   "Can't reach the PC": "PC に接続できません",
   "PC disk is full": "PC のディスクがいっぱいです",
   "No permission on the PC": "PC で権限がありません",
-  "Pair it again in Settings → Phone & devices.": "設定 → スマートフォンとデバイスでもう一度ペアリングしてください。",
+  "Pair it again in Settings → Devices and PCs.": "設定 → デバイスと PCでもう一度ペアリングしてください。",
   "Refresh and try again.": "更新してからもう一度お試しください。",
   "Check it and try again.": "確認してからもう一度お試しください。",
   "Check your connection, then try again.": "接続を確認してからもう一度お試しください。",
@@ -369,9 +375,6 @@ const BASE: Record<string, string> = {
   "Copy details": "詳細をコピー",
   "This pane can't be shown.": "このペインを表示できません。",
   "The sidebar can't be shown.": "サイドバーを表示できません。",
-  "Diff layout": "差分の表示形式",
-  "Unified": "1列",
-  "Split": "並べて表示",
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PCを切り替え",
@@ -409,7 +412,6 @@ const BASE: Record<string, string> = {
   "this PC": "このPC",
   "It matches": "一致しています",
   "Does {name}'s screen show this ID?": "{name} の画面にこの ID が表示されていますか？",
-  "The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.": "PC は「設定 → スマートフォンとデバイス」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
   "ID of the PC this code found": "このコードで見つかった PC の ID",
   "A code has ten letters and digits, like 7K3QD-M2XHA.": "コードは 7K3QD-M2XHA のような英数字 10 文字です。",
   "No PC shows this code. Check it, or show a new one on the PC.": "このコードを表示している PC はありません。確認するか、PC で新しいコードを表示してください。",
@@ -424,12 +426,40 @@ const BASE: Record<string, string> = {
   "New group": "新しいグループ",
   "Add group": "グループを追加",
   "No group": "グループなし",
+  "Context {percent}% left": "コンテキスト残り {percent}%",
+  "{used} of {window} tokens": "{used} / {window} トークン",
+  "Suggestion chip": "提案チップ",
+  "Artifacts chip": "アーティファクトチップ",
+  "Side conversations chip (experimental)": "サイド会話チップ（実験的）",
+  "Permission mode": "権限モード",
+  "Model": "モデル",
+  "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
+  "Effort": "推論レベル",
+  "Sandbox and approvals": "サンドボックスと承認",
+  "Add this PC to my account": "このPCをアカウントに追加",
+  "Add this PC to your account, so every device of your account can use it with one approval.": "このPCをアカウントに追加すると、一度の承認でアカウントのすべてのデバイスから使えます。",
+  "Every device of your account can use this PC after that.": "その後は、アカウントのすべてのデバイスからこのPCを使えます。",
+  "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "すでにアカウントにあるスマホでOvisアプリを開き、{name} の「追加」をタップしてください。そのあとここで承認します。",
+  "This PC could not be listed in your account. Try again.": "このPCをアカウントに登録できませんでした。もう一度お試しください。",
+  "Turn on remote access through the Ovis relay above first.": "まず上でOvisリレー経由のリモートアクセスをオンにしてください。",
+  "New terminal": "新しいターミナル",
+  "New terminal failed: {reason}": "新しいターミナルを開けませんでした: {reason}",
+  "herdr prefix: press a key": "herdrプレフィックス: キーを押してください",
+  "Connect a device": "デバイスを接続",
+  "This device": "このデバイス",
+  "Sign out of {provider}": "{provider} からサインアウト",
+  "Ovis relay": "Ovis リレー",
+  "Reset relay identity": "リレー ID をリセット",
+  "Reset the relay identity?": "リレー ID をリセットしますか？",
+  "Phones paired through the relay will need to scan a new code.": "リレー経由でペアリングしたスマートフォンは、新しいコードを読み取り直す必要があります。",
+  "Pairs this phone through the relay, so Ovis keeps working away from home.": "このスマートフォンをリレー経由でペアリングし、外出先でも Ovis を使えるようにします。",
+  "This PC": "この PC",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_AGENTS_JA },
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,

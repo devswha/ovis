@@ -1,3 +1,4 @@
+import type { HerdrKeys } from "./herdr-keys.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -37,6 +38,8 @@ import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, 
 /** GET /api/herdr-ui: the herdr client preferences of the PC serving the web UI, never the rest of its config. */
 export interface HerdrUiConfig {
   copy_on_select: boolean;
+  /** its `[keys]` prefix bindings the app can run (shared/herdr-keys.ts); absent from an older server */
+  keys?: HerdrKeys;
 }
 
 /** Friendly aliases used across the UI. */
@@ -46,6 +49,7 @@ export type HerdrTab = TabInfo;
  * `background_tasks`: an OmO pane's `task` children, or a Claude Code pane's subagents and background commands, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
  * `plan`: how far the pane's agent's task list or checklist has progressed; absent when it keeps none.
+ * `context`: how much of its context a Claude Code or Codex pane's last request filled, read from its transcript as the chat's ring reads it; absent before one reports it.
  *
  * What herdr-core (server/herdr-core/snapshot.ts) reports about the terminal, each absent where it
  * reported nothing (and always on herdr's TUI runtime):
@@ -56,8 +60,11 @@ export type HerdrTab = TabInfo;
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
  */
+/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
+export type PaneContext = { used: number; window: number | null };
+
 export type HerdrPane = PaneInfo & {
-  background_tasks?: number; background_wait?: true; plan?: PlanSummary;
+  background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
   own_tab?: true;
   agent_kind?: string;
@@ -137,8 +144,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
  *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
  *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
- *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select,
- *         for local and remote panes alike), no-store
+ *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select and
+ *         [keys] prefix bindings, for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
  *         Tailscale on this PC already serves, or the command to run), no-store
  *  GET    /api/portal                    -> PortalStatus (an optional public HTTPS address through
@@ -338,16 +345,22 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/pane/artifacts?pane_id= -> { artifacts: ClaudeArtifact[] } (the pages a Claude Code
  *         pane's session published with its Artifact tool, newest first; empty for any other pane or
  *         one whose session is not known yet)
+ *  GET    /api/pane/btw?pane_id=        -> OmpBtwHistory (the side conversations an OMP pane's session
+ *         saved with /btw, newest first, under hard caps; `more` when a cap left some out; empty for any
+ *         other pane or one without any)
  *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex or OmO session
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
+ *  GET    /api/pane/docs?pane_id=       -> PaneDocuments (the Markdown files under the pane's folder,
+ *         newest first, from the same listing; read only: Files' Documents tab, shared/files.ts)
  *  GET    /api/workspace/diff/files?pane_id=&directory=&scope=&base=&head= -> RepoDiffFileList
  *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
  *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
  *         working tree against the index, plus untracked files), staged (index against HEAD),
- *         commit (`base` against `head`, HEAD when absent; each one commit) or branch (the working
+ *         commit (`base` against `head`, HEAD when absent; each one commit, or for `base` the
+ *         empty tree's hash, which a root commit's changes are read against) or branch (the working
  *         tree, untracked files included, against the merge base of `base` and HEAD: what this
  *         branch changed, never what `base` went on to change; `base` is required, `head` is not
  *         taken). The list is capped (`limits`), and `truncated` says when it was. 400
@@ -368,6 +381,21 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/git/log?pane_id=&directory=&ref=&oid=&skip=&limit= -> RepoLog
+ *         (shared/repo-log.ts: a page of the history of `ref`, HEAD when absent, newest first,
+ *         `limit` 1..100 commits (50 by default) from `skip`; each commit carries the branches,
+ *         remote branches and tags at it by full refname. Later pages pass the first page's `oid`,
+ *         so commits made in between do not shift them; `next_skip` is null on the last page. An
+ *         empty page before the first commit. Read like the diff routes, with their folder
+ *         resolution, errors and refusals; 400 invalid_limit / invalid_skip)
+ *  GET    /api/workspace/git/branches?pane_id=&directory= -> RepoBranches (the local branches,
+ *         the current one first and then by last commit, each with its upstream, how far ahead
+ *         and behind it is and whether the upstream is gone; at most `limits.max_branches`)
+ *  GET    /api/workspace/git/show?pane_id=&directory=&rev= -> RepoCommitDetail (one commit's
+ *         whole message, up to `limits.max_message_bytes`, and the `base` its changes are read
+ *         against with the diff routes in the commit scope: its first parent, or the empty tree
+ *         for a root commit). The three are reached on another PC under /api/machines/<id>/,
+ *         as the diff routes are
  *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
  *         pull request of the branch checked out in the pane's folder, or `directory`, read through
  *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
@@ -422,6 +450,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         409 repository_without_commits when no base is named and the repository has no commit yet;
  *         both worktree routes refuse a label over MAX_LABEL_CHARS with 400 label_too_long)
  *  GET    /api/worktree/list?workspace_id= -> WorktreeListing (worktree.list: the repo's checkouts)
+ *  GET    /api/worktree/inventory?workspace_id=&workspace_id=... -> WorktreeInventory (the same listing for up to
+ *         MAX_INVENTORY_WORKSPACES workspaces in one read, each with its listing or the error the list route would give;
+ *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
  *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
@@ -479,7 +510,7 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
@@ -549,6 +580,11 @@ export interface ConversationTurn {
   ts: string | null;
   /** Last recorded assistant activity, never the next user's timestamp. */
   end_ts?: string;
+  /**
+   * The store row each text part was read from, in the parts' order (Hermes's message ids): a search
+   * match is found by the row its words are in, wherever a page boundary split the turn.
+   */
+  text_rows?: number[];
   parts: ConversationPart[];
 }
 
@@ -561,7 +597,9 @@ export interface SkillActivity {
 }
 
 export type ConversationPart =
-  | { kind: "text"; text: string; phase?: "commentary" | "final_answer" }
+  /** `failed`: a request the agent recorded as failed (pi-family `stopReason: "error"`); `text` is "Error: " and its error.
+   *  A later part of the same turn is a later request; nothing records whether it was an automatic retry. */
+  | { kind: "text"; text: string; phase?: "commentary" | "final_answer"; failed?: true }
   /** the agent's reasoning block; the client folds it and shows it only on request */
   | { kind: "thinking"; text: string }
   | { kind: "skill"; skill: SkillActivity }
@@ -587,8 +625,9 @@ export type ConversationPart =
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }
-  /** the summary a compaction left; the conversation before it is what it sums up */
-  | { kind: "compact"; text: string }
+  /** the summary a compaction left; the conversation before it is what it sums up. The token counts are present only
+   *  where the record states them (pi-family `tokensBefore`/`tokensAfter`, OmO's `details.structuralYield.savedTokens`). */
+  | { kind: "compact"; text: string; tokens_before?: number; tokens_after?: number; tokens_saved?: number }
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
   | { kind: "notice"; text: string; source?: string }
@@ -596,7 +635,20 @@ export type ConversationPart =
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
-  | { kind: "task_result"; tasks: OmoTaskResult[] };
+  | { kind: "task_result"; tasks: OmoTaskResult[] }
+  /** OmO's goal waiting on background work before it continues on its own (its `goal-cache-warmup`
+   * record): a turn of its own while it is the conversation's last, gone once it resumes or anything
+   * else follows. `due_at`: when OmO continues if nothing wakes it first */
+  | { kind: "goal_wait"; due_at: string; waiting_on: GoalWaitSources };
+
+/** What an OmO goal's wait waits on, by kind: background tasks, monitors, background terminals, DAG runs and detached code cells. */
+export interface GoalWaitSources {
+  tasks: number;
+  monitors: number;
+  terminals: number;
+  dags: number;
+  cells: number;
+}
 
 /** One OmO background task that ended (the `senpi-task.completion` OmO wakes its agent with). */
 export interface OmoTaskResult {
@@ -626,7 +678,12 @@ export interface ConversationMetadata {
    * How much of the model's context the last request filled, in tokens; absent until a
    * response reports its usage. `window` is null when the transcript does not say it.
    */
-  context?: { used: number; window: number | null };
+  context?: PaneContext;
+  /**
+   * The provider the conversation runs at, as omp, omo, gjc and pi name it (`anthropic`,
+   * `openai-codex`): set by a model change and by each answer, absent when none is named.
+   */
+  provider?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
@@ -640,6 +697,28 @@ export interface ClaudeArtifact {
   url: string;
   title: string | null;
   at: string | null;
+}
+
+/** One question of an OMP `/btw` side conversation and its answer, as OMP saved it; `at` is when it was asked. */
+export interface OmpBtwExchange {
+  question: string;
+  answer: string;
+  status: "running" | "complete" | "cancelled" | "error" | "interrupted";
+  error: string | null;
+  at: string;
+}
+
+/** One OMP `/btw` topic: its first question, the follow-ups asked in it, and the title OMP gave it if any. */
+export interface OmpBtwTopic extends OmpBtwExchange {
+  id: string;
+  title: string | null;
+  follow_ups: OmpBtwExchange[];
+}
+
+/** GET /api/pane/btw: at most a megabyte; `more` says a cap (topics, follow-ups, size, or a folder too long to list) left some out. */
+export interface OmpBtwHistory {
+  topics: OmpBtwTopic[];
+  more: boolean;
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */
@@ -664,7 +743,7 @@ export interface ConversationResponse {
    * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
    */
   server_time?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -679,6 +758,12 @@ export interface ConversationResponse {
    * read again on the pane's next activity rather than on a timer.
    */
   recovery?: "waiting";
+  /**
+   * On a scrollback answer for a Copilot pane on Linux: its one Copilot process was not started with
+   * `--ui-server`, and Chat could not bind its session from the files and herdr's report; starting it
+   * with the flag may help.
+   */
+  hint?: "copilot_ui_server";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
@@ -713,15 +798,16 @@ export type { PluginActionContext, PluginAction, PluginActions, PluginActionsRes
 
 export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from "./directories.ts";
 
-export type { FileKind, FileInfo, ProjectFavicon } from "./files.ts";
+export type { FileKind, FileInfo, MarkdownDocument, PaneDocuments, ProjectFavicon } from "./files.ts";
 
 export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
+export type { RepoPerson, RepoCommit, RepoLog, RepoBranch, RepoBranches, RepoCommitDetail } from "./repo-log.ts";
 
 export type { AgentKind } from "./agents.ts";
 
 export type { AgentIntegration, IntegrationsResponse } from "./integrations.ts";
 
-export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
+export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorktreeInventory, WorktreeInventoryEntry, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
 
 /** POST /api/agent/rename: the live name of the agent in the pane; null clears it. */
 export interface AgentRenameRequest {
@@ -884,6 +970,13 @@ export interface InteractivePrompt {
    * of the card's id.
    */
   screen_words?: string;
+  /**
+   * The preview Claude draws for the option under its cursor (AskUserQuestion's `preview`), read off
+   * the screen as drawn: rows a long line wrapped into at the box's width stay apart, and a long
+   * preview is cut to its first rows, `hidden_lines` more in the terminal. Claude draws only that
+   * option's, so it follows the cursor; not part of the card's id. Absent without a preview box.
+   */
+  option_preview?: { option_index: number; text: string; hidden_lines?: number };
   /**
    * The card's own words, which the bridge wrote rather than read off the agent's screen (an Esc
    * offered as Close, a fallback card's title): for each such field above, its English as a key with
@@ -1155,8 +1248,10 @@ export type ServerMessage =
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
-   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
-  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot.
+   * `paste_dir`: the absolute folder `OVIS_PASTE_DIR` sends this PC's uploads to, so the page reads an upload's
+   * path whole through it (src/lib/pasteFolders.ts, #2771); absent when uploads go to each pane's `<cwd>/.ovis` */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */
@@ -1204,7 +1299,7 @@ export type ServerMessage =
   | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: PendingRemoval[] }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** agent-status push for ANY pane, attached or not (server-side status collector) */
-  | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null }
+  | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null; /** a pane's context, when the frame is about it (null: none reported now); it changes no status */ context?: PaneContext | null }
   /** Native transcript invalidation for an interested attached pane; signature is opaque, not a REST ETag. Refetch the existing conversation endpoint. */
   | { type: "conversation-changed"; pane_id: string; signature: string }
   /** the prompt on a watched pane's screen (`prompt-watch`) opened, closed or became another one: read GET /api/pane/prompt

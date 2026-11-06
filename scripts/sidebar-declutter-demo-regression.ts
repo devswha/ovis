@@ -2,7 +2,7 @@
  * Purpose: the sidebar when it shows one PC, and without its filter, on the real client over the demo's fixture
  * transport. A lone Host is drawn without its header and loses nothing: its workspaces start the list, it is never
  * folded (a fold stored before stays harmless), its + is the New workspace row, and its state words stay when it is
- * offline; one PC shown of two (Settings → Remote PCs) looks the same and says the other is hidden; a lone PC that
+ * offline; one PC shown of two (Settings → Devices and PCs) looks the same and says the other is hidden; a lone PC that
  * is not the Host keeps its header (its name and manage menu); two PCs keep both headers. Settings → Appearance →
  * Sidebar filter off leaves the Filter field out, and the command palette's Filter workspaces and agents opens and
  * focuses it, at a phone's and a desktop's width, light and dark. On a desktop, that field's edges (#2079): its close
@@ -190,7 +190,7 @@ async function twoPcs(browser: Browser, scene: Scene): Promise<void> {
     try {
       await newRow(page).waitFor();
       assert.equal(await headers(page).count(), 0, "the Host shown alone of two has no header");
-      assert.equal((await page.locator(".machine-hidden-note").innerText()).trim(), "1 PC hidden on this device", "the note says the other PC is hidden");
+      assert.equal(await page.locator(".sidebar-hidden-pcs").getAttribute("aria-label"), "1 PC hidden on this device", "the PCs head says the other PC is hidden");
       await capture(page, scene, "host-shown-of-two");
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
@@ -201,6 +201,16 @@ async function twoPcs(browser: Browser, scene: Scene): Promise<void> {
       await page.waitForFunction(() => document.querySelectorAll(".machine-list .machine-header").length === 1);
       assert.equal((await page.locator(".machine-list .machine-name").innerText()).trim(), "Work PC", "a lone PC that is not the Host keeps its name");
       assert.equal(await page.locator(".machine-list .machine-manage").count(), 1, "and its manage menu");
+      // the last PC shown cannot be hidden (lib/hiddenMachines.ts): its menu leaves Hide on this device out
+      // a desktop shows the manage button on the header's hover
+      if (!scene.phone) await page.locator(".machine-list .machine-header").hover();
+      await page.locator(".machine-list .machine-manage").click();
+      const menu = page.locator(".row-menu, .row-sheet");
+      await menu.waitFor();
+      assert.ok((await menu.locator(".menu-item, .row-sheet-item").allInnerTexts()).some((label) => label.trim() === "Reconnect / setup"), "the menu lists the PC's actions");
+      assert.equal(await menu.getByText("Hide on this device", { exact: true }).count(), 0, "and no Hide on this device for the last PC shown");
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached" });
       assert.equal(await newRow(page).count(), 0);
       assert.deepEqual(errors, []);
     } finally { await context.close(); }

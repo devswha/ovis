@@ -2,7 +2,8 @@
 
 How the chat lists an agent's `/` commands and skills, sends them, and says what became of them.
 It covers every agent the bridge knows (Claude Code, Codex, OpenCode, pi, omp, OmO, gjc, Hermes,
-Grok, Antigravity, Devin CLI and Command Code) and is written for people who change that code.
+Grok, Antigravity, Devin CLI, Command Code and GitHub Copilot CLI) and is written for people who
+change that code.
 For what a user sees, read the [user guide](guide.md#features); for skill status inside an
 answer, read [Skill activity in chat](chat-skill-activity.md).
 
@@ -59,6 +60,7 @@ catalog; the bridge does not query its SDK broker.
 | Antigravity | the recorded agy 1.4.0 palette | `~/.gemini/config/skills` and the two loaded builtin skills | none | none known |
 | Devin CLI | 3000.11.92, checked against its changelog | native roots, plus Claude, Windsurf, Copilot and Cursor roots unless `read_config_from` turns them off | none | MCP prompts not declared on disk |
 | Command Code | its bundled reference at 1.84.0 | `skills/`, nested `commands/`, bundled skills | none | none known |
+| GitHub Copilot CLI | its own `/` menu at 1.0.105, with `copilot help commands` descriptions | `.github`, `.agents` and `.claude` `skills/` of each folder up to the repository root (outside one, up to the home folder or `/`), `$COPILOT_HOME/skills` (default `~/.copilot`), `~/.agents/skills` and `skillDirectories` (a relative one from the pane's folder), recursive, the first of a name winning; files without frontmatter, `disabledSkills`, `user-invocable: false` and names a builtin takes are left out | none | plugin skills, custom agents (`/agent`) |
 
 A command typed by hand that no row lists (an extension command, an undeclared MCP prompt) still
 sends, and a leading command is still tracked. Its outcome stays `accepted` and ends as
@@ -298,8 +300,9 @@ the setting for that session only. On a Windows PC the bridge passes the same te
 file holding it ([`claude-settings-file.ts`](../server/claude-settings-file.ts)): Windows
 PowerShell 5.1 strips the JSON's quotes on the way through the `claude.ps1` shim of an npm install,
 and a path arrives intact (if the file cannot be written, the JSON goes as it is). The file is in
-`%LOCALAPPDATA%\ovis\claude-settings`, a folder only that Windows user and the administrators
-reach, where `%TEMP%` can be one other accounts write to. Ultracode needs Claude Code 2.1.284 or
+`%LOCALAPPDATA%\ovis\claude settings`, a folder only that Windows user and the administrators
+reach, where `%TEMP%` can be one other accounts write to; the space in its name has PowerShell
+quote the path, so a profile folder holding `&` (`R&D`) still starts on herdr-core. Ultracode needs Claude Code 2.1.284 or
 later (Claude Code's settings reference says an older one runs the session at xhigh), a model with
 xhigh and dynamic workflows turned on; otherwise Claude Code ignores it without an error, and the
 dialog cannot tell. The bridge still takes `--effort ultracode` from other clients, which Claude

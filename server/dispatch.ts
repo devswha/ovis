@@ -20,12 +20,16 @@ import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
 import { handlePlanRequest } from "./plan-routes.ts";
 import { handleArtifactsRequest } from "./claude-artifacts.ts";
+import { handleBtwRequest } from "./omp-btw.ts";
+import { paneTranscript } from "./conversation.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 import type { ShellAgentLocator } from "./shell-agent.ts";
 import { handleAgentsRequest } from "./agents-routes.ts";
 import type { AgentDetector } from "./agent-catalog-detect.ts";
 import { handleAgentCatalogRequest } from "./agent-catalog-routes.ts";
 import { type AgentInstaller, INSTALL_PATH, SIGN_IN_PATH } from "./agent-catalog-install.ts";
 import { forgetPageMedia } from "./file-view.ts";
+import { textEditAllowed } from "./file-edit.ts";
 import { handleFileRequest } from "./file-routes.ts";
 import { BACKGROUND_AGENT_PATH, handleBackgroundAgentRequest } from "./background-agent.ts";
 import { paneGet, ping } from "./herdr/client.ts";
@@ -39,11 +43,15 @@ import { handlePortalRequest } from "./portal.ts";
 import { handleRelayRequest } from "./relay/routes.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
+import type { AccountHolds } from "./account/holds.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
 import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
+import { handleSystemRequest, type SystemSampler } from "./system-stats.ts";
+import { handleUserFontsRequest } from "./user-fonts.ts";
+import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
@@ -77,6 +85,7 @@ export interface RequestServices {
   readonly devices: DeviceStore;
   readonly accountMailbox: AccountMailbox;
   readonly accountIntroductions: AccountIntroductions;
+  readonly accountHolds: AccountHolds;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
@@ -92,6 +101,9 @@ export interface RequestServices {
   readonly usageLogin: UsageLoginService;
   readonly usage: UsageService;
   readonly usageAccounts: UsageAccountList;
+  readonly systemSampler: SystemSampler | null;
+  /** the state folder's fonts/, served to every device that may read this PC (server/user-fonts.ts) */
+  readonly fontsDir: string;
   readonly voice: VoiceService;
   readonly browserSnapshot: <S extends SessionSnapshot>(snapshot: S) => S;
   readonly core: ReturnType<typeof createCore>;
@@ -114,10 +126,16 @@ export interface ServerContext {
   readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string; serverId: string; key: string };
   readonly services: RequestServices;
   readonly relayBodyBudget?: EventStreamBudget;
+  /**
+   * The request came to the opt-in LAN HTTPS listener (server/lan-https.ts), from a private IPv4 peer:
+   * it gets in only with the token or a paired device, never as an open install, by the bridge token,
+   * and its wrong tokens share one budget with every other peer there.
+   */
+  readonly lanHttps?: boolean;
 }
 
 /** The routes that read or write files and folders on this disk (or run git and gh in them) for a pane, a workspace or a picker. */
-const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|image)$|workspace\/(?:diff\/|directories$|pr(?:$|\/)))/;
+const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|docs|image)$|workspace\/(?:diff\/|git\/|directories$|pr(?:$|\/)))/;
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
@@ -133,14 +151,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
-  const bridgeAuthorized = relayPeer === undefined && isAuthenticated(request, bridgeToken);
+  const bridgeAuthorized = relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
   // custom header (update-api.ts), and whoever holds the token already drives every pane here. Only those two
   // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
   const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
-  const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
+  const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || (pathname === "/api/system" && request.method === "GET") || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
   const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
   const loopback = ip !== null && isLoopbackAddress(ip.address);
   const forwarded = relayPeer === undefined && cameThroughProxy(request.headers);
@@ -149,7 +167,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const forwardedFor = relayPeer === undefined ? request.headers.get("x-forwarded-for") : null;
   const requestHost = request.headers.get("host");
   // the guessing budget of the address that asks (auth.ts): a token presented while it waits is not compared
-  const client = relayPeer === undefined ? authClient(ip?.address ?? null, request.headers) : `relay:${relayPeer.id}`;
+  // on the LAN listener `via lan-https` puts every peer in one shared budget too (auth.ts sharedKey)
+  const client = relayPeer !== undefined ? `relay:${relayPeer.id}` : ctx.lanHttps === true && ip !== null ? `${ip.address} via lan-https` : authClient(ip?.address ?? null, request.headers);
   const presented = relayPeer === undefined ? presentedToken(request, token, client) : null;
   // counted at once, before any await below lets a concurrent guess pass the same check. Every
   // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
@@ -171,7 +190,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // only the shape decideAccess could let in by login: from loopback, one tailnet address, not Funnel
       token === "" && pairedDevice === null && loopback && tailscaleLogin !== null && !funnel && inTailnet(forwardedFor) && apiPath)
     : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
-  const portalProven = relayPeer === undefined && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
+  // Portal reaches this server over loopback, never the LAN listener: its proof is not a way in there
+  const portalProven = relayPeer === undefined && ctx.lanHttps !== true && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
   const access = decideAccess({
     relayPeer,
     ...requestShape,
@@ -180,7 +200,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     device: pairedDevice,
     ...identity,
     tokenConfigured: token !== "",
-    gated: devices.gated,
+    gated: devices.gated || ctx.lanHttps === true,
     portal: {
       proven: portalProven,
       user: portalProven ? request.headers.get("x-portal-user") : null,
@@ -223,8 +243,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // is a POST only to keep the subscription out of the address, and answers the device about its own.
   // A watch device may report its own connection metadata, never terminal input or file data.
   const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe" || pathname === "/api/push/status" || pathname === "/api/connection-diagnostics";
-  // a repository's changes are file contents too: the patch of a credential file is that file
-  const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/diff\//.test(pathname);
+  // a repository's changes are file contents too: the patch of a credential file is that file; its
+  // history (commit messages, branch names) is read the same way
+  const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/(?:diff|git)\//.test(pathname);
   // a pull request's review comments and job logs are the repository's contents as well
   const pullRequest = /^\/api\/(?:machines\/[^/]+\/)?workspace\/pr(?:\/|$)/.test(pathname);
   // earlier sessions carry their first prompts
@@ -234,19 +255,25 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // composer's menu that lists them is a drive feature (#2132)
   const commandRows = /^\/api\/(?:machines\/[^/]+\/)?(?:agent|pane)\/commands$/.test(pathname);
   // the paths under a pane's folder that match a query are a directory listing too; they feed the
-  // composer's @-mention picker, a drive feature (#2244)
-  const paneFiles = /^\/api\/(?:machines\/[^/]+\/)?pane\/files$/.test(pathname);
+  // composer's @-mention picker, a drive feature (#2244); so are its Markdown files, which Files' Documents lists
+  const paneFiles = /^\/api\/(?:machines\/[^/]+\/)?pane\/(?:files|docs)$/.test(pathname);
   // where a plugin action's run stands carries what its command printed when it failed, asked for by a
   // log id: only the device that started the run (a POST, which a watching device cannot send) asks it
   const pluginRun = /^\/api\/(?:machines\/[^/]+\/)?plugin\/action$/.test(pathname);
   // a repository's checkouts are its folders' paths and branches, those not open in herdr too; the worktree
   // dialog that lists them is a drive feature, and the sidebar names a branch only for a driving device (#2250)
-  const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/list$/.test(pathname);
+  const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/(?:list|inventory)$/.test(pathname);
   // the digits of a waiting comparison are what approving it takes (docs/account.md, "Who may admit a device")
   const pairingDigits = pathname === "/api/relay/pairings";
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
+  }
+  // a text file is edited (read for it and saved) only by a device that drives this PC, here or through it on another PC (file-edit.ts)
+  const textEdit = /^\/api\/(?:machines\/[^/]+\/)?fs\/text$/.test(pathname);
+  if (textEdit && !textEditAllowed(access, bridgeAuthorized, pathname.startsWith("/api/machines/"))) {
+    setRequestRoute("drive-refusal");
+    return jsonResponse({ error: { code: "drive_only", message: "Only a device that drives this PC can edit its files" } }, 403);
   }
   // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
   // identity explicitly given drive in local state cannot use these controls to leave access
@@ -432,7 +459,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
           // and every page media address its renders were given
           forgetPageMedia({ device: id });
         }
-      });
+      }, ctx.lanHttps === true);
     } catch (error) { return errorResponse(error); }
   }
 
@@ -461,6 +488,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // the finishes read in some browser of this server; a watching device reads them and cannot add to them (above)
   if (pathname === "/api/seen") { setRequestRoute(pathname); return handleSeenRequest(request, seen); }
 
+  if (pathname === "/api/system") { setRequestRoute(pathname); return handleSystemRequest(request, ctx.services.systemSampler); }
+  if (pathname === USER_FONTS_PATH || pathname.startsWith(`${USER_FONTS_PATH}/`)) return handleUserFontsRequest(request, pathname, ctx.services.fontsDir, url.search);
   if (pathname === "/api/usage") { setRequestRoute(pathname); return handleUsageRequest(request, url, ctx.services.usageAccounts); }
   if (pathname === "/api/usage/accounts") { setRequestRoute(pathname); return ctx.services.usageAccounts.handle(request); }
   // on or off only: the server decides what is installed and where (server/statusline-install.ts)
@@ -622,6 +651,15 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   const artifactsResponse = await handleArtifactsRequest(request, url, pathname, { claudeAgents });
   if (artifactsResponse) return artifactsResponse;
+
+  // the pane's transcript as its conversation finds it: a pane that runs no OMP session, or one not written yet, has none
+  const btwResponse = await handleBtwRequest(request, url, pathname, {
+    transcript: (paneId) => paneTranscript(paneId, options.codexHome, undefined, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData).then(
+      (found) => found.source === "omp-transcript" ? found.path : null,
+      (error: unknown) => { if (error instanceof ConversationUnavailable) return null; throw error; },
+    ),
+  });
+  if (btwResponse) return btwResponse;
 
   if (pathname === SESSION_HISTORY_PATH) {
     setRequestRoute(SESSION_HISTORY_PATH);
