@@ -174,7 +174,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
-it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "live owner's sibling tab"] as const)(
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
     const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -198,7 +198,7 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
         omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
       const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
-      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null }, scenario === "live owner's sibling tab");
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, { agent: "codex", terminalId: "p", session: null }, scenario === "live owner's sibling tab" || scenario === "held before close");
       if (scenario === "live owner's sibling tab") {
         // the tab that holds it alone may send it while it lives: a sibling told it is held could offer it again later
         const sibling = client("device", token);
@@ -220,7 +220,7 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       if (scenario === "held after reattach") delivery.pending.settle(item, { code: "disconnected", message: "The pending message's connection closed" }, false);
       // its own field: a client that predates it reads any resumed removal as settled
       expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
-      expect(heldIds(resumed)).toEqual(["held on close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"].includes(scenario)
+      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"].includes(scenario)
         ? [item.message.id] : []);
       if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry") {
         now += 60_001; delivery.pending.expire();
