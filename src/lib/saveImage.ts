@@ -35,6 +35,9 @@ export async function imageFile(src: string, name: string, shown: HTMLImageEleme
 /** The Android app's plugin that saves a picture to Downloads (app/android/.../SaveImagePlugin.java). */
 export const SAVE_PLUGIN = "OvisSave";
 
+/** The app's limit (SavedImage.MAX_BYTES), checked here before the bytes are copied into base64. */
+export const SAVE_MAX_BYTES = 20 * 1024 * 1024;
+
 /**
  * How Download saves the picture here: a download link, the share sheet, or the Android app. An
  * Android app built before its plugin has neither a working link nor a share sheet, so Download
@@ -53,6 +56,7 @@ export type ShareOutcome = "shared" | "cancelled" | "failed";
  * ("shared").
  */
 export async function saveInApp(file: File): Promise<"saved" | "shared" | "failed"> {
+  if (file.size === 0 || file.size > SAVE_MAX_BYTES) return "failed";
   try {
     const { saved } = await callNative<{ saved?: string }>(SAVE_PLUGIN, "saveImage", { name: file.name, type: file.type, data: base64(new Uint8Array(await file.arrayBuffer())) });
     return saved === "downloads" ? "saved" : "shared";

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { downloadLeavesApp, imageFile, SAVE_PLUGIN, saveInApp, saveRoute, shareFile } from "./saveImage.ts";
+import { downloadLeavesApp, imageFile, SAVE_MAX_BYTES, SAVE_PLUGIN, saveInApp, saveRoute, shareFile } from "./saveImage.ts";
 import { nativeTransport, setTransport, type Transport } from "./transport.ts";
 
 const saved = new Map(["navigator", "Capacitor"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
@@ -67,6 +67,13 @@ describe("saveInApp", () => {
     expect(await saveInApp(file)).toBe("shared");
     environment({}, "android", [SAVE_PLUGIN], () => Promise.reject(new Error("Only a picture can be saved.")));
     expect(await saveInApp(file)).toBe("failed");
+  });
+
+  test("fails a picture over the app's limit without handing it over", async () => {
+    let calls = 0;
+    environment({}, "android", [SAVE_PLUGIN], async () => { calls++; return { saved: "downloads" }; });
+    expect(await saveInApp(new File([new Uint8Array(SAVE_MAX_BYTES + 1)], "huge.png", { type: "image/png" }))).toBe("failed");
+    expect(calls).toBe(0);
   });
 });
 

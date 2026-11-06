@@ -6,6 +6,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.junit.Test;
 
@@ -41,9 +42,20 @@ public class SavedImageTest {
         assertEquals("image", SavedImage.fileName(null));
         assertEquals("image", SavedImage.fileName("dir/"));
         assertEquals("image", SavedImage.fileName(".."));
-        String longName = "x".repeat(300) + ".jpeg";
-        String cut = SavedImage.fileName(longName);
-        assertEquals(120, cut.length());
+        String cut = SavedImage.fileName("x".repeat(300) + ".jpeg");
+        assertEquals(200, cut.length());
         assertTrue(cut.endsWith(".jpeg"));
+        // Korean takes 3 bytes a character: the cut counts bytes and never splits one
+        String korean = SavedImage.fileName("\uADF8\uB9BC".repeat(80) + ".png");
+        assertTrue(korean.getBytes(StandardCharsets.UTF_8).length <= 200);
+        assertTrue(korean.endsWith("\uADF8.png") || korean.endsWith("\uB9BC.png"));
+    }
+
+    @Test
+    public void startsAtMostTenSavesAMinute() {
+        SavedImage.Budget budget = new SavedImage.Budget();
+        for (int i = 0; i < SavedImage.MAX_PER_MINUTE; i++) assertTrue(budget.take(1_000 + i));
+        assertFalse(budget.take(30_000));
+        assertTrue(budget.take(61_000));
     }
 }
