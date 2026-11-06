@@ -62,8 +62,9 @@ complete reads, including unavailable selections. Ambiguity remains unavailable 
 fresh registration; it does not permanently block later registrations. Two descriptors on the
 same log path, as Copilot holds while it copies its log to rotate it, are one log; two logs of
 the same process are ambiguous. While Copilot moves its copies up for a rotation, a missing copy
-with an older one still there leaves only that lookup unavailable; the next lookup follows the
-rotation from the bytes already read.
+with an older one still there leaves that lookup unavailable unless the open log itself registers
+or releases a session; once the new copy is in place, a later lookup follows the rotation from the
+bytes already read.
 Unchanged file identity, size and timestamps reuse the last verification only when both
 mtime and ctime were at least three seconds old at that check and the wall clock has not
 moved behind it; younger timestamps or a clock rollback trigger rehashing

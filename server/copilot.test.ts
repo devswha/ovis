@@ -325,6 +325,19 @@ for (const between of ["output", "another registration"] as const) {
   });
 }
 
+it.skipIf(process.platform !== "linux")("binds a registration in the open log while a log copy stays missing", async () => {
+  const fixture = await logFixture([session, other]);
+  const { environment, log, pid } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    writeFileSync(log.replace(/\.log$/, ".2.log"), readFileSync(log));
+    fs.truncateSync(log, 0);
+    appendFileSync(log, register(other));
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).session?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
 it("parses persisted Copilot messages and tool rounds once, with failures and recorded metadata", () => {
   const text = start + prompt("Visible prompt")
     + line("assistant.message", { content: "Checking.", phase: "commentary", toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check directory" }], model: "fixture-model" })
