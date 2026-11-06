@@ -40,9 +40,14 @@ export function layout(root: string, platform: NodeJS.Platform = process.platfor
 /** hc's session for the app's own core, apart from the `default` one another hc client may run. */
 export const HC_SESSION = "ovis";
 
+/** the lists an AppImage's AppRun puts its own folders in front of */
+const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
+
 /**
  * The environment hc runs in: the caller's, with the app's own core session unless one is named.
- * Electron's own settings are not passed on.
+ * Electron's own settings are not passed on, nor an AppImage's: the core and its terminals outlive
+ * the app, and its mount (APPDIR) goes away with it, so they would load its libraries meanwhile
+ * and then point at a folder that is gone.
  */
 export function coreEnv(base: Env): Env {
   const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
@@ -50,6 +55,17 @@ export function coreEnv(base: Env): Env {
   delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
   delete env["ELECTRON_NO_ATTACH_CONSOLE"];
+  const mount = base["APPIMAGE"] ? base["APPDIR"]?.replace(/\/+$/, "") : undefined;
+  if (mount) {
+    for (const name of ["APPDIR", "APPIMAGE", "ARGV0", "OWD"]) delete env[name];
+    for (const name of APPIMAGE_LISTS) {
+      const value = env[name];
+      if (value === undefined) continue;
+      const kept = value.split(":").filter((entry) => entry !== "" && entry.replace(/\/+$/, "") !== mount && !entry.startsWith(`${mount}/`));
+      if (kept.length > 0) env[name] = kept.join(":");
+      else delete env[name];
+    }
+  }
   return env;
 }
 
