@@ -324,7 +324,7 @@ messages):
 
 1. On the new PC, Settings → Phone & devices → Account: sign in, then **Add this PC to my account**.
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
-   a pairing window with `POST /api/relay/link?local_only=1`. What that window takes is decided on
+   a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
    once the PC has members. The screen keeps the window open while it waits.
 2. On any device already in the account, the PC shows as a card, **Add {name} to your account?**,
