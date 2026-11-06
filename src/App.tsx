@@ -558,7 +558,7 @@ export function App() {
         void load();
         // what the user went to while herdr answered is theirs to keep
         if (selectionStill(asked, selectionRef.current)) {
-          ahead?.handTo(paneStorageId(found.machineId, created.pane_id));
+          ahead?.handTo(found.machineId, created.pane_id);
           selectTargetRef.current(found.machineId, created.pane_id);
         } else ahead?.drop();
       },

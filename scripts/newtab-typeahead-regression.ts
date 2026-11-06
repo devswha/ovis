@@ -1,17 +1,36 @@
 /**
- * Keys typed right after a New tab choice (the +, the phone title's sheet, the New tab dialog's Start) reach the
- * new tab, every one and in order, and none the old tab; a Space or Enter typed then opens no second tab.
+ * Keys typed right after a New tab choice (the +, the tab list's New terminal, the New tab dialog's Start) reach
+ * the new tab, every one and in order, and none the old tab; a Space or Enter typed then opens no second tab.
+ * What may not go by itself (a paste, keys typed before the user went elsewhere) is held for review instead.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, Page } from "playwright-core";
+import type { Browser, Page, Route } from "playwright-core";
 import { paneRead, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
 
 type Way = "plus" | "sheet" | "dialog";
 type Sent = { type: string; pane_id: string; text?: string; keys?: string[] };
+interface Case {
+  name: string;
+  way: Way;
+  viewport: { width: number; height: number };
+  touch?: boolean;
+  /** the keys, typed right after the choice */
+  type: (page: Page) => Promise<void>;
+  /** the line the new tab's shell prints, or null when the keys must be held for review */
+  ran: string | null;
+  /** exactly what the new tab is sent, when it is known */
+  sent?: string;
+  /** herdr's answer waits until the keys are typed */
+  holdCreate?: boolean;
+}
+
+const desktop = { width: 1280, height: 800 };
+const phone = { width: 390, height: 844 };
+const MOUSE_REPORT = /^\x1b\[[<M]/;
 
 async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
   const deadline = Date.now() + 15_000;
@@ -37,19 +56,21 @@ function watch(page: Page): { sent: Sent[]; ready: Set<string> } {
   return { sent, ready };
 }
 
-const textOf = (sent: Sent[], paneId: string): string => sent.filter((message) => message.pane_id === paneId)
+const textOf = (sent: Sent[], paneId: string): string => sent.filter((message) => message.pane_id === paneId && !MOUSE_REPORT.test(message.text ?? ""))
   .map((message) => message.text ?? (message.keys ?? []).join("")).join("");
+const screenOf = (page: Page, paneId: string) => page.locator(`[data-layout-pane=${JSON.stringify(paneId)}] .xterm-screen`);
 
-async function choose(page: Page, first: string, way: Way, sent: Sent[]): Promise<void> {
-  if (way === "sheet") {
+async function choose(page: Page, first: string, item: Case, sent: Sent[]): Promise<void> {
+  if (item.way === "sheet") {
     // the title's list stands in for the row on a narrow window
-    await page.locator(".app-header .context-tabs").click();
+    if (item.touch) await page.locator(".app-header .context-tabs").tap(); else await page.locator(".app-header .context-tabs").click();
     sent.length = 0;
-    await page.locator(".row-sheet-item", { hasText: "New terminal" }).click();
+    const entry = page.locator(".row-sheet-item", { hasText: "New terminal" });
+    if (item.touch) await entry.tap(); else await entry.click();
     return;
   }
-  await page.locator(`[data-layout-pane=${JSON.stringify(first)}] .xterm-screen`).click();
-  if (way === "plus") {
+  await screenOf(page, first).click();
+  if (item.way === "plus") {
     sent.length = 0;
     await page.locator(".tab-strip-add").click();
     return;
@@ -62,12 +83,12 @@ async function choose(page: Page, first: string, way: Way, sent: Sent[]): Promis
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
 }
 
-async function typeAhead(browser: Browser, origin: string, way: Way, viewport: { width: number; height: number }, delay: number): Promise<void> {
+async function typeAhead(browser: Browser, origin: string, item: Case): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
-  const created = await workspaceCreate({ cwd: root, label: `ovis-test-newtab-${way}` });
+  const created = await workspaceCreate({ cwd: root, label: `ovis-test-newtab-${item.name}` });
   const workspaceId = created.workspace.workspace_id;
   const first = created.root_pane.pane_id;
-  const context = await browser.newContext({ viewport, locale: "en-US" });
+  const context = await browser.newContext({ viewport: item.viewport, hasTouch: item.touch === true, isMobile: item.touch === true, locale: "en-US" });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
   try {
     const page = await context.newPage();
@@ -75,23 +96,35 @@ async function typeAhead(browser: Browser, origin: string, way: Way, viewport: {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const { sent, ready } = watch(page);
+    let held: Route | null = null;
+    if (item.holdCreate) await page.route("**/api/**tab/create", (route) => { held = route; });
     await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
     await page.locator(".conn-live").waitFor();
     await until(() => ready.has(first), "the first terminal accepts input");
-    const word = `ahead-${way}`;
-    await choose(page, first, way, sent);
-    // typed at once, while herdr is still making the tab
-    await page.keyboard.type(`echo ${word}`, { delay });
-    await page.keyboard.press("Enter");
+    await choose(page, first, item, sent);
+    await item.type(page);
+    if (item.holdCreate) {
+      await until(() => held !== null, "the page asked herdr for the tab");
+      await held!.continue();
+    }
     let second: string | undefined;
     await until(async () => (second = (await sessionSnapshot()).panes.find((pane) => pane.workspace_id === workspaceId && pane.pane_id !== first)?.pane_id) !== undefined, "herdr has the new tab");
     await until(() => ready.has(second!), "the new terminal accepts input");
-    const ran = async () => (await paneRead({ paneId: second!, source: "recent", lines: 30, stripAnsi: true })).text.split("\n").some((line) => line.trim() === word);
-    await until(ran, `${way}: the new tab ran the command typed ahead`);
-    assert.equal(textOf(sent, first), "", `${way}: no key goes to the old tab`);
-    assert.equal(textOf(sent, second!), `echo ${word}\r`, `${way}: every key reaches the new tab, in order`);
+    const lines = async () => (await paneRead({ paneId: second!, source: "recent", lines: 30, stripAnsi: true })).text.split("\n").map((line) => line.trim());
+    if (item.ran !== null) {
+      const ran = item.ran;
+      await until(async () => (await lines()).includes(ran), `${item.name}: the new tab ran the command typed ahead`);
+      if (item.sent !== undefined) assert.equal(textOf(sent, second!), item.sent, `${item.name}: every key reaches the new tab, in order`);
+    } else {
+      // held for review as typing offline is: the new tab offers it with Send and Discard
+      const frame = page.locator(`[data-layout-pane=${JSON.stringify(second!)}]`);
+      await frame.getByRole("button", { name: "Discard held input", exact: true }).waitFor();
+      assert.match(await frame.innerText(), /echo ahead-/, `${item.name}: what was typed is held for review`);
+      assert.equal(textOf(sent, second!), "", `${item.name}: nothing held is sent by itself`);
+    }
+    assert.equal(textOf(sent, first), "", `${item.name}: no key goes to the old tab`);
     const tabs = (await sessionSnapshot()).panes.filter((pane) => pane.workspace_id === workspaceId).length;
-    assert.equal(tabs, 2, `${way}: a Space or Enter typed ahead opens no other tab`);
+    assert.equal(tabs, 2, `${item.name}: a Space or Enter typed ahead opens no other tab`);
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
@@ -100,12 +133,47 @@ async function typeAhead(browser: Browser, origin: string, way: Way, viewport: {
   }
 }
 
-export async function checkNewTabTypeAhead(browser: Browser, origin: string): Promise<void> {
-  await typeAhead(browser, origin, "plus", { width: 1280, height: 800 }, 0);
-  await typeAhead(browser, origin, "sheet", { width: 390, height: 844 }, 0);
+const typed = (text: string, delay = 0) => async (page: Page): Promise<void> => {
+  await page.keyboard.type(text, { delay });
+  await page.keyboard.press("Enter");
+};
+
+const CASES: Case[] = [
+  { name: "plus", way: "plus", viewport: desktop, type: typed("echo ahead-plus"), ran: "ahead-plus", sent: "echo ahead-plus\r" },
+  { name: "sheet", way: "sheet", viewport: phone, type: typed("echo ahead-sheet"), ran: "ahead-sheet", sent: "echo ahead-sheet\r" },
+  { name: "touch", way: "sheet", viewport: phone, touch: true, type: typed("echo ahead-touch"), ran: "ahead-touch", sent: "echo ahead-touch\r" },
   // slower, so the keys go on while the dialog closes over the old tab
-  await typeAhead(browser, origin, "dialog", { width: 1280, height: 800 }, 15);
-  console.log("PASS keys typed right after New terminal, the tab list's New terminal and the New tab dialog's Start reach the new tab in order, none the old, and open no other tab");
+  { name: "dialog", way: "dialog", viewport: desktop, type: typed("echo ahead-dialog", 15), ran: "ahead-dialog", sent: "echo ahead-dialog\r" },
+  {
+    name: "edit", way: "plus", viewport: desktop, ran: "ahead-edit",
+    type: async (page) => {
+      await page.keyboard.type("echo ahead-edt");
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.type("i");
+      await page.keyboard.press("Enter");
+    },
+  },
+  {
+    name: "paste", way: "plus", viewport: desktop, ran: null, holdCreate: true,
+    type: async (page) => {
+      await page.evaluate(() => document.activeElement?.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true })));
+      await page.keyboard.insertText("echo ahead-paste");
+      await page.keyboard.press("Enter");
+    },
+  },
+  {
+    name: "away", way: "plus", viewport: desktop, ran: null, holdCreate: true,
+    type: async (page) => {
+      await page.keyboard.type("echo ahead-away");
+      // the user goes elsewhere before herdr has made the tab
+      await page.getByPlaceholder("Filter workspaces and agents").click();
+    },
+  },
+];
+
+export async function checkNewTabTypeAhead(browser: Browser, origin: string): Promise<void> {
+  for (const item of CASES) await typeAhead(browser, origin, item);
+  console.log("PASS keys typed right after New terminal, the tab list's New terminal (mouse and touch) and the New tab dialog's Start reach the new tab in order (arrows too), none the old, and open no other tab; a paste or keys left behind are held for review");
 }
 
 if (import.meta.main) {

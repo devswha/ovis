@@ -389,7 +389,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       // the dialog closes on this: left pending, its next opening would start a frame with the
       // fields disabled and Escape ignored, until the open effect's reset has rendered
       setPending(false);
-      ahead?.handTo(paneStorageId(machineId, result.pane_id));
+      ahead?.handTo(machineId, result.pane_id);
       made.current = true;
       onCreated(result.pane_id, agentKind !== "" && result.agent_started !== false, messageWaits);
     } catch (reason: unknown) {

@@ -39,7 +39,7 @@ import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
-import { takeTypeAhead } from "./typeAhead.ts";
+import { takeTypeAhead, type TypeAheadItem } from "./typeAhead.ts";
 import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
@@ -1179,13 +1179,32 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       // What was typed for a new tab before it existed (lib/typeAhead.ts) waits with the keys typed here after it, as
       // a pane taken back does, and goes ahead of them: taken before the attach and before any key reaches this pane.
+      // It is held for review instead, never sent by itself, when it holds a paste, when the user went elsewhere
+      // meanwhile, or when the PC's connection was not open all along since it was typed (nothing goes after a disconnect).
       const adoptTypeAhead = (pane: string): void => {
-        const ahead = takeTypeAhead(paneStorageId(machineId, pane));
+        let at = 0;
+        let held = false;
+        const take = (items: TypeAheadItem[], heldNow: boolean): void => {
+          held ||= heldNow || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+          for (const item of items) {
+            const arrow = item.arrow !== undefined ? terminalChord(item.arrow, NO_STICKY_MODIFIERS) : null;
+            const typed: Typed = { input: item.input, keys: arrow !== null ? [arrow] : null, chord: false, stop: false, secret: false };
+            if (held) retainTyped(pane, typed, secretRef.current !== null);
+            else if (resumeInput !== null && resumeInput.pane === pane) resumeInput.items.push(typed);
+            else if (paneRef.current === pane) sendTyped(pane, typed);
+          }
+        };
+        const takeKeyboard = (focused: boolean): void => {
+          if (focused && paneRef.current === pane && activeRef.current && !chatViewRef.current && !coarseRef.current) term.focus();
+        };
+        const ahead = takeTypeAhead(paneStorageId(machineId, pane), { more: take, done: takeKeyboard });
         if (ahead === null) return;
-        startResume(pane, ahead.since);
-        resumeInput!.items.push(...ahead.items.map((input): Typed => ({ input, keys: null, chord: false, stop: false, secret: false })));
-        if (ahead.focused && !chatViewRef.current) term.focus();
-        if (socket.canInput(pane)) flushResume();
+        at = ahead.at;
+        held = ahead.held || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+        if (!held) startResume(pane, ahead.since);
+        take(ahead.items, ahead.held);
+        takeKeyboard(ahead.focused);
+        if (!held && socket.canInput(pane)) flushResume();
       };
       typeAheadRef.current = adoptTypeAhead;
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
