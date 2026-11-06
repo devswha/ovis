@@ -13,7 +13,7 @@ import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog,
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
 import { checkForUpdates, debInstallCommand, updateChannel, updatePlan } from "./updates.ts";
-import { extractedAppDir } from "./appimage.ts";
+import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 
 type StepState = "pending" | "ok" | "failed";
@@ -433,9 +433,10 @@ if (!app.requestSingleInstanceLock()) {
     if (!quitting) void stopForQuit().then(() => setImmediate(() => app.quit()));
   });
   // an AppImage run unpacked (no FUSE) leaves its folder in the temporary folder: the server, the
-  // last user of its files, has stopped by now (the core runs from its own copy)
+  // last user of its files, has stopped by now (the core runs from its own copy). Another copy of the
+  // same AppImage runs from the same folder: then it stays
   const unpacked = process.platform === "linux" ? extractedAppDir(process.env, process.execPath) : null;
-  if (unpacked) app.on("quit", () => rmSync(unpacked, { recursive: true, force: true }));
+  if (unpacked) app.on("quit", () => { if (!othersRunFrom(unpacked, process.pid)) rmSync(unpacked, { recursive: true, force: true }); });
   app.on("activate", showWindow);
   // the app stays in the tray with its window closed
   app.on("window-all-closed", () => {});

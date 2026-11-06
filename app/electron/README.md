@@ -67,7 +67,9 @@ in it. Ovis's own data stays.
 
 - **.deb**: the package's `prerm` (`linux/before-remove.sh`) stops it for the user who removed the
   package with `sudo` or `pkexec`; not on an upgrade, and never failing the removal. A removal by
-  root alone (no `SUDO_UID` or `PKEXEC_UID`, as some software centres run it) leaves it running.
+  root alone (no `SUDO_UID` or `PKEXEC_UID`, as some software centres run it) leaves it running,
+  and so does an app that ran with its data outside `~/.config/Ovis` (`XDG_CONFIG_HOME`,
+  `--user-data-dir`): the script cannot know where that was.
 - **AppImage** and **macOS** (dragging the app to the Trash) run nothing as they go. Stop the core
   first:
 
