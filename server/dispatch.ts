@@ -814,5 +814,6 @@ function stopRefusalText(refused: StopRefusal): string {
     case "own_server": return "that pane runs this Ovis server";
     case "own_group_unknown": return "Ovis cannot tell its own process group here, so it ends nothing";
     case "not_tried": return "send Ctrl+C first, and force only once it has had a few seconds";
+    case "not_local": return "this PC does not show that command in front of its shell, so Ovis does not signal it";
   }
 }

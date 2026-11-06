@@ -108,7 +108,7 @@ export interface MoveStopRequest {
  */
 export interface MoveStopAllOffer {
   token: string;
-  panes: { pane_id: string; command: string | null }[];
+  panes: { pane_id: string; command: string }[];
 }
 
 export interface MoveStopAllRequest {

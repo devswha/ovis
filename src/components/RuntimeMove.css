@@ -116,6 +116,14 @@
   font-size: var(--fs-sm);
 }
 
+.runtime-move-confirm-list {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
 .runtime-move-why {
   color: var(--text-dim);
   font-size: var(--fs-xs);

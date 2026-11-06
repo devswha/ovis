@@ -56,8 +56,14 @@ While it waits, the dialog lets the person end a shell's command where they woul
 - Nothing is sent or signalled when Ovis cannot tell its own process group (Linux reads
   `/proc/self/stat`, macOS asks `ps`), and a cancel that arrives while herdr answers the last look
   sends nothing: herdr checks the wait again right before it writes Ctrl+C.
-- Force end is not atomic: a process group has no pidfd, so between herdr's answer and the kill the
-  group could end and its id be reused. Nothing is awaited in between.
+- Force end signals only when this PC itself reports that group in front of the shell's terminal
+  (`/proc/<shell>/stat` tpgid, or `ps -o tpgid=` on macOS); otherwise (`not_local`, e.g. Ovis and
+  herdr in different pid namespaces) nothing is signalled. It is still not atomic: a process group
+  has no pidfd, so between that last look and the kill the group could end and its id be reused.
+- The command a row or End all's confirm showed is compared with the name from the same look as the
+  group that is ended, and End all ends each pane only while it runs the shell and group the confirm
+  covered. The confirm lists the commands its token covers. A server that stops drops any stop still
+  on its way.
 
 Agents are never ended from the wait: their row opens the agent's pane, where the person ends it.
 A pane that does not end keeps the move waiting, as before.

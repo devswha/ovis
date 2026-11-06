@@ -202,7 +202,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
         </header>
         <div className="modal-body">
           {view === "plan" && <PlanView t={t} plan={plan} leadId={`${id}-lead`} />}
-          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? confirming.panes.length : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
+          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? confirming.panes : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
           {view === "moving" && status.state === "moving" && <MovingView t={t} status={status} leadId={`${id}-lead`} />}
           {view === "done" && <p className="runtime-move-lead" id={`${id}-lead`} role="status">{t("Now running on herdr-core. To go back to herdr, switch the runtime again.")}</p>}
           {view === "result" && (status.state === "rolled_back" || status.state === "interrupted") && <ResultView t={t} plan={plan} status={status} leadId={`${id}-lead`} />}

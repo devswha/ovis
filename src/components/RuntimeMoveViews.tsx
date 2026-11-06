@@ -7,7 +7,7 @@
 import type { ReactNode } from "react";
 import { Check } from "lucide-react";
 
-import type { MovePane, MovePlan, MoveStatus, MoveStopping } from "../../shared/runtime-move.ts";
+import type { MovePane, MovePlan, MoveStatus, MoveStopAllOffer, MoveStopping } from "../../shared/runtime-move.ts";
 import type { Translate } from "../lib/i18n.ts";
 import { agentName, blockingPanes, moveReasonText, moveStepText, moveWhyText, paneAgent, paneTitle, tabPaneIds, verdictTag } from "../lib/runtimeMove.ts";
 
@@ -77,7 +77,7 @@ export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; le
   );
 }
 
-export function WaitingView({ t, plan, leadId, confirming, ...actions }: WaitActions & { t: Translate; plan: MovePlan; leadId: string; confirming: number | null }) {
+export function WaitingView({ t, plan, leadId, confirming, ...actions }: WaitActions & { t: Translate; plan: MovePlan; leadId: string; confirming: MoveStopAllOffer["panes"] | null }) {
   const held = blockingPanes(plan);
   return (
     <>
@@ -87,7 +87,11 @@ export function WaitingView({ t, plan, leadId, confirming, ...actions }: WaitAct
       </ul>
       {confirming === null
         ? <p className="runtime-move-note">{t("End an agent marked above yourself; the move goes on by itself once nothing runs.")}</p>
-        : <p className="runtime-move-confirm" role="alert">{confirming === 1 ? t("Ends 1 running command. Unsaved work may be lost.") : t("Ends {n} running commands. Unsaved work may be lost.", { n: confirming })}</p>}
+        : <p className="runtime-move-confirm" role="alert">
+            {confirming.length === 1 ? t("Ends 1 running command. Unsaved work may be lost.") : t("Ends {n} running commands. Unsaved work may be lost.", { n: confirming.length })}
+            {/* the commands the server's token covers, which may differ from the last poll's rows */}
+            <span className="runtime-move-confirm-list">{confirming.map((pane) => pane.command).join(", ")}</span>
+          </p>}
     </>
   );
 }

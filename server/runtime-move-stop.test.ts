@@ -17,7 +17,9 @@ const services: MoveService[] = [];
 function world() {
   const root = mkdtempSync(join(tmpdir(), "ovis-runtime-move-stop-"));
   roots.push(root);
-  const fronts: Record<string, { shell: number; group: number }> = { p1: { shell: 101, group: 201 }, p2: { shell: 102, group: 202 } };
+  const fronts: Record<string, { shell: number; group: number; name?: string }> = { p1: { shell: 101, group: 201 }, p2: { shell: 102, group: 202 } };
+  /** the foreground group each shell's terminal reports on this PC; absent: the shell is not a process here */
+  const terminals: Record<number, number> = { 101: 201, 102: 202 };
   const shellPane = (pane_id: string) => ({ pane_id, tab_id: "t1", workspace_id: "w1", cwd: root, agent: null });
   const snapshot = { workspaces: [{ workspace_id: "w1", label: "demo" }], tabs: [{ tab_id: "t1", workspace_id: "w1", label: "1", number: 1 }], layouts: [], agents: [],
     panes: [shellPane("p1"), shellPane("p2"), { pane_id: "p9", tab_id: "t1", workspace_id: "w1", cwd: root, agent: "codex", agent_status: "working" }] } as unknown as SessionSnapshot;
@@ -27,16 +29,18 @@ function world() {
   /** the stop waited for typing to settle: it is in the pane's input lane, right before its last look */
   let inLane = false;
   let own: number | null = 999;
+  let onSend: ((paneId: string) => void) | null = null;
   const deps: PaneStopDeps = {
     snapshot: async () => snapshot,
     processInfo: async (paneId): Promise<PaneProcessInfo | undefined> => {
       onInfo?.(paneId, inLane);
       const front = fronts[paneId];
-      return front ? { pane_id: paneId, shell_pid: front.shell, foreground_process_group_id: front.group, foreground_processes: [{ pid: front.group, name: "sleep" }] } : undefined;
+      return front ? { pane_id: paneId, shell_pid: front.shell, foreground_process_group_id: front.group, foreground_processes: [{ pid: front.group, name: front.name ?? "sleep" }] } : undefined;
     },
-    sendKeys: async (paneId, keys, guard) => { sent.push({ paneId, keys, guard }); },
+    sendKeys: async (paneId, keys, guard) => { sent.push({ paneId, keys, guard }); onSend?.(paneId); },
     signalGroup: (group) => { signalled.push(group); },
     ownGroup: async () => own,
+    terminalGroup: async (shell) => terminals[shell] ?? null,
   };
   let tail: Promise<unknown> = Promise.resolve();
   const service = moveService({
@@ -51,7 +55,7 @@ function world() {
     expect(await service.start(answer.plan.revision)).toBeNull();
     expect((await service.read()).status.state).toBe("waiting");
   };
-  return { service, fronts, sent, signalled, wait, setOwn: (group: number | null) => { own = group; }, onInfo: (fn: ((paneId: string, inLane: boolean) => void) | null) => { onInfo = fn; } };
+  return { service, fronts, terminals, sent, signalled, wait, onSend: (fn: ((paneId: string) => void) | null) => { onSend = fn; }, setOwn: (group: number | null) => { own = group; }, onInfo: (fn: ((paneId: string, inLane: boolean) => void) | null) => { onInfo = fn; } };
 }
 
 afterEach(() => {
@@ -126,5 +130,66 @@ describe("ending every running command at once", () => {
     await service.prepareStopAll();
     expect(await service.stopAll("not-the-token")).toBe("no_offer");
     expect(sent).toEqual([]);
+  });
+});
+
+describe("what a stop checks right before it acts", () => {
+  it("sends nothing once the server stops", async () => {
+    const { service, sent, wait, onInfo } = world();
+    await wait();
+    onInfo((paneId, inLane) => { if (paneId === "p1" && inLane) service.stop(); });
+    expect(await service.stopPane("p1", false)).toBe("not_waiting");
+    expect(sent).toEqual([]);
+  });
+
+  it("compares the command shown with the one in the same look as its group", async () => {
+    const { service, fronts, sent, wait, onInfo } = world();
+    await wait();
+    let looks = 0;
+    // the plan saw sleep; by the stop's own look a vim runs there in a new group
+    onInfo((paneId) => { if (paneId === "p1" && ++looks === 2) fronts["p1"] = { shell: 101, group: 401, name: "vim" }; });
+    expect(await service.stopPane("p1", false, "sleep")).toBe("changed");
+    expect(sent).toEqual([]);
+  });
+
+  it("forces only a group this PC's terminal reports in front of that shell", async () => {
+    const { service, terminals, signalled, wait } = world();
+    await wait();
+    expect(await service.stopPane("p1", false)).toBeNull();
+    const tried = Date.now();
+    const realNow = Date.now;
+    Date.now = () => tried + 3_100;
+    try {
+      // herdr's pid for the shell is not a process here (another pid namespace): nothing is signalled
+      delete terminals[101];
+      expect(await service.stopPane("p1", true)).toBe("not_local");
+      terminals[101] = 999;
+      expect(await service.stopPane("p1", true)).toBe("not_local");
+      expect(signalled).toEqual([]);
+      terminals[101] = 201;
+      expect(await service.stopPane("p1", true)).toBeNull();
+      expect(signalled).toEqual([201]);
+    } finally { Date.now = realNow; }
+  });
+});
+
+describe("End all after its confirm", () => {
+  it("ends a later pane only while it runs the group that was confirmed", async () => {
+    const { service, fronts, sent, wait, onSend } = world();
+    await wait();
+    const offer = (await service.prepareStopAll()) as { token: string };
+    // while p1 is stopped, p2 starts another sleep in a new group: it was never confirmed
+    onSend((paneId) => { if (paneId === "p1") fronts["p2"] = { shell: 102, group: 303 }; });
+    expect(await service.stopAll(offer.token)).toBe("changed");
+    expect(sent.map(({ paneId }) => paneId)).toEqual(["p1"]);
+  });
+
+  it("offers a pane again once the command it stopped gave way to another", async () => {
+    const { service, fronts, wait } = world();
+    await wait();
+    expect(await service.stopPane("p1", false)).toBeNull();
+    fronts["p1"] = { shell: 101, group: 301 };
+    const offer = (await service.prepareStopAll()) as { panes: { pane_id: string }[] };
+    expect(offer.panes.map((pane) => pane.pane_id)).toEqual(["p1", "p2"]);
   });
 });
