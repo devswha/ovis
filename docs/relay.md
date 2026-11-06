@@ -723,8 +723,8 @@ While the relay is on, the PC also listens on its private IPv4 addresses (RFC 19
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
 ([`server/relay/direct.ts`](../server/relay/direct.ts)). A phone that can reach one of them opens
-it there instead of through `relay.ovis.sh`. Not yet started by `bun run server`: it is turned on together
-with the apps that open it.
+it there instead of through `relay.ovis.sh`. The iOS and Android apps open it through their OvisDirect
+plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser stays on the relay.
 
 - **Same channel, same trust.** The listener speaks to a phone what the relay does (`/v1/ws`, an
   `assigned` frame, then the phone's Noise records) and hands the socket to the same session a

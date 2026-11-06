@@ -7,13 +7,14 @@ import { copyText } from "../lib/clipboard.ts";
 import { ApiError, cancelRelayCode, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { announcePairingCode, PAIRING_CODE_EVENT } from "../lib/useRelay.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { KeyId } from "./KeyId.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { CompactPair } from "./CompactPair.tsx";
+import { SettingsRow, Toggle } from "./SettingsControls.tsx";
 
 export const failureText = (error: unknown): string => error instanceof ApiError ? error.detail : error instanceof Error ? error.message : String(error);
 
@@ -44,6 +45,32 @@ export async function openOwnOffer(url: string): Promise<void> {
     return;
   }
   window.location.assign(url);
+}
+
+/**
+ * Settings → Phones and devices → More: whether phones paired through the relay connect straight to this
+ * PC when they can reach it on the same network (docs/relay.md, "Direct on the same network"). Only where
+ * the PC can say (an older one has no `direct`) and the relay can be changed from: a direct connection by
+ * someone who drives this PC.
+ */
+export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnly: boolean }) {
+  const t = useT();
+  const [failure, setFailure] = useState<string | null>(null);
+  const direct = relay.status?.direct;
+  if (direct === undefined || readOnly) return null;
+  const label = t("Connect directly on the same network");
+  const change = (on: boolean) => {
+    setFailure(null);
+    relay.request({ direct: on }).catch((reason: unknown) => setFailure(failureText(reason)));
+  };
+  return (
+    <SettingsRow label={label} description={<>
+      {t("Phones paired through the relay skip it when they are on this PC's network.")}
+      {failure !== null && <span className="settings-hint relay-error" role="alert">{failure}</span>}
+    </>}>
+      <Toggle label={label} checked={direct.on} disabled={relay.pending} onChange={change} />
+    </SettingsRow>
+  );
 }
 
 // a code announced by a relay QR (announceFromRelay), not by the Devices group
