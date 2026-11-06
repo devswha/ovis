@@ -699,6 +699,8 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
       </SettingsRow>
     </SettingsGroup>
     <AlertPcsGroup machines={machines} />
+    {/* a destination's last failed post is said in its group, so the group stays in sight */}
+    <AlertWebhookGroup />
     <SettingsFold kind="more" keys={["alertInApp"]}>
       <SettingsGroup section="alerts-more">
         <SettingsRow label={t("Stopped on an error")} description={t("A turn that ended on an error, as OmO and GJC report it")}>
@@ -708,7 +710,6 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
           <Toggle label={t("In the app")} checked={settings.alertInApp} onChange={(alertInApp) => update({ alertInApp })} />
         </SettingsRow>
       </SettingsGroup>
-      <AlertWebhookGroup />
     </SettingsFold>
     </>
   );
@@ -1233,7 +1234,6 @@ function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSet
       {pcSettings?.set_aside?.some((name) => !heldAddedPcs(name)) && <p className="settings-item settings-hint">
         {t("The permission to connect to the PCs saved in herdr was damaged and could not be read when the app started. It was set aside as {files}; choose Connect on those PCs again.", { files: pcSettings.set_aside.filter((name) => !heldAddedPcs(name)).join(", ") })}
       </p>}
-      {pcSettingsError && <p className="settings-item settings-hint" role="alert">{pcSettingsError}</p>}
     </SettingsGroup>
     <SidebarPcsGroup machines={machines} />
     <SettingsFold kind="more" keys={["pcLoad"]}>
@@ -1244,6 +1244,8 @@ function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSet
             <Toggle label={t("Update PC bridges automatically")} checked={pcSettings.auto_update_bridges} onChange={(auto_update_bridges) => onPcSettings({ auto_update_bridges })} />
           </SettingsRow>
         )}
+        {/* a refused change of the switch above, beside it: in a search too */}
+        {pcSettingsError && <p className="settings-item settings-hint" role="alert">{pcSettingsError}</p>}
         <PcLoadSetting machines={machines} />
       </SettingsGroup>
     </SettingsFold>
