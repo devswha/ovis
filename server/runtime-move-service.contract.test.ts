@@ -73,14 +73,14 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
 
     const refusedDestination = await coreDestination(stateDir, "refused-move");
     try {
-      const journal = await runMove(stateDir, 7421, "refused-move", plan, herdrSource(() => false), refusedDestination, { switchRuntime: () => "locked" });
+      const journal = await runMove(stateDir, 7421, "refused-move", plan, herdrSource(() => false, async () => null), refusedDestination, { switchRuntime: () => "locked" });
       expect([journal.state, journal.reason]).toEqual(["rolled_back", "switch_refused: locked"]);
       expect(await moved("refused-move")).toEqual([]);
     } finally { refusedDestination.close(); }
 
     const destination = await coreDestination(stateDir, "kept-move");
     try {
-      const journal = await runMove(stateDir, 7421, "kept-move", plan, herdrSource(() => false), destination, { switchRuntime: () => null });
+      const journal = await runMove(stateDir, 7421, "kept-move", plan, herdrSource(() => false, async () => null), destination, { switchRuntime: () => null });
       expect(journal.state).toBe("committed");
     } finally { destination.close(); }
     const terminals = await moved("kept-move");

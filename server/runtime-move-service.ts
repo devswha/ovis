@@ -5,9 +5,7 @@ import type { HerdrRuntimeFacts } from "../shared/machines.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { freeAgentName } from "./agent-name.ts";
-import { claudeInputEmpty } from "./claude-input.ts";
-import { claudeBoxReads } from "./core/composer.ts";
-import { agentStart, HerdrError, herdrRpc, paneGet, paneProcessInfo, paneRename, paneSendText, sessionSnapshot, tabRename } from "./herdr/client.ts";
+import { agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendText, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
 import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
 import { findHc } from "./herdr-core/discovery.ts";
@@ -27,6 +25,8 @@ export interface MoveServiceOptions {
   facts: () => HerdrRuntimeFacts | undefined;
   stores: SessionHistoryOptions;
   holdsPending: (paneId: string) => boolean;
+  /** true: the agent's input line reads empty; false: something is typed; null: unreadable for this agent (the core's) */
+  inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** asks the launcher to switch to herdr-core; an error message when it refuses */
   switchRuntime: () => string | null;
 }
@@ -41,13 +41,8 @@ export interface MoveService {
   stop: () => void;
 }
 
-async function inputEmpty(paneId: string, agent: string): Promise<boolean | null> {
-  if (agent !== "claude") return null;
-  try { return claudeInputEmpty(...await claudeBoxReads(paneId)); } catch { return false; }
-}
-
 /** herdr, through the server's own HERDR_SOCKET (a herdr-mode server's is herdr's). */
-export function herdrSource(holdsPending: (paneId: string) => boolean): MoveSource {
+export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpty: MoveSource["inputEmpty"]): MoveSource {
   return {
     pane: async (paneId) => {
       try {
@@ -82,20 +77,19 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   const socket = join(stateDir, `move-${id.slice(0, 8)}.sock`);
   const adapter = await startHerdrCoreAdapter(hc, socket);
   if (process.platform !== "win32") chmodSync(socket, 0o600);
-  const rpc = <T>(method: string, params: Record<string, unknown>) => herdrRpc<T>(method, params, socket);
   return {
     appArranged: async () => { const doc = await hc.call("doc.get", { name: LAYOUT_DOC }); return doc.value !== null && doc.value !== undefined; },
     createWorkspace: async (move, cwd, name) => {
-      const made = await rpc<{ workspace: { workspace_id: string }; tab: { tab_id: string }; root_pane: { pane_id: string } }>("workspace.create", { ...(cwd ? { cwd } : {}), label: name, focus: false, move });
+      const made = await workspaceCreate({ ...(cwd ? { cwd } : {}), label: name, move }, socket);
       return { workspaceId: made.workspace.workspace_id, tabId: made.tab.tab_id, paneId: made.root_pane.pane_id };
     },
     createTab: async (move, workspaceId, cwd, name) => {
-      const made = await rpc<{ tab: { tab_id: string }; root_pane: { pane_id: string } }>("tab.create", { workspace_id: workspaceId, ...(cwd ? { cwd } : {}), label: name, focus: false, move });
+      const made = await tabCreate({ workspaceId, ...(cwd ? { cwd } : {}), label: name, move }, socket);
       return { tabId: made.tab.tab_id, paneId: made.root_pane.pane_id };
     },
     renameTab: (tabId, name) => tabRename(tabId, name, socket),
-    split: async (move, paneId, direction, cwd) => (await rpc<{ pane: { pane_id: string } }>("pane.split", { target_pane_id: paneId, direction, focus: false, ...(cwd ? { cwd } : {}), move })).pane.pane_id,
-    setRatio: async (tabId, path, ratio) => { await rpc("layout.set_split_ratio", { tab_id: tabId, path, ratio }); },
+    split: async (move, paneId, direction, cwd) => (await paneSplitForMove(paneId, direction, { ...(cwd ? { cwd } : {}), move }, socket)).pane_id,
+    setRatio: (tabId, path, ratio) => layoutSetSplitRatio(tabId, path, ratio, socket),
     renamePane: (paneId, name) => paneRename(paneId, name, socket),
     start: async (paneId, argv) => {
       // a shell started a moment ago may not be up yet (`agent_pane_busy`), as agent-launch.ts waits for it
@@ -141,7 +135,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
   const facts: MoveFacts = {
     findResume: storeResume(options.stores),
     processInfo: async (paneId) => { try { return await paneProcessInfo(paneId); } catch { return undefined; } },
-    inputEmpty,
+    inputEmpty: options.inputEmpty,
     holdsPending: options.holdsPending,
   };
   const plan = async (): Promise<MovePlan> => planMove(await sessionSnapshot(), facts);
@@ -154,7 +148,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
       destination = await coreDestination(options.stateDir, id);
       // read again right before the first exit: anything changed while herdr-core was reached stops it
       if ((await plan()).revision !== current.revision) { status = { state: "rolled_back", reason: "plan_changed", left: [] }; return; }
-      const journal = await runMove(options.stateDir, options.port, id, current, herdrSource(options.holdsPending), destination, {
+      const journal = await runMove(options.stateDir, options.port, id, current, herdrSource(options.holdsPending, options.inputEmpty), destination, {
         switchRuntime: options.switchRuntime,
         onStep: (step) => { status = step; },
       });
