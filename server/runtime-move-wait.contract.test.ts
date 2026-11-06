@@ -17,7 +17,8 @@ const WAIT_MS = 20_000;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-runtime-move-wait-")));
 const facts: HerdrRuntimeFacts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null };
 const asked: unknown[] = [];
-const runtimeService: RuntimeService = { facts: () => facts, request: (target) => { asked.push(target); return { ok: true }; } };
+let switching = false;
+const runtimeService: RuntimeService = { facts: () => facts, request: (target) => { asked.push(target); return { ok: true }; }, switching: () => switching };
 const workspaces: string[] = [];
 let server: ReturnType<typeof createServer>;
 // with an hc on this PC a move would build there for real: that is the gated test in runtime-move-service.contract.test.ts
@@ -54,6 +55,22 @@ afterAll(async () => {
   server.stop();
   for (const workspace of workspaces) await workspaceClose(workspace).catch(() => undefined);
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("a move while the runtime switches", () => {
+  it("is refused before anything is ended once a runtime switch was asked for", async () => {
+    const created = await workspaceCreate({ cwd: root, label: "move-switching" });
+    workspaces.push(created.workspace.workspace_id);
+    const { plan } = (await read()) as Extract<MovePlanResponse, { available: true }>;
+    switching = true;
+    try {
+      const refused = await send("POST", { revision: plan.revision });
+      expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([409, "runtime_switching"]);
+      expect((await read()).status).toEqual({ state: "idle" });
+    } finally {
+      switching = false;
+    }
+  });
 });
 
 describe("a move while a pane works", () => {

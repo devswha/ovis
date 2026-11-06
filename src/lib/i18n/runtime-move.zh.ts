@@ -52,4 +52,6 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "It could not start: {detail}": "无法启动：{detail}",
   "Ended when the server stopped.": "服务器停止时已结束。",
   "Running on herdr-core.": "正在 herdr-core 上运行。",
+  "The server was switching its runtime.": "服务器正在切换运行时。",
+  "An agent did not reopen its conversation on herdr-core.": "有代理未能在 herdr-core 上重新打开同一对话。",
 };

@@ -31,7 +31,7 @@ interface World { herdr: Map<string, { agent: string | null; status: string; ses
  * herdr and herdr-core as the move sees them. An agent typed its exit command ends, unless
  * `turnsBusy` names it (it took the command as work instead).
  */
-function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?: boolean } = {}) {
+function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?: boolean; notResumed?: string } = {}) {
   const world: World = {
     herdr: new Map([["a", { agent: "claude", status: "idle", session: "s1", shellInFront: false }], ["b", { agent: null, status: "unknown", session: null, shellInFront: true }], ["c", { agent: "codex", status: "idle", session: null, shellInFront: false }]]),
     core: new Set(),
@@ -43,7 +43,7 @@ function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?:
     pane: async (id) => world.herdr.get(id) ?? null,
     holdsPending: () => false,
     inputEmpty: async () => true,
-    sendExit: async (id, command) => {
+    sendExit: async (id, _agent, command) => {
       world.calls.push(`herdr exit ${id} ${command}`);
       const pane = world.herdr.get(id)!;
       world.herdr.set(id, id === options.turnsBusy ? { ...pane, status: "working" } : { ...pane, agent: null, status: "unknown", shellInFront: true });
@@ -63,6 +63,7 @@ function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?:
       if (argv[0] === options.failStart) throw new Error("agent refused");
       world.calls.push(`core start ${pane} ${argv.join(" ")}`);
     },
+    confirmResumed: async (pane, session) => { world.calls.push(`core confirm ${pane} ${session}`); return session !== options.notResumed; },
     endMove: async () => { world.calls.push(`core end ${world.core.size}`); world.core.clear(); },
   };
   const switchRuntime = () => { world.calls.push("switch"); return options.refuseSwitch ? "locked" : null; };
@@ -78,7 +79,7 @@ describe("runMove", () => {
     expect(world.calls).toEqual([
       "herdr exit a /exit", "herdr exit c /quit",
       "core workspace ovis /a", "core split P1 right /b", "core tab logs /c",
-      "core start P1 claude --resume s1", "core start P3 codex",
+      "core start P1 claude --resume s1", "core confirm P1 s1", "core start P3 codex",
       "switch",
     ]);
     expect(readJournal(dir, PORT)?.state).toBe("committed");
@@ -110,6 +111,16 @@ describe("runMove", () => {
     expect([journal.state, journal.reason]).toEqual(["rolled_back", "switch_refused: locked"]);
     expect(world.core.size).toBe(0);
     expect(world.herdr.get("a")?.agent).toBe("claude");
+  });
+});
+
+describe("runMove, a conversation that does not reopen", () => {
+  it("does not switch when a started agent is not running its conversation, and puts herdr back", async () => {
+    const { world, source, destination, options } = fakes({ notResumed: "s1" });
+    const journal = await runMove(stateDir(), PORT, "m1", plan, source, destination, options);
+    expect([journal.state, journal.reason]).toEqual(["rolled_back", "resume_unconfirmed"]);
+    expect(world.calls).not.toContain("switch");
+    expect(world.calls).toContain("herdr start a claude --resume s1");
   });
 });
 

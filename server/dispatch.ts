@@ -613,7 +613,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     try {
       const refused = await move.start(revision);
       if (refused === null) return jsonResponse({ accepted: true }, 202);
-      return jsonResponse({ error: { code: refused, message: refused === "plan_changed" ? "the panes changed since the plan was shown: look again" : refused === "already_moving" ? "a move is already waiting or running" : "no move to herdr-core is offered here" } }, 409);
+      return jsonResponse({ error: { code: refused, message: refused === "plan_changed" ? "the panes changed since the plan was shown: look again" : refused === "already_moving" ? "a move is already waiting or running" : refused === "runtime_switching" ? "the server is switching its runtime: try again once it is back" : "no move to herdr-core is offered here" } }, 409);
     } catch (error) {
       return errorResponse(error);
     }

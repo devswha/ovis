@@ -52,4 +52,6 @@ export const RUNTIME_MOVE_JA: Record<string, string> = {
   "It could not start: {detail}": "起動できませんでした: {detail}",
   "Ended when the server stopped.": "サーバーが止まったときに終了した状態です。",
   "Running on herdr-core.": "herdr-coreで動いています。",
+  "The server was switching its runtime.": "サーバーがランタイムを切り替え中でした。",
+  "An agent did not reopen its conversation on herdr-core.": "エージェントがherdr-coreで同じ会話を再開できませんでした。",
 };

@@ -52,4 +52,6 @@ export const RUNTIME_MOVE_KO: Record<string, string> = {
   "It could not start: {detail}": "시작하지 못했습니다: {detail}",
   "Ended when the server stopped.": "서버가 멈출 때 끝난 상태입니다.",
   "Running on herdr-core.": "herdr-core에서 돌고 있습니다.",
+  "The server was switching its runtime.": "서버가 런타임을 전환하는 중이었습니다.",
+  "An agent did not reopen its conversation on herdr-core.": "에이전트가 herdr-core에서 같은 대화를 다시 열지 못했습니다.",
 };

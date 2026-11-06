@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HerdrRuntimeFacts } from "../shared/machines.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
@@ -25,18 +26,22 @@ export interface MoveServiceOptions {
   facts: () => HerdrRuntimeFacts | undefined;
   stores: SessionHistoryOptions;
   holdsPending: (paneId: string) => boolean;
+  /** the pane's input lane (core/input.ts `serialize`): the exit takes its place in it */
+  lane: InputLane;
   /** true: the agent's input line reads empty; false: something is typed; null: unreadable for this agent (the core's) */
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** asks the launcher to switch to herdr-core; an error message when it refuses */
   switchRuntime: () => string | null;
   /** the launcher took this server past its startup check: until then it may still roll back to herdr */
   accepted: () => boolean;
+  /** a runtime switch was asked for (Settings) and the server restarts for it: no agent is ended meanwhile */
+  switching: () => boolean;
 }
 
 export interface MoveService {
   read: () => Promise<MovePlanResponse>;
   /** starts the move, or waits for every pane to be done first; an error code when it cannot */
-  start: (revision: string) => Promise<"plan_changed" | "unavailable" | "already_moving" | null>;
+  start: (revision: string) => Promise<"plan_changed" | "unavailable" | "already_moving" | "runtime_switching" | null>;
   cancel: () => void;
   /** a move waits or runs: no other runtime switch meanwhile */
   busy: () => boolean;
@@ -44,7 +49,10 @@ export interface MoveService {
 }
 
 /** herdr, through the server's own HERDR_SOCKET (a herdr-mode server's is herdr's). */
-export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpty: MoveSource["inputEmpty"]): MoveSource {
+/** The pane's input lane every Ovis send and keystroke takes (core/input.ts `serialize`). */
+export type InputLane = <T>(paneId: string, task: () => T | Promise<T>) => Promise<T>;
+
+export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpty: MoveSource["inputEmpty"], lane: InputLane, prompt: (paneId: string, text: string) => Promise<void> = agentPrompt): MoveSource {
   return {
     pane: async (paneId) => {
       try {
@@ -56,9 +64,14 @@ export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpt
     },
     holdsPending,
     inputEmpty,
-    // as Ovis sends any message to an agent: herdr pastes it, then its Enter, and refuses while the agent
-    // waits for an answer; a message Ovis queued for the pane since stops it right before the write
-    sendExit: async (paneId, command) => { await agentPrompt(paneId, command, undefined, () => !holdsPending(paneId)); },
+    // in the pane's input lane, behind anything typed or sent through Ovis before it and ahead of anything
+    // after, checked again there: a message queued or text typed meanwhile stops it. herdr then pastes it
+    // and its Enter, and refuses while the agent waits for an answer
+    sendExit: (paneId, agent, command) => lane(paneId, async () => {
+      if (holdsPending(paneId)) throw new Error("a message waits for the pane");
+      if (await inputEmpty(paneId, agent) !== true) throw new Error("text is in the input box");
+      await prompt(paneId, command);
+    }),
     runsConversation: async (agent, session) => (await sessionSnapshot()).panes.some((pane) => pane.agent === agent && pane.agent_session?.value === session),
     start: async (paneId, argv) => {
       const started = await agentLaunch(paneId, { kind: argv[0]!, args: argv.slice(1) });
@@ -83,15 +96,16 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   return {
     appArranged: async () => { const doc = await hc.call("doc.get", { name: LAYOUT_DOC }); return doc.value !== null && doc.value !== undefined; },
     createWorkspace: async (move, cwd, name) => {
-      const made = await workspaceCreate({ ...(cwd ? { cwd } : {}), label: name, move }, socket);
+      // a pane whose folder is gone starts home: never in another pane's folder, which hc would hand down
+      const made = await workspaceCreate({ cwd: cwd ?? homedir(), label: name, move }, socket);
       return { workspaceId: made.workspace.workspace_id, tabId: made.tab.tab_id, paneId: made.root_pane.pane_id };
     },
     createTab: async (move, workspaceId, cwd, name) => {
-      const made = await tabCreate({ workspaceId, ...(cwd ? { cwd } : {}), label: name, move }, socket);
+      const made = await tabCreate({ workspaceId, cwd: cwd ?? homedir(), label: name, move }, socket);
       return { tabId: made.tab.tab_id, paneId: made.root_pane.pane_id };
     },
     renameTab: (tabId, name) => tabRename(tabId, name, socket),
-    split: async (move, paneId, direction, cwd) => (await paneSplitForMove(paneId, direction, { ...(cwd ? { cwd } : {}), move }, socket)).pane_id,
+    split: async (move, paneId, direction, cwd) => (await paneSplitForMove(paneId, direction, { cwd: cwd ?? homedir(), move }, socket)).pane_id,
     setRatio: (tabId, path, ratio) => layoutSetSplitRatio(tabId, path, ratio, socket),
     renamePane: (paneId, name) => paneRename(paneId, name, socket),
     start: async (paneId, argv) => {
@@ -106,6 +120,24 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
           await Bun.sleep(250);
         }
       }
+    },
+    confirmResumed: async (paneId, sessionId) => {
+      // the process naming the conversation in its arguments, the same one still up 3 s later: an agent that
+      // refuses an id (gone, another store) quits within that once it has come up
+      let seen: { pid: number; at: number } | null = null;
+      for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
+        const info = await paneProcessInfo(paneId, socket).catch(() => undefined);
+        const runs = info?.foreground_processes?.find((entry) => (entry.argv ?? []).includes(sessionId));
+        if (!runs) {
+          if (seen !== null) return false;
+        } else if (seen === null || seen.pid !== runs.pid) {
+          seen = { pid: runs.pid, at: Date.now() };
+        } else if (Date.now() - seen.at >= 3_000) {
+          return true;
+        }
+        await Bun.sleep(250);
+      }
+      return false;
     },
     endMove: async (move) => {
       // a killed terminal may take a moment to be listed as finished: look again until none is live
@@ -155,9 +187,10 @@ export function moveService(options: MoveServiceOptions): MoveService {
     try {
       status = { state: "moving", step: "ending_agents", done: 0, total: 0 };
       destination = await coreDestination(options.stateDir, id);
+      if (options.switching()) { status = { state: "rolled_back", reason: "runtime_switching", left: [] }; return; }
       // read again right before the first exit: anything changed while herdr-core was reached stops it
       if ((await plan()).revision !== current.revision) { status = { state: "rolled_back", reason: "plan_changed", left: [] }; return; }
-      const journal = await runMove(options.stateDir, options.port, id, current, herdrSource(options.holdsPending, options.inputEmpty), destination, {
+      const journal = await runMove(options.stateDir, options.port, id, current, herdrSource(options.holdsPending, options.inputEmpty, options.lane), destination, {
         switchRuntime: options.switchRuntime,
         onStep: (step) => { status = step; },
       });
@@ -174,7 +207,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
     if (wait !== generation || status.state !== "waiting") return;
     try {
       // the PC may have lost herdr-core, or got the Herdr app, while it waited
-      if (moveUnavailable(options.serving(), options.facts()) !== null) { status = { state: "idle" }; return; }
+      if (moveUnavailable(options.serving(), options.facts()) !== null || options.switching()) { status = { state: "idle" }; return; }
       const current = await plan();
       if (wait !== generation || status.state !== "waiting") return;
       if (current.ready) {
@@ -195,6 +228,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
     },
     start: async (revision) => {
       if (moveUnavailable(options.serving(), options.facts()) !== null) return "unavailable";
+      if (options.switching()) return "runtime_switching";
       if (starting || running || status.state === "moving" || status.state === "waiting") return "already_moving";
       starting = true;
       try {

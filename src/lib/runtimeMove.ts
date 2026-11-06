@@ -92,6 +92,8 @@ export function moveReasonText(t: Translate, reason: string): string {
   if (reason === "herdr_app") return t("The Herdr app arranges herdr-core on this PC.");
   if (reason.startsWith("switch_refused")) return t("The switch to herdr-core was refused.");
   if (reason === "switch_not_started") return t("The switch to herdr-core did not come up; the agents run there. Switch again in Settings.");
+  if (reason === "resume_unconfirmed") return t("An agent did not reopen its conversation on herdr-core.");
+  if (reason === "runtime_switching") return t("The server was switching its runtime.");
   if (reason === "server_stopped") return t("A server stopped partway; nothing was put back. Check the agents listed below.");
   return t("Something failed: {detail}", { detail: reason.replace(/^failed: /, "") });
 }

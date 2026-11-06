@@ -26,7 +26,7 @@ export interface MoveSource {
   /** true: the input line reads empty; false: something is typed; null: unreadable for this agent */
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** sends the command as a message to the agent (herdr's agent.prompt: pasted, then Enter) */
-  sendExit: (paneId: string, command: string) => Promise<void>;
+  sendExit: (paneId: string, agent: string, command: string) => Promise<void>;
   /** whether a pane of herdr now runs this conversation */
   runsConversation: (agent: string, session: string) => Promise<boolean>;
   /** starts the agent in the pane: argv[0] is its kind */
@@ -44,6 +44,8 @@ export interface MoveDestination {
   setRatio: (tabId: string, path: boolean[], ratio: number) => Promise<void>;
   renamePane: (paneId: string, name: string) => Promise<void>;
   start: (paneId: string, argv: readonly string[]) => Promise<void>;
+  /** whether the agent started in the pane runs that conversation (its process names it) and stays up */
+  confirmResumed: (paneId: string, sessionId: string) => Promise<boolean>;
   /** ends every terminal labeled with the move and resolves once none is left */
   endMove: (move: string) => Promise<void>;
 }
@@ -168,7 +170,7 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       if (command === undefined) throw new MoveAbort("no_exit_command");
       journal.ended.push({ pane_id: pane.pane_id, agent: verdict.agent, argv: verdict.kind === "resume" ? verdict.argv : [verdict.agent], session: verdict.kind === "resume" ? verdict.session_id : null });
       save();
-      await source.sendExit(pane.pane_id, command);
+      await source.sendExit(pane.pane_id, verdict.agent, command);
       let gone = false;
       for (const deadline = Date.now() + exitMs; Date.now() < deadline;) {
         const after = await source.pane(pane.pane_id);
@@ -221,7 +223,10 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
     save();
     for (const [index, pane] of starts.entries()) {
       step("starting_agents", index, starts.length);
-      await destination.start(placed.get(pane.pane_id)!, pane.verdict.kind === "resume" ? pane.verdict.argv : [pane.verdict.agent]);
+      const target = placed.get(pane.pane_id)!;
+      await destination.start(target, pane.verdict.kind === "resume" ? pane.verdict.argv : [pane.verdict.agent]);
+      // a process that came up is not yet the conversation: it may have refused the id and quit
+      if (pane.verdict.kind === "resume" && !(await destination.confirmResumed(target, pane.verdict.session_id))) throw new MoveAbort("resume_unconfirmed");
     }
     journal.state = "switching";
     save();
