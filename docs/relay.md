@@ -801,7 +801,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
   tries the PC's direct carriers first, one at a time within 1.5 s, whenever it connects or
-  reconnects, then the relay. While the relay carries it, it probes them (a socket, `assigned` and
+  reconnects. When none is up within 300 ms it opens the relay too and keeps whichever channel is
+  admitted first; the other attempt is ended, and a channel it still admits is closed without
+  being reported as a lost carrier. While the relay carries it, it probes them (a socket, `assigned` and
   the Noise handshake to the pinned key, closed before `HELLO`, so the PC holds no session) after
   each admission (at most every 5 minutes, the next one due even across a reconnect), on `online`
   and when the page comes back to the foreground; once one proves to be the PC, no request is under
