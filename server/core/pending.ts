@@ -294,6 +294,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let identity: PendingIdentity;
       try { identity = (await currentIdentity(paneId, currentItems[0]!.identity.processPid ?? null)).identity; }
       catch { return; }
+      // a start that reads as unknown for the same PID says nothing either way here: the receipt is read again later,
+      // never failed for it (only a write is refused on it)
+      if (identity.processBirth == null && currentItems.some((item) => item.identity.processPid === identity.processPid && item.identity.processBirth != null)) return;
       const same = currentItems.filter((item) => activePiReceipt(paneId, item) && samePendingIdentity(item.identity, identity));
       failPi(paneId, currentItems.filter((item) => !same.includes(item)));
       if (same.length === 0) return;

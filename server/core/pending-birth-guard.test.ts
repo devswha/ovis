@@ -1,4 +1,7 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import * as claude from "../claude-store.ts";
@@ -122,4 +125,43 @@ it("types no OpenCode skill into a masked prompt that comes up during the check 
 
 it("sends no steering Escape into a masked prompt that comes up during the steering's check", async () => {
   expect(await drain({ mode: "codex" })).toEqual(["paste", "Enter"]);
+});
+
+it("keeps a Pi receipt waiting while the agent's start reads as unknown for a moment, and confirms it after", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-pi-birth-"));
+  try {
+    const path = join(dir, "session.jsonl");
+    writeFileSync(path, `${JSON.stringify({ type: "session", version: 3, id: "session" })}\n${JSON.stringify({ type: "message", id: "base", parentId: null, message: { role: "assistant", content: [] } })}\n`);
+    let birth: number | null = 1_000;
+    spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => birth);
+    spyOn(client, "paneProcessInfo").mockResolvedValue({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "pi", argv: ["pi"] }] } as Awaited<ReturnType<typeof client.paneProcessInfo>>);
+    spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null } as Awaited<ReturnType<typeof pi.piTranscriptPath>>);
+    spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
+    spyOn(client, "paneSendText").mockResolvedValue(undefined);
+    spyOn(client, "paneSendKeys").mockResolvedValue(undefined);
+    const frames: ServerMessage[] = [];
+    const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
+    owner.data.attached.set("p", { keepSize: false });
+    let tail: Promise<unknown> = Promise.resolve();
+    const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = tail.catch(() => {}).then(task); tail = run; return run; };
+    const facts = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 120 };
+    const delivery = createPendingDelivery({
+      options: { submitDelayMs: 0 }, clients: new Set([owner]), attachments: new Map(),
+      sight: (() => ({ facts: () => facts, write: () => {} })) as unknown as Parameters<typeof createPendingDelivery>[0]["sight"],
+      serialize, lastTyped: new Map(), submitText: async () => {}, authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "pi", agent_status: "idle", focused: false, revision: 0 }] }) as unknown as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "hello", payload: "hello", delivery: "queue" });
+    for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+    const messages = () => frames.flatMap((frame) => frame.type === "pending-messages" ? frame.messages : []);
+    expect(messages().some((message) => message.error?.code === "pi_transcript_pending")).toBe(true);
+    birth = null;
+    await delivery.reconcilePiDeliveries("p");
+    expect(messages().some((message) => message.error?.code === "pi_transcript_target_changed")).toBe(false);
+    birth = 1_000;
+    appendFileSync(path, `${JSON.stringify({ type: "message", id: "ours", parentId: "base", message: { role: "user", content: [{ type: "text", text: "hello" }] } })}\n`);
+    await delivery.reconcilePiDeliveries("p");
+    expect(frames.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toContainEqual(expect.objectContaining({ outcome: "consumed" }));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
