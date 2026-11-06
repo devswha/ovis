@@ -447,7 +447,11 @@ export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: 
     const aborted = (): void => settle(false);
     signal?.addEventListener("abort", aborted, { once: true });
     const transport: Transport = {
-      send: (data) => { if (socket.readyState === OPEN) socket.send(data); },
+      // a send that throws ends the probe from a later turn, once the handshake's retry exists to be stopped
+      send: (data) => {
+        if (socket.readyState !== OPEN) return;
+        try { socket.send(data); } catch { queueMicrotask(() => settle(false)); }
+      },
       close: () => settle(false),
       onmessage: null, onclose: null, onerror: null,
     };

@@ -245,11 +245,13 @@ export class RelayTransport implements Transport {
     if (!socket) return undefined;
     this.directCarriers ??= (await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined))?.direct ?? [];
     const ends = performance.now() + DIRECT_BUDGET_MS;
-    for (const direct of this.directCarriers) {
+    const carriers = this.directCarriers;
+    for (const [index, direct] of carriers.entries()) {
       const left = ends - performance.now();
       if (left <= 0 || this.stopped) return undefined;
       const attempt = new AbortController();
-      const timer = setTimeout(() => attempt.abort(), left);
+      // a carrier that stays silent takes only its share, so the ones after it still get a turn
+      const timer = setTimeout(() => attempt.abort(), left / (carriers.length - index));
       try {
         // closing the transport ends an admitted channel too; the budget only an attempt under way
         const signal = AbortSignal.any([this.abort.signal, attempt.signal]);
@@ -288,7 +290,12 @@ export class RelayTransport implements Transport {
       let proven = false;
       for (const direct of carriers) {
         if (!current()) return;
-        if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS, ending.signal)) { proven = true; break; }
+        if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS, ending.signal)) {
+          proven = true;
+          // the reconnect tries the carrier that just proved to be the PC first
+          this.directCarriers = [direct, ...carriers.filter((other) => other !== direct)];
+          break;
+        }
       }
       if (!proven) return;
       for (let check = 0; check < DIRECT_IDLE_CHECKS; check++) {
@@ -453,7 +460,7 @@ export class RelayTransport implements Transport {
         const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
         request.signal.addEventListener("abort", aborted, { once: true });
         // an event stream stays open for good and is reopened after any reconnect: it does not hold a switch back
-        const counted = request.headers.get("accept")?.includes("text/event-stream") !== true;
+        const counted = !(init !== undefined && eventStreams.has(init));
         if (counted) this.openHttp++;
         stream.onDispose = (error) => {
           if (counted) this.openHttp--;
@@ -651,6 +658,9 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
 /** SSE's line and unfinished-event storage are jointly bounded, including ignored fields. */
 export const SSE_BUFFER_LIMIT = 1024 * 1024;
 
+/** The requests of a RelayEventSource: reopened after any reconnect, so they never hold a switch to a direct carrier back. */
+const eventStreams = new WeakSet<RequestInit>();
+
 export class RelayEventSource extends EventTarget implements EventSourceLike {
   override addEventListener<K extends keyof EventSourceEventMap>(type: K, listener: (event: EventSourceEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
   override addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
@@ -679,7 +689,9 @@ export class RelayEventSource extends EventTarget implements EventSourceLike {
   }
 
   private async read(transport: Transport, url: string): Promise<void> {
-    const response = await transport.fetch(url, { signal: this.abort.signal, headers: { accept: "text/event-stream" } });
+    const init: RequestInit = { signal: this.abort.signal, headers: { accept: "text/event-stream" } };
+    eventStreams.add(init);
+    const response = await transport.fetch(url, init);
     if (this.readyState === 2) { await response.body?.cancel(); return; }
     if (response.status !== 200 || response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "text/event-stream" || !response.body) {
       await response.body?.cancel();

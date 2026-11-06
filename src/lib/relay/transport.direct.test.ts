@@ -32,7 +32,7 @@ class MemoryStore implements RelayDeviceStore {
 }
 
 /** A PC on a local relay with direct connections on, and a phone's way to both. */
-async function pcFixture() {
+async function pcFixture(extraCarriers: readonly string[] = []) {
   const relay = startBunRelay({ port: 0 });
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-direct-transport-"));
   const synced = deferred<void>();
@@ -47,7 +47,7 @@ async function pcFixture() {
       socket.addEventListener("message", (event) => { if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve(); });
       return socket;
     },
-    direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise: (port) => [`ws://${LAN}:${port}`] },
+    direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise: (port) => [...extraCarriers, `ws://${LAN}:${port}`] },
   });
   const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
   cleanup.push(() => relay.stop(), () => rmSync(stateDir, { recursive: true, force: true }), async () => { await service.shutdown(); app.stop(); });
@@ -152,6 +152,40 @@ describe("direct carriers in the relay transport", () => {
   });
 });
 
+describe("direct carriers that do not all answer", () => {
+  it("comes back on the carrier that proved to be the PC, past one that stays silent", async () => {
+    // Given a PC that names a silent address first (a host that assigns and never answers), then its own
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const pc = await pcFixture([`ws://10.0.0.8:${silent.port}`]);
+    const store = new MemoryStore();
+    const socketFor = (url: string): WebSocket => new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:").replace("ws://10.0.0.8:", "ws://127.0.0.1:"));
+    const moved = pc.opened().then(() => pc.opened());
+    // When the phone pairs through the relay and then moves
+    const transport = await transportFor(pc, store, pc.offer, { directSocket: socketFor });
+    // Then it lands on the PC's own carrier
+    const direct = await bounded(moved, 15_000);
+    expect(direct.direct).toBe(`ws://${LAN}:${pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1)}`);
+    expect(transport.route).toBe("direct");
+  });
+});
+
+describe("what holds a switch back", () => {
+  it("counts a request that only mentions event streams in its Accept header", async () => {
+    const pc = await pcFixture();
+    const transport = await openRelayTransport(pc.offer, { store: new MemoryStore(), openChannel: pc.openChannel });
+    cleanup.push(() => transport.close());
+    const open = (): number => (transport as unknown as { openHttp: number }).openHttp;
+    const abort = new AbortController();
+    cleanup.push(() => abort.abort());
+    const response = await transport.fetch("/api/machines/events", { signal: abort.signal, headers: { accept: "application/json, text/event-stream;q=0" } });
+    expect(open()).toBe(1);
+    abort.abort();
+    await response.body?.cancel().catch(() => {});
+  });
+});
+
 describe("probing a direct carrier", () => {
   it("proves the PC and makes no session; another key is not the PC", async () => {
     // Given a PC that names its direct carrier
@@ -179,6 +213,22 @@ describe("probing a direct carrier", () => {
     const proven = await probeDirect(offer, `ws://${LAN}:${silent.port}`, (url) => new WebSocket(url.replace(`ws://${LAN}:`, "ws://127.0.0.1:")), 300);
     // Then it is not the PC, and the handshake's retries stopped with it
     expect(proven).toBe(false);
+    expect(live.size).toBe(0);
+  });
+
+  it("leaves nothing running when the socket refuses the handshake's first send", async () => {
+    const live = new Set<unknown>();
+    const { setInterval: realSet, clearInterval: realClear } = globalThis;
+    globalThis.setInterval = ((callback: () => void, ms?: number) => { const id = realSet(callback, ms); live.add(id); return id; }) as typeof setInterval;
+    globalThis.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
+    cleanup.push(() => { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; for (const id of live) realClear(id as never); });
+    const offer: RelayOffer = { v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.test" };
+    const socket = { binaryType: "arraybuffer" as BinaryType, readyState: 1, onmessage: null as ((event: MessageEvent) => void) | null, onclose: null, onerror: null,
+      send() { throw new Error("socket refused the send"); }, close() {} };
+    const probing = probeDirect(offer, `ws://${LAN}:7319`, () => socket, 2_000);
+    socket.onmessage?.({ data: JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) }) } as MessageEvent);
+    expect(await probing).toBe(false);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(live.size).toBe(0);
   });
 
