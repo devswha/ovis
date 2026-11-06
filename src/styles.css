@@ -2584,14 +2584,15 @@ button {
   white-space: nowrap;
 }
 
-/* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title.
-   The word stays for a screen reader and in the chip's title. */
+/* A narrow window: the chip keeps its pulsing dot and gives its word's room to the pane title, which
+   says the connection itself. The word stays for a screen reader and in the chip's title. A header
+   whose row is the tabs has no title to say it, so its chip keeps the word. */
 @media (max-width: 900px) {
-  .conn-reconnecting {
+  .app-header:not(.has-tab-row) .conn-reconnecting {
     gap: 0;
   }
 
-  .conn-reconnecting .conn-text {
+  .app-header:not(.has-tab-row) .conn-reconnecting .conn-text {
     position: absolute;
     width: 1px;
     height: 1px;

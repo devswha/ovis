@@ -3,7 +3,7 @@
  * Connected once it is back. On a phone (390, 412) in the header's title area, in the crumb's place,
  * then the crumb again: the word is whole and on the title's line, the header keeps its height, the title
  * stays and nothing in the line is animated. On a desktop (1280) in the status bar under the pane, whose
- * height and the header's stay put. Either way the draft typed before the loss is neither lost nor sent
+ * height and the header's stay put. On a tablet (800, touch) in the connection chip, its word drawn. Either way the draft typed before the loss is neither lost nor sent
  * by the return. The real client over owned demo fixtures; no live herdr session.
  * The demo's `?demo_connection=switch` loses and restores the connection when the page says so.
  */
@@ -70,6 +70,26 @@ async function restoreAndCatchConnected(page: Page): Promise<LineFacts> {
   }));
 }
 
+/** A tablet (a touch screen from 769px): the tabs are the header's row and no status bar is drawn, so
+ *  the connection chip itself says reconnecting in words, and the draft waits. */
+async function tabletChip(page: Page, width: number): Promise<void> {
+  await page.locator(".app-header.has-tab-row").waitFor();
+  assert.equal(await page.locator(".status-bar").count(), 0, `${width}: a touch screen draws no status bar`);
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill(DRAFT);
+  await page.evaluate(() => window.herdrDemoLoseConnection());
+  const word = page.locator(".app-header .conn-reconnecting .conn-text");
+  await word.waitFor();
+  await page.waitForFunction(() => document.querySelector(".app-header .conn-reconnecting .conn-text")?.textContent === "reconnecting");
+  const box = await word.boundingBox();
+  assert.ok(box !== null && box.width > 20 && box.height > 8, `${width}: the chip's word is drawn, not clipped away (${JSON.stringify(box)})`);
+  if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `reconnect-header-${width}-reconnecting.png`) }); }
+  await page.evaluate(() => { window.herdrDemoRestoreConnection(); window.dispatchEvent(new Event("online")); });
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  assert.equal(await composer.inputValue(), DRAFT, `${width}: the return sends nothing: the draft waits for the user`);
+  console.log(`PASS ${width}: a tablet's chip says reconnecting in words, the draft kept`);
+}
+
 /** A desktop window: the status bar says the connection in words, its height and the header's unchanged,
  *  the draft kept and nothing sent; another pane on the same connected PC says nothing new. */
 async function desktopStatusBar(page: Page, width: number): Promise<void> {
@@ -125,9 +145,11 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
     try {
-      for (const width of [390, 412, 1280]) {
+      for (const width of [390, 412, 800, 1280]) {
         const phone = width < 769;
-        const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark", locale: "en-US" });
+        // 800: a touch screen wide enough for the header's tab row, with no status bar under the pane
+        const tablet = width === 800;
+        const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone || tablet, colorScheme: "dark", locale: "en-US" });
         try {
           await context.addInitScript(`window.lineFacts = ${measureLine.toString()};`);
           await context.addInitScript(() => {
@@ -139,6 +161,7 @@ try {
           page.on("pageerror", (error) => errors.push(error.message));
           await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.hermes)}&view=chat&demo_connection=switch`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (tablet) { await tabletChip(page, width); assert.deepEqual(errors, []); continue; }
           if (!phone) { await desktopStatusBar(page, width); assert.deepEqual(errors, []); continue; }
           await page.locator(".context-title-text").waitFor();
           await appFaces(page);
