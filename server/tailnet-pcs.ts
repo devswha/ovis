@@ -15,6 +15,8 @@ const FOUND_MS = 10 * 60_000;
 const MAX_PEERS = 32;
 /** systems that never run an Ovis server */
 const PHONE_OS = new Set(["ios", "android"]);
+/** a health or code answer is a few hundred bytes; anything past this is not one */
+const MAX_BODY_BYTES = 64 * 1024;
 
 export interface TailnetPcsOptions {
   /** `tailscale status --json`; null when Tailscale is not here */
@@ -67,10 +69,30 @@ const readCli = async (): Promise<string | null> => {
 
 const httpsOrigin = (dnsName: string, port: number) => `https://${dnsName}${port === 443 ? "" : `:${port}`}`;
 
-interface Health { ok?: boolean; auth?: { authenticated?: boolean; via?: string; role?: string }; relay?: { phase?: string } | null }
+/** The body as JSON, or null when it is not JSON or runs past MAX_BODY_BYTES; reading stops there. */
+async function boundedJson(response: Response): Promise<unknown> {
+  if (response.body === null) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY_BYTES) { void reader.cancel(); return null; }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch { return null; }
+}
+
+interface Health { web_ui?: { server_id?: string }; auth?: { authenticated?: boolean; via?: string; role?: string }; relay?: { phase?: string } | null }
 
 export class TailnetPcs {
-  private found = new Map<string, { name: string; at: number }>();
+  private found = new Map<string, { name: string; dnsName: string; at: number }>();
+  /** the list in flight: windows asking at once share one round of probes */
+  private listing: Promise<TailnetPc[]> | null = null;
   private readonly readStatus: () => Promise<string | null>;
   private readonly ports: readonly number[];
   private readonly origin: (dnsName: string, port: number) => string;
@@ -81,34 +103,41 @@ export class TailnetPcs {
     this.origin = options.origin ?? httpsOrigin;
   }
 
-  /** this PC's login drives that Ovis as its owner: what `tailscale serve` says, never an open LAN window */
+  /** this PC's login drives that Ovis as its owner: what `tailscale serve` says, never an open LAN window; herdr there may be stopped */
   private static drivable(health: Health): boolean {
-    return health.ok === true && health.auth?.authenticated === true && health.auth.via === "tailscale" && health.auth.role === "drive";
+    return health.auth?.authenticated === true && health.auth.via === "tailscale" && health.auth.role === "drive";
   }
 
   private async probe(url: string): Promise<Health | null> {
     try {
       const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(PROBE_MS), redirect: "error" });
-      return response.ok ? await response.json() as Health : null;
+      if (!response.ok) { void response.body?.cancel(); return null; }
+      const health = await boundedJson(response);
+      return typeof health === "object" && health !== null ? health as Health : null;
     } catch { return null; }
   }
 
-  /** The PCs found now, each at the first port its Ovis answers on. */
-  async list(): Promise<TailnetPc[]> {
+  /** The PCs found now, each at the first port its Ovis answers on, leaving out those whose relay ID is in `added`. */
+  list(added: ReadonlySet<string>): Promise<TailnetPc[]> {
+    this.listing ??= this.discover(added).finally(() => { this.listing = null; });
+    return this.listing;
+  }
+
+  private async discover(added: ReadonlySet<string>): Promise<TailnetPc[]> {
     const peers = tailnetPeers(await this.readStatus());
-    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<TailnetPc | null> => {
+    const pcs = await Promise.all(peers.map(async ({ name, dnsName }): Promise<(TailnetPc & { dnsName: string }) | null> => {
       const answers = await Promise.all(this.ports.map(async (port) => {
         const url = this.origin(dnsName, port);
         const health = await this.probe(url);
-        return health !== null && TailnetPcs.drivable(health) ? { name, url, relay: health.relay?.phase ?? null } : null;
+        const known = health?.web_ui?.server_id !== undefined && added.has(health.web_ui.server_id);
+        return health !== null && TailnetPcs.drivable(health) && !known ? { name, dnsName, url, relay: health.relay?.phase ?? null } : null;
       }));
       return answers.find((answer) => answer !== null) ?? null;
     }));
-    const now = Date.now();
-    for (const [url, held] of this.found) if (now - held.at > FOUND_MS) this.found.delete(url);
-    const listed = pcs.filter((pc): pc is TailnetPc => pc !== null);
-    for (const pc of listed) this.found.set(pc.url, { name: pc.name, at: now });
-    return listed;
+    const listed = pcs.filter((pc) => pc !== null);
+    // a fresh list replaces the last: a PC gone from it is no longer addable
+    this.found = new Map(listed.map((pc) => [pc.url, { name: pc.name, dnsName: pc.dnsName, at: Date.now() }]));
+    return listed.map(({ name, url, relay }) => ({ name, url, relay }));
   }
 
   /** the name a recent list found at this address, or null: no other address is ever asked for a code */
@@ -120,11 +149,15 @@ export class TailnetPcs {
 
   /**
    * The code that PC would show under Connect a device, asked of it as its owner (server/relay/routes.ts
-   * /api/relay/code). Its trust is checked again first: the list may be minutes old.
+   * /api/relay/code). Its trust is checked again first, Tailscale's word before the PC's: the list may be minutes old.
    */
-  async code(url: string): Promise<{ code: string; server_id: string }> {
+  async code(url: string, added: ReadonlySet<string>): Promise<{ code: string; server_id: string }> {
+    const held = this.found.get(url);
+    const peers = tailnetPeers(await this.readStatus());
+    if (held === undefined || !peers.some((peer) => peer.dnsName === held.dnsName)) throw new TailnetPcError("not_found", "That PC is no longer one of yours on Tailscale. Look again.");
     const health = await this.probe(url);
     if (health === null || !TailnetPcs.drivable(health)) throw new TailnetPcError("not_owner", "That PC no longer lets this PC in as its owner over Tailscale. Add it with its code instead.");
+    if (health.web_ui?.server_id !== undefined && added.has(health.web_ui.server_id)) throw new TailnetPcError("already_added", "That PC is already added.");
     if (health.relay?.phase !== "online") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Connect a device.");
     let response: Response;
     try {
@@ -132,15 +165,23 @@ export class TailnetPcs {
     } catch (error) {
       throw new TailnetPcError("unreachable", `That PC did not answer: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const body = await response.json().catch(() => null) as { code?: unknown; server_id?: unknown; error?: { message?: unknown } } | null;
+    const body = await boundedJson(response) as { code?: unknown; server_id?: unknown; error?: { message?: unknown } } | null;
     if (!response.ok || typeof body?.code !== "string" || typeof body.server_id !== "string") {
       const message = typeof body?.error?.message === "string" ? body.error.message : `HTTP ${response.status}`;
       throw new TailnetPcError("no_code", `That PC gave no code: ${message}`);
     }
     return { code: body.code, server_id: body.server_id };
   }
+
+  /** Takes the code this PC asked for off that PC's relay, when adding stopped after it was given; best effort. */
+  async cancelCode(url: string): Promise<void> {
+    try {
+      const response = await fetch(`${url}/api/relay/code/cancel`, { method: "POST", headers: { "x-herdr-update": "1" }, signal: AbortSignal.timeout(PROBE_MS), redirect: "error" });
+      void response.body?.cancel();
+    } catch { /* that PC's code then ends at its own expiry */ }
+  }
 }
 
 export class TailnetPcError extends Error {
-  constructor(readonly failure: "not_found" | "not_owner" | "relay_off" | "unreachable" | "no_code" | "mismatch", message: string) { super(message); }
+  constructor(readonly failure: "not_found" | "not_owner" | "already_added" | "relay_off" | "unreachable" | "no_code" | "mismatch", message: string) { super(message); }
 }

@@ -324,7 +324,7 @@ export class MachineManager {
   /** this server's own relay ID, where it has one: the local PC's `server_id` */
   private serverId?: () => string | undefined;
   /** other PCs of this PC's Tailscale login, added through the relay with one tap (server/tailnet-pcs.ts) */
-  readonly tailnet: TailnetPcs;
+  private readonly tailnet: TailnetPcs;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
     options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; relaySocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions } = {}) {
@@ -1739,29 +1739,44 @@ export class MachineManager {
     return { ticket, server_id: offer.server_id, name: offer.name ?? null };
   }
 
+  /** the relay IDs of the PCs added through the relay */
+  private relayServerIds(): Set<string> {
+    return new Set([...this.machines.values()].flatMap(({ machine }) => machine.relay ? [machine.relay.server_id] : []));
+  }
+
+  /** Settings → Connect a device → PCs on your Tailscale: those not added yet (server/tailnet-pcs.ts). */
+  listTailnet() {
+    return this.tailnet.list(this.relayServerIds());
+  }
+
+  /**
+   * Settings → Connect a device → PCs on your Tailscale → Add: asks that PC for its code over the tailnet and adds it
+   * as a typed code would. The ID the relay found must be the one that PC named, which the person compares for a
+   * code typed by hand. Stopped after the code was given, the code is taken off that PC again.
+   */
+  async addTailnet(url: unknown): Promise<Machine> {
+    const name = this.tailnet.foundAt(url);
+    if (name === null) throw new TailnetPcError("not_found", "That PC is not among those found on Tailscale. Look again.");
+    const asked = await this.tailnet.code(url as string, this.relayServerIds());
+    try {
+      const found = await this.relayFoundByCode(asked.code);
+      if (found.server_id !== asked.server_id) {
+        this.foundByCode.delete(found.ticket);
+        throw new TailnetPcError("mismatch", "The relay found a different PC than the one asked. Nothing was added.");
+      }
+      return await this.addRelay(undefined, name, found.ticket);
+    } catch (error) {
+      await this.tailnet.cancelCode(url as string);
+      throw error;
+    }
+  }
+
   /**
    * Settings → Remote PCs → Add a PC through the relay: pairs with the PC whose pairing link (its Settings → Phone &
    * devices → Copy link) this is, as a phone would, and adds it once that PC admitted this one. The link's code is
    * spent here; later connections sign in with the key this pairing made.
    * `found` instead of `link`: the ticket relayFoundByCode gave for the PC it found, once the person matched its ID.
    */
-  /**
-   * Settings → Connect a device → PCs on your Tailscale → Add: asks that PC for its code over the tailnet and adds it
-   * as a typed code would. The ID the relay found must be the one that PC named, which the person compares for a
-   * code typed by hand.
-   */
-  async addTailnet(url: unknown): Promise<Machine> {
-    const name = this.tailnet.foundAt(url);
-    if (name === null) throw new TailnetPcError("not_found", "That PC is not among those found on Tailscale. Look again.");
-    const asked = await this.tailnet.code(url as string);
-    const found = await this.relayFoundByCode(asked.code);
-    if (found.server_id !== asked.server_id) {
-      this.foundByCode.delete(found.ticket);
-      throw new TailnetPcError("mismatch", "The relay found a different PC than the one asked. Nothing was added.");
-    }
-    return this.addRelay(undefined, name, found.ticket);
-  }
-
   async addRelay(link: unknown, name?: unknown, found?: unknown): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
     let offer: RelayOffer | null = null;

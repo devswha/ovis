@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { addTailnetPc, findTailnetPcs, type TailnetPc } from "../lib/api.ts";
+import { addTailnetPc, ApiError, findTailnetPcs, type TailnetPc } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { codeFailureText, typedCodeFailure } from "./codeFailureText.ts";
 
 /**
  * Connect a device → PCs on your Tailscale: other PCs of this PC's own Tailscale login whose Ovis lets this PC in
@@ -25,7 +26,8 @@ export function TailnetPcs() {
       setPcs((current) => current.filter((other) => other.url !== pc.url));
       setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
     } catch (error) {
-      setResult({ error: true, text: error instanceof Error ? error.message : String(error) });
+      const failure = error instanceof ApiError ? typedCodeFailure(error.code) : null;
+      setResult({ error: true, text: failure !== null ? codeFailureText(t, failure) : error instanceof Error ? error.message : String(error) });
     } finally { setBusy(null); }
   };
   if (pcs.length === 0 && result === null) return null;

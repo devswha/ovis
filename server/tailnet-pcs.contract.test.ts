@@ -49,7 +49,7 @@ it("lists only online, untagged PCs of this PC's own Tailscale login, never phon
  * PC B with the relay on, reached as `tailscale serve` would bring a request from another node of the
  * tailnet: from loopback, with the asking node's login and its tailnet source address.
  */
-async function pcB(login: string) {
+async function pcB(login: string, options: { codeServerId?: string } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -73,19 +73,25 @@ async function pcB(login: string) {
   const bBase = `http://127.0.0.1:${b.port}`;
   expect((await fetch(`${bBase}/api/relay/start`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } })).status).toBe(200);
   await bounded(synced.promise);
+  const asked: string[] = [];
   const serve = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
     const url = new URL(request.url);
+    asked.push(`${request.method} ${url.pathname}`);
     const headers = new Headers(request.headers);
     headers.set("tailscale-user-login", login);
     headers.set("x-forwarded-for", "100.64.0.7");
-    return fetch(`${bBase}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body });
+    const answer = await fetch(`${bBase}${url.pathname}${url.search}`, { method: request.method, headers, body: request.body });
+    // a PC that names another PC's ID beside its code
+    if (url.pathname === "/api/relay/code" && options.codeServerId !== undefined) return Response.json({ ...await answer.json() as object, server_id: options.codeServerId });
+    return answer;
   } });
   cleanup.push(() => serve.stop(true));
-  return { b, serveUrl: `http://127.0.0.1:${serve.port}`, local };
+  return { b, bBase, serveUrl: `http://127.0.0.1:${serve.port}`, local, asked };
 }
 
-async function pcA(peers: Parameters<typeof status>[0], origins: Record<string, string>, local: (url: string) => WebSocket) {
+async function pcA(initial: Parameters<typeof status>[0], origins: Record<string, string>, local: (url: string) => WebSocket) {
   const probed: string[] = [];
+  let peers = initial;
   const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: stateDir(), token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local,
     tailnetPcs: { readStatus: async () => status(peers), ports: [443], origin: (dnsName) => { probed.push(dnsName); return origins[dnsName] ?? "http://127.0.0.1:9"; } } });
   cleanup.push(() => a.stop());
@@ -93,7 +99,7 @@ async function pcA(peers: Parameters<typeof status>[0], origins: Record<string, 
   const ask = (method: string, body?: unknown) => fetch(`${base}/api/machines/tailnet`, {
     method, headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { ask, probed };
+  return { ask, probed, base, setPeers: (next: Parameters<typeof status>[0]) => { peers = next; } };
 }
 
 type Found = { pcs: { name: string; url: string; relay: string | null }[] };
@@ -116,6 +122,30 @@ it("adds a PC of the same Tailscale login through the relay with one tap, after 
   expect(added.status).toBe(201);
   const { machine } = await added.json() as { machine: Machine };
   expect(machine).toMatchObject({ kind: "relay", name: "pc-b", relay: { server_id: b.context.services.relay.serverId() } });
+  // added, it is no longer offered
+  expect(await (await ask("GET")).json()).toEqual({ pcs: [] });
+});
+
+it("adds nothing when the relay finds another PC than the one that gave the code, and takes that code back", async () => {
+  const { serveUrl, local, asked } = await pcB("me@example.com", { codeServerId: "f".repeat(43) });
+  const { ask, base } = await pcA([{ name: "pc-b", user: "9007199254740993" }], { "pc-b.tail.ts.net": serveUrl }, local);
+  await ask("GET");
+  const added = await ask("POST", { url: serveUrl });
+  expect(added.status).toBe(409);
+  expect((await added.json() as { error: { code: string } }).error.code).toBe("tailnet_mismatch");
+  expect(asked).toContain("POST /api/relay/code/cancel");
+  const { machines } = await (await fetch(`${base}/api/machines`, { headers: { origin: base } })).json() as { machines: Machine[] };
+  expect(machines.filter((machine) => machine.kind === "relay")).toEqual([]);
+});
+
+it("asks no code of a PC whose relay is off", async () => {
+  const { bBase, serveUrl, local, asked } = await pcB("me@example.com");
+  expect((await fetch(`${bBase}/api/relay/stop`, { method: "POST", headers: { origin: bBase, "x-herdr-update": "1" } })).status).toBe(200);
+  const { ask } = await pcA([{ name: "pc-b", user: "9007199254740993" }], { "pc-b.tail.ts.net": serveUrl }, local);
+  expect((await (await ask("GET")).json() as Found).pcs).toEqual([{ name: "pc-b", url: serveUrl, relay: "off" }]);
+  const added = await ask("POST", { url: serveUrl });
+  expect((await added.json() as { error: { code: string } }).error.code).toBe("tailnet_relay_off");
+  expect(asked).not.toContain("POST /api/relay/code");
 });
 
 it("tells a watching device nothing and asks no PC", async () => {
@@ -126,6 +156,28 @@ it("tells a watching device nothing and asks no PC", async () => {
   expect(response.status).toBe(403);
   expect(asked).toBe(0);
   manager.stop();
+});
+
+it("lets no open LAN window borrow this PC's Tailscale login, and adds no PC that has since left it", async () => {
+  const { serveUrl, local } = await pcB("me@example.com");
+  const { ask, base, setPeers } = await pcA([{ name: "pc-b", user: "9007199254740993" }], { "pc-b.tail.ts.net": serveUrl }, local);
+  const fromLan = await fetch(`${base}/api/machines/tailnet`, { headers: { origin: base, "x-forwarded-for": "192.168.1.5" } });
+  expect(fromLan.status).toBe(403);
+  expect((await fromLan.json() as { error: { code: string } }).error.code).toBe("owner_only");
+
+  expect((await (await ask("GET")).json() as Found).pcs).toHaveLength(1);
+  // Tailscale now says that name is another login's: the list minutes ago does not make it addable
+  setPeers([{ name: "pc-b", user: "42" }]);
+  const added = await ask("POST", { url: serveUrl });
+  expect(added.status).toBe(404);
+  expect((await added.json() as { error: { code: string } }).error.code).toBe("tailnet_not_found");
+});
+
+it("stops reading a PC's answer past its size bound", async () => {
+  const big = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(JSON.stringify({ ok: true, auth: { authenticated: true, via: "tailscale", role: "drive" }, pad: "x".repeat(200_000) })) });
+  cleanup.push(() => big.stop(true));
+  const { ask } = await pcA([{ name: "pc-b", user: "9007199254740993" }], { "pc-b.tail.ts.net": `http://127.0.0.1:${big.port}` }, (url) => new WebSocket(url));
+  expect(await (await ask("GET")).json()).toEqual({ pcs: [] });
 });
 
 it("does not list a PC that does not let this PC's login drive it", async () => {
