@@ -186,20 +186,28 @@ describe("a phone's sheet in the history", () => {
     expect(h.state).toMatchObject({ "ovis:web-panel-below": 3 });
   });
 
-  it("leaves a retired entry copied from a plain file's or a diff's as one more under it, so closing it goes past it (#3101)", async () => {
+  it("counts a sheet's copy of a plain file's or a diff's entry, kept over it, as one more under it, and not one Forward lands on (#3101)", async () => {
     const under = h.state;
+    const href = fake.window.location.href;
     for (const own of [
       { "ovis:file-preview": { path: "/r/README.md", machineId: "local", paneId: "p" } },
       { "ovis:repo-diff": { machineId: "local", paneId: "p", directory: "/r", scope: "workspace", base: null, head: null, comparison: null, path: "a.ts", oldPath: null } },
     ]) {
+      // an item that changes the address on the sheet's entry keeps it over the file's or diff's own entry
       h.replaceState(own, "");
+      const leave = hooks.enter(() => {});
+      h.replaceState(h.state, "", `${href}&new=1`);
+      leave(); await settled();
+      expect(h.state).toEqual({ ...own, "ovis:sheet-under": expect.any(String), "ovis:web-panel-below": 1 });
+      h.back(); await settled();
+      // Forward onto the entry of a sheet Back closed: the entry under it may be another's by now
       hooks.enter(() => {});
       h.back(); await settled();
       h.forward(); await settled();
-      expect(h.state).toEqual({ ...own, "ovis:sheet-under": expect.any(String), "ovis:web-panel-below": 1 });
+      expect(h.state).not.toHaveProperty("ovis:web-panel-below");
       h.back(); await settled();
     }
-    h.replaceState(under, "");
+    h.replaceState(under, "", href);
   });
 
   it("keeps a sheet that opens while the step off a closed sheet's entry is on its way", async () => {

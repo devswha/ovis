@@ -32,12 +32,14 @@ export function webPagesBelow(state: Record<string, unknown>): number {
  * ordinary entry (a reload, Forward onto it after Back closed the sheet), a copy of the panel's entry
  * is one more of the panel's entries over that one, which closing the panel goes back past too (#3058).
  * So is a copy of a docked file's entry that holds the panel's count: closing the file goes past it.
- * A copy of a file's or a diff's own entry is one more of theirs: closing it goes past the real one,
- * which would show the file or the diff again (#3101).
+ * With `overlays`, a copy of a file's or a diff's own entry is one more of theirs: closing it goes past
+ * the real one, which would show the file or the diff again (#3101). Only where the entry under the
+ * copy is still the one it copied (a reload, an address changed on the sheet's entry): after Back off
+ * the sheet, another pane may have taken that entry over, and closing must not go past it.
  */
-export function overCopiedEntry(state: Record<string, unknown>): Record<string, unknown> {
+export function overCopiedEntry(state: Record<string, unknown>, overlays: boolean): Record<string, unknown> {
   const owned = state[WEB_PANEL_KEY] !== undefined || state[WEB_PANEL_DOCKED_KEY] === true ||
-    state[FILE_PREVIEW_KEY] !== undefined || state[REPO_DIFF_KEY] !== undefined;
+    (overlays && (state[FILE_PREVIEW_KEY] !== undefined || state[REPO_DIFF_KEY] !== undefined));
   if (!owned && webPagesBelow(state) === 0) return state;
   return { ...state, [WEB_PANEL_BELOW_KEY]: webPagesBelow(state) + 1 };
 }
