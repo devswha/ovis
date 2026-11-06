@@ -3646,8 +3646,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name, a **This PC** pill in the accent and its relay ID in `--font-mono` under it: the
   ID a device that typed this PC's code compares, so it is shown here and not in the dialog), then
-  the PCs this app shows (a neutral **PC** pill, their state, a Remove PC icon for an SSH or relay
-  PC, confirmed as the sidebar's Remove PC… is), then signed in the account's other PCs (their
+  the PCs this app shows (a neutral **PC** pill and their state; removing an eligible PC stays in
+  the sidebar's PC menu), then signed in the account's other PCs (their
   account state, no action), then the paired phones and browsers with a neutral kind pill (Phone,
   Tablet or Browser, read from the name the app first gave the device), Rename and Revoke as
   before, then **Revoke every device**. On a touch phone on this PC's own address, with the relay

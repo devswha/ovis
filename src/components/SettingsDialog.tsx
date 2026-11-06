@@ -1298,7 +1298,8 @@ function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; clos
  * AddRelayPc and the hosted app's code screen), the PCs this app shows (SSH, relay, herdr-core machines), and,
  * signed in, the account's other PCs. One PC is one row: an account PC this app already shows is not listed twice.
  * The ID is read again whenever the relay's state or identity changes (`relayKey`): turning the relay on can make
- * this PC's first ID, and a reset makes a new one, before the roster's next read would say so. Removing a PC stays
+ * this PC's first ID, and a reset makes a new one, before the roster's next read would say so; a new ID in the roster
+ * (a reset in another window) is read again too. Removing a PC stays
  * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
  */
 function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string }) {
@@ -1309,10 +1310,10 @@ function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machi
     let live = true;
     fetchMachines().then((list) => { if (live) setOwnId(list.find((machine) => machine.kind === "local")?.server_id ?? null); }, () => undefined);
     return () => { live = false; };
-  }, [relayKey]);
+  }, [relayKey, local?.server_id]);
   const id = ownId ?? local?.server_id;
   const others = machines.filter((machine) => machine.kind !== "local");
-  const shown = new Set<string>([local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
+  const shown = new Set<string>([id, local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
   const fromAccount = (accountPcs ?? []).filter((pc) => !shown.has(pc.server_id));
   return (
     <ul className="devices-list my-pcs">
