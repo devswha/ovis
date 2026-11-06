@@ -237,6 +237,7 @@ const BASE: Record<string, string> = {
   "No matching folders": "没有匹配的文件夹",
   "This folder cannot be opened.": "无法打开此文件夹。",
   "Folders could not be loaded.": "无法加载文件夹。",
+  "Unlock agent": "解锁 Agent",
 
   // ---- files ----
   "Files": "文件",
@@ -458,10 +459,6 @@ const BASE: Record<string, string> = {
   "Connect a device": "连接设备",
   "This device": "此设备",
   "Sign out of {provider}": "退出 {provider} 登录",
-  "Remove PC": "移除 PC",
-  "Remove PC {name}?": "移除 PC {name}？",
-  "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",
-  "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "仅从这台 PC 移除。要同时取消它的访问权限，请在那台 PC 的 手机和设备 中撤销。",
   "Ovis relay": "Ovis 中继",
   "Reset relay identity": "重置中继身份",
   "Reset the relay identity?": "要重置中继身份吗？",

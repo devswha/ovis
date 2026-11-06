@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Palette, Plus, Search, Smartphone, SquareTerminal, Star, Trash2, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Palette, Plus, Search, Smartphone, SquareTerminal, Star, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -40,7 +40,7 @@ import type { UserError } from "../lib/userError.ts";
 import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
-import { fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
+import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -1093,10 +1093,15 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
  */
 const MOVED_GROUPS: Readonly<Record<string, string>> = { phone: "devices", remote: "devices", portal: "devices" };
 
-/** How a paired device's row names what it is: its label as the app first named it (lib/phone.ts deviceLabel), or the name it was given. */
-function deviceKind(label: string, t: ReturnType<typeof useT>): string {
-  if (/\b(iPhone|Android|Pixel|Galaxy|phone)\b/i.test(label)) return t("Phone");
-  if (/\b(iPad|tablet)\b/i.test(label)) return t("Tablet");
+/**
+ * What a paired device is, read from the label the app first gave it (lib/phone.ts deviceLabel, "iPhone · Safari");
+ * a device renamed since says nothing of what it is, so its row carries no pill rather than a guess.
+ */
+function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
+  const named = /^(iPhone|iPad|Android|Mac|Windows|Chromebook|Linux|Device)( · (Edge|Firefox|Chrome|Safari))?$/.exec(label);
+  if (named === null) return null;
+  if (named[1] === "iPhone" || named[1] === "Android") return t("Phone");
+  if (named[1] === "iPad") return t("Tablet");
   return t("Browser");
 }
 
@@ -1139,6 +1144,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
   const [connecting, setConnecting] = useState(false);
   const closeConnect = useCallback(() => setConnecting(false), []);
+  // a reset relay identity is a new ID for this PC: My devices reads it again
+  const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
   const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null });
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
@@ -1196,7 +1203,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Connect")}</button>
         </SettingsRow>
         <div className="settings-item my-devices">
-          <MyPcRows machines={machines} accountPcs={account.pcs} />
+          <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
           <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} />
         </div>
         <DamagedPcFiles pcSettings={pcSettings} />
@@ -1213,7 +1220,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
             {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
           </SettingsRow>
         </SettingsGroup>
-        {relayOffered(relay) && !relayReadOnly && <RelayControls relay={relay} closesGate={closesGate} />}
+        {relayOffered(relay) && !relayReadOnly && <RelayControls relay={relay} closesGate={closesGate} onReset={() => setIdentityResets((count) => count + 1)} />}
         <SidebarPcsGroup machines={machines} />
         <AccessFacts facts={security} />
         <RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={onPcSettings} />
@@ -1247,7 +1254,7 @@ function UseRelayHere() {
 }
 
 /** The relay's switch and its identity reset: rarely touched once it is on, so in More settings (Connect a device turns it on). */
-function RelayControls({ relay, closesGate }: { relay: RelayState; closesGate: boolean }) {
+function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; closesGate: boolean; onReset: () => void }) {
   const t = useT();
   const { status, pending, request } = relay;
   const [error, setError] = useState<string | null>(null);
@@ -1277,6 +1284,7 @@ function RelayControls({ relay, closesGate }: { relay: RelayState; closesGate: b
           confirmLabel={t("Reset")} onClose={() => setConfirmingReset(false)} onConfirm={async () => {
             await request("reset-identity");
             setConfirmingReset(false);
+            onReset();
             // the confirmation hands focus back only when it is dismissed: after the reset it goes back here
             window.requestAnimationFrame(() => resetButton.current?.focus());
           }} />
@@ -1289,21 +1297,31 @@ function RelayControls({ relay, closesGate }: { relay: RelayState; closesGate: b
  * The PCs at the top of My devices: this PC with its relay ID (what a device that typed this PC's code compares,
  * AddRelayPc and the hosted app's code screen), the PCs this app shows (SSH, relay, herdr-core machines), and,
  * signed in, the account's other PCs. One PC is one row: an account PC this app already shows is not listed twice.
+ * The ID is read again whenever the relay's state or identity changes (`relayKey`): turning the relay on can make
+ * this PC's first ID, and a reset makes a new one, before the roster's next read would say so; a new ID in the roster
+ * (a reset in another window) is read again too. Removing a PC stays
+ * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
  */
-function MyPcRows({ machines, accountPcs }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null }) {
+function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string }) {
   const t = useT();
   const local = machines.find((machine) => machine.kind === "local");
+  const [ownId, setOwnId] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchMachines().then((list) => { if (live) setOwnId(list.find((machine) => machine.kind === "local")?.server_id ?? null); }, () => undefined);
+    return () => { live = false; };
+  }, [relayKey, local?.server_id]);
+  const id = ownId ?? local?.server_id;
   const others = machines.filter((machine) => machine.kind !== "local");
-  const shown = new Set<string>([local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
+  const shown = new Set<string>([id, local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
   const fromAccount = (accountPcs ?? []).filter((pc) => !shown.has(pc.server_id));
-  const [removing, setRemoving] = useState<Machine | null>(null);
   return (
     <ul className="devices-list my-pcs">
       {local !== undefined && (
         <li className="devices-row my-device-self" data-testid="this-pc">
           <div className="devices-name">
             <span className="settings-label">{local.name}<span className="devices-kind is-self">{t("This PC")}</span></span>
-            {local.server_id !== undefined && <span className="settings-description my-device-id">{t("ID {id}", { id: groupedId(local.server_id) })}</span>}
+            {id !== undefined && <span className="settings-description my-device-id">{t("ID {id}", { id: groupedId(id) })}</span>}
           </div>
         </li>
       )}
@@ -1313,11 +1331,6 @@ function MyPcRows({ machines, accountPcs }: { machines: readonly Machine[]; acco
             <span className="settings-label">{machine.name}<span className="devices-kind">PC</span></span>
             <span className="settings-description">{t(STATE_WORD[machine.state])}</span>
           </div>
-          {(machine.kind === "ssh" || machine.kind === "relay") && (
-            <div className="devices-actions">
-              <button type="button" className="icon-button" aria-label={t("Remove PC {name}", { name: machine.name })} onClick={() => setRemoving(machine)}><Trash2 aria-hidden="true" /></button>
-            </div>
-          )}
         </li>
       ))}
       {fromAccount.map((pc) => (
@@ -1328,10 +1341,6 @@ function MyPcRows({ machines, accountPcs }: { machines: readonly Machine[]; acco
           </div>
         </li>
       ))}
-      {removing !== null && (
-        <ConfirmDialog title={t("Remove PC {name}?", { name: removing.name })} body={t(removing.kind === "relay" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
-          onConfirm={async () => { await machineRequest(`/${removing.id}`, "DELETE"); setRemoving(null); }} onClose={() => setRemoving(null)} />
-      )}
     </ul>
   );
 }

@@ -45,7 +45,6 @@ export const SETTINGS_ACCESS_KO: Record<string, string> = {
   "The code that PC shows under Connect a device.": "그 PC의 기기 연결에 보이는 코드입니다.",
   "ID {id}": "ID {id}",
   "My devices": "내 기기",
-  "Remove PC {name}": "{name} PC 제거",
   "Sign out of this PC": "이 PC에서 로그아웃",
   "This app": "이 앱",
   "Use the relay": "릴레이 사용",

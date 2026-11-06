@@ -134,7 +134,8 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
         setOffer(null);
         // a code that ran out while shown is replaced by itself; one that arrived already expired
         // (the PC's clock and this one apart) is not, or the asking would never end
-        if (wasLive) again(); else setState("expired");
+        // compact: CompactRelay renews both, the code to type first and then this offer, so the two never race
+        if (wasLive) { if (!compact) again(); } else setState("expired");
         return;
       }
       wasLive = true;
@@ -161,7 +162,7 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   };
 
   // Connect a device: the QR code and the code to type side by side, one Refresh for both
-  if (compact) return <CompactRelay qr={offer?.url ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
+  if (compact) return <CompactRelay qr={offer?.url ?? null} qrExpires={offer?.expires_at ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
   const countdown = (
     <>
       {state === "live" && t("Expires in {time}.", { time: left })}
@@ -216,21 +217,18 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   );
 }
 
-/** the relay's code to type this page last showed, while it lasts: the next opening of Connect a device shows it again */
-let keptTypedCode: RelayCode | null = null;
-
 /**
  * The relay's two ways in Connect a device: its QR code (`qr`, the pending offer) and a code to type on the
- * other device, asked for at once, again on Refresh, and again when it runs out while shown. Asking for one
- * starts a new six-digit code, so the offer is asked for only after it (`onMinted`), never beside it. A six-digit code started anywhere
+ * other device, asked for as the dialog opens, again on Refresh, and again when either runs out while shown:
+ * one renewal for both, the code first. Asking for one starts a new six-digit code, so the offer is asked for
+ * only after it (`onMinted`), never beside it. A code is never kept for the next opening: one looked up by a
+ * device is spent even when its person cancels at the ID comparison, and nothing here would know. A six-digit code started anywhere
  * else ends this one on the PC (`reset`): it goes, and Refresh asks for another, never on its own, or the two
  * would keep ending each other.
  */
-function CompactRelay({ qr, failure, reset, onMinted }: { qr: string | null; failure: string | null; reset: number; onMinted: () => void }) {
+function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string | null; qrExpires: string | null; failure: string | null; reset: number; onMinted: () => void }) {
   const t = useT();
-  // a code still live from this page's last opening is shown again rather than minted anew: each mint starts a
-  // pairing code, and the PC allows ten in ten minutes (server/devices.ts), so opening the dialog must not spend one
-  const [code, setCode] = useState<RelayCode | null>(() => (keptTypedCode !== null && Date.parse(keptTypedCode.expires_at) > Date.now() ? keptTypedCode : null));
+  const [code, setCode] = useState<RelayCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // the latest ask: an answer to an older one is not shown
@@ -242,7 +240,6 @@ function CompactRelay({ qr, failure, reset, onMinted }: { qr: string | null; fai
     try {
       const minted = await requestRelayCode();
       if (mine !== request.current) return;
-      keptTypedCode = minted;
       setCode(minted);
     } catch (reason) {
       if (mine === request.current) { setCode(null); setError(failureText(reason)); }
@@ -254,32 +251,37 @@ function CompactRelay({ qr, failure, reset, onMinted }: { qr: string | null; fai
       }
     }
   };
-  // once as it opens: the effect's own run, not a render; a kept code only asks for the offer that carries its pairing code
+  // once as it opens: the effect's own run, not a render
   const opened = useRef(false);
   useEffect(() => {
     if (opened.current) return;
     opened.current = true;
-    if (code !== null) onMinted();
-    else void mint();
+    void mint();
   });
   const lastReset = useRef(reset);
   useEffect(() => {
     if (lastReset.current === reset) return;
     lastReset.current = reset;
     request.current++;
-    keptTypedCode = null;
     setCode(null);
     setBusy(false);
   }, [reset]);
+  // the code and the offer carry the one pending pairing, so they run out together (server/relay/service.ts): the
+  // code's expiry renews both. Without a code (an older server mints none) the offer's expiry does, so the QR
+  // code still renews; it is read only then, since the offer shown at a renewal is the old one for a moment.
+  const deadline = code !== null ? code.expires_at : qrExpires;
   useEffect(() => {
-    if (code === null) return;
-    const ms = Date.parse(code.expires_at) - Date.now();
+    if (deadline === null) return;
+    const ms = Date.parse(deadline) - Date.now();
     // one that arrived already expired (the PC's clock and this one apart) says so and waits for Refresh,
-    // rather than asking again and again; one that ran out while shown is renewed, as the QR code renews itself
-    if (ms <= 0) { keptTypedCode = null; setCode(null); setError(t("This code expired.")); return; }
+    // rather than asking again and again; one that ran out while shown is renewed
+    if (ms <= 0) {
+      if (code !== null) { setCode(null); setError(t("This code expired.")); }
+      return;
+    }
     const timer = window.setTimeout(() => void mint(), ms);
     return () => window.clearTimeout(timer);
-  }, [code]);
+  }, [code, deadline]);
   return (
     <div className="relay-pairing-compact" role="status">
       <CompactPair qr={qr} qrLabel={t("QR code that pairs a phone through the relay")} code={code?.code ?? null} codeLabel={t("Code to type")} busy={busy} onRefresh={() => void mint()} />

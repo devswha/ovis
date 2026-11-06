@@ -235,6 +235,7 @@ const BASE: Record<string, string> = {
   "No matching folders": "一致するフォルダーはありません",
   "This folder cannot be opened.": "このフォルダーは開けません。",
   "Folders could not be loaded.": "フォルダーを読み込めませんでした。",
+  "Unlock agent": "エージェントのロックを解除",
 
   // ---- files ----
   "Files": "ファイル",
@@ -456,10 +457,6 @@ const BASE: Record<string, string> = {
   "Connect a device": "デバイスを接続",
   "This device": "このデバイス",
   "Sign out of {provider}": "{provider} からサインアウト",
-  "Remove PC": "PC を削除",
-  "Remove PC {name}?": "PC {name} を削除しますか？",
-  "Removes this registration. Remote sessions keep running.": "この登録のみを削除します。リモートのセッションは実行されたままです。",
-  "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "この PC からだけ削除します。アクセスも止めるには、その PC の スマートフォンとデバイス で取り消してください。",
   "Ovis relay": "Ovis リレー",
   "Reset relay identity": "リレー ID をリセット",
   "Reset the relay identity?": "リレー ID をリセットしますか？",

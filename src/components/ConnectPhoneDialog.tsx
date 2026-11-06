@@ -19,7 +19,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
-import { Toggle } from "./SettingsControls.tsx";
+import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { AddRelayPc } from "./AddRelayPc.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
@@ -127,6 +127,9 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
   const [withCode, setWithCode] = useState(false);
   const signInFirst = joinBySignIn && !withCode;
   const [open, setOpen] = useState<OtherWay | null>(null);
+  // a way once opened stays mounted while the dialog is: opening Same Wi-Fi again keeps its code, not a new one
+  const opened = useRef(new Set<OtherWay>());
+  if (open !== null) opened.current.add(open);
   const toggle = (way: OtherWay) => setOpen((current) => (current === way ? null : way));
   // the relay's one switch, for the PC's owner where nothing blocks it, while it is not online
   const switchable = offered && !readOnly && relay.status?.blocked === null;
@@ -148,6 +151,8 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
   ];
 
   return createPortal(
+    // a Settings search hides no row in here
+    <SettingsQuery.Provider value={[]}>
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={surface} className="modal connect-phone-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1}>
         <header className="modal-header">
@@ -197,7 +202,7 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
                   <button type="button" className="connect-way" aria-expanded={open === way} onClick={() => toggle(way)}>
                     <span>{label}</span><ChevronRight className="connect-way-chevron" aria-hidden="true" />
                   </button>
-                  {open === way && <div className="connect-way-body">{body}</div>}
+                  {opened.current.has(way) && <div className="connect-way-body" hidden={open !== way}>{body}</div>}
                 </div>
               ))}
               {onAddPcSsh !== null && !readOnly && (
@@ -209,7 +214,8 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
           </details>
         </div>
       </div>
-    </div>,
+    </div>
+    </SettingsQuery.Provider>,
     document.body,
   );
 }
@@ -218,7 +224,7 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
  * The relay's way: its state (Blocked says why), a start that failed with Try again, the pairing QR
  * code once it is online, and the identity reset as a quiet last action. The switch is on its card.
  * On a phone, online, the phone pairs itself through its own offer in one tap, and the offer for
- * another device is a link to send, its QR code behind Show QR code. A phone on the relay is told
+ * another device is a link to send, its QR code behind Show QR code. A device on the relay is told
  * that relay links come from the PC or a direct connection (the server refuses them over the relay)
  * and pointed to the pairing code.
  */
@@ -241,9 +247,9 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   const [opening, setOpening] = useState(false);
   const resetButton = useRef<HTMLButtonElement>(null);
   if (status === null) return null;
-  if (phone && inRelayShell()) return (
+  if (inRelayShell()) return (
     <div className="connect-phone-relay">
-      <p className="relay-status" role="status">{t("This phone reaches the PC through the relay now. Relay links are made on the PC or from a direct connection to it.")}</p>
+      <p className="relay-status" role="status">{t("This device reaches the PC through the relay now. Relay links are made on the PC or from a direct connection to it.")}</p>
       {onUseCode !== undefined && (
         <>
           <p className="settings-description">{t("To connect another device from here, give it a pairing code.")}</p>

@@ -45,7 +45,6 @@ export const SETTINGS_ACCESS_ZH: Record<string, string> = {
   "The code that PC shows under Connect a device.": "该 PC 在“连接设备”中显示的代码。",
   "ID {id}": "ID {id}",
   "My devices": "我的设备",
-  "Remove PC {name}": "移除 PC {name}",
   "Sign out of this PC": "从此 PC 退出登录",
   "This app": "此应用",
   "Use the relay": "使用中继",
