@@ -120,9 +120,11 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
     conn.up?.socket?.end();
     socket.end();
   };
-  const forward = async (socket: Socket<Conn>, head: string): Promise<void> => {
+  const forward = async (socket: Socket<Conn>, head: string, after: Uint8Array): Promise<void> => {
     const conn = socket.data;
-    const up: Side = { socket: undefined, pending: [new TextEncoder().encode(head)], pendingBytes: head.length };
+    // the head, then what came with it, then whatever arrives while connecting: in that order
+    const first = [new TextEncoder().encode(head), ...after.byteLength > 0 ? [after] : []];
+    const up: Side = { socket: undefined, pending: first, pendingBytes: head.length + after.byteLength };
     conn.up = up;
     try {
       up.socket = await Bun.connect({
@@ -183,7 +185,7 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
         const rebuilt = [head.line, ...kept, `${PEER_HEADER}: ${conn.source}`, `${GATE_HEADER}: ${options.secret}`, "", ""].join("\r\n");
         const after = Buffer.concat(conn.head).subarray(stop + 4);
         conn.head = [];
-        void forward(socket, rebuilt).then(() => { if (after.byteLength > 0 && conn.up) send(conn.up, after); });
+        void forward(socket, rebuilt, new Uint8Array(after));
       },
       drain: (socket) => flush(socket.data.down),
       close: (socket) => end(socket),

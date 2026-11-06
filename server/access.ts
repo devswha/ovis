@@ -115,9 +115,8 @@ export function isLoopbackBind(hostname: string): boolean {
  * `hostname` is the address the server is bound to, not the one the request arrived on: a
  * loopback bind is local, and a Tailscale-only bind is reachable only within the tailnet.
  */
-export function lanExposed(input: { hostname: string; tokenConfigured: boolean; gated: boolean; lanListener?: boolean }): boolean {
-  // the relay's direct carriers (server/relay/direct.ts) listen on the network too, whatever the main bind
-  return (bindScope(input.hostname) === "other" || input.lanListener === true) && !input.tokenConfigured && !input.gated;
+export function lanExposed(input: { hostname: string; tokenConfigured: boolean; gated: boolean }): boolean {
+  return bindScope(input.hostname) === "other" && !input.tokenConfigured && !input.gated;
 }
 
 /**
