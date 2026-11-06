@@ -3,6 +3,7 @@
  * persistence, reset, keyboard, snap-fold, scrolling, a short window and both section orders.
  * Also checks actual workspace visibility with 47 agents across two PCs, and a short single-PC tree.
  * BROWSER_ENGINE=webkit selects WebKit; --only=roster runs just the visibility/fold/rotation matrix.
+ * A full WebKit run still fails 390/dark/pcs-first on a ResizeObserver loop error, as on main; use --only=roster there.
  * UI_EVIDENCE_DIR saves demo screenshots and geometry at 390 and 1280.
  */
 import assert from "node:assert/strict";
@@ -162,6 +163,8 @@ try {
               await page.screenshot({ path: file + ".png", animations: "disabled" });
             }
             assert.equal(geometry.workspaces, scene === "many" ? 12 : 1, label + " workspaces remain in the real tree");
+            // CI runs Chromium, where a unitless zero basis still shows rows; WebKit needs a percentage, so pin the computed basis.
+            if (phase === "expanded") assert.equal(geometry.pcsBasis, "0%", label + " the default PCs basis stays a percentage, or WebKit caps the list at its minimum");
             assert.ok(geometry.visible, label + " " + phase + ": an expanded PC exposes a full workspace row, not just its PC header; " + JSON.stringify(geometry));
             const m = await metrics(page);
             assert.ok(m.footer.bottom <= m.shell.bottom + 1, label + " footer remains reachable");
