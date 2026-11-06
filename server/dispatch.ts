@@ -533,9 +533,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     // this server is open to the network with no token and nothing paired, told to a client
     // that got in and to nobody else: naming it to an anonymous caller would be
     // reconnaissance, not help. Nothing here changes who is let in (server/access.ts).
-    const lan_exposure = access.level === "full" && lanExposed({ hostname, tokenConfigured: token !== "", gated: devices.gated,
-      lanListener: (ctx.services.relay.status().direct?.carriers.length ?? 0) > 0 })
-      ? { host: hostname } : undefined;
+    const directCarriers = ctx.services.relay.status().direct?.carriers ?? [];
+    const lan_exposure = access.level !== "full" ? undefined
+      : lanExposed({ hostname, tokenConfigured: token !== "", gated: devices.gated, lanListener: directCarriers.length > 0 }) ? { host: hostname }
+      // open to paired devices only, but on the network all the same: said too, in its own words
+      : directCarriers.length > 0 ? { host: new URL(directCarriers[0]!.replace(/^ws:/, "http:")).hostname, direct: true as const } : undefined;
     // what protects this server, for a client that got in (a watching one too) and nobody else;
     // per request, so never stored. The ingress is this request's, proven or `unknown`.
     // Portal's proof says how the request came even when the token or a paired device signed it in.

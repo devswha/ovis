@@ -191,6 +191,21 @@ describe("direct carrier", () => {
     expect(firstClosed).toBe(false);
   });
 
+  it("closes a connection from an address past its share before reading it", async () => {
+    // Given eight connections from one address that never finish a request
+    const { direct } = await directFixture();
+    const raw = (): Promise<{ closed: Promise<void> }> => new Promise((resolve, reject) => {
+      let done = (): void => {};
+      const closed = new Promise<void>((settle) => { done = settle; });
+      Bun.connect({ hostname: "127.0.0.1", port: direct.port!, socket: { open: () => resolve({ closed }), data() {}, close: () => done(), error: () => done() } }).catch(reject);
+    });
+    const held = [];
+    for (let index = 0; index < 8; index++) held.push(await raw());
+    // When a ninth comes, it is closed at once, unread
+    const ninth = await raw();
+    await bounded(ninth.closed, 2_000);
+  });
+
   it("refuses a browser page: a socket that names an origin", async () => {
     const { url } = await directFixture();
     const page = new WebSocket(url(), { headers: { origin: "http://192.168.0.20:8080" } } as never);
@@ -407,6 +422,17 @@ describe("direct connections with the relay", () => {
     expect(service.status().direct?.carriers).toHaveLength(1);
   });
 
+  it("are told to a client that got in, in /api/health, even with the gate closed", async () => {
+    // Given a PC with the relay and direct connections on, a device paired (the gate closed)
+    const { fixture } = await liveFixture();
+    await relayDevice(fixture);
+    // When this PC asks for its health
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const health = await (await fetch(`${base}/api/health`)).json() as { lan_exposure?: { host: string; direct?: true } };
+    // Then the direct listener is named, as paired-only
+    expect(health.lan_exposure).toEqual({ host: "10.0.0.7", direct: true });
+  });
+
   it("stop with the relay", async () => {
     const { service } = await liveFixture();
     await service.stop();
@@ -423,27 +449,26 @@ describe("direct connections with the relay", () => {
 });
 
 describe("who gives way to a new client", () => {
+  it("lets a phone at a new address in while four addresses churn their full share every second", () => {
+    // Given four LAN hosts each holding their two places, renewed within the grace
+    const churn = ["192.168.0.101", "192.168.0.102", "192.168.0.103", "192.168.0.104"].flatMap((source, index) => [
+      { source, order: index * 2, openedAt: 900 }, { source, order: index * 2 + 1, openedAt: 950 }]);
+    // When a phone comes from an address none of them uses, it gets in without anyone giving way
+    expect(admissionDrops(churn, "192.168.0.20", 1_000)).toEqual([]);
+  });
+
   const client = (source: string, order: number, openedAt = 0) => ({ source, order, openedAt });
-  const none = () => false;
 
-  it("lets a phone at an address a device signed in from in, past eight strangers within their grace", () => {
-    const strangers = Array.from({ length: 8 }, (_, index) => client(`192.168.0.${100 + index}`, index, 900));
-    expect(admissionDrops(strangers, "192.168.0.20", none, 1_000)).toBeNull();
-    expect(admissionDrops(strangers, "192.168.0.20", (address) => address === "192.168.0.20", 1_000)).toEqual([]);
+  it("past every place takes the busiest address's oldest client past its grace, and none within it", () => {
+    const waiting = [client("10.0.0.1", 0), client("10.0.0.1", 1), ...Array.from({ length: 62 }, (_, index) => client(`10.0.${1 + (index >> 1)}.${index & 1 ? 2 : 3}`, index + 2))];
+    expect(waiting).toHaveLength(64);
+    expect(admissionDrops(waiting, "10.9.9.9", 500)).toBeNull();
+    expect(admissionDrops(waiting, "10.9.9.9", 1_000)?.map((carrier) => carrier.order)).toEqual([0]);
   });
 
-  it("never takes a trusted address's waiting client for a stranger", () => {
-    const waiting = [client("192.168.0.20", 0), ...Array.from({ length: 7 }, (_, index) => client(`192.168.0.${100 + index}`, index + 1))];
-    const trusted = (address: string) => address === "192.168.0.20";
-    const drops = admissionDrops(waiting, "192.168.0.200", trusted, 5_000);
-    expect(drops).toEqual([]);
-    const full = [...waiting, client("192.168.0.107", 8)];
-    expect(admissionDrops(full, "192.168.0.200", trusted, 5_000)?.map((carrier) => carrier.source)).toEqual(["192.168.0.100"]);
-  });
-
-  it("takes the busiest address's oldest client past its grace, and none within it", () => {
-    const waiting = [client("10.0.0.1", 0), client("10.0.0.1", 1), ...Array.from({ length: 6 }, (_, index) => client(`10.0.0.${10 + index}`, index + 2))];
-    expect(admissionDrops(waiting, "10.0.0.50", none, 500)).toBeNull();
-    expect(admissionDrops(waiting, "10.0.0.50", none, 1_000)?.map((carrier) => carrier.order)).toEqual([0]);
+  it("takes an address's own oldest past its share, never another address's", () => {
+    const waiting = [client("10.0.0.1", 0), client("10.0.0.2", 1), client("10.0.0.1", 2)];
+    expect(admissionDrops(waiting, "10.0.0.1", 500)).toBeNull();
+    expect(admissionDrops(waiting, "10.0.0.1", 1_000)?.map((carrier) => carrier.order)).toEqual([0]);
   });
 });

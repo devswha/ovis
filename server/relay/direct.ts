@@ -11,6 +11,8 @@
  * nobody on the network can crowd out relay service; signed-in sessions keep the relay's limits.
  */
 import { randomBytes } from "node:crypto";
+import type { TCPSocketListener } from "bun";
+import { GATE_HEADER, openGate, PEER_HEADER } from "./direct-gate.ts";
 import { createSocket } from "node:dgram";
 import { networkInterfaces } from "node:os";
 import type { NetworkInterfaceInfo } from "node:os";
@@ -30,15 +32,12 @@ import { version } from "../../package.json";
 export const DIRECT_PORT = 7319;
 /** Carriers not yet signed in: per source address, and in total across every address listened on. */
 const MAX_PENDING_PER_SOURCE = 2;
-const MAX_PENDING = 8;
+const MAX_PENDING = 64;
 /** From upgrade to an open protected channel, and from there to a signed-in device. */
 const HANDSHAKE_MS = 5_000;
 const SIGN_IN_MS = 15_000;
 /** How long a client that has not signed in keeps its place against newer ones. */
 const GRACE_MS = 1_000;
-/** How long an address a device signed in from keeps places of its own (makeRoom), and how many such addresses. */
-const TRUSTED_MS = 24 * 60 * 60_000;
-const MAX_TRUSTED = 64;
 const REFRESH_MS = 30_000;
 
 /** Adapters a phone on the PC's network is not on: containers, VMs, VPNs and tunnels. */
@@ -117,11 +116,13 @@ interface Carrier {
 
 /**
  * Who gives way so one more client from `source` can wait to sign in (DirectCarrier.makeRoom), or null when
- * nobody may: per address MAX_PENDING_PER_SOURCE, MAX_PENDING across untrusted addresses, a client within
- * GRACE_MS of opening never giving way, a trusted address's clients never giving way to another address.
+ * nobody may. Each address has MAX_PENDING_PER_SOURCE places that only its own clients take, its oldest
+ * giving way past GRACE_MS; MAX_PENDING across all addresses is far above what a few hosts can hold, so a
+ * phone at any address of its own gets in unless dozens of hosts on the network flood together, and then
+ * it stays on the relay.
  */
 export function admissionDrops<T extends { readonly source: string; readonly openedAt: number; readonly order: number }>(
-  waiting: readonly T[], source: string, trusted: (address: string) => boolean, now: number): T[] | null {
+  waiting: readonly T[], source: string, now: number): T[] | null {
   const pending = [...waiting].sort((a, b) => a.order - b.order);
   const old = (carrier: T): boolean => now - carrier.openedAt >= GRACE_MS;
   const drops: T[] = [];
@@ -131,27 +132,28 @@ export function admissionDrops<T extends { readonly source: string; readonly ope
     if (!oldest) return null;
     drops.push(oldest);
   }
-  if (!trusted(source)) {
-    const shared = pending.filter((carrier) => !trusted(carrier.source) && !drops.includes(carrier));
-    if (shared.length >= MAX_PENDING) {
-      const counts = new Map<string, number>();
-      for (const carrier of shared) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
-      const oldest = shared.filter(old).sort((a, b) => (counts.get(b.source)! - counts.get(a.source)!) || a.order - b.order)[0];
-      if (!oldest) return null;
-      drops.push(oldest);
-    }
+  const others = pending.filter((carrier) => !drops.includes(carrier));
+  if (others.length >= MAX_PENDING) {
+    const counts = new Map<string, number>();
+    for (const carrier of others) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
+    const oldest = others.filter(old).sort((a, b) => (counts.get(b.source)! - counts.get(a.source)!) || a.order - b.order)[0];
+    if (!oldest) return null;
+    drops.push(oldest);
   }
   return drops;
 }
 
 export class DirectCarrier {
-  private listeners: Bun.Server<SocketData>[] = [];
+  private listeners: TCPSocketListener<unknown>[] = [];
+  /** the carrier's HTTP server on loopback, behind the gates (direct-gate.ts) */
+  private upstream: Bun.Server<SocketData> | undefined;
+  private readonly secret = randomBytes(32).toString("hex");
+  /** connections per address, shared by every gate */
+  private readonly connections = new Map<string, number>();
   private bound: { addresses: readonly string[]; port: number } | null = null;
   private readonly carriers = new Map<string, Carrier>();
   private stopped = false;
   private opened = 0;
-  /** addresses devices signed in from, and when last */
-  private readonly trusted = new Map<string, number>();
   private cancelRefresh: (() => void) | undefined;
   private readonly clock: MuxClock;
   private readonly signedIn: SignedInSessions;
@@ -203,10 +205,10 @@ export class DirectCarrier {
     this.listeners = [];
     this.bound = null;
     // released before the new ones bind: an address that stayed may hold the port
-    for (const listener of previous) void listener.stop(false);
+    for (const listener of previous) listener.stop(false);
     if (addresses.length === 0) return;
     for (const port of wanted === 0 ? [0] : [wanted, 0]) {
-      const made: Bun.Server<SocketData>[] = [];
+      const made: TCPSocketListener<unknown>[] = [];
       try {
         let chosen = port;
         for (const address of addresses) {
@@ -218,20 +220,29 @@ export class DirectCarrier {
         this.bound = { addresses, port: chosen };
         return;
       } catch (error) {
-        for (const listener of made) void listener.stop(true);
+        for (const listener of made) listener.stop(true);
         if (port === 0) console.error(`Direct connections on this network are off: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
 
-  private listen(address: string, port: number): Bun.Server<SocketData> {
+  /** A gate on `address` in front of the loopback server (made at the first one). */
+  private listen(address: string, port: number): TCPSocketListener<unknown> {
+    this.upstream ??= this.serveUpstream();
+    return openGate({ hostname: address, port, upstreamPort: this.upstream.port!, secret: this.secret,
+      allowed: (source) => (this.options.peerAllowed ?? privateLanPeer)(source), counts: this.connections }) as TCPSocketListener<unknown>;
+  }
+
+  /** The carrier's HTTP server: on loopback, answering only what a gate of this carrier forwarded. */
+  private serveUpstream(): Bun.Server<SocketData> {
     return Bun.serve<SocketData>({
-      hostname: address, port,
-      // an upgrade request that never finishes holds nothing for long
+      hostname: "127.0.0.1", port: 0,
       idleTimeout: 10,
       fetch: (request, server) => {
-        const source = server.requestIP(request)?.address;
-        if (!(this.options.peerAllowed ?? privateLanPeer)(source) || source === undefined) return new Response(null, { status: 403 });
+        const loopback = server.requestIP(request)?.address;
+        const vouched = request.headers.get(GATE_HEADER) === this.secret && (loopback === "127.0.0.1" || loopback === "::ffff:127.0.0.1");
+        const source = vouched ? request.headers.get(PEER_HEADER) ?? undefined : undefined;
+        if (!vouched || !(this.options.peerAllowed ?? privateLanPeer)(source) || source === undefined) return new Response(null, { status: 403 });
         if (new URL(request.url).pathname !== "/v1/ws") return new Response(null, { status: 404 });
         // a browser page always names its origin; the apps' sockets name none. No web page on the network opens this.
         if (request.headers.has("origin")) return new Response(null, { status: 403 });
@@ -255,20 +266,10 @@ export class DirectCarrier {
     });
   }
 
-  /**
-   * Room for one more client that has not signed in, or false; `apply` false only asks. A client gets
-   * GRACE_MS to finish its handshake untouched (a phone on the network needs a fraction of that); after
-   * it, a newer attempt takes its place: past the address's share its own oldest, past every place the
-   * oldest of the busiest address. An address a device signed in from lately (`trusted`) is outside
-   * the shared places: others never count against it nor take its places. Someone flooding the network
-   * from other addresses can at most keep a phone at a new address on the relay, where it falls back
-   * by itself.
-   */
+  /** Room for one more client that has not signed in (admissionDrops), or false; `apply` false only asks. */
   private makeRoom(source: string, apply: boolean): boolean {
-    const now = this.clock.now();
-    for (const [address, at] of this.trusted) if (now - at > TRUSTED_MS) this.trusted.delete(address);
     const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId);
-    const drops = admissionDrops(pending, source, (address) => this.trusted.has(address), now);
+    const drops = admissionDrops(pending, source, this.clock.now());
     if (drops === null) return false;
     if (apply) for (const carrier of drops) this.drop(carrier);
     return true;
@@ -348,9 +349,6 @@ export class DirectCarrier {
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
     carrier.release = this.signedIn.admit(deviceId, () => carrier.session?.close("resource_exhausted"));
-    this.trusted.delete(carrier.source);
-    this.trusted.set(carrier.source, this.clock.now());
-    while (this.trusted.size > MAX_TRUSTED) this.trusted.delete(this.trusted.keys().next().value!);
   }
 
   /** Stops listening and ends every carrier, signed in or not. */
@@ -360,7 +358,7 @@ export class DirectCarrier {
     this.cancelRefresh?.();
     // no new connections; the carriers' GOAWAY goes out before their sockets close
     const listeners = this.listeners.splice(0);
-    for (const listener of listeners) void listener.stop(false);
+    for (const listener of listeners) listener.stop(false);
     this.bound = null;
     await Promise.all([...this.carriers.values()].map(async (carrier) => {
       carrier.cancelTimeout();
@@ -374,6 +372,8 @@ export class DirectCarrier {
       carrier.release?.();
     }));
     this.carriers.clear();
-    for (const listener of listeners) void listener.stop(true);
+    for (const listener of listeners) listener.stop(true);
+    void this.upstream?.stop(true);
+    this.upstream = undefined;
   }
 }

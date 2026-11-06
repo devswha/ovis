@@ -739,12 +739,14 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
   PC offers or answers nothing, and nothing changes for it.
 - **Bounded, and never locked out.** A socket that names an `Origin` (any browser page, on the network
-  or not) is refused: the apps' sockets name none. At most two clients that have not signed in per
-  source address and eight in all, apart from the relay's places. A client keeps its place for 1 s;
-  after that a newer one may take it (its address's oldest, then the oldest of the busiest address),
-  and only once the newer one's upgrade has happened. An address a device signed in from in the last
-  day has places of its own that strangers neither count against nor take. A phone that still cannot
-  get in stays on the relay, where it falls back by itself; 5 s to finish the handshake and
+  or not) is refused: the apps' sockets name none. A gate in front ([`direct-gate.ts`](../server/relay/direct-gate.ts))
+  counts connections before reading a byte (8 per address, 128 in all) and gives a request head 5 s
+  and 8 KiB; only a WebSocket upgrade of `/v1/ws` gets past it, to the carrier's own server on
+  loopback. At most two clients that have not signed in per address, whose places only that
+  address's clients take, and 64 in all. A client keeps its place for 1 s; after that a newer one
+  from the same address may take it, and only once its upgrade has happened. A phone at an address of
+  its own gets in unless dozens of hosts flood together; then it stays on the relay, where it falls
+  back by itself; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
   eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
@@ -762,8 +764,10 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   relay. The carriers are saved with the pairing for the next start. A browser has no such socket
   and always uses the relay.
 - **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
-  Wi-Fi direct connection on" (who can sign in there) with its switch, and the network-exposure
-  warning (`lanExposed`) counts this listener as a network bind.
+  Wi-Fi direct connection on" (who can sign in there) with its switch. `/api/health` names the
+  listener to a client that got in (`lan_exposure` with `direct: true`), and the app's banner
+  says it in paired-only words; the open-server warning (`lanExposed`) counts this listener as a
+  network bind too.
 - **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
   `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first

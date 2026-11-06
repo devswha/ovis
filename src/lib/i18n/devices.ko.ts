@@ -211,4 +211,5 @@ export const DEVICES_KO: Record<string, string> = {
   "On, but this PC has no home network address to listen on right now.": "켜져 있지만 지금은 이 PC에 연결을 받을 집 네트워크 주소가 없습니다.",
   "Phones paired through the relay always go through the relay.": "릴레이로 연결한 폰은 항상 릴레이를 거칩니다.",
   "Same Wi-Fi direct connection": "같은 Wi-Fi 직접 연결",
+  "This PC takes connections at {host} on your home network. Only devices paired through the relay can sign in there; nothing new pairs.": "이 PC가 집 네트워크의 {host}에서 연결을 받음 · 릴레이로 연결한 기기만 여기서 로그인할 수 있고, 새 기기는 여기서 연결할 수 없습니다.",
 };
