@@ -82,8 +82,16 @@ it.skipIf(process.platform !== "linux")("reads a log Copilot opens a second time
     expect(fixture.binding()).toEqual(before);
     appendFileSync(log, register(other));
     expect(fixture.binding()?.sessionId).toBe(other);
-    // another log of the same process still leaves it unclear which one Copilot writes
+    // another file under the same path, as after a rename between two looks, is another log
     await fixture.command("extra");
+    const realLink = fs.readlinkSync;
+    const links = spyOn(fs, "readlinkSync").mockImplementation(((path: fs.PathLike) => {
+      const target = realLink(path, "utf8");
+      return target.endsWith(`/process-200-${pid}.log`) ? log : target;
+    }) as typeof fs.readlinkSync);
+    try { expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_ambiguous"); }
+    finally { links.mockRestore(); }
+    // as does another log of the same process
     expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_ambiguous");
   } finally { await fixture.close(); }
 });
