@@ -41,7 +41,7 @@
 **컴퓨터에서**
 
 - **Mac:** [Apple 실리콘용](https://ovis.sh/Ovis-mac-arm64.dmg) 또는 [Intel용](https://ovis.sh/Ovis-mac-x64.dmg) 데스크톱 앱을 **응용 프로그램**으로 끌어 놓습니다.
-- **Windows:** 데스크톱 앱 [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe)를 실행합니다.
+- **Windows:** 데스크톱 앱 [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe)를 실행합니다. Windows가 'PC 보호' 화면을 띄우면 **추가 정보** → **실행**을 누르세요.
 - **Linux:** Debian·Ubuntu는 데스크톱 앱 [x64](https://ovis.sh/Ovis-linux-x64.deb) 또는 [arm64](https://ovis.sh/Ovis-linux-arm64.deb)(`sudo apt install ./Ovis-linux-*.deb`), 그 밖에는 AppImage [x64](https://ovis.sh/Ovis-linux-x64.AppImage) 또는 [arm64](https://ovis.sh/Ovis-linux-arm64.AppImage)(`chmod +x Ovis-linux-*.AppImage`).
 
 데스크톱 앱은 따로 설치할 것이 없고 자체 터미널을 씁니다. 대신 herdr 세션을 쓰려면 Linux나 macOS에서:

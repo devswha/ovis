@@ -41,7 +41,7 @@
 **在电脑上**
 
 - **Mac：** 把 [Apple 芯片版](https://ovis.sh/Ovis-mac-arm64.dmg) 或 [Intel 版](https://ovis.sh/Ovis-mac-x64.dmg) 桌面应用拖到 **应用程序**。
-- **Windows：** 运行桌面应用 [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe)。
+- **Windows：** 运行桌面应用 [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe)。如果 Windows 显示 **Windows 已保护你的电脑**，请选择 **更多信息** → **仍要运行**。
 - **Linux：** Debian、Ubuntu 用桌面应用 [x64](https://ovis.sh/Ovis-linux-x64.deb) 或 [arm64](https://ovis.sh/Ovis-linux-arm64.deb)（`sudo apt install ./Ovis-linux-*.deb`）；其他发行版用 AppImage [x64](https://ovis.sh/Ovis-linux-x64.AppImage) 或 [arm64](https://ovis.sh/Ovis-linux-arm64.AppImage)（`chmod +x Ovis-linux-*.AppImage`）。
 
 桌面应用无需其他安装，并使用自己的终端。若要使用你的 herdr 会话，在 Linux 或 macOS 上运行：

@@ -41,7 +41,7 @@
 **コンピューターに**
 
 - **Mac:** [Apple シリコン版](https://ovis.sh/Ovis-mac-arm64.dmg) または [Intel 版](https://ovis.sh/Ovis-mac-x64.dmg) のデスクトップアプリを **アプリケーション** にドラッグします。
-- **Windows:** デスクトップアプリ [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe) を実行します。
+- **Windows:** デスクトップアプリ [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe) を実行します。「Windows によって PC が保護されました」と表示されたら、**詳細情報** → **実行** を選んでください。
 - **Linux:** Debian・Ubuntu はデスクトップアプリの [x64](https://ovis.sh/Ovis-linux-x64.deb) か [arm64](https://ovis.sh/Ovis-linux-arm64.deb)（`sudo apt install ./Ovis-linux-*.deb`）、それ以外は AppImage の [x64](https://ovis.sh/Ovis-linux-x64.AppImage) か [arm64](https://ovis.sh/Ovis-linux-arm64.AppImage)（`chmod +x Ovis-linux-*.AppImage`）。
 
 デスクトップアプリはほかに何も要らず、独自のターミナルを使います。herdr のセッションを使うには、Linux か macOS で：

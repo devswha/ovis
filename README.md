@@ -39,7 +39,7 @@ Chat with the coding agents on your computer from a desktop app, your phone or a
 **On your computer**
 
 - **Mac:** the desktop app for [Apple silicon](https://ovis.sh/Ovis-mac-arm64.dmg) or [Intel](https://ovis.sh/Ovis-mac-x64.dmg); drag it to **Applications**.
-- **Windows:** the desktop app, [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe); run it.
+- **Windows:** the desktop app, [Ovis-win-x64.exe](https://ovis.sh/Ovis-win-x64.exe); run it. If Windows shows **Windows protected your PC**, choose **More info** → **Run anyway**.
 - **Linux:** the desktop app for Debian or Ubuntu, [x64](https://ovis.sh/Ovis-linux-x64.deb) or [arm64](https://ovis.sh/Ovis-linux-arm64.deb) (`sudo apt install ./Ovis-linux-*.deb`); elsewhere the AppImage, [x64](https://ovis.sh/Ovis-linux-x64.AppImage) or [arm64](https://ovis.sh/Ovis-linux-arm64.AppImage) (`chmod +x Ovis-linux-*.AppImage`).
 
 The desktop app needs nothing else and runs its own terminals. To use your herdr sessions instead, on Linux or macOS:

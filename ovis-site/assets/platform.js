@@ -3,8 +3,8 @@
 // Debian and Ubuntu) or on Windows; a phone links to its part of the Beta page, which
 // the page's language script points at the visitor's language. The page ships the Mac button, and
 // under it the Mac's other build (.dl-alt), so a visitor without JavaScript, on a Mac, or on a
-// platform this cannot tell keeps them; on Linux that line offers the AppImage instead, and on
-// Windows or a phone it goes. This runs before the page's copy and language scripts, which then
+// platform this cannot tell keeps them; on Linux that line offers the AppImage instead, on Windows
+// it says how to get past SmartScreen, and on a phone it goes. This runs before the page's copy and language scripts, which then
 // pick up the button, the line and their English text.
 // Marks are from Simple Icons (CC0-1.0).
 (() => {
@@ -69,6 +69,8 @@
     mac: (cpu) => ({ href: `https://ovis.sh/Ovis-mac-${cpu}.dmg` }),
   };
   // the line under the download row on Linux; its English HTML is its #i18n-data key
+  // the line under the download row on Windows: the desktop app is not code-signed yet, so SmartScreen asks first
+  const WINDOWS_ALT = "If Windows shows 'Windows protected your PC', choose More info → Run anyway.";
   const LINUX_ALT = 'Not on Debian or Ubuntu? Get the AppImage for <a href="https://ovis.sh/Ovis-linux-x64.AppImage">x64</a> or <a href="https://ovis.sh/Ovis-linux-arm64.AppImage">arm64</a>.';
   const BUTTONS = {
     windows: { mark: "M0,0H11.377V11.372H0ZM12.623,0H24V11.372H12.623ZM0,12.623H11.377V24H0Zm12.623,0H24V24H12.623", label: "Download for Windows", href: "https://ovis.sh/Ovis-win-x64.exe", aria: "Download for Windows" },
@@ -78,6 +80,7 @@
   };
   for (const alt of document.querySelectorAll(".dl-alt")) {
     if (platform === "linux") alt.innerHTML = LINUX_ALT;
+    else if (platform === "windows") alt.textContent = WINDOWS_ALT;
     else if (platform !== "mac" && platform !== "unknown") alt.hidden = true;
   }
 
