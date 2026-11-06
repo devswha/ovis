@@ -17,10 +17,12 @@ export interface WaitingBaseline {
   takenAt: number;
   /**
    * The PC's last answer to this chat's reads and what this browser's monotonic clock says has passed
-   * since (observeWaitingClock), or the time the PC stamped on a queued row as it went out. null from
+   * since (observeWaitingClock), or the time the PC stamped on a send before typing it (stampedBaseline). null from
    * an older bridge, which says neither: the turns' times alone bound the skew.
    */
   pcFloor: number | null;
+  /** made from a send's stamp alone, before the chat's first read: no turns shown to tell an older one of the stamp's second apart */
+  unread?: true;
 }
 
 /** One confirmed send, independent of any other sends to the same pane. */
@@ -97,7 +99,14 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
   // The PC's own clock bounds it more tightly than its newest turn, read perhaps long after it was
   // written, and needs neither of this browser's wall clock times: an identical turn another device
   // or the terminal wrote just before the send is not this one, whatever either wall clock did since
-  if (after.pcFloor !== null) return at + coarse >= after.pcFloor;
+  if (after.pcFloor !== null) {
+    if (at >= after.pcFloor) return true;
+    // a whole-second turn may hold the floor in its second; one of an earlier second was written before it
+    if (at + coarse <= after.pcFloor) return false;
+    // stamped before the chat's first read, no turns were shown to rule out an older one of that
+    // second: the same guard as a send with no turns shown above
+    return after.unread !== true || last || answeredAt >= at + coarse;
+  }
   return after.latest === null || at + coarse + (after.takenAt - after.latest) > send.at;
 }
 
@@ -173,6 +182,20 @@ export function waitingBaseline(key: string, now = performance.now(), wall = Dat
 export function observeWaitingClock(key: string, serverTime: string | null | undefined, received = performance.now(), receivedWall = Date.now()): void {
   const pcTime = serverTime == null ? Number.NaN : Date.parse(serverTime);
   if (Number.isFinite(pcTime) && !((clocks.get(key)?.received ?? Number.NEGATIVE_INFINITY) > received)) clocks.set(key, { pcTime, received, receivedWall });
+}
+
+/**
+ * `after` bounded by the PC's own stamp of when it began typing the send (a queued row's
+ * `sending_at`, or a submit-result's): its turn is written after it on the PC's clock alone, whatever
+ * that clock or this browser's did since the chat's last read. A shown turn's time does not bound it
+ * then: a clock set back since writes the send's turn before it. Without a stamp (an older bridge)
+ * `after` stays as it is; `takenAt` (the browser's clock) dates a baseline made from the stamp alone.
+ */
+export function stampedBaseline(after: WaitingBaseline | null, sendingAt: string | undefined, takenAt = Date.now()): WaitingBaseline | null {
+  const stamped = sendingAt === undefined ? Number.NaN : Date.parse(sendingAt);
+  if (!Number.isFinite(stamped)) return after;
+  if (after === null) return { keys: new Set(), latest: null, takenAt, pcFloor: stamped, unread: true };
+  return { keys: after.keys, latest: null, takenAt: after.takenAt, pcFloor: stamped };
 }
 
 export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null): void {

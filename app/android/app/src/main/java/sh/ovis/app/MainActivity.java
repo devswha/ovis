@@ -82,6 +82,8 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(HerdrShellPlugin.class);
         registerPlugin(OvisAuthPlugin.class);
+        registerPlugin(SaveImagePlugin.class);
+        registerPlugin(OvisDirectPlugin.class);
         String link = takeAppLink(getIntent(), savedInstanceState == null);
         if (link != null) openAppLink(link);
         // the PC's key: its origin, or its scope on the hosted shell's origin for a relay PC. An

@@ -13,7 +13,7 @@ import type { UpdateStatus } from "../../../shared/update.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
+import { accountProvidersOf, accountServiceOf, AccountService, offeredProviders, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
 import { enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -35,6 +35,7 @@ import { setTransport } from "../transport.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
+import { nativeDirectSocket } from "./directSocket.ts";
 import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry } from "./shellState.ts";
@@ -140,7 +141,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
   const accountStore = mount.accountStore ?? indexedAccountStore;
   const accountService = mount.accountService === undefined ? accountServiceOf(document) : mount.accountService;
-  const accountProviders = mount.accountProviders ?? accountProvidersOf(document);
+  let accountProviders = mount.accountProviders ?? accountProvidersOf(document);
   const account = new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
   const openSignIn = mount.openSignIn ?? ((url: string) => { window.location.assign(url); });
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
@@ -177,6 +178,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const setTypedJoin = (serverId: string | null): void => {
     try { if (serverId === null) sessionStorage.removeItem(TYPED_JOIN); else sessionStorage.setItem(TYPED_JOIN, serverId); } catch { /* no storage: the plain comparison stays */ }
   };
+  /** the phone apps' way to the PC's direct carriers; none in a browser, which reaches the PC through the relay only */
+  const directSocket = nativeDirectSocket();
   /** the offer a typed code found, until its ID is compared on screen */
   let codeOffer: RelayOffer | null = null;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -200,7 +203,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   const toFront = (): void => navigate("/");
 
+  let shown: RelayShellState | null = null;
+  // the build's list shows at once; the service's own answer replaces it, so a Google button
+  // appears only once the service says it is set up for Google
+  if (accountService !== null && mount.accountProviders === undefined) {
+    offeredProviders(accountService, accountProviders, mount.accountFetch ? { fetch: mount.accountFetch } : {}).then((offered) => {
+      if (offered.providers.join() === accountProviders.join()) return;
+      accountProviders = offered.providers;
+      if (shown !== null) show(shown);
+    }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
+  }
+
   const show = (state: RelayShellState): void => {
+    shown = state;
     shell ??= createRoot(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
       createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
@@ -335,6 +350,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...(accountKey ? { accountKey, intent } : {}),
+        ...(directSocket ? { directSocket } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;

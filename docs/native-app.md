@@ -387,6 +387,12 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   for Try again and Change PC. For the same reason `error.html` carries its own style and
   script, which `app/scripts/build-web.ts` inlines.
 - The manifest allows cleartext http to any host (see the connect screen's warning above).
+- The WebView has no download handler and no Web Share, so a download link does nothing there.
+  Download in the chat's image viewer hands the picture's bytes, read by the page (relay pictures
+  through the relay), to `SaveImagePlugin` (`OvisSave`), which writes them to Downloads through
+  MediaStore with no storage permission, as Chrome saves a download. Android 8 and 9 give an app
+  that without the storage permission, so there it opens the share sheet with the picture instead.
+  An app built before the plugin makes the viewer say it couldn't save.
 - A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
   PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
   `https://app.ovis.sh/s/`, which Android verifies against
@@ -523,6 +529,25 @@ hosted app in the phone's browser.
 Files load as in a browser without a service worker ([relay files](relay.md#files)), since the
 app's web view has none ([Spike results](#spike-results-2026-10-19)): each picture, PDF or video
 loads whole, up to 64 MiB, before it shows, so a video can't skip ahead while it loads.
+
+### Direct on the same network
+
+A page on https cannot open the PC's plain `ws://` direct carrier ([relay.md](relay.md#direct-on-the-same-network)),
+so the apps' `OvisDirect` plugin opens it for the hosted app (`app/ios/App/App/OvisDirectPlugin.swift`,
+`app/android/app/src/main/java/sh/ovis/app/OvisDirectPlugin.java`, `src/lib/relay/directSocket.ts`):
+
+- It answers only the main frame of `https://app.ovis.sh`: on iOS `DirectCallGate` stands in front of
+  Capacitor's message handler, which lets any frame call; on Android Capacitor's own origin rule and
+  main-frame check apply, and the plugin refuses without the WebView's message listener.
+- It opens only `ws://<10/8, 172.16/12, 192.168/16 or 169.254/16 address>:<port>/v1/ws?v=1`, at most
+  two at once, and closes them when a new page loads. Noise inside the channel proves the PC.
+- Frames cross the bridge as `{ id, kind, data }` (binary as base64), in order; the page acknowledges
+  what it took, and a socket with more than 4 MiB or 16,384 messages unacknowledged is closed (1009).
+- iOS asks for Local Network access the first time (`NSLocalNetworkUsageDescription`); declined, the
+  app stays on the relay. The simulator does not model that prompt: check it on a real iPhone.
+  Android needs no permission while `targetSdkVersion` is below 37; at 37 add
+  `ACCESS_LOCAL_NETWORK`. Android has no WebSocket library, so `DirectSocket.java` is a small
+  `ws://` client of its own.
 
 ## Risks and open questions
 

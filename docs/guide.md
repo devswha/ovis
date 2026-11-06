@@ -115,8 +115,7 @@ two panes trade places. Drop it on another pane's body to move it beside that pa
 nearest the pointer; the highlighted half shows where it goes. Within its own tab a title only
 arranges the tab: to open it in a half, drop it on the other half while that half shows another tab.
 
-To see more than two panes at once, turn on **Settings > Terminal > Split into rows and columns**.
-Then drop a pane on the edge of another pane in the split to open it beside, above or below that
+To see more than two panes at once, drop a pane on the edge of another pane in the split to open it beside, above or below that
 pane, up to four at once, or on its middle to open it in that pane's place. Drag the line between
 two panes, or focus it and use the arrow keys, to resize them.
 
@@ -149,7 +148,7 @@ bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
 
-`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. The actions start, stop and report on the server:
+`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. To link the PC through the relay from its terminal, `link` signs it in to your account and approves the device that adds it, and `link --code` shows a code to type and the relay QR code, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout. The actions start, stop and report on the server:
 
 ```bash
 herdr plugin action invoke devswha.ovis.start    # leaves a running server alone
@@ -461,7 +460,7 @@ The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, n
 
 Step by step:
 
-1. On the PC, open **Settings → Phone & devices**, choose **Connect** next to **Connect a phone**, and turn on the switch on the **Ovis relay** card. Once it says **Online**, a QR code shows below. It works for ten minutes, and **New code** makes another.
+1. On the PC, open **Settings → Devices and PCs**, choose **Connect** next to **Connect a device**, and turn on the **Ovis relay** switch. Once it is online, a QR code shows with a code to type beside it. Both work for ten minutes, and **Refresh** makes new ones. Signed in to your Ovis account, the dialog asks the new device to sign in instead, and you approve it once on a device already in the account; **Connect with a code (no sign-in)** still shows the QR code. The relay's switch and **Reset relay identity** are also under **More settings** on that page.
 2. Scan the QR code with the phone's camera. Ovis opens in the phone's browser at `app.ovis.sh` and asks whether to pair with this PC: tap **Pair**.
 3. Install it: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app** or **Add to Home screen** from its menu. Then open the **⋯** menu at the top right and tap **Alerts** to get alerts on this phone. iPhone needs iOS 16.4+ and the home-screen app.
 
@@ -469,7 +468,7 @@ If the relay cannot start before its link exists, the switch stays off and shows
 **The relay did not start: …** with the reason. Fix the cause, then press **Try again**.
 A link that already exists stays on while retrying a connection error.
 
-The phone pairs once. It makes a key of its own for this PC, which never leaves the phone, and proves itself with it on every connection, so there's no token or password to type. The PC lists the phone under **Phone & devices**, marked **via relay**, and **Revoke** there removes it and closes its connections at once. Opened again later, the app connects by itself. Each PC is an app of its own: pair another PC from its own QR code, and `app.ovis.sh` lists every PC the phone is paired with.
+The phone pairs once. It makes a key of its own for this PC, which never leaves the phone, and proves itself with it on every connection, so there's no token or password to type. The PC lists the phone under **Devices and PCs → My devices**, marked **via relay**, and **Revoke** there removes it and closes its connections at once. Opened again later, the app connects by itself. Each PC is an app of its own: pair another PC from its own QR code, and `app.ovis.sh` lists every PC the phone is paired with.
 
 **On an iPhone or iPad, add it to the Home Screen to stay paired.** In a Safari tab, the phone's key for a PC can be cleared after a week without a visit, and the phone then has to pair again. The home-screen app keeps it, and the app reminds you of this in Safari.
 
@@ -482,7 +481,7 @@ The phone pairs once. It makes a key of its own for this PC, which never leaves 
 Good to know:
 
 - Relay controls require drive access and a direct connection to this PC. A visitor signed in
-  through Portal can read the state in Connect a phone, with an explanation, but gets no relay
+  through Portal can read the state in Connect a device, with an explanation, but gets no relay
   switch, no QR code and no identity reset. Relay changes answer `403 read_only` for the default watch visitor;
   even a saved drive invitation gets `403 owner_only`, because the watch guard runs first
   ([`server/dispatch.ts:223-243`](../server/dispatch.ts#L223-L243)).
