@@ -9,7 +9,7 @@ import { coreSocket } from "../herdr-core/discovery.ts";
 // A script that names a test session but never ran scripts/test-herdr.ts (an import Bun drops
 // because its binding is unused) is left on herdr's default socket: the user's own session.
 // HOME is a temp folder here, so the default socket is nobody's and nothing live is reached.
-const NAMES = ["HOME", "HERDR_SOCKET", "HERDR_TEST_SESSION", "HERDR_TEST_LIVE", "OVIS_ALLOW_LIVE_HERDR", "HC_SOCKET", "HC_SESSION"] as const;
+const NAMES = ["HOME", "XDG_CONFIG_HOME", "HERDR_SOCKET", "HERDR_TEST_SESSION", "HERDR_TEST_LIVE", "OVIS_ALLOW_LIVE_HERDR", "HC_SOCKET", "HC_SESSION"] as const;
 const saved = Object.fromEntries(NAMES.map((name) => [name, process.env[name]]));
 const home = mkdtempSync(join(tmpdir(), "ovis-live-guard-"));
 afterEach(() => {
@@ -36,6 +36,24 @@ it("refuses herdr's default socket to a process that names a test session", asyn
     expect(codeOf(reached)).not.toBe("live_herdr_refused");
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("refuses herdr's socket under XDG_CONFIG_HOME, but not under a temp XDG_CONFIG_HOME a test chose", async () => {
+  // regression (fails on main): a child a test spawns with XDG_CONFIG_HOME=<temp>/config was refused its own herdr there
+  isolatedIntent();
+  const temp = mkdtempSync(join(tmpdir(), "ovis-live-guard-xdg-"));
+  try {
+    process.env["XDG_CONFIG_HOME"] = temp;
+    const own = await herdrRpc("ping", {}, join(temp, "herdr", "herdr.sock")).then(() => null, (error: unknown) => error);
+    expect(codeOf(own)).not.toBe("live_herdr_refused");
+    // a config folder outside the temp folder is the user's: still refused, before anything connects
+    const config = join(import.meta.dir, "no-such-config");
+    process.env["XDG_CONFIG_HOME"] = config;
+    const users = await herdrRpc("ping", {}, join(config, "herdr", "herdr.sock")).then(() => null, (error: unknown) => error);
+    expect(codeOf(users)).toBe("live_herdr_refused");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
   }
 });
 

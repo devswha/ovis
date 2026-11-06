@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve, win32 } from "node:path";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ConnectionDiagnostics, transportFailureCode } from "../connection-diagnostics.ts";
 import type {
@@ -50,20 +50,35 @@ export function sameSocket(path: string): string {
 /**
  * A process that names a test session never reaches herdr's default socket, the user's own session:
  * a script whose scripts/test-herdr.ts import Bun dropped (its binding unused) would otherwise create,
- * type into and close panes there. Both homes count (HOME may be changed for a fixture after the
- * socket was chosen), and every spelling of the same socket.
+ * type into and close panes there. Every home counts (HOME may be changed for a fixture after the
+ * socket was chosen; the account's own home stays the user's), and every spelling of the same socket.
+ * An XDG_CONFIG_HOME inside the temp folder is a test's own (a child it spawned with a temp config),
+ * never the user's: refusing it would refuse the test's own herdr.
  */
 function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
   if (!liveSessionsRefused(env)) return;
-  const homes = [...new Set([env["HOME"], homedir()].filter((home): home is string => Boolean(home)))];
+  const homes = [...new Set([env["HOME"], homedir(), accountHome()].filter((home): home is string => Boolean(home)))];
+  const config = env["XDG_CONFIG_HOME"];
   const defaults = [
     ...homes.map((home) => join(home, ".config", "herdr", "herdr.sock")),
-    ...(env["XDG_CONFIG_HOME"] ? [join(env["XDG_CONFIG_HOME"], "herdr", "herdr.sock")] : []),
+    ...(config && !insideTemp(config) ? [join(config, "herdr", "herdr.sock")] : []),
     ...(process.platform === "win32" && env["APPDATA"] ? [`${env["APPDATA"]}\\herdr\\herdr.sock`] : []),
   ].map(sameSocket);
   if (defaults.includes(sameSocket(socketPath))) {
     throw new HerdrError("live_herdr_refused", `HERDR_TEST_SESSION=${env["HERDR_TEST_SESSION"]} is set, but this call would reach the user's own herdr at ${socketPath}: import scripts/test-herdr.ts for its effect (import "./test-herdr.ts"), or set OVIS_ALLOW_LIVE_HERDR=1`);
   }
+}
+
+/** The home the account database names, whatever HOME says. */
+function accountHome(): string | undefined {
+  try { return userInfo().homedir; } catch { return undefined; }
+}
+
+/** Whether `path` lies inside this process's temp folder (through the folder's links). */
+function insideTemp(path: string): boolean {
+  const folder = (dir: string) => dirname(sameSocket(join(dir, "x")));
+  const inside = relative(folder(tmpdir()), folder(path));
+  return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
 }
 
 /**
