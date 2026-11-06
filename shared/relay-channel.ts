@@ -473,6 +473,24 @@ export function probeDirect(offer: RelayOffer, direct: string, socketFor: (url: 
   });
 }
 
+/** 100.64.0.0/10, the shared address space Tailscale gives each device: a route past the same network's. */
+function tailnetCarrier(carrier: string): boolean {
+  const match = /^ws:\/\/100\.(\d{1,3})\./.exec(carrier);
+  return match !== null && Number(match[1]) >= 64 && Number(match[1]) <= 127;
+}
+
+/**
+ * A PC's direct carriers in the order to try them: same-network addresses first, then Tailscale ones, each kind in
+ * the order the PC named them, except that `worked` (the carrier that last carried the channel) leads its kind.
+ * The relay always comes after all of them.
+ */
+export function orderDirectRoutes(carriers: readonly string[], worked?: string): string[] {
+  const rank = (carrier: string): number => tailnetCarrier(carrier) ? 1 : 0;
+  return carriers.map((carrier, index) => ({ carrier, index }))
+    .sort((a, b) => rank(a.carrier) - rank(b.carrier) || Number(b.carrier === worked) - Number(a.carrier === worked) || a.index - b.index)
+    .map(({ carrier }) => carrier);
+}
+
 /**
  * Opens through `first` (the offer's own relay by default) and, when the offer names one of Ovis's
  * regional relays and that attempt failed before the PC answered (so no pairing code was spent),

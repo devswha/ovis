@@ -18,8 +18,14 @@ function stateDir(): string {
   return dir;
 }
 
-/** PC B with the relay on, PC A that adds it through the relay, and the local relay between them. */
-async function twoPcs() {
+/** The private address B names for its direct carrier in these tests; A's dials to it reach B's loopback listener. */
+const LAN = "10.99.0.1";
+
+/**
+ * PC B with the relay on, PC A that adds it through the relay, and the local relay between them. `direct`: B also
+ * listens on its network, and A reaches that address on the dials `reachable` lets through (else nothing answers).
+ */
+async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean } } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -43,7 +49,8 @@ async function twoPcs() {
     return socket;
   };
   const bState = stateDir();
-  const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}` });
+  const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
+    ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => [`ws://${LAN}:${port}`], peerAllowed: () => true, preferredPort: 0 } } : {}) });
   const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
@@ -60,14 +67,22 @@ async function twoPcs() {
   expect(approvals.localOnlyOpen()).toBe(true);
   const { url: link } = await offered.json() as { url: string };
   const aState = stateDir();
+  const lan = { dials: 0 };
+  const onLan = (url: string): WebSocket => {
+    const target = new URL(url);
+    expect(target.hostname).toBe(LAN);
+    // port 1 on loopback refuses at once, as an address of another network does
+    const port = options.direct?.reachable(++lan.dials) ? target.port : "1";
+    return new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`);
+  };
   const startA = () => {
-    const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local });
+    const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local, relayPcDirectSocket: onLan });
     let stopped = false;
     const stop = () => { if (!stopped) { stopped = true; a.stop(); } };
     cleanup.push(stop);
     return { app: a, base: `http://127.0.0.1:${a.port}`, stop };
   };
-  return { b, bBase, link, aState, startA, delay };
+  return { b, bBase, link, aState, startA, delay, lan };
 }
 
 const findRelayPc = (base: string, code: string) => postRelay(base, { code }, "/code");
@@ -248,4 +263,56 @@ it("waits for a PC that answers slower than an idle connection's default limit",
   delay.ms = 12_000;
   const slow = await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } });
   expect(slow.status).toBe(200);
+}, 60_000);
+
+/** Opens a terminal socket for the PC through A and resolves with its first frame. */
+async function terminalAnswers(base: string, machineId: string): Promise<string> {
+  const opened = deferred<string>();
+  const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  const terminal = new RuntimeSocket(`${base.replace("http:", "ws:")}/ws?machine_id=${machineId}`, { headers: { origin: base } });
+  terminal.onmessage = (event) => opened.resolve(String(event.data));
+  terminal.onclose = (event) => opened.reject(new Error(`terminal socket closed ${event.code}`));
+  try { return await bounded(opened.promise); } finally { terminal.onclose = null; terminal.close(); }
+}
+
+it("moves a relay PC's connection to its same-network address without dropping it, and starts there after a restart", async () => {
+  // Given B listening on its network as well, and A on that network
+  const { link, startA } = await twoPcs({ direct: { reachable: () => true } });
+  let a = startA();
+  const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
+  // When A has paired through the relay (pairing never goes direct) and B named its address inside the channel
+  const seen: string[] = [];
+  const moved = await machineWhen(a.base, (pc) => {
+    if (pc.id !== machine.id) return false;
+    if (pc.state !== "connected" || seen.length > 0) seen.push(pc.state);
+    return pc.route === "direct";
+  });
+  // Then the connection moved to that address with no disconnect in between, and still carries routes and terminals
+  expect(moved.state).toBe("connected");
+  expect(seen.filter((state) => state !== "connected")).toEqual([]);
+  expect((await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } })).status).toBe(200);
+  expect(JSON.parse(await terminalAnswers(a.base, machine.id)).type).toBeString();
+
+  // and a restart signs in there first, from the address A kept with the key
+  a.stop();
+  a = startA();
+  const back = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
+  expect(back.route).toBe("direct");
+}, 60_000);
+
+it("keeps a relay PC on the relay while its same-network address does not answer", async () => {
+  // Given B listening on a network A is not on
+  const { link, startA, lan } = await twoPcs({ direct: { reachable: () => false } });
+  let a = startA();
+  const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
+  await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
+  // When A restarts, it tries that address first
+  a.stop();
+  const dialsBefore = lan.dials;
+  a = startA();
+  const back = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
+  // Then it falls back to the relay by itself, and the PC works there
+  expect(lan.dials).toBeGreaterThan(dialsBefore);
+  expect(back.route).toBe("relay");
+  expect(JSON.parse(await terminalAnswers(a.base, machine.id)).type).toBeString();
 }, 60_000);
