@@ -111,6 +111,8 @@ export interface Settings {
   agentMarks: AgentMarks;
   /** Settings -> Lock pinned agents (experimental): the Agents list offers Lock agent, and the locks below hold; off, none does */
   agentLocks: boolean;
+  /** Settings -> Experimental -> OpenCode: subagent ends from their session: the server ends an OpenCode subagent where its parent session's record does (server/opencode-subagents.ts); off, by its own rows */
+  opencodeParentEnds: boolean;
   /** pinned agent rows this app does not close (lib/paneLocks.ts), by their pin key; a lock holds only while its row is pinned */
   lockedAgents: string[];
   /** Settings -> Named agent groups: the Agents list splits into the groups below, which New workspace and New tab offer (lib/namedAgentGroups.ts); off, none is drawn or offered */
@@ -234,8 +236,6 @@ export interface Settings {
   alertInput: boolean;
   /** alert this device when a turn finishes: never, after a long one, or every one */
   alertDone: DoneAlerts;
-  /** while the app is on screen, the same alerts drop in from the top edge (components/Droplet.tsx) */
-  alertInApp: boolean;
   /** an open tab chimes for the same alerts (lib/alertSound.ts), heard also when a Focus silences notifications; off until chosen */
   alertSound: boolean;
   /** one-tap replies above the composer, in order; blank ones are kept while being typed, never shown */
@@ -297,12 +297,12 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, splitGrid, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, the agent groups, the
+ * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, splitGrid, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, the agent groups, the
  * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
-  | "quickReplies" | "agentLocks" | "lockedAgents" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "filesDocuments" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
+  | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "filesDocuments" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
   | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "splitGrid" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "chatRequestDetails" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
@@ -342,7 +342,8 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
     alertsOn: settings.alertsOn,
     alertInput: settings.alertInput,
     alertDone: settings.alertDone,
-    alertInApp: settings.alertInApp,
+    // Settings no longer has an In the app row: in-app alerts always drop in, and telemetry keeps the field
+    alertInApp: true,
     alertSound: settings.alertSound,
     showQuickReplies: settings.showQuickReplies,
     showUsage: settings.showUsage,
@@ -378,7 +379,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  */
 export const SETTING_SCOPE = {
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
   terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", herdrPrefixKeys: "device", density: "device",
@@ -426,7 +427,7 @@ export const SETTING_SCOPE = {
   pcLoad: "device",
   // a phone may group its agents by state while a desk keeps herdr's order, as with the filter
   agentGroups: "device", agentGroupSort: "device",
-  keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertInApp: "device", alertSound: "device",
+  keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertSound: "device",
   paletteLight: "device", paletteDark: "device", statusIndicators: "device",
   voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device",
   // Viewer layout follows this screen, as chatWidth does.
@@ -461,6 +462,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentGroupSort: "wait",
   agentMarks: "color",
   agentLocks: false,
+  opencodeParentEnds: false,
   lockedAgents: [],
   agentNamedGroups: false,
   agentGroupNames: [],
@@ -509,7 +511,6 @@ export const DEFAULT_SETTINGS: Settings = {
   alertsOn: true,
   alertInput: true,
   alertDone: "long",
-  alertInApp: true,
   alertSound: false,
   quickReplies: ["continue", "yes", "no", "commit and push", "retry"],
   showQuickReplies: false,
@@ -687,6 +688,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,
     agentLocks: typeof record["agentLocks"] === "boolean" ? record["agentLocks"] : DEFAULT_SETTINGS.agentLocks,
+    opencodeParentEnds: typeof record["opencodeParentEnds"] === "boolean" ? record["opencodeParentEnds"] : DEFAULT_SETTINGS.opencodeParentEnds,
     lockedAgents: Array.isArray(record["lockedAgents"])
       ? [...new Set(record["lockedAgents"].filter((key): key is string => typeof key === "string" && key.length > 0))].slice(0, MAX_PINS)
       : [...DEFAULT_SETTINGS.lockedAgents],
@@ -743,7 +745,6 @@ export function sanitizeSettings(raw: unknown): Settings {
     alertsOn: typeof record["alertsOn"] === "boolean" ? record["alertsOn"] : DEFAULT_SETTINGS.alertsOn,
     alertInput: typeof record["alertInput"] === "boolean" ? record["alertInput"] : DEFAULT_SETTINGS.alertInput,
     alertDone: record["alertDone"] === "off" || record["alertDone"] === "long" || record["alertDone"] === "always" ? record["alertDone"] : DEFAULT_SETTINGS.alertDone,
-    alertInApp: typeof record["alertInApp"] === "boolean" ? record["alertInApp"] : DEFAULT_SETTINGS.alertInApp,
     alertSound: typeof record["alertSound"] === "boolean" ? record["alertSound"] : DEFAULT_SETTINGS.alertSound,
     // kept as typed (a trailing space is the next word being started), only bounded
     quickReplies: Array.isArray(record["quickReplies"])

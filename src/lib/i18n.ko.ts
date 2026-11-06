@@ -1,5 +1,6 @@
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
+import { SETTINGS_AGENTS_KO } from "./i18n/settings-agents.ko.ts";
 import { SETTINGS_COMPOSER_KO } from "./i18n/settings-composer.ko.ts";
 import { SETTINGS_LAYOUT_KO } from "./i18n/settings-layout.ko.ts";
 import { TERMINAL_KO } from "./i18n/terminal.ko.ts";
@@ -27,6 +28,7 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "보기 전용",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "붙여넣지 않았습니다: 파일 경로에 줄바꿈이 있어 터미널이 Enter로 받아들입니다.",
   "Attach files": "파일 첨부",
   "Sign out": "로그아웃",
@@ -163,7 +165,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "명령 팔레트 (⌘⇧K)",
   "Could not sign out. Try again.": "로그아웃하지 못했습니다. 다시 시도해 주세요.",
   "Retry": "다시 시도",
-  "Notify me when a pane needs input or finishes": "패널이 입력을 기다리거나 끝나면 알려줍니다",
   "On, pushed to this device": "켜짐, 이 기기로 푸시",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "알림 켜짐, 이 기기로 푸시됩니다. 앱을 닫아도 옵니다. 누르면 꺼집니다",
   "Off on this device": "이 기기에서 꺼짐",
@@ -200,10 +201,7 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
   "Via the local network": "로컬 네트워크를 거쳐 연결",
   "Straight to this address": "이 주소로 바로 연결",
-  "Sessions on this PC": "이 PC의 세션",
-  "{count} working": "작업 중 {count}개",
   "{count} waiting for you": "내 응답 대기 {count}개",
-  "{count} done": "완료 {count}개",
   "Open the next session waiting for you": "응답을 기다리는 다음 세션 열기",
   "Tab {index} of {count}": "탭 {count}개 중 {index}번째",
   "Tabs of {workspace}": "{workspace}의 탭",
@@ -437,7 +435,6 @@ const BASE: Record<string, string> = {
   "{used} of {window} tokens": "{window} 토큰 중 {used}",
   "Suggestion chip": "제안 칩",
   "Artifacts chip": "아티팩트 칩",
-  "Side conversations chip (experimental)": "곁가지 대화 칩 (실험적)",
   "Permission mode": "권한 모드",
   "Model": "모델",
   "One model name, without spaces.": "띄어쓰기 없는 모델 이름 하나를 적으세요.",
@@ -466,7 +463,7 @@ const BASE: Record<string, string> = {
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const KO_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO },
+  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO, ...SETTINGS_AGENTS_KO },
   terminal: TERMINAL_KO,
   composer: COMPOSER_KO,
   chat: CHAT_KO,

@@ -1,5 +1,6 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
+import { SETTINGS_AGENTS_ZH } from "./i18n/settings-agents.zh.ts";
 import { SETTINGS_COMPOSER_ZH } from "./i18n/settings-composer.zh.ts";
 import { SETTINGS_LAYOUT_ZH } from "./i18n/settings-layout.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
@@ -31,6 +32,7 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "仅查看",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
   "Attach files": "附加文件",
   "Sign out": "退出登录",
@@ -167,7 +169,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "命令面板 (⌘⇧K)",
   "Could not sign out. Try again.": "无法退出登录，请重试。",
   "Retry": "重试",
-  "Notify me when a pane needs input or finishes": "窗格需要输入或完成时通知我",
   "On, pushed to this device": "已开启，推送到此设备",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "提醒已开启，推送到此设备。即使关闭应用也会收到。点按可关闭",
   "Off on this device": "此设备已关闭",
@@ -204,10 +205,7 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
-  "Sessions on this PC": "此 PC 上的会话",
-  "{count} working": "{count} 个工作中",
   "{count} waiting for you": "{count} 个等待你回应",
-  "{count} done": "{count} 个已完成",
   "Open the next session waiting for you": "打开下一个等待你回应的会话",
   "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
   "Tabs of {workspace}": "{workspace} 的标签页",
@@ -441,7 +439,6 @@ const BASE: Record<string, string> = {
   "{used} of {window} tokens": "{used} / {window} Token",
   "Suggestion chip": "建议标签",
   "Artifacts chip": "Artifact 标签",
-  "Side conversations chip (experimental)": "旁支对话标签（实验性）",
   "Permission mode": "权限模式",
   "Model": "模型",
   "One model name, without spaces.": "填写一个不含空格的模型名称。",
@@ -470,7 +467,7 @@ const BASE: Record<string, string> = {
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH },
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH, ...SETTINGS_AGENTS_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,
