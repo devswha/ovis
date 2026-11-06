@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { AppWindow, ArrowLeft, Bell, Bot, Box, CheckCheck, ChevronLeft, ChevronRight, ClipboardCopy, Command, FlaskConical, Globe, Image as ImageIcon, Info, Keyboard, LayoutGrid, Lock, MessageCircleQuestionMark, MessageSquare, MessagesSquare, Monitor, Mouse, MousePointer2, OctagonX, Palette, Plus, Puzzle, Search, ShieldAlert, Smartphone, SquareTerminal, Star, Tags, TextCursorInput, Timer, Volume2, X, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowLeft, Bell, Bot, Box, CheckCheck, ChevronLeft, ChevronRight, ClipboardCopy, Command, FlaskConical, Globe, Image as ImageIcon, Info, Keyboard, Lock, MessageCircleQuestionMark, MessageSquare, MessagesSquare, Monitor, Mouse, MousePointer2, OctagonX, Palette, Plus, Puzzle, Search, ShieldAlert, Smartphone, SquareTerminal, Star, Tags, TextCursorInput, Timer, Volume2, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -693,16 +693,13 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault }: { ke
     </SettingsGroup>
     {/* the key bar's own rows live in its editor; a search here still finds them */}
     {searching && <KeyBarToggles />}
-    <SettingsFold kind="more" keys={["paneClipboard", "terminalImages", "splitGrid"]}>
+    <SettingsFold kind="more" keys={["paneClipboard", "terminalImages"]}>
       <SettingsGroup section="terminal-more">
         <SettingsRow label={t("Clipboard from a pane")} icon={ClipboardCopy} reset={["paneClipboard"]}>
           <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
         </SettingsRow>
         <SettingsRow label={t("Pictures in the terminal")} icon={ImageIcon} reset={["terminalImages"]}>
           <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages ?? picturesByDefault} onChange={(terminalImages) => update({ terminalImages })} />
-        </SettingsRow>
-        <SettingsRow label={t("Split into rows and columns")} icon={LayoutGrid} reset={["splitGrid"]}>
-          <Toggle label={t("Split into rows and columns")} checked={settings.splitGrid} onChange={(splitGrid) => update({ splitGrid })} />
         </SettingsRow>
       </SettingsGroup>
     </SettingsFold>
