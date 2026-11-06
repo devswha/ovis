@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { answerKeys, claudeRewindOpen, parseInteractivePrompt } from "../prompt.ts";
+import { withoutClaudeSidePanel } from "./claude.ts";
 import { executeInteractionPlan } from "./interaction-plan.ts";
 import { registry } from "./registry.ts";
 import { ANSI_RE, parsedByPublicPrompt, type AnswerStep } from "./shared.ts";
@@ -323,6 +324,39 @@ describe("Claude's question beside its fullscreen diff panel", () => {
     const prompt = parseInteractivePrompt("claude", lines.join("\n"));
     expect(prompt).toMatchObject({ kind: "question", title: "Color", question: "Which color?" });
     expect(labels(prompt)).toEqual(["Red", "Green", "Blue"]);
+  });
+
+  test("reads a command's approval beside the panel drawn without its edge (#2730)", () => {
+    // live-captured in a 196x45 pane with the diff plugin off: the panel is a plain sidebar from column 109,
+    // its "No changes this session" on the question's row and its file note on the last row
+    const edgeless = (version: string, state: string) =>
+      readFileSync(new URL(`../fixtures/claude-diff-panel-${version}-borderless-${state}-196.txt`, import.meta.url), "utf8");
+    for (const version of ["2.1.318", "2.1.319"]) {
+      const prompt = parseInteractivePrompt("claude", edgeless(version, "bash"));
+      expect(prompt, version).toMatchObject({ title: "Bash command", question: "Do you want to proceed?" });
+      expect(prompt!.body, version).toContain("git status --short > status.txt");
+      expect(labels(prompt), version).toEqual(["Yes", "Yes, and always allow access to /home/user/demo/repo from this project",
+        "Yes, and switch to auto mode · auto mode handles these prompts for you", "No"]);
+      expect(JSON.stringify(prompt), version).not.toMatch(/No changes this session|edited before this session|✕/);
+    }
+  });
+
+  test("cuts no row of a menu whose rule spans the pane", () => {
+    // a narrower rule above a full-width one, and a `✕` past it: the session's column is the pane
+    const screen = [
+      "Claude Code".padEnd(150) + "✕",
+      "─".repeat(60),
+      "Text wider than that rule ".repeat(6),
+      "─".repeat(160),
+      " Bash command",
+      " git status",
+      " Do you want to proceed?",
+      " ❯ 1. Yes",
+      "   2. No",
+      "",
+      " Esc to cancel · Tab to amend",
+    ].join("\n");
+    expect(withoutClaudeSidePanel(screen)).toBe(screen);
   });
 
   test("an answered question beside the panel is not read as open", () => {
