@@ -184,3 +184,27 @@ it("refuses pairing without a code to an open LAN window, which never hears of a
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+it("refuses Send later to a Portal visitor, whose lost access nothing would check when the message goes (#2919)", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-portal-scheduled-"));
+  const portal = new PortalService({ stateDir });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, portal, token: "shared-token", tailscaleOwner: null, machines: false, sidecar: false });
+  const proof = spyOn(portal, "vouches").mockReturnValue(true);
+  const role = spyOn(portal, "roleFor").mockReturnValue("drive");
+  const ctx: ServerContext = { ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout: () => {}, upgrade: () => false };
+  const headers = { host: `127.0.0.1:${app.port}`, origin: `http://127.0.0.1:${app.port}`, "content-type": "application/json",
+    "x-portal-proof": "valid-portal-proof", "x-portal-user": "visitor", "x-portal-auth": "credential" };
+  try {
+    const created = await handleRequest(new Request(`http://127.0.0.1:${app.port}/api/scheduled`, { method: "POST", headers,
+      body: JSON.stringify({ pane_id: "p1", text: "later", send_at: new Date(Date.now() + 60_000).toISOString() }) }), ctx);
+    expect(created?.status).toBe(403);
+    expect(await created?.json()).toMatchObject({ error: { code: "owner_only" } });
+    expect(app.context.services.core.scheduled.list()).toEqual([]);
+  } finally {
+    proof.mockRestore();
+    role.mockRestore();
+    await portal.shutdown();
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

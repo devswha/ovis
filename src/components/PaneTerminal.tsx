@@ -44,6 +44,9 @@ import { RenderBoundary } from "./RenderBoundary.tsx";
 import { Composer } from "./Composer.tsx";
 import { ComposerNotices, type ComposerNoticeRow } from "./ComposerNotices.tsx";
 import { PendingMessages } from "./PendingMessages.tsx";
+import { ScheduledMessages, useScheduledMessages } from "./ScheduledMessages.tsx";
+import { shownInPane } from "../lib/sendLater.ts";
+import { scheduleMessage } from "../lib/api.ts";
 import type { AgentStatus, ClientRole, PlanSummary, ServerMessage } from "../../shared/protocol.ts";
 import type { PaneControls, PaneView } from "../lib/actions.ts";
 import { usePaneLane } from "../lib/chatLane.ts";
@@ -662,6 +665,12 @@ export function PaneTerminal({
   const queueOwner = paneId === null ? null : paneStorageId(machineId, paneId);
   const queued = useSyncExternalStore(queueStore.subscribe, () => queueStore.read(queueOwner ?? ""));
   const pending = useSyncExternalStore(pendingMessages.subscribe, () => pendingMessages.read(queueOwner ?? ""));
+  // the PC's scheduled messages (#2919), for a connection that may drive a PC that keeps them. Not for a PC reached through
+  // another PC's connection: that one forwards with its own credential, so a device revoked there could not stop what it scheduled
+  const scheduling = machineId === "local" && connected && !observing && socketRef.current?.canSchedule() === true;
+  // one held for a pane that is gone has no pane of its own to show in: every pane lists it, to read or discard
+  const scheduled = useScheduledMessages(machineId, scheduling ? socketRef.current : null, scheduling)
+    .filter((message) => shownInPane(message, paneId));
   useEffect(() => {
     if (!paneId || !queueOwner || !submitRetention) return;
     let release: (() => void) | undefined;
@@ -1404,6 +1413,7 @@ export function PaneTerminal({
           </ol>
         </section>
       )}
+      {presented && paneId !== null && chatMounted && !observing && scheduled.length > 0 && <ScheduledMessages machineId={machineId} messages={scheduled} connected={connected} />}
       {presented && paneId !== null && chatMounted && !observing && queueOwner !== null && pending.length > 0 && <PendingMessages
         key={`pending-${queueOwner}`}
         active={active}
@@ -1452,6 +1462,7 @@ export function PaneTerminal({
           notices={composerNotices}
           role={observing ? "observe" : role}
           onOpenHistory={historyOffered ? onOpenHistory : undefined}
+          onSchedule={scheduling ? async (text, sendAt) => { await scheduleMessage(paneId, text, sendAt, machineId); } : undefined}
           greeting={greetingDue ? (
             <div className={`composer-greeting${greeted ? "" : " is-out"}`} ref={greetingRef} aria-hidden={greeted ? undefined : true}>
               <p className="composer-greeting-title">{t("What should {agent} do in {folder}?", { agent: agentDisplayLabel(agent), folder })}</p>

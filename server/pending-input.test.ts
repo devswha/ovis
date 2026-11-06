@@ -561,3 +561,41 @@ describe("a pane moved to a new ID (#1503)", () => {
       }
     });
 });
+
+it("keeps a pane marked uncertain after its uncertain record went with its closed owner, until the pane's status changes (#2919)", () => {
+  let now = 0;
+  const store = new PendingInputs<string, null>(() => {}, () => now);
+  const identity = { agent: "codex", terminalId: "t", session: null };
+  store.status("p", "idle");
+  const item = store.enqueue("browser", "p", 1, "earlier", null, identity);
+  expect(store.claim(item, false)).toBe(true);
+  store.settle(item, { code: "submit_changed", message: "not confirmed" }, true);
+  store.close("browser");
+  now = 61_000;
+  store.expire();
+  expect(store.uncertainIn("p")).toBe(true);
+  store.status("p", "idle");
+  expect(store.uncertainIn("p")).toBe(true);
+  store.status("p", "working");
+  expect(store.uncertainIn("p")).toBe(false);
+});
+
+it("keeps the pane's uncertain mark and unconfirmed turn when herdr moves it to a new ID (#2951)", () => {
+  let now = 0;
+  const store = new PendingInputs<string, null>(() => {}, () => now);
+  const identity = { agent: "codex", terminalId: "t", session: null };
+  store.status("p", "idle");
+  const item = store.enqueue("browser", "p", 1, "earlier", null, identity);
+  expect(store.claim(item, false)).toBe(true);
+  store.settle(item, { code: "submit_changed", message: "not confirmed" }, true);
+  store.close("browser");
+  now = 61_000;
+  store.expire();
+  store.committingUnrecorded("p", "scheduled:1");
+  now = 200_000;
+  store.expire();
+  expect(store.turnUnconfirmed("p")).toBe(true);
+  store.move("p", "q", { code: "pane_moved", message: "moved" });
+  expect(store.uncertainIn("q")).toBe(true);
+  expect(store.turnUnconfirmed("q")).toBe(true);
+});

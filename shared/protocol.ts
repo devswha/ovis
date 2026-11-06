@@ -1090,6 +1090,22 @@ export interface PendingMessage {
   agent_only?: true;
 }
 
+/**
+ * A message the user scheduled for a pane's agent (feature "scheduled-send", #2919), kept and sent by the PC
+ * (server/scheduled-messages.ts). `scheduled`: waits for `send_at`; once due, for the agent's turn, `error` saying
+ * why it has not gone yet. `held`: not sent (its pane is gone, or runs another agent session): `error` says why, and
+ * it waits for Send now or Discard. `uncertain`: its delivery may have typed part of it; only Discard.
+ */
+export interface ScheduledMessage {
+  id: string;
+  pane_id: string;
+  text: string;
+  send_at: string;
+  created_at: string;
+  state: "scheduled" | "sending" | "held" | "uncertain";
+  error?: { code: string; message: string };
+}
+
 export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
   | { type: "machine-events"; enabled: boolean }
@@ -1239,7 +1255,7 @@ export interface ClientConnectionTrace {
  * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
  * attaching it (the `conversation-watch` and `prompt-watch` frames).
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "scheduled-send";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1297,6 +1313,8 @@ export type ServerMessage =
    * `dismissed` removes an uncertain copy, never proves withdrawal or delivery. Existing clients
    * remove owned IDs for any explicit outcome; Edit restores only `discarded`. */
   | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: PendingRemoval[] }
+  /** the PC's scheduled messages changed (feature "scheduled-send"): a connection that may drive reads GET /api/scheduled again. It names none of them */
+  | { type: "scheduled-changed" }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** agent-status push for ANY pane, attached or not (server-side status collector) */
   | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null; /** a pane's context, when the frame is about it (null: none reported now); it changes no status */ context?: PaneContext | null }

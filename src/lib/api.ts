@@ -11,6 +11,7 @@ import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "..
 import { parseSystemReport } from "./systemReport.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
+  ScheduledMessage,
   WorkspaceMoved,
   HerdrPane,
   AgentKind,
@@ -1452,6 +1453,31 @@ export async function fetchPanePromptState(paneId: string, machineId = "local"):
     restored: typeof body.restored === "string" && body.restored !== "" ? body.restored : null,
     outcomes: Array.isArray(body.outcomes) ? body.outcomes : [],
   };
+}
+
+/** GET /api/scheduled: the PC's scheduled messages, every pane's (#2919). */
+export async function fetchScheduled(machineId = "local"): Promise<ScheduledMessage[]> {
+  return (await getJson<{ messages: ScheduledMessage[] }>(machinePath(machineId, "scheduled"))).messages;
+}
+
+/** POST /api/scheduled: the PC sends `text` to the pane's agent at `sendAt` (an ISO time). */
+export async function scheduleMessage(paneId: string, text: string, sendAt: string, machineId = "local"): Promise<ScheduledMessage> {
+  return ((await (await sendJson(machinePath(machineId, "scheduled"), "POST", { pane_id: paneId, text, send_at: sendAt })).json()) as { message: ScheduledMessage }).message;
+}
+
+/** POST /api/scheduled/update: a new text or time; a held message is scheduled again. */
+export async function updateScheduled(id: string, change: { text?: string; sendAt?: string }, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "scheduled/update"), "POST", { id, ...(change.text === undefined ? {} : { text: change.text }), ...(change.sendAt === undefined ? {} : { send_at: change.sendAt }) });
+}
+
+/** POST /api/scheduled/discard */
+export async function discardScheduled(id: string, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "scheduled/discard"), "POST", { id });
+}
+
+/** POST /api/scheduled/send: Send now; ApiError 409 names why it was not sent, and the message stays. */
+export async function sendScheduledNow(id: string, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "scheduled/send"), "POST", { id });
 }
 
 /** POST /api/pane/prompt/answer: ApiError 409 `prompt_changed` when the menu moved on. */

@@ -48,7 +48,7 @@ import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.
 /** a focus or reconnect re-reads the panes for the daily active message at most this often */
 const VISIT_READ_MS = 10 * 60_000;
 
-export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, paneMoved, usage, usageLogin }: {
+export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, paneMoved, paneGone: paneGoneHook, usage, usageLogin }: {
   options: {
     stateDir?: string;
     codexHome?: string;
@@ -88,6 +88,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   holdPendingPane: (paneId: string, fault: { code: string; message: string }) => void;
   /** herdr moved a pane under a new ID: what the server keeps under the old one follows it (pending messages, the terminal) */
   paneMoved?: (from: string, to: string) => void;
+  /** a pane ended or closed: what the server keeps for it beyond its pending messages is told (scheduled messages) */
+  paneGone?: (paneId: string) => void;
   usage: UsageService;
   usageLogin: UsageLoginService;
 }) {
@@ -546,6 +548,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     finishes.ended(paneId);
     if (usageLogin.ended(paneId)) usage.invalidate();
     holdPendingPane(paneId, { code: "pane_not_found", message: "The pane ended; its pending messages were not sent" });
+    paneGoneHook?.(paneId);
     pending.forget(paneId);
     waits.forget(paneId);
     completions.forget(paneId);

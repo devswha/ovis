@@ -1,0 +1,80 @@
+.send-later-dialog {
+  width: min(100%, 460px);
+}
+
+.send-later-dialog:focus {
+  outline: none;
+}
+
+/* the form only groups the fields with their Schedule button: the modal lays out its body and footer */
+.send-later-form {
+  display: contents;
+}
+
+.send-later-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.send-later-label {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.send-later-text {
+  height: auto;
+  min-height: calc(3 * var(--control-h));
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+  line-height: var(--lh-prose);
+}
+
+.send-later-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-1) 0;
+}
+
+.send-later-choice {
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.send-later-choice:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.send-later-choice[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+
+.send-later-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+@media (max-width: 480px) {
+  .send-later-choice {
+    min-height: var(--touch-target);
+  }
+}
+
+/* the scheduled row's clock (ScheduledMessages.tsx) is as tall as its note's line */
+.scheduled-message-icon {
+  flex: none;
+  width: calc(var(--fs-xs) * 1.25);
+  height: calc(var(--fs-xs) * 1.25);
+  color: var(--text-dim);
+}

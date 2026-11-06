@@ -271,6 +271,13 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerPasteSend).toBe(false);
   });
 
+  it("keeps the composer's Send later button in its own key, out of an old tab's whole-record save (#2919)", () => {
+    saveSettings(sanitizeSettings({ composerSendLater: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerSendLater");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerSendLater).toBe(true);
+  });
+
   it("keeps Expand thinking, Collapse work and Files beside the pane in keys of their own, out of an old tab's whole-record save", () => {
     for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"], ["chatRequestDetails", "ovis:chat-request-details"], ["filesPanel", "ovis:files-panel"], ["filesDocuments", "ovis:files-documents"]] as const) {
       expect(loadSettings()[key]).toBe(false);
@@ -515,6 +522,13 @@ it("keeps the composer's Paste and send button off until this device turns it on
   expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
   expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
   expect(SETTING_SCOPE.composerPasteSend).toBe("device");
+});
+
+it("keeps the composer's Send later button off until this device turns it on, and keeps that choice its own (#2919)", () => {
+  expect(sanitizeSettings({}).composerSendLater).toBe(false);
+  expect(sanitizeSettings({ composerSendLater: true }).composerSendLater).toBe(true);
+  expect(sanitizeSettings({ composerSendLater: "true" }).composerSendLater).toBe(false);
+  expect(SETTING_SCOPE.composerSendLater).toBe("device");
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {

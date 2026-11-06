@@ -60,6 +60,12 @@ export class PendingInputs<Owner, Lease> {
   /** how many status events each pane has had: orders a snapshot read against them (mark, observe) */
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
+  /** panes whose turn gate ran out unconfirmed, until their next status event: a message with no record here is held for them (`turnUnconfirmed`) */
+  private readonly unconfirmed = new Set<string>();
+  /** panes whose uncertain record went with its closed owner, until their status changes: its paste may still sit in the input (`uncertainIn`) */
+  private readonly stranded = new Set<string>();
+  /** panes whose status changed since this store began: what a server before this one left in the others' input is unknown (`uncertainIn`) */
+  private readonly statusMoved = new Set<string>();
   private readonly closed = new Map<Owner, number>();
   /** sends on their way when their pane moved (`move`) */
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
@@ -264,6 +270,13 @@ export class PendingInputs<Owner, Lease> {
 
   /** A status event from the collector. */
   status(paneId: string, status: AgentStatus): void {
+    // only a change says the pane moved on: a snapshot read since (observe), or a baseline that repeats the status, never lifts it
+    const was = this.statuses.get(paneId);
+    if (was !== status) {
+      this.unconfirmed.delete(paneId);
+      this.stranded.delete(paneId);
+      if (was !== undefined) this.statusMoved.add(paneId);
+    }
     this.events.set(paneId, this.mark(paneId) + 1);
     this.apply(paneId, status);
   }
@@ -273,13 +286,43 @@ export class PendingInputs<Owner, Lease> {
     if (this.mark(paneId) === mark) this.apply(paneId, status);
   }
 
+  /**
+   * Whether a message that holds no record here (a scheduled one, server/scheduled-messages.ts) must not go yet: the turn
+   * an earlier send started is not confirmed, or a send is on its way or was left uncertain in the pane's input.
+   */
+  turnBusy(paneId: string): boolean {
+    return this.gates.has(paneId) || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "uncertain"));
+  }
+
+  /**
+   * Whether the pane's status changed since this store began: until then, what a server before this one left in its input is
+   * unknown, and a scheduled message waits (#2951).
+   */
+  statusChangedIn(paneId: string): boolean { return this.statusMoved.has(paneId); }
+
+  /** Whether a delivery to the pane may sit in its input: a scheduled message is then never typed, not even by Send now (#2919). */
+  uncertainIn(paneId: string): boolean {
+    return this.stranded.has(paneId) || [...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain");
+  }
+
+  /** Whether the pane's last turn gate ran out with no status since: such a message is held for review, as `expire` holds the records. */
+  turnUnconfirmed(paneId: string): boolean { return this.unconfirmed.has(paneId); }
+
+  /** Such a message committing its key: the pane's next message waits for the turn it starts, as `committing` makes a record's do. */
+  committingUnrecorded(paneId: string, id: string, steeringWorkingTurn = false, restartingWorkingTurn = false): void {
+    this.gates.set(paneId, { by: id, committed: true, sawWorking: steeringWorkingTurn && !restartingWorkingTurn, completed: false,
+      deadline: steeringWorkingTurn && !restartingWorkingTurn ? null : this.now() + this.startTimeoutMs,
+      ...(restartingWorkingTurn ? { restart: "interruption" as const } : {}),
+    });
+  }
+
   /** Whether a message of any connection still waits its turn on the pane. */
   waiting(paneId: string): boolean {
     return [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued"));
   }
 
   /** The pane ended: its held messages stay with their owners, its status and turn gate go. */
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.unconfirmed.delete(paneId); this.stranded.delete(paneId); this.statusMoved.delete(paneId); }
 
   private apply(paneId: string, status: AgentStatus): void {
     this.statuses.set(paneId, status);
@@ -353,8 +396,12 @@ export class PendingInputs<Owner, Lease> {
       this.resends.delete(key);
       this.resends.set(JSON.stringify([to, id, generation]), entry);
     }
-    // its status and turn come again under the new ID; a gate the old one opened guards nothing there
+    // its status and turn come again under the new ID; a gate the old one opened guards nothing there. What may sit in its
+    // input, and a turn that ran out unconfirmed, are the terminal's: they follow it (#2951)
+    const stranded = this.stranded.has(from), unconfirmed = this.unconfirmed.has(from);
     this.forget(from);
+    if (stranded) this.stranded.add(to);
+    if (unconfirmed) this.unconfirmed.add(to);
     for (const owner of owners) { this.publish(owner, from); this.publish(owner, to); }
   }
 
@@ -366,11 +413,12 @@ export class PendingInputs<Owner, Lease> {
       if (gate.deadline !== null && this.now() >= gate.deadline && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
         this.holdPane(paneId, { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" });
         this.gates.delete(paneId);
+        this.unconfirmed.add(paneId);
       }
     }
     for (const [owner, closedAt] of this.closed) if (this.now() - closedAt >= CLOSED_RETENTION_MS) {
       for (const [id, item] of this.records) if (item.owner === owner && !item.inFlight) {
-        if (item.message.state === "uncertain") this.finish(item, "dismissed");
+        if (item.message.state === "uncertain") { this.stranded.add(item.paneId); this.finish(item, "dismissed"); }
         else this.records.delete(id);
       }
       if (![...this.records.values()].some((item) => item.owner === owner)) {

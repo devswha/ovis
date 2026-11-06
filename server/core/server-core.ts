@@ -15,11 +15,12 @@ import type { DeviceStore } from "../devices.ts";
 import { ping } from "../herdr/client.ts";
 import { servingCore } from "../herdr-core/runtime.ts";
 import type { PreferenceStore } from "../preferences.ts";
+import { ScheduledMessages } from "../scheduled-messages.ts";
 import { type OmpLookups, OpenCodePromptState, shownPromptText } from "../prompt.ts";
 import { attachableIdentity, sidecarAvailable } from "../pty/sidecar.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
-import { createSubmitText } from "./composer.ts";
+import { createSubmitText, pendingText } from "./composer.ts";
 import { type Client, createConnections, type SocketData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import { createPendingDelivery } from "./pending.ts";
@@ -38,6 +39,8 @@ type CoreOptions = Parameters<typeof createTerminalRegistry>[0]["options"] & Par
     attachHeldRetryMs?: number;
     attachRelookupForMs?: number;
     attachHoldMs?: number;
+    /** where the scheduled messages are kept (server/scheduled-messages.ts); none keeps them in memory */
+    stateDir?: string;
   };
 
 export function createCore({ options, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS }: {
@@ -80,7 +83,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   const submitText = createSubmitText({ options, lastTyped, attachments, terminalAttach, SUBMIT_DEADLINE_MS, TYPED_SETTLE_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS, SUBMIT_DELAY_MS });
 
-  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId) => queueHeld(paneId), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
+  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries, scheduledIdentity, sendScheduled } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId) => queueHeld(paneId), scheduledUncertain: (paneId) => scheduled.uncertainIn(paneId), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
 
   // the watches read OpenCode's forms and omp's sessions into a state of their own: the route's entries, drafts and
   // lookups are its answers' (the route's drafts are only read, for the step an answer moved its card to)
@@ -90,9 +93,19 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   const { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end } = createConnections({ clients, present, pending: { close: closeConnection }, devices, detachClaimed,
     dropClaims: (client) => { dropClaims(client); promptWatch.drop(client); } });
-  const { push, alertWebhook, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
+  const { push, alertWebhook, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer } = createStatusHub({ options, devices, preferences, clients, present, pending, holdPendingPane,
+    // a pane's event also tries its due scheduled messages again
+    drainPending: (paneId) => { drainPending(paneId); scheduled.paneEvent(paneId); }, usage, usageLogin,
     // the messages first: the old ID's terminal closing holds what it still leases
-    paneMoved: (from, to) => { movePendingPane(from, to); paneMoved(from, to); } });
+    paneMoved: (from, to) => { movePendingPane(from, to); scheduled.paneMoved(from, to); paneMoved(from, to); },
+    paneGone: (paneId) => scheduled.paneGone(paneId) });
+  const scheduled = new ScheduledMessages({
+    stateDir: options.stateDir, checkText: pendingText, identity: scheduledIdentity, send: sendScheduled, changed: () => broadcastAll({ type: "scheduled-changed" }),
+    uncertain: (paneId) => pending.holdPane(paneId, { code: "pending_held", message: "A scheduled message may be in the terminal's input line; send this one after it is cleared or sent" }),
+    released: (paneId) => drainPending(paneId),
+    // the device that scheduled a message must still be paired, and still drive, when it goes
+    mayDrive: (device) => device === null || devices.list(null).some((entry) => entry.id === device && entry.role === "drive"),
+  });
   const socketHandlers = createSocket({
     clients, present, stopped: () => stopped, admit, setRole, watchable: () => !servingCore(), terminalHistory: () => servingCore(), watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
     // each frame type by name, with the handler of the module that owns it: anything else on a frame object never
@@ -124,7 +137,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   let outputTimer: ReturnType<typeof setInterval> | undefined;
 
   return {
-    sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage,
+    sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage, scheduled,
     // The relay uses these same handlers with a SocketLike; websocket above remains Bun's boundary.
     socketHandlers,
     /** once the server listens */
@@ -135,10 +148,12 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
         for (const paneId of attachments.keys()) reconcileOutput(paneId);
       }, 100);
       outputTimer.unref();
+      scheduled.start();
     },
     /** `beforeTerminals` runs once the services are stopped and before the terminals close */
     stop(beforeTerminals: () => void): void {
       stopped = true;
+      scheduled.stop();
       conversations.stop();
       promptWatch.stop();
       clearInterval(outputTimer);

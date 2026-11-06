@@ -16,7 +16,7 @@
  */
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, ScheduledMessage, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import type { PullRequestCheckLog, PullRequestView } from "../../shared/pull-request.ts";
@@ -877,6 +877,51 @@ function submitToChat(paneId: string, text: string): void {
   }, CHAT_ANSWER_MS);
 }
 
+/** Send later (#2919), as the PC keeps it: each goes into its pane's chat at its time, or at Send now */
+const scheduledMessages = new Map<string, { message: ScheduledMessage; timer: ReturnType<typeof setTimeout> }>();
+function scheduledChanged(): void {
+  for (const socket of sockets) socket.push({ type: "scheduled-changed" });
+}
+function scheduleDemo(message: ScheduledMessage): void {
+  clearTimeout(scheduledMessages.get(message.id)?.timer);
+  const timer = setTimeout(() => sendScheduledDemo(message.id), Math.max(0, Date.parse(message.send_at) - Date.now()));
+  scheduledMessages.set(message.id, { message, timer });
+}
+function sendScheduledDemo(id: string): void {
+  const entry = scheduledMessages.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  scheduledMessages.delete(id);
+  submitToChat(entry.message.pane_id, entry.message.text);
+  scheduledChanged();
+}
+async function scheduledRoute(path: string, method: string, init: RequestInit | undefined): Promise<Response> {
+  if (path === "/api/scheduled" && method === "GET") return json({ messages: [...scheduledMessages.values()].map((entry) => entry.message).sort((a, b) => Date.parse(a.send_at) - Date.parse(b.send_at)) }, 200, { "cache-control": "no-store" });
+  const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string; pane_id?: string; text?: string; send_at?: string };
+  if (path === "/api/scheduled") {
+    const message: ScheduledMessage = { id: crypto.randomUUID(), pane_id: body.pane_id ?? "", text: (body.text ?? "").replace(/[\r\n]+$/, ""), send_at: new Date(body.send_at ?? "").toISOString(), created_at: now(), state: "scheduled" };
+    scheduleDemo(message);
+    scheduledChanged();
+    return json({ message }, 201);
+  }
+  const entry = scheduledMessages.get(body.id ?? "");
+  if (!entry) return error("scheduled_not_found", "This scheduled message was sent or discarded", 404);
+  if (path === "/api/scheduled/update") {
+    const message = { ...entry.message, ...(body.text === undefined ? {} : { text: body.text }), ...(body.send_at === undefined ? {} : { send_at: new Date(body.send_at).toISOString() }) };
+    scheduleDemo(message);
+    scheduledChanged();
+    return json({ message });
+  }
+  if (path === "/api/scheduled/discard") {
+    clearTimeout(entry.timer);
+    scheduledMessages.delete(entry.message.id);
+    scheduledChanged();
+    return json({ ok: true });
+  }
+  sendScheduledDemo(entry.message.id);
+  return json({ ok: true });
+}
+
 function answerPrompt(paneId: string, optionIndex: number | undefined): void {
   promptOpen = false;
   replying.add(paneId);
@@ -1267,6 +1312,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   const query = url.searchParams;
   const paneId = query.get("pane_id") ?? "";
 
+  if (path === "/api/scheduled" || path === "/api/scheduled/update" || path === "/api/scheduled/discard" || path === "/api/scheduled/send") return scheduledRoute(path, method, init);
   if (path === "/api/health") {
     const variant = demoSecurity();
     // a device that only watches, from either demo switch: the security facts' own, or the device states' (`?demo_devices=watch`)
@@ -2399,7 +2445,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only", "conversation-search"], connection: this.connection });
+      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only", "conversation-search", "scheduled-send"], connection: this.connection });
     }, 20);
     this.timers.add(opening);
   }

@@ -1018,6 +1018,11 @@ export class HerdrSocket {
     return this.connected && this.mode === "interact" && this.features.has("submit") && this.features.has("pending-input");
   }
 
+  /** Whether the PC keeps and sends scheduled messages (#2919) for this connection, which may drive. */
+  canSchedule(): boolean {
+    return this.connected && this.mode === "interact" && this.features.has("scheduled-send");
+  }
+
   /** Whether the bridge can keep a pending message for Send now alone (`delivery: "hold"`). */
   canHoldMessages(): boolean {
     return this.canQueueMessages() && this.features.has("pending-hold");

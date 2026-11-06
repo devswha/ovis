@@ -364,6 +364,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Test sent. Check the destination.": "テストを送りました。送り先を確認してください。",
   "This PC also posts its alerts to a chat app or any URL. A message names the PC, the pane and what happened, with a link to the pane. The pane goes by its terminal title, which an agent may take from your task.": "この PC は通知をチャットアプリや任意の URL にも送ります。メッセージには PC、ペイン、起きたこととペインへのリンクが入ります。ペイン名はターミナルのタイトルで、エージェントが作業内容から付けることもあります。",
   "Webhook URL": "Webhook の URL",
+  "Send later button (experimental)": "あとで送信ボタン (試験的)",
+  "A button in the message box schedules the message for a set time. This PC sends it then while a device has the pane open.": "メッセージ欄のボタンで、メッセージを指定した時刻に送るよう予約します。その時刻にペインを開いているデバイスがあれば、この PC が送信します。",
   "Edit text files": "テキストファイルを編集",
   "Adds Edit to the file viewer for a text file in the pane's folder. Saving asks first, and stops if the file changed since you opened it.": "ペインのフォルダにあるテキストファイルをファイルビューアで編集できるようにします。保存前に確認し、開いた後にファイルが変更されていれば保存しません。",
 };
