@@ -384,8 +384,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
-      // a PC this link brings into the account gets the removals this client signed (enrollPc)
-      if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
+      // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
+      // gets this client's enrollment: the account's removals first, read from its other PCs
+      if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
