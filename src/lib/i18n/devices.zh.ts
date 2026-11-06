@@ -207,7 +207,8 @@ export const DEVICES_ZH: Record<string, string> = {
   "Then approve it once on a device already in your account.": "然后在账户中已有的设备上批准一次即可。",
   "Same Wi-Fi direct connection on": "同一 Wi-Fi 直接连接：已开启",
   "Same Wi-Fi direct connection off": "同一 Wi-Fi 直接连接：已关闭",
-  "This PC takes connections on your home network. Only devices already paired can sign in there; nothing new pairs.": "这台电脑在家庭网络上接受连接。只有已配对的设备能在这里登录，不能在这里配对新设备。",
+  "This PC takes connections on your home network. Only devices paired through the relay can sign in there; nothing new pairs.": "这台电脑在家庭网络上接受连接。只有通过中继配对的设备能在这里登录，不能在这里配对新设备。",
+  "On, but this PC has no home network address to listen on right now.": "已开启，但这台电脑现在没有可接受连接的家庭网络地址。",
   "Phones paired through the relay always go through the relay.": "通过中继配对的手机始终经由中继。",
   "Same Wi-Fi direct connection": "同一 Wi-Fi 直接连接",
 };

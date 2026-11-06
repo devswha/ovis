@@ -64,9 +64,9 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
   };
   return (
     <SettingsRow label={direct.on ? t("Same Wi-Fi direct connection on") : t("Same Wi-Fi direct connection off")} description={<>
-      {direct.on
-        ? t("This PC takes connections on your home network. Only devices already paired can sign in there; nothing new pairs.")
-        : t("Phones paired through the relay always go through the relay.")}
+      {!direct.on ? t("Phones paired through the relay always go through the relay.")
+        : direct.carriers.length > 0 ? t("This PC takes connections on your home network. Only devices paired through the relay can sign in there; nothing new pairs.")
+        : t("On, but this PC has no home network address to listen on right now.")}
       {failure !== null && <span className="settings-hint relay-error" role="alert">{failure}</span>}
     </>}>
       {!readOnly && <Toggle label={t("Same Wi-Fi direct connection")} checked={direct.on} disabled={relay.pending} onChange={change} />}

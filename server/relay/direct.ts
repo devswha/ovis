@@ -34,6 +34,8 @@ const MAX_PENDING = 8;
 /** From upgrade to an open protected channel, and from there to a signed-in device. */
 const HANDSHAKE_MS = 5_000;
 const SIGN_IN_MS = 15_000;
+/** How long a client that has not signed in keeps its place against newer ones. */
+const GRACE_MS = 1_000;
 const REFRESH_MS = 30_000;
 
 /** Adapters a phone on the PC's network is not on: containers, VMs, VPNs and tunnels. */
@@ -102,8 +104,8 @@ interface Carrier {
   cancelTimeout: () => void;
   /** opening order, for giving way oldest first */
   readonly order: number;
-  /** given way to a newer client; closing */
-  dropped?: boolean;
+  /** when it opened, on the carrier's clock: a client gets GRACE_MS before a newer one may take its place */
+  readonly openedAt: number;
   session?: RelaySession;
   deviceId?: string;
   /** Gives its signed-in place back (SignedInSessions.admit). */
@@ -200,7 +202,9 @@ export class DirectCarrier {
         // a browser page always names its origin; the apps' sockets name none. No web page on the network opens this.
         if (request.headers.has("origin")) return new Response(null, { status: 403 });
         if (this.stopped) return new Response(null, { status: 503 });
-        this.makeRoom(source);
+        // only a WebSocket upgrade may take a place: any other request changes nothing here
+        if (request.headers.get("upgrade")?.toLowerCase() !== "websocket" || !request.headers.has("sec-websocket-key")) return new Response(null, { status: 426 });
+        if (!this.makeRoom(source)) return new Response(null, { status: 503 });
         return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex") } })
           ? undefined : new Response(null, { status: 426 });
       },
@@ -217,30 +221,41 @@ export class DirectCarrier {
   }
 
   /**
-   * Room for one more client that has not signed in: the newest attempt always gets in, so filling the
-   * places can never shut a paired phone out. Past the source's share its own oldest gives way; past every
-   * place, the oldest of the source holding the most. A phone that still cannot finish uses the relay.
+   * Room for one more client that has not signed in, or false. A client gets GRACE_MS to finish its
+   * handshake untouched (a phone on the network needs a fraction of that); after it, a newer attempt
+   * takes its place: past the address's share its own oldest, past every place the oldest of the
+   * busiest address. Someone flooding the network can at most keep the phone on the relay, where it
+   * falls back by itself; it cannot take a place a phone already holds within its grace.
    */
-  private makeRoom(source: string): void {
-    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId && !carrier.dropped).sort((a, b) => a.order - b.order);
+  private makeRoom(source: string): boolean {
+    const now = this.clock.now();
+    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId).sort((a, b) => a.order - b.order);
+    const old = (carrier: Carrier): boolean => now - carrier.openedAt >= GRACE_MS;
     const own = pending.filter((carrier) => carrier.source === source);
-    const evict = (carrier: Carrier | undefined): void => {
-      if (!carrier) return;
-      pending.splice(pending.indexOf(carrier), 1);
-      this.drop(carrier);
-    };
-    while (own.length >= MAX_PENDING_PER_SOURCE) evict(own.shift());
-    while (pending.length >= MAX_PENDING) {
+    if (own.length >= MAX_PENDING_PER_SOURCE) {
+      const oldest = own.find(old);
+      if (!oldest) return false;
+      pending.splice(pending.indexOf(oldest), 1);
+      this.drop(oldest);
+    }
+    if (pending.length >= MAX_PENDING) {
       const counts = new Map<string, number>();
       for (const carrier of pending) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
-      const busiest = [...counts].sort((a, b) => b[1] - a[1])[0]![0];
-      evict(pending.find((carrier) => carrier.source === busiest));
+      const oldest = pending.filter(old).sort((a, b) => (counts.get(b.source)! - counts.get(a.source)!) || a.order - b.order)[0];
+      if (!oldest) return false;
+      this.drop(oldest);
     }
+    return true;
   }
 
-  /** Ends a client that had not signed in: its place is free at once, and its close runs as any other. */
+  /** Ends a client that had not signed in, all at once: its place, timers and handshake go now, not at its close. */
   private drop(carrier: Carrier): void {
-    carrier.dropped = true;
+    const id = carrier.socket.data.id;
+    if (this.carriers.get(id) !== carrier) return;
+    carrier.cancelTimeout();
+    this.carriers.delete(id);
+    carrier.session?.close("resource_exhausted");
+    carrier.transport.onclose?.(1013, "Try again");
     carrier.socket.close(1013, "Try again");
   }
 
@@ -253,7 +268,7 @@ export class DirectCarrier {
       send: (data) => { if (socket.send(data) === 0) socket.close(1011, "Send dropped"); },
       close: (code, reason) => socket.close(code, reason),
     };
-    const carrier: Carrier = { socket, source, transport, order: ++this.opened, sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
+    const carrier: Carrier = { socket, source, transport, order: ++this.opened, openedAt: this.clock.now(), sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
     this.carriers.set(id, carrier);
     // the relay's word to a client that it reached the PC (shared/relay-channel.ts)
     socket.send(JSON.stringify({ type: "assigned", connection_id: id }));

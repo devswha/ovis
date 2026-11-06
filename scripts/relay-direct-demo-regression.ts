@@ -30,7 +30,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await openSettingsPage(page, "Devices and PCs");
   const group = page.locator('[data-section="devices"]');
   await group.getByText("Same Wi-Fi direct connection on", { exact: true }).waitFor();
-  await group.getByText("Only devices already paired can sign in there; nothing new pairs.", { exact: false }).waitFor();
+  await group.getByText("Only devices paired through the relay can sign in there; nothing new pairs.", { exact: false }).waitFor();
   const toggle = group.getByRole("switch", { name: "Same Wi-Fi direct connection" });
   assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: on by default`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);

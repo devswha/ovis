@@ -10,18 +10,18 @@ import { DirectCarrier, rankLanAddresses } from "./direct.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
-import { bounded, deferred, relayConnection, relayDevice, relayFixture } from "./test-helpers.ts";
+import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "./test-helpers.ts";
 import { startBunRelay } from "../../relay/bun.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
 /** A PC with its relay identity and a direct carrier on loopback (a test stands in for a private address). */
-async function directFixture() {
+async function directFixture(clock?: TestClock) {
   const fixture = relayFixture();
   const identity = loadRelayIdentity(fixture.stateDir);
   const direct = new DirectCarrier({ identity, services: fixture.app.context.services, port: fixture.app.port,
-    addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: () => true });
+    addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: () => true, ...(clock ? { clock } : {}) });
   await direct.start();
   cleanup.push(() => fixture.close(), () => direct.stop());
   const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.ovis.example" };
@@ -108,9 +108,10 @@ describe("direct carrier", () => {
     expect(store.pairRelay(code, "Phone", publicKey)).toBeTruthy();
   });
 
-  it("lets a paired phone in even when silent clients from its address hold every place", async () => {
-    // Given two sockets from the phone's address that never start a handshake
-    const { fixture, offer, url } = await directFixture();
+  it("lets a paired phone in once silent clients from its address are past their grace", async () => {
+    // Given two sockets from the phone's address that never start a handshake, held a second
+    const clock = new TestClock();
+    const { fixture, offer, url } = await directFixture(clock);
     const device = await relayDevice(fixture);
     const first = new WebSocket(url());
     const second = new WebSocket(url());
@@ -118,12 +119,50 @@ describe("direct carrier", () => {
     await opened(first);
     await opened(second);
     const firstClosed = new Promise<number>((resolve) => { first.onclose = (event) => resolve(event.code); });
+    clock.advance(1_000);
     // When the phone opens its channel from the same address
     const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()) }));
     cleanup.push(() => channel.close());
     // Then it is admitted, and the oldest silent client gave way
     expect(channel.device.device_id).toBe(device.id);
     expect(await bounded(firstClosed)).toBe(1013);
+  });
+
+  it("does not let a newer attempt take the place of one still within its grace", async () => {
+    // Given two clients from one address that just opened (a phone mid-handshake looks the same)
+    const clock = new TestClock();
+    const { url } = await directFixture(clock);
+    const first = new WebSocket(url());
+    const second = new WebSocket(url());
+    cleanup.push(() => first.close(), () => second.close());
+    await opened(first);
+    await opened(second);
+    let firstClosed = false;
+    first.onclose = () => { firstClosed = true; };
+    // When a third comes at once, it is the one refused
+    const third = new WebSocket(url());
+    cleanup.push(() => third.close());
+    await expect(opened(third)).rejects.toThrow();
+    expect(firstClosed).toBe(false);
+  });
+
+  it("lets no plain request take a place", async () => {
+    // Given two silent clients from one address, past their grace
+    const clock = new TestClock();
+    const { url } = await directFixture(clock);
+    const first = new WebSocket(url());
+    const second = new WebSocket(url());
+    cleanup.push(() => first.close(), () => second.close());
+    await opened(first);
+    await opened(second);
+    let firstClosed = false;
+    first.onclose = () => { firstClosed = true; };
+    clock.advance(1_000);
+    // When an ordinary GET reaches the same path, it is turned away and nobody gives way
+    const response = await fetch(url().replace("ws://", "http://"));
+    expect(response.status).toBe(426);
+    expect(firstClosed).toBe(false);
+    expect(first.readyState).toBe(WebSocket.OPEN);
   });
 
   it("refuses a browser page: a socket that names an origin", async () => {
