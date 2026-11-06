@@ -680,7 +680,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (secretPrompt(withoutEscapes(screen), lease.sighting.facts().cols) !== null) {
             throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
           }
-          await sameStart(identity);
+          // that screen is the viewport, which may be scrolled: the live screen once more, then the process start
+          await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
         const result = await typeWithSkills(text, skills, typing, herdrSkillAttachIo(paneId), revalidate, beforeKey).catch((error: unknown) => {
           // nothing was written before a refused check or guard: the message is unsent, not uncertain
@@ -914,6 +915,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // its agent came up and left, or what herdr names there is not what was launched for it: held at once, as
       // pendingContext would hold it at a send, which a pane that is not at rest never gets to
       if (launchGone(item, identity, shellPid, processes)) holdFor(item, LAUNCH_GONE);
+      // a start that reads as unknown for the same PID says nothing either way: the message waits for the next read
+      else if (identity.processBirth == null && item.identity.processBirth != null && identity.processPid === item.identity.processPid) continue;
       else if (targetChanged(item, identity)) holdFor(item, TARGET_CHANGED);
       else learn(item, identity, shellPid, processes, held);
     }

@@ -23,7 +23,7 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
  * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
  */
-async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live" }) {
   spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
   if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
   if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
@@ -40,6 +40,8 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   spyOn(client, "paneRead").mockImplementation(async (options) => {
     if (mode !== "skill" || options.source !== "visible") return { text: shown.screen } as Awaited<ReturnType<typeof client.paneRead>>;
     if (++visible === 2 && tabRace === "birth") shown.birth = 2_000;
+    // the visible viewport, scrolled, still shows the row while the live screen has a masked prompt
+    if (visible === 2 && tabRace === "live") shown.screen = PROMPT;
     return { text: tabRace === "masked" && visible >= 2 ? `${selected}\n${PROMPT}` : selected } as Awaited<ReturnType<typeof client.paneRead>>;
   });
   const skillsToType = opencode.openCodeSkillsToType;
@@ -180,4 +182,39 @@ it("sends no skill-accept Tab to another process that took the agent's PID durin
 
 it("sends no skill-accept Tab when its autocomplete read shows a masked prompt", async () => {
   expect(await drain({ mode: "skill", tabRace: "masked" })).toEqual(["paste"]);
+});
+
+it("sends no skill-accept Tab while the live screen shows a masked prompt behind a scrolled viewport", async () => {
+  expect(await drain({ mode: "skill", tabRace: "live" })).toEqual(["paste"]);
+});
+
+it("keeps a first message waiting, not held, while its launched agent's start reads as unknown for a moment", async () => {
+  let birth: number | null = 1_000;
+  spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => birth);
+  spyOn(client, "paneProcessInfo").mockResolvedValue({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "codex", argv: ["codex"] }] } as Awaited<ReturnType<typeof client.paneProcessInfo>>);
+  const frames: ServerMessage[] = [];
+  const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
+  owner.data.attached.set("p", { keepSize: false });
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = tail.catch(() => {}).then(task); tail = run; return run; };
+  const facts = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 120 };
+  const delivery = createPendingDelivery({
+    options: {}, clients: new Set([owner]), attachments: new Map(),
+    sight: (() => ({ facts: () => facts, write: () => {} })) as unknown as Parameters<typeof createPendingDelivery>[0]["sight"],
+    serialize, lastTyped: new Map(), submitText: async () => {}, authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "codex", agent_status: "working", focused: false, revision: 0 }] }) as unknown as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  const message = await delivery.queueFirstMessage("p", "FIRST", "codex", owner.data.connectionId, 41001);
+  for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+  const codes = () => frames.flatMap((frame) => frame.type === "pending-messages" ? frame.messages.filter((entry) => entry.id === message.id).map((entry) => entry.error?.code) : []);
+  birth = null;
+  delivery.drainPending("p");
+  for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+  expect(codes()).not.toContain("pending_target_changed");
+  birth = 2_000;
+  delivery.drainPending("p");
+  for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
+  // a start read as another one is still a replacement
+  expect(codes().at(-1)).toBe("pending_target_changed");
 });
