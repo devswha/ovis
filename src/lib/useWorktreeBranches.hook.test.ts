@@ -3,17 +3,33 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { useWorktreeBranches } from "./useWorktreeBranches.ts";
+import type { WorkspaceBranch } from "./worktreeBranches.ts";
 
 const repository = { workspace_id: "w1", worktree: { repo_key: "repo", repo_name: "repo", repo_root: "/work/repo", checkout_path: "/work/repo", is_linked_worktree: false } } as WorkspaceInfo;
 const snapshot = { workspaces: [repository], tabs: [], panes: [], agents: [] } as unknown as SessionSnapshot;
+/** two repositories and a git workspace herdr has not marked (w3) */
+const other = { workspace_id: "w2", worktree: { repo_key: "other", repo_name: "other", repo_root: "/work/other", checkout_path: "/work/other", is_linked_worktree: false } } as WorkspaceInfo;
+const wide = { workspaces: [repository, other, { workspace_id: "w3" } as WorkspaceInfo], tabs: [], panes: [], agents: [] } as unknown as SessionSnapshot;
+const listings: Record<string, unknown> = {
+  w1: { source: { repo_key: "repo", source_checkout_path: "/work/repo" }, worktrees: [{ path: "/work/repo", branch: "main", is_detached: false, open_workspace_id: "w1" }] },
+  w2: { source: { repo_key: "other", source_checkout_path: "/work/other" }, worktrees: [{ path: "/work/other", branch: "dev", is_detached: false, open_workspace_id: "w2" }] },
+  w3: { source: { repo_key: "loose", source_checkout_path: "/work/loose" }, worktrees: [{ path: "/work/loose", branch: "spike", is_detached: false, open_workspace_id: null }] },
+};
 
 // Keep React, the hook, its cache and the API function real; only the network is a stand-in.
 describe("useWorktreeBranches", () => {
   let renderer: ReactTestRenderer | null = null;
   /** while set, every listing is refused as a watching device's is (#2250) */
   let refused = false;
+  /** while set, the PC's bridge is from before GET /api/worktree/inventory and answers it as an unknown endpoint */
+  let before = false;
   let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
+  const asked = () => fetchSpy.mock.calls.map(([input]) => new URL(String(input), "http://pc"));
   function Probe({ watching = false }: { watching?: boolean }) { useWorktreeBranches(snapshot, true, false, undefined, watching); return null; }
+  let shown: ReadonlyMap<string, WorkspaceBranch> = new Map();
+  const unmarked = new Set(["w3"]);
+  function Wide() { shown = useWorktreeBranches(wide, true, false, unmarked).branches; return null; }
+  const words = () => [...shown].map(([id, branch]) => `${id}:${branch.branch}`).sort();
   /** Lets the read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
 
@@ -33,9 +49,17 @@ describe("useWorktreeBranches", () => {
   beforeEach(() => {
     jest.useFakeTimers();
     refused = false;
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => {
+    before = false;
+    shown = new Map();
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
       if (refused) return Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 });
-      return Response.json({ source: { repo_key: "repo" }, worktrees: [{ path: "/work/repo", branch: "main", is_detached: false, open_workspace_id: "w1" }] });
+      const url = new URL(String(input), "http://pc");
+      const ids = url.searchParams.getAll("workspace_id");
+      if (url.pathname.endsWith("/worktree/inventory")) {
+        if (before) return Response.json({ error: { code: "not_found", message: `unknown endpoint ${url.pathname}` } }, { status: 404 });
+        return Response.json({ entries: ids.map((id) => ({ workspace_id: id, listing: listings[id] })) });
+      }
+      return Response.json(listings[ids[0]!]);
     }, { preconnect: globalThis.fetch.preconnect }));
   });
   afterEach(async () => {
@@ -80,5 +104,32 @@ describe("useWorktreeBranches", () => {
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await settle(() => fetchSpy.mock.calls.length >= 3);
     expect(fetchSpy.mock.calls.length).toBe(3);
+  });
+
+  it("reads every repository and unmarked git workspace of the PC in one request per poll (#2661)", async () => {
+    await act(async () => { renderer = create(createElement(Wide)); });
+    await settle(() => words().length === 3);
+    expect(words()).toEqual(["w1:main", "w2:dev", "w3:spike"]);
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await settle(() => fetchSpy.mock.calls.length >= 2);
+    await settle(() => false);
+    expect(asked().map((url) => [url.pathname, url.searchParams.getAll("workspace_id")])).toEqual([
+      ["/api/worktree/inventory", ["w2", "w1", "w3"]],
+      ["/api/worktree/inventory", ["w2", "w1", "w3"]],
+    ]);
+  });
+
+  it("reads a PC from before the inventory one workspace at a time, without asking it for the inventory again (#2661)", async () => {
+    before = true;
+    await act(async () => { renderer = create(createElement(Wide)); });
+    await settle(() => words().length === 3);
+    expect(words()).toEqual(["w1:main", "w2:dev", "w3:spike"]);
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await settle(() => fetchSpy.mock.calls.length >= 7);
+    await settle(() => false);
+    expect(asked().map((url) => `${url.pathname.split("/").pop()} ${url.searchParams.getAll("workspace_id").join(",")}`)).toEqual([
+      "inventory w2,w1,w3", "list w2", "list w1", "list w3",
+      "list w2", "list w1", "list w3",
+    ]);
   });
 });

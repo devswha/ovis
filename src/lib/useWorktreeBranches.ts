@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SessionSnapshot, WorktreeOpened } from "../../shared/protocol.ts";
-import { ApiError } from "./api.ts";
+import type { SessionSnapshot, WorktreeListing, WorktreeOpened } from "../../shared/protocol.ts";
+import { MAX_INVENTORY_WORKSPACES } from "../../shared/workspace-lifecycle.ts";
+import { ApiError, routeMissing } from "./api.ts";
 import { useMachineApi, useMachineId } from "./machineContext.tsx";
 import { publishBranches } from "./paneBranch.ts";
 import { usePageVisible } from "./visibility.ts";
@@ -19,11 +20,12 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
   rememberOpened(opened: WorktreeOpened): void;
 } {
   const machineId = useMachineId();
-  const { listWorktrees } = useMachineApi();
+  const { listWorktrees, readWorktreeInventory } = useMachineApi();
   const visible = usePageVisible();
   // `refused`: the PC answered that this device may only watch (#2250): it is not asked again until the
-  // device's role changes, which starts over (a device signed in to drive reads branches again)
-  const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching }), [machineId, watching]);
+  // device's role changes, which starts over (a device signed in to drive reads branches again).
+  // `oneByOne`: the PC's bridge is from before GET /api/worktree/inventory, so each workspace is asked alone (#2661)
+  const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching, oneByOne: false }), [machineId, watching]);
   const [, publish] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const workspaces = snapshot?.workspaces ?? [];
@@ -49,10 +51,33 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
       const generation = owner.cache.generation;
       const cycle = (async () => {
         let changed = false;
+        // every workspace of the PC in one request (a few for very many), answered as each list would have been
+        const answered = new Map<string, WorktreeListing | ApiError>();
+        const asked = [...repositories.map((repository) => repository.workspaceId), ...unmarkedIds];
+        for (let at = 0; at < asked.length && !owner.oneByOne; at += MAX_INVENTORY_WORKSPACES) {
+          if (stopped || owner.refused || generation !== owner.cache.generation) return;
+          try {
+            const inventory = await readWorktreeInventory(asked.slice(at, at + MAX_INVENTORY_WORKSPACES));
+            for (const entry of inventory.entries) {
+              answered.set(entry.workspace_id, "listing" in entry ? entry.listing
+                : new ApiError("worktree/list", entry.error.status, entry.error.message, entry.error.code));
+            }
+          } catch (error) {
+            if (routeMissing(error)) { owner.oneByOne = true; break; }
+            if (error instanceof ApiError && error.code === "read_only") owner.refused = true;
+            // a failure to ask keeps every last known branch until the next poll
+            return;
+          }
+        }
+        const listingOf = async (workspaceId: string): Promise<WorktreeListing> => {
+          const answer = answered.get(workspaceId);
+          if (answer instanceof ApiError) throw answer;
+          return answer ?? await listWorktrees(workspaceId);
+        };
         for (const repository of repositories) {
           if (stopped || owner.refused || generation !== owner.cache.generation) break;
           try {
-            const listing = await listWorktrees(repository.workspaceId);
+            const listing = await listingOf(repository.workspaceId);
             if (!stopped) changed = owner.cache.applyListing(repository.repoKey, listing, generation) || changed;
           } catch (error) {
             // Retain a last known branch only while its exact checkout still exists.
@@ -62,7 +87,7 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
         for (const workspaceId of unmarkedIds) {
           if (stopped || owner.refused || generation !== owner.cache.generation) break;
           try {
-            const listing = await listWorktrees(workspaceId);
+            const listing = await listingOf(workspaceId);
             if (!stopped) changed = owner.cache.applyUnmarked(workspaceId, listing, generation) || changed;
           } catch (error) {
             if (error instanceof ApiError && error.code === "read_only") { owner.refused = true; break; }
@@ -88,7 +113,7 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
       owner.cache.invalidate();
       clearTimeout(timer);
     };
-  }, [owner, listWorktrees, signature, unmarkedKey, online, visible, refresh, onNotCheckout]);
+  }, [owner, listWorktrees, readWorktreeInventory, signature, unmarkedKey, online, visible, refresh, onNotCheckout]);
 
   const rememberOpened = useCallback((opened: WorktreeOpened): void => {
     owner.cache.rememberOpened(opened);
