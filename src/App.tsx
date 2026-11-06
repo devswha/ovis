@@ -711,9 +711,9 @@ export function App() {
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
   // take it (from 769px). A pane herdr could not restore draws a placeholder, not the chat.
   const chatShown = showsChat(selectedPane, view);
-  // From 769px with one pane in view the header is one row, as the Herdr app's: the workspace's tabs, +,
-  // Files and the lens toggle (THIRD_PARTY_NOTICES.md). A split keeps a strip per half and the title here;
-  // a phone keeps the title that lists the tabs.
+  // From 769px with one pane in view the header is one row, a browser's tab strip: the workspace's tabs and +,
+  // then the lens switch, Files and More (styles.css .header-tabs, THIRD_PARTY_NOTICES.md). A split keeps a
+  // strip per half and the title here; a phone keeps the title that lists the tabs.
   const stripInHeader = wideScreen && !splitOn && !tabsInHeader && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
   // from 769px the pane column ends in the Herdr app's status bar: where the pane is, its branch, the connection
   const statusBarShown = wideScreen && selectedPane !== null && !guideShown;

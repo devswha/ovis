@@ -45,6 +45,9 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 
+/** a strip that held the focus is unmounting in this commit (TabStrip's handoff effect) */
+let focusHandoff = false;
+
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
 export interface TabStripProps {
@@ -195,6 +198,23 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const tab = stripTab();
     if (tab) tab.focus(); else focusWorkspaceListToggle();
   });
+  // The strip moves between the header (from 769px) and the pane as the window is resized, and a move is
+  // a new strip: the focus the old one held, on a tab or in the menu it had open, goes to the new one's
+  // open tab. The old one's cleanup runs in the same commit as the new one's mount, before any microtask.
+  const menuOpen = useRef(false);
+  menuOpen.current = picker !== null;
+  useLayoutEffect(() => {
+    const row = strip.current;
+    if (focusHandoff && (!document.activeElement || document.activeElement === document.body)) {
+      focusHandoff = false;
+      row?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
+    }
+    return () => {
+      if (!row?.contains(document.activeElement) && !menuOpen.current) return;
+      focusHandoff = true;
+      queueMicrotask(() => { focusHandoff = false; });
+    };
+  }, []);
   // a name herdr never showed back (renamed again elsewhere) does not stay on the tab
   useEffect(() => {
     if (!sent) return;
