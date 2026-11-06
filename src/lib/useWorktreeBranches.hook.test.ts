@@ -106,7 +106,7 @@ describe("useWorktreeBranches", () => {
     expect(fetchSpy.mock.calls.length).toBe(3);
   });
 
-  it("reads every repository and unmarked git workspace of the PC in one request per poll (#2661)", async () => {
+  it("reads every repository and unmarked git workspace of the PC in one request per poll, each poll starting one further on (#2661)", async () => {
     await act(async () => { renderer = create(createElement(Wide)); });
     await settle(() => words().length === 3);
     expect(words()).toEqual(["w1:main", "w2:dev", "w3:spike"]);
@@ -115,7 +115,8 @@ describe("useWorktreeBranches", () => {
     await settle(() => false);
     expect(asked().map((url) => [url.pathname, url.searchParams.getAll("workspace_id")])).toEqual([
       ["/api/worktree/inventory", ["w2", "w1", "w3"]],
-      ["/api/worktree/inventory", ["w2", "w1", "w3"]],
+      // the next poll starts one further on: a herdr too slow for the whole read still reaches every workspace
+      ["/api/worktree/inventory", ["w1", "w3", "w2"]],
     ]);
   });
 
@@ -154,6 +155,29 @@ describe("useWorktreeBranches", () => {
       "inventory w2,w1,w3", "list w2", "list w1", "list w3",
       "list w2", "list w1", "list w3",
     ]);
+  });
+
+  it("does not let an older bridge's answer that arrives after the PC went offline outlive the reconnect (#2661)", async () => {
+    before = true;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const fetched = fetchSpy.getMockImplementation()!;
+    fetchSpy.mockImplementation(Object.assign(async (input: string | URL | Request) => {
+      const answer = await fetched(input);
+      if (fetchSpy.mock.calls.length === 1) await held;
+      return answer;
+    }, { preconnect: globalThis.fetch.preconnect }));
+    await act(async () => { renderer = create(createElement(Wide)); });
+    await settle(() => fetchSpy.mock.calls.length >= 1);
+    await act(async () => { renderer!.update(createElement(Wide, { online: false })); });
+    // the old bridge's 404 lands while the PC is offline; it comes back updated
+    await act(async () => { release(); });
+    await settle(() => false);
+    before = false;
+    await act(async () => { renderer!.update(createElement(Wide, { online: true })); });
+    await settle(() => fetchSpy.mock.calls.length >= 2);
+    await settle(() => false);
+    expect(asked().map((url) => url.pathname.split("/").pop())).toEqual(["inventory", "inventory"]);
   });
 
   it("asks a PC that read one workspace at a time for the inventory again once it reconnects, as after an update (#2661)", async () => {

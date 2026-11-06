@@ -23,8 +23,10 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
   const visible = usePageVisible();
   // `refused`: the PC answered that this device may only watch (#2250): it is not asked again until the
   // device's role changes, which starts over (a device signed in to drive reads branches again).
-  // `oneByOne`: the PC's bridge is from before GET /api/worktree/inventory, so each workspace is asked alone (#2661)
-  const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching, oneByOne: false }), [machineId, watching]);
+  // `oneByOne`: the PC's bridge is from before GET /api/worktree/inventory, so each workspace is asked alone (#2661).
+  // `turn`: each poll starts the inventory one workspace further on, so a herdr too slow to answer them all
+  // within the PC's budget (server/workspace-routes.ts) still reaches every workspace in turn
+  const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching, oneByOne: false, turn: 0 }), [machineId, watching]);
   const [, publish] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const workspaces = snapshot?.workspaces ?? [];
@@ -56,7 +58,9 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
         const answered = new Map<string, WorktreeListing | ApiError>();
         // a read that failed: the workspaces it left unanswered keep their last known branch until the next poll
         let unanswered = false;
-        for (const read of owner.oneByOne ? [] : inventoryReads([...repositories.map((repository) => repository.workspaceId), ...unmarkedIds])) {
+        const asked = [...repositories.map((repository) => repository.workspaceId), ...unmarkedIds];
+        const start = owner.turn++ % asked.length;
+        for (const read of owner.oneByOne ? [] : inventoryReads([...asked.slice(start), ...asked.slice(0, start)])) {
           if (stopped || owner.refused || generation !== owner.cache.generation) return;
           try {
             const inventory = await readWorktreeInventory(read);
@@ -65,7 +69,8 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
                 : new ApiError("worktree/list", entry.error.status, entry.error.message, entry.error.code));
             }
           } catch (error) {
-            if (routeMissing(error)) { owner.oneByOne = true; break; }
+            // an answer the PC gave before it went offline says nothing of the bridge it comes back with
+            if (routeMissing(error)) { if (!stopped) owner.oneByOne = true; break; }
             if (error instanceof ApiError && error.code === "read_only") { owner.refused = true; return; }
             unanswered = true;
             break;
