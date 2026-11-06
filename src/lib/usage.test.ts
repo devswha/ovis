@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ProviderUsage, UsageWindow } from "../../shared/protocol.ts";
-import { canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, meterPercent, meterText, moveInOrder, orderProviders, providerForAgent, statusWindows, tightestWindow, usageName, windowLabel } from "./usage.ts";
+import { canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, statusWindows, tightestWindow, usageName, windowLabel } from "./usage.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const window = (used_percent: number, kind: UsageWindow["kind"] = "week", scope: string | null = null): UsageWindow => ({ kind, scope, used_percent, resets_at: null, starts_at: null });
@@ -26,6 +26,26 @@ describe("usage meters", () => {
     expect(composerUsage(accounts, null, [], [])).toBeUndefined();
     expect(providerForAgent("agy")).toBe("antigravity");
     expect(providerForAgent("opencode")).toBe("opencode");
+  });
+
+  it("looks up a pi-family pane's plan by the provider its conversation runs at", () => {
+    const accounts = [provider("claude", [window(40)], "c@x"), provider("codex", [window(20)], "a@x"), provider("codex", [window(80)], "b@x")];
+    for (const agent of ["gjc", "omp", "pi"]) {
+      expect(planForPane(agent, "anthropic")).toBe("claude");
+      expect(planForPane(agent, "openai-codex")).toBe("codex");
+      expect(composerUsage(accounts, agent, [], [], "anthropic")?.account).toBe("c@x");
+      // the user's order and hidden accounts still choose among that plan's accounts
+      expect(composerUsage(accounts, agent, ["codex:b@x"], [], "openai-codex")?.account).toBe("b@x");
+      expect(composerUsage(accounts, agent, ["codex:b@x"], ["codex:b@x"], "openai-codex")?.account).toBe("a@x");
+      // an API key or any other provider is no plan, and nothing is guessed without one
+      for (const other of ["openai", "zai", "anthropic-subscription", null, undefined]) {
+        expect(planForPane(agent, other)).toBeNull();
+        expect(composerUsage(accounts, agent, [], [], other)).toBeUndefined();
+      }
+    }
+    // an agent that maps to a plan keeps its own
+    expect(planForPane("codex", "anthropic")).toBe("codex");
+    expect(planForPane(null, "anthropic")).toBe("claude");
   });
 
   it("prioritizes the plan-wide five-hour session, with weekly fallback only", () => {
