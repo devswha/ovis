@@ -174,9 +174,9 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
 /** The sidebar's head (from 769px): the Ovis wordmark in the theme's colours (ovis-site's logo pair). */
 function SidebarBrand({ dark }: { dark: boolean }) {
   return (
-    <h1 className="brand sidebar-brand">
+    <div className="brand sidebar-brand">
       <img src={dark ? logoDark : logoLight} alt="Ovis" width="68" height="24" />
-    </h1>
+    </div>
   );
 }
 
@@ -813,7 +813,7 @@ export function App() {
         {stripInHeader ? (
           <div className="header-tabs">
             <PanePressContext.Provider value={pressPane}>
-              <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} splitDrag browserTabs
+              <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} splitDrag browserTabs closable={auth?.role !== "watch"}
                 renameRequest={renameRequest?.machineId === selectedMachineId && renameRequest.paneId === selectedPane.pane_id ? renameRequest : null}
                 onRenameHandled={clearRenameRequest}
                 onNewTab={() => actions.openNewTab()}
@@ -896,7 +896,7 @@ export function App() {
           {!guideShown && <ConnectionChip
             connected={connected}
             word={connWord}
-            quiet={(headerConnection === "reconnecting" && note === null && crumb !== null) || statusBarShown}
+            quiet={(headerConnection === "reconnecting" && note === null && crumb !== null && !stripInHeader) || statusBarShown}
             title={[connected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {/* the Host's herdr is away: the step to take is on that PC (the sidebar's state line says the same) */}
@@ -931,10 +931,11 @@ export function App() {
           <RowMenu
             anchor={more.anchor}
             title={t("More")}
-            header={crumb && !statusBarShown ? (
+            header={crumb ? (
               <div className="header-more-crumb">
-                <span>{crumb.place}</span>
-                {crumb.path !== null && <span className="header-more-path">{crumb.path}</span>}
+                {/* the status bar says where the pane is; the session's lines and the route stay here */}
+                {!statusBarShown && <span>{crumb.place}</span>}
+                {!statusBarShown && crumb.path !== null && <span className="header-more-path">{crumb.path}</span>}
                 {sessionLines !== null && <span className="header-more-session">
                   <span>{sessionLines.totals}</span>
                   {sessionLines.goal !== null && <span>{sessionLines.goal}</span>}

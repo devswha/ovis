@@ -882,7 +882,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   device, a tinted "N waiting for you" button that opens the next session waiting, and the
   connection (Connected, or the word while it is not live). The header draws no session counts
   and no connection route; More's first item still jumps to the next waiting session, with a
-  waiting dot on its button on a phone, whose More header keeps the place, path and route.
+  waiting dot on its button on a phone. More's header keeps the session's lines and the route, and
+  the place and path where no status bar shows them.
   `--divider` (each theme's `--border-strong`) draws the lines between the shell's regions: the
   sidebar's seam, the status bar's rule, the tabs' rules; `--border` stays for lines inside a
   region.

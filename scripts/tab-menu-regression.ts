@@ -377,6 +377,16 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     await inactive.waitFor({ state: "detached" });
     await currentPane(page, first);
     assert.equal(await strip.getByRole("tab").count(), 1, "closing an inactive tab preserves the original tab");
+    // the header's row is a browser's tab strip: a hovered resting tab's close closes it alone, at once
+    const closable = await tabCreate({ workspaceId: nativeTab.workspace_id, label: "close-x" });
+    const closableTab = page.getByRole("tab", { name: "close-x", exact: true });
+    await closableTab.hover();
+    const closingByX = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/tab/close"));
+    await strip.locator(".tab-strip-item:not(.is-active)").filter({ has: closableTab }).getByRole("button", { name: "Close close-x", exact: true }).click();
+    assert.deepEqual((await closingByX).request().postDataJSON(), { tab_id: closable.tab.tab_id });
+    await closableTab.waitFor({ state: "detached" });
+    assert.equal(await tab.getAttribute("aria-selected"), "true", "closing another tab by its close keeps the open tab");
+    assert.equal(await strip.getByRole("tab").count(), 1);
 
     // Closing through Delete must return keyboard focus with the native removal, even when
     // its HTTP acknowledgement arrives later than the new snapshot.

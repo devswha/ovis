@@ -2274,6 +2274,11 @@ button {
   border-radius: var(--radius-pill);
 }
 
+/* a note (herdr's prefix, a copied link) beside the row takes its own width; the tabs give way */
+.app-header.has-tab-row > .context {
+  flex: 0 1 auto;
+}
+
 .header-tabs {
   display: flex;
   align-items: stretch;
