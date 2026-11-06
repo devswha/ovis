@@ -1373,8 +1373,9 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     // no phone ever compares digits with the demo, so none is waiting to be approved
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/direct") {
-      const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
-      if (typeof body !== "object" || body === null || !("on" in body) || typeof body.on !== "boolean") return error("invalid_relay_direct", "Send { on: true } or { on: false }.", 400);
+      const body = await layoutBodyOf(method, init, input);
+      if (body instanceof Response) return body;
+      if (typeof body.on !== "boolean") return error("invalid_relay_direct", "Send { on: true } or { on: false }.", 400);
       demoRelayDirect = body.on;
       return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
     }

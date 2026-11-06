@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openRelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
-import { DIRECT_CARRIER, MuxProtocolError } from "../../shared/relay-mux.ts";
+import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier, rankLanAddresses } from "./direct.ts";
@@ -147,6 +147,19 @@ describe("direct carrier", () => {
   });
 });
 
+describe("a sign-in-only session", () => {
+  it("refuses a comparison of digits as a sign-in failure, whatever the phone offered", async () => {
+    const fixture = relayFixture();
+    cleanup.push(() => fixture.close());
+    const connection = await relayConnection(fixture, { signInOnly: true });
+    await connection.hello(["pair-sas", "pair-intent-pc"]);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    connection.mux.sendSession({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0, payload: { label: "Phone", public_key: publicKey, commitment: Buffer.alloc(32).toString("base64url") } });
+    expect(await bounded(connection.serverError)).toBe("auth_failed");
+  });
+});
+
 describe("direct carriers in AUTH_OK", () => {
   it("are named only to a phone that offered them", async () => {
     // Given a PC with a direct carrier
@@ -227,6 +240,15 @@ describe("signed-in sessions over every way in", () => {
     for (const name of ["r1", "r2", "d1", "d2", "d3"]) sessions.admit("phone", () => closed.push(name));
     expect(closed).toEqual(["r1"]);
     expect(sessions.size).toBe(4);
+  });
+
+  it("let a device at its share replace its own oldest even when every place is taken", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    sessions.admit("a", () => closed.push("a5"));
+    expect(closed).toEqual(["a1"]);
+    expect(sessions.size).toBe(8);
   });
 
   it("close a session past every place, and give places back", () => {

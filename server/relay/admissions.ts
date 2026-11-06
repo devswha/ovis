@@ -19,15 +19,15 @@ export class SignedInSessions {
     const entry = { deviceId, order: ++this.order, close };
     this.entries.add(entry);
     const release = (): void => { this.entries.delete(entry); };
-    if (this.entries.size > this.max) {
-      release();
-      close();
-      return release;
-    }
+    // the device's own oldest give way first, so a device at its share always gets its new session in
     const own = [...this.entries].filter((other) => other.deviceId === deviceId).sort((a, b) => a.order - b.order);
     for (const oldest of own.slice(0, Math.max(0, own.length - this.perDevice))) {
       this.entries.delete(oldest);
       oldest.close();
+    }
+    if (this.entries.size > this.max) {
+      release();
+      close();
     }
     return release;
   }

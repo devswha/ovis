@@ -272,8 +272,10 @@ export class RelaySession {
         return;
       }
       case FrameType.PAIR_REQUEST: {
+        // a direct carrier pairs nothing, whatever was offered: refused as a sign-in failure, before the binding is looked at
+        if (this.options.signInOnly) { this.close("auth_failed"); return; }
         if (this.state !== "auth" || !this.sasBinding) { this.close("protocol_error"); return; }
-        if (this.options.services.serveOnly || this.options.signInOnly) { this.close("auth_failed"); return; }
+        if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
         // nobody asked for a link lately: refused before any prompt, and not counted, since no person was asked,
         // unless it is an account join the account service has seen (accountJoin, docs/account.md design 5.3)
         let membersOnly = false;

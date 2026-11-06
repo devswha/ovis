@@ -685,8 +685,8 @@ them; the list is `REGIONAL_RELAYS` in [`shared/relay-regions.ts`](../shared/rel
 - **It stays on both.** The PC keeps its link to `relay.ovis.sh` and opens a second one, with the
   same key and proof, to the regional relay. New pairing QR codes and pairing links without a code
   name the regional relay while its link is online (the global one otherwise), and the relay status
-  is the global link's. Each link
-  has its own session limits.
+  is the global link's. Signed-in sessions share one limit across both links (and the
+  [direct carriers](#direct-on-the-same-network)): eight at once and four per device key.
 - **It tells phones paired before.** A phone that offers `relay-hints` is told in `AUTH_OK` the
   relay new offers name, then `relay.ovis.sh`, and saves the first for that PC; the app uses it from
   the next time it opens that PC. This comes inside the encrypted channel from the PC the phone authenticated,
