@@ -139,10 +139,10 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
   };
   const { status: portal } = usePortal();
   // without the relay the same Wi-Fi's code is the first way, not one of the others
-  const wifiFirst = !offered && !onRelay && canPair;
+  const wifiFirst = !offered && !onRelay && canPair && !readOnly;
 
   const otherWays: { way: OtherWay; label: string; body: ReactNode }[] = [
-    ...(canPair && !wifiFirst ? [{ way: "wifi" as const, label: t("Same Wi-Fi"), body: <CodeRoute pairUrl={inRelayShell() ? null : pairUrl} startAtOnce phone={phone} compact /> }] : []),
+    ...(canPair && !readOnly && !wifiFirst ? [{ way: "wifi" as const, label: t("Same Wi-Fi"), body: <CodeRoute pairUrl={inRelayShell() ? null : pairUrl} startAtOnce phone={phone} compact /> }] : []),
     { way: "tailscale", label: "Tailscale", body: <PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} phone={phone} /> },
     ...(portal?.supported ? [{ way: "portal" as const, label: "Portal", body: <PortalPanel readOnly={readOnly} /> }] : []),
   ];
@@ -180,7 +180,7 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
               {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
               {(offered || onRelay) && <RelayRoute relay={relay} readOnly={readOnly} phone={phone} onUseCode={canPair && !readOnly ? () => setOpen("wifi") : undefined} compact />}
               {wifiFirst && <CodeRoute pairUrl={pairUrl} startAtOnce phone={phone} compact />}
-              {!offered && !onRelay && !canPair && <PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} phone={phone} />}
+              {!offered && !onRelay && (!canPair || readOnly) && <PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} phone={phone} />}
             </>
           )}
           {!readOnly && !inRelayShell() && (

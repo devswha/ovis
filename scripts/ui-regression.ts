@@ -2511,7 +2511,7 @@ try {
   await securedPage.getByRole("dialog", { name: "Command palette", exact: true }).waitFor({ state: "hidden" });
   await securedPage.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(securedPage, "Devices and PCs");
-  const settingsSignOut = securedPage.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Sign out", exact: true });
+  const settingsSignOut = securedPage.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Sign out of this PC", exact: true });
   const signOutConfirm = securedPage.getByRole("alertdialog", { name: "Sign out of this browser?", exact: true });
   await settingsSignOut.click();
   await signOutConfirm.getByRole("button", { name: "Cancel", exact: true }).click();

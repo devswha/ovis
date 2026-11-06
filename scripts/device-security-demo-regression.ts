@@ -332,6 +332,8 @@ try {
               while (at && !(at.scrollHeight > at.clientHeight && /auto|scroll/.test(getComputedStyle(at).overflowY))) at = at.parentElement;
               return at ?? document.scrollingElement as HTMLElement;
             });
+            // a page short enough to fit has no other frame to show: the three captures are then one
+            const scrolls = await scroller.evaluate((node) => node.scrollHeight > node.clientHeight + 1);
             await scroller.evaluate((node) => { node.scrollTop = node.scrollHeight; });
             assert.equal(await scroller.evaluate((node) => Math.ceil(node.scrollTop + node.clientHeight) >= node.scrollHeight), true, "Settings is scrolled to its end");
             assert.equal(await page.locator(".devices-panel").evaluate((node, scroller) => {
@@ -339,7 +341,7 @@ try {
               return card.getBoundingClientRect().bottom <= (scroller as HTMLElement).getBoundingClientRect().bottom + 0.5;
             }, scroller), true, "the devices card ends inside the view, its bottom padding included");
             const end = await capture(page, `${prefix}-scrolled-end`, about("scrolled-end"));
-            if (evidence) assert.equal(new Set([rest, longLabel, end]).size, 3, "rest, long label and the end are three different frames");
+            if (evidence && scrolls) assert.equal(new Set([rest, longLabel, end]).size, 3, "rest, long label and the end are three different frames");
             assert.deepEqual(await overflow(page), [], `nothing reaches past the edge at ${width}`);
             if (phone) {
               const targets = await touchTargets(page, ".devices-panel button");

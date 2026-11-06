@@ -24,7 +24,7 @@ type View =
   | { kind: "signed-out"; error: string | null }
   | { kind: "signing-in" }
   | { kind: "device-code"; userCode: string | null; verificationUri: string }
-  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; error: string | null };
 
 const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", apple: "Apple" };
 
@@ -82,7 +82,7 @@ function AddThisPc() {
 }
 
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
-export interface AccountState { signedIn: boolean; pcs: MyPc[] | null }
+export interface AccountState { signedIn: boolean; account: string | null; pcs: MyPc[] | null }
 
 /** the phone and Mac apps sign in their own way, never with a code from a PC's page */
 const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
@@ -107,18 +107,18 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();
     if (session === undefined) { show({ kind: "signed-out", error: null }); return; }
-    show({ kind: "signed-in", provider: session.provider, pcs: null, error: null });
+    show({ kind: "signed-in", provider: session.provider, account: session.account, pcs: null, error: null });
     try {
-      show({ kind: "signed-in", provider: session.provider, pcs: myPcs(await service.listPcs(), [], { now: Date.now() }), error: null });
+      show({ kind: "signed-in", provider: session.provider, account: session.account, pcs: myPcs(await service.listPcs(), [], { now: Date.now() }), error: null });
     } catch (error) {
       if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
-      else show({ kind: "signed-in", provider: session.provider, pcs: [], error: t("The account service could not be reached. The PCs this device is paired with still work.") });
+      else show({ kind: "signed-in", provider: session.provider, account: session.account, pcs: [], error: t("The account service could not be reached. The PCs this device is paired with still work.") });
     }
   }, [t]);
 
   useEffect(() => { if (offered) void load(); }, [offered, load]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", pcs: view.kind === "signed-in" ? view.pcs : null });
+    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null });
   }, [onAccount, view]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);

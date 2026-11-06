@@ -55,7 +55,8 @@ import { failureText, openOwnOffer, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountOffered, type AccountState } from "./AccountSection.tsx";
 import { accountPcStateText } from "./AccountPcs.tsx";
 import { STATE_WORD } from "./MachineSidebar.tsx";
-import { thisPcInNoAccount } from "../lib/account/addThisPc.ts";
+import { pcAccountStatus } from "../lib/account/join.ts";
+import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
@@ -1137,16 +1138,17 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const [connecting, setConnecting] = useState(false);
   const closeConnect = useCallback(() => setConnecting(false), []);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
-  const [account, setAccount] = useState<AccountState>({ signedIn: false, pcs: null });
-  // signed in, a new device joins only a PC in that account (docs/account.md "Joining through the account")
-  const [pcInAccount, setPcInAccount] = useState(false);
+  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null });
+  // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
+  // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
+  const [pcAccount, setPcAccount] = useState<string | null>(null);
   useEffect(() => {
-    if (!account.signedIn) { setPcInAccount(false); return; }
+    if (account.account === null) { setPcAccount(null); return; }
     let live = true;
-    thisPcInNoAccount().then((none) => { if (live) setPcInAccount(!none); }, () => { if (live) setPcInAccount(false); });
+    pcAccountStatus(apiFetch).then((status) => { if (live) setPcAccount(status.account); }, () => { if (live) setPcAccount(null); });
     return () => { live = false; };
-  }, [account.signedIn]);
-  const joinBySignIn = account.signedIn && pcInAccount && relay.status?.phase === "online";
+  }, [account.account, connecting]);
+  const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
   const signIn = useCallback(() => {
     setConnecting(false);
     // the account's own sign-in, at the top of this page
