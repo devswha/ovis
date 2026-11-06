@@ -13,6 +13,11 @@ import type { useNewSessionState } from "./useNewSessionDialog.ts";
 import type { usePaneLens } from "./usePaneLens.ts";
 import type { useSettingsDialog } from "./useSettingsDialog.ts";
 
+/**
+ * Keeps the address and the history in step with the selection (lib/deepLink.ts): a move between
+ * panes is an entry, Back and Forward select the entry's pane, and a file open over a pane is left
+ * behind, or kept for Back and shown again on return (#3179), when another pane is selected.
+ */
 export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, setHeaderNote, selectionRef }: {
   newSessionOpen: boolean;
   selectedPane: HerdrPane | null;
@@ -76,8 +81,12 @@ export function useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, se
   const fileKept = useRef(false);
   const restoreFileRef = useRef(restoreFile); restoreFileRef.current = restoreFile;
   useEffect(() => {
-    if (fileLeft && !fileLanding) fileKept.current = leaveFile();
-  }, [fileLeft, fileLanding, leaveFile]);
+    // a pane its PC's roster no longer lists is closed; a PC with no roster read yet keeps its panes
+    if (fileLeft && !fileLanding) fileKept.current = leaveFile((machineId, paneId) => {
+      const panes = machinesRef.current.find((machine) => machine.id === machineId)?.snapshot?.panes;
+      return panes === undefined || panes.some((pane) => pane.pane_id === paneId);
+    });
+  }, [fileLeft, fileLanding, leaveFile, machinesRef]);
   useEffect(() => {
     if (locked !== false || machines.length === 0 || snapshot === null || linkWorkspaceId === undefined || !linkLanded) return;
     // A popped entry's PC can land before its fallback pane. Keep Forward until that pane is known.

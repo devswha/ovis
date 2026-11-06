@@ -19,6 +19,10 @@ type Preview = Parameters<ReturnType<typeof useFileViewer>["openFile"]>[0];
 const LEFT_FILES_KEPT = 10;
 const paneKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
 
+/**
+ * The Files dialog, the file viewer, a repository diff and the web panel, which share the place beside
+ * the pane and the history entries over it; and, with Reopen files on return, the files tab switches left.
+ */
 export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId }: FilePanelsParams) {
   // the Files dialog, and the file open in the viewer (a path as the chat or the dialog gave it)
   const [filesOpen, setFilesOpen] = useState(false);
@@ -134,13 +138,18 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
   useEffect(() => {
     if (viewing?.paneId) leftFiles.current.delete(paneKey(viewing.machineId, viewing.paneId));
   }, [viewing]);
-  /** Leaves the file behind on a move to another pane or PC; true when its entry keeps it for Back. */
-  const leaveFile = useCallback(() => {
+  /**
+   * Leaves the file behind on a move to another pane or PC; true when its entry keeps it for Back.
+   * `paneLive` says whether a remembered pane is still in its PC's roster: a closed tab's file gives
+   * its place up before the cap is applied, so only live tabs' files take the places.
+   */
+  const leaveFile = useCallback((paneLive: (machineId: string, paneId: string) => boolean = () => true) => {
     if (!settings.reopenFileOnReturn || viewing?.paneId == null) {
       releaseFile();
       return false;
     }
     const left = leftFiles.current;
+    for (const [key, file] of left) if (file.paneId !== null && !paneLive(file.machineId, file.paneId)) left.delete(key);
     const key = paneKey(viewing.machineId, viewing.paneId);
     // the oldest left beyond the cap is forgotten (a Map keeps insertion order)
     left.delete(key);

@@ -24,7 +24,11 @@ function previewFromState(state: unknown): FilePreview | null {
     } : null;
 }
 
-/** Android Back traverses history: a preview must be an entry above the chat, not just a modal. */
+/**
+ * The file open in the viewer, held in its own history entry. Android Back traverses history: a
+ * preview must be an entry above the chat, not just a modal. Back closes it, Forward and a reload
+ * restore it from the entry, and a tab switch releases it, or hides it with its entry kept (#3179).
+ */
 export function useFileViewer() {
   const [viewing, setViewing] = useState(() => previewFromState(window.history.state));
   const closing = useRef(false);

@@ -139,6 +139,25 @@ it("on: a file shown again by Back and closed there is not reopened by a later s
   expect(panels.viewing).toBeNull();
 });
 
+it("on: a closed tab's file gives its place up before the oldest live one is forgotten", async () => {
+  // Given files left on ten panes, one of which (p5) has since closed.
+  await mount(true);
+  for (let pane = 0; pane < 10; pane++) {
+    await act(async () => { panels.openFile(fileOn(`p${pane}`)); });
+    await act(async () => { panels.leaveFile(); });
+    await moveTo("elsewhere", true);
+  }
+
+  // When an eleventh is left while p5 is no longer in the roster.
+  await act(async () => { panels.openFile(fileOn("p10")); });
+  await act(async () => { panels.leaveFile((_machine, pane) => pane !== "p5"); });
+  await moveTo("elsewhere", true);
+
+  // Then p0, the oldest, keeps its place, which the closed tab gave up.
+  await moveTo("p0", true);
+  expect(panels.viewing).toEqual(fileOn("p0"));
+});
+
 it("on: keeps the files of the ten panes left last", async () => {
   // Given files left on eleven panes in turn.
   await mount(true);
