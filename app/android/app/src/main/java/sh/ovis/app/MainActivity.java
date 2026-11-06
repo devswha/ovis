@@ -83,7 +83,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(HerdrShellPlugin.class);
         registerPlugin(OvisAuthPlugin.class);
         String link = takeAppLink(getIntent(), savedInstanceState == null);
-        if (link != null) PCStore.link = link;
+        if (link != null) openAppLink(link);
         // the PC's key: its origin, or its scope on the hosted shell's origin for a relay PC. An
         // app link waiting for the connect screen shows that screen first
         String pc = PCStore.link != null ? null : PCStore.current(this);
@@ -430,12 +430,30 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onNewIntent(Intent intent) {
         String link = takeAppLink(intent, true);
-        if (link != null) {
-            PCStore.link = link;
+        if (link != null && openAppLink(link)) {
             reopen();
             return;
         }
         super.onNewIntent(intent);
+    }
+
+    /**
+     * Readies an app link for the next first load, or answers false and leaves the open page alone. A
+     * link to pair from waits for the connect screen (PCStore.link); a view of a PC (a file, a pane)
+     * opens that PC at that view when the app has it saved, as the browser would have; for any other
+     * PC the app has nothing to show.
+     */
+    private boolean openAppLink(String link) {
+        if (PCStore.pairingLink(link)) {
+            PCStore.link = link;
+            return true;
+        }
+        String scope = PCStore.appScope(link);
+        if (!PCStore.saved(this).contains(scope)) return false;
+        PCStore.open(this, scope, link);
+        PCStore.failure = null;
+        PCStore.redirects = 0;
+        return true;
     }
 
     /**

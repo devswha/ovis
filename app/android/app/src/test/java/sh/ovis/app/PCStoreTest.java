@@ -318,10 +318,19 @@ public class PCStoreTest {
     }
 
     @Test
-    public void takesOnlyAViewOfAPcPageOnTheHostedShellAsAnAppLink() {
-        String offer = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ";
-        assertEquals(offer, PCStore.appLink("android.intent.action.VIEW", offer));
-        assertEquals("https://APP.ovis.sh/s/x", PCStore.appLink("android.intent.action.VIEW", "https://APP.ovis.sh/s/x"));
+    public void takesOnlyAViewOfAPcOnTheHostedShellAsAnAppLink() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String offer = scope + "#offer=eyJ2IjoxfQ";
+        for (String link : new String[] {
+            offer,
+            scope,
+            "https://APP.ovis.sh:443/s/0123456789abcdef0123456789abcdef",
+            scope + "#read=%2Fhome%2Fa.md&machine=local",
+            scope + "?pane=w1%3Ap1",
+        }) {
+            assertEquals(link, PCStore.appLink("android.intent.action.VIEW", link));
+            assertEquals(link, scope, PCStore.appScope(link));
+        }
         assertNull(PCStore.appLink("android.intent.action.MAIN", offer));
         assertNull(PCStore.appLink("android.intent.action.VIEW", null));
         for (String other : new String[] {
@@ -330,8 +339,21 @@ public class PCStoreTest {
             "https://app.ovis.sh.evil.example/s/0123456789abcdef0123456789abcdef/",
             "https://app.ovis.sh/",
             "https://app.ovis.sh/sx/",
+            "https://app.ovis.sh/s/not-a-pc",
+            "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/sw.js",
             "ovis://account/callback?code=1",
             "https://app.ovis.sh/s/ bad",
         }) assertNull(other, PCStore.appLink("android.intent.action.VIEW", other));
+    }
+
+    @Test
+    public void pairsOnlyFromAPcsScopeOrItsOfferAndOpensAnyOtherLinkAsAView() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        assertTrue(PCStore.pairingLink(scope));
+        assertTrue(PCStore.pairingLink(scope + "#offer=eyJ2IjoxfQ"));
+        assertFalse(PCStore.pairingLink(scope + "#read=%2Fhome%2Fa.md&machine=local"));
+        assertFalse(PCStore.pairingLink(scope + "#machine=local&pane=w1%3Ap1"));
+        assertFalse(PCStore.pairingLink(scope + "?pane=w1%3Ap1"));
+        assertFalse(PCStore.pairingLink(scope + "?pair=1#offer=eyJ2IjoxfQ"));
     }
 }

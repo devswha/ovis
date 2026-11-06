@@ -392,10 +392,13 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   `https://app.ovis.sh/s/`, which Android verifies against
   `https://app.ovis.sh/.well-known/assetlinks.json` (written by `scripts/shell-build.ts` with Play's
   app signing certificate and the upload certificate, so it is live once a release deploys the
-  hosted shell). `MainActivity` keeps the link in memory (`PCStore.link`) and shows the connect
-  screen, which takes it once (`HerdrShellPlugin.takeLink`) and opens it as a scanned QR code, so
-  `relayLink()` checks it the same way. A link handed back when the app is restored or started
-  from Recents is not opened again. Until the link is verified, Android opens such links in the
+  hosted shell). `MainActivity` takes only a link to a PC's scope (`PCStore.appLink`); one to
+  another page of the hosted shell leaves the open page alone. A view of a PC (a file's `#read=`, a
+  pane's `#pane=` or an older `?pane=`) opens that PC at that view when the app has it saved, and
+  otherwise leaves the open page alone too. A link to pair from (the scope alone or with its
+  `#offer=`) is kept in memory (`PCStore.link`) for the connect screen, which takes it once (`HerdrShellPlugin.takeLink`, which an activity showing a PC never answers, as its
+  page has the bridge too) and opens it as a scanned QR code, so `relayLink()` checks the offer the
+  same way. A link handed back when the app is restored or started from Recents is not opened again. Until the link is verified, Android opens such links in the
   browser as before. The hosted shell also serves `apple-app-site-association` for the iOS app,
   which still needs the Associated Domains capability (`applinks:app.ovis.sh`) and a handler.
   `minSdkVersion` is 26 (Android 8), which the QR scanner's library needs. The merged manifest
