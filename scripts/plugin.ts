@@ -888,6 +888,8 @@ async function linkCommand(): Promise<number> {
     // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it
     process.on("SIGINT", () => undefined);
     const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too
+    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
     return await child.exited;
   }
   if (!(await health())) {
@@ -897,7 +899,8 @@ async function linkCommand(): Promise<number> {
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const stop = new AbortController();
-  process.once("SIGINT", () => stop.abort());
+  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, () => stop.abort());
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),

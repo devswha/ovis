@@ -76,7 +76,8 @@ describe("ovis link, on the PC itself", () => {
     let minted = 0;
     let offers = 0;
     let cancelled = 0;
-    const local = localPc((request, path) => {
+    const cancels: unknown[] = [];
+    const local = localPc(async (request, path) => {
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
       if (path === "/api/relay/code") {
         const code = codes[minted++]!;
@@ -88,7 +89,7 @@ describe("ovis link, on the PC itself", () => {
         if (++offers === 2) stop.abort();
         return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: String(100000 + offers) }, "https://app.ovis.sh"), expires_at: new Date(time.now() + 600_000).toISOString() });
       }
-      if (path === "/api/devices/pair/cancel") { cancelled++; return Response.json({ ok: true }); }
+      if (path === "/api/devices/pair/cancel") { cancelled++; cancels.push(await request.json()); return Response.json({ ok: true }); }
       return undefined;
     });
     const out: string[] = [];
@@ -103,6 +104,8 @@ describe("ovis link, on the PC itself", () => {
     // renewed when the pair ran out, as the Settings view does, and the code taken back on the way out
     expect(time.waits).toEqual([600_000]);
     expect(cancelled).toBe(1);
+    // only the code it showed last: a pairing started since in Settings or on another device stays
+    expect(cancels).toEqual([{ code: "100002" }]);
     for (const call of local.calls.filter((entry) => entry.method === "POST")) {
       expect(call.headers.get("x-herdr-update")).toBe("1");
       expect(call.headers.get("origin")).toBe(ORIGIN);
@@ -328,6 +331,39 @@ describe("ovis link, on the PC itself", () => {
     expect(service.pcs("acct_1").map((entry) => entry.server_id)).toEqual([pc.server_id]);
   });
 
+  it("puts this PC back in the account's list when a renewal's DELETE went through but its answer was lost", async () => {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    let polls = 0;
+    let loseDelete = false;
+    const local = localPc(async (request, path) => {
+      if (path === "/api/account/status") return Response.json({ account: null, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") {
+        // the renewal is due after nine minutes of polls (2 s each)
+        if (++polls === 271) loseDelete = true;
+        return Response.json({ pairings: [] });
+      }
+      return undefined;
+    });
+    const out: string[] = [];
+    expect(await link([], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: answers(), accountService: SERVICE,
+      serviceFetch: async (input, init) => {
+        const request = new Request(input, init);
+        const answer = await service.fetch(request);
+        if (request.method === "DELETE" && loseDelete) { loseDelete = false; throw new TypeError("connection reset"); }
+        return answer;
+      },
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+    })).toBe(1);
+    expect(polls).toBe(271);
+    expect(service.pcs("acct_1").map((entry) => entry.server_id)).toEqual([pc.server_id]);
+    expect(out.join("")).not.toContain("dropped out of your account's list");
+  });
+
   it("says the Ovis on this PC is too old for link, rather than failing on an unknown route", async () => {
     const local = localPc((_request, path) => path === "/api/account/status" ? Response.json({ error: { code: "not_found", message: "unknown endpoint /api/account/status" } }, { status: 404 }) : undefined);
     const out: string[] = [];
@@ -358,6 +394,85 @@ describe("ovis link, on the PC itself", () => {
       const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(exit, stderr).toBe(0);
       expect(stdout).toContain("active release link --code");
+    } finally { server.stop(true); }
+  });
+
+  for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+    it.skipIf(process.platform === "win32")(`--code takes its code back when ${signal} ends it, not only on Ctrl+C`, async () => {
+      const scratchDir = mkdtempSync(join(tmpdir(), "ovis-link-signal-"));
+      scratch.push(scratchDir);
+      const pc = identity();
+      const root = join(import.meta.dir, "..");
+      const cancels: unknown[] = [];
+      const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/health") return Response.json({ ok: true, herdr: { version: "0.9.5", protocol: 1 }, auth: { required: false, authenticated: true } });
+        if (path === "/api/relay") return Response.json({ phase: "online", blocked: null });
+        if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(Date.now() + 600_000).toISOString(), server_id: pc.server_id });
+        if (path === "/api/relay/offer") {
+          return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: "123456" }, "https://app.ovis.sh"), expires_at: new Date(Date.now() + 600_000).toISOString() });
+        }
+        if (path === "/api/devices/pair/cancel") { cancels.push(await request.json()); return Response.json({ ok: true }); }
+        return new Response(null, { status: 404 });
+      } });
+      try {
+        mkdirSync(join(scratchDir, "config"));
+        writeFileSync(join(scratchDir, "config", ".env"), `PORT=${server.port}\n`);
+        const child = Bun.spawn([process.execPath, "scripts/plugin.ts", "link", "--code"], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: {
+          ...process.env, HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: root, HERDR_PLUGIN_CONFIG_DIR: join(scratchDir, "config"),
+          HERDR_PLUGIN_STATE_DIR: join(scratchDir, "plugin-state"), OVIS_STATE_DIR: join(scratchDir, "app-state"), OVIS_TOKEN: "",
+        } });
+        // the code and the QR code on the screen, then the signal
+        const reader = child.stdout.getReader();
+        const decoder = new TextDecoder();
+        let stdout = "";
+        while (!stdout.includes("Press Ctrl+C to stop")) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          stdout += decoder.decode(chunk.value, { stream: true });
+        }
+        child.kill(signal);
+        const [stderr, exit] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+        expect(cancels, stderr).toEqual([{ code: "123456" }]);
+        expect(exit).toBe(0);
+      } finally { server.stop(true); }
+    });
+  }
+
+  it.skipIf(process.platform === "win32")("passes a SIGTERM on to the copy of link the app updated to, so it can take its code back", async () => {
+    const scratchDir = mkdtempSync(join(tmpdir(), "ovis-link-release-term-"));
+    scratch.push(scratchDir);
+    const root = join(import.meta.dir, "..");
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 404 }) });
+    try {
+      const updates = updateStateDir(root, server.port!, join(scratchDir, "app-state"));
+      const release = join(updates, "release-test");
+      mkdirSync(join(release, "scripts"), { recursive: true });
+      writeFileSync(join(release, "scripts", "plugin.ts"), 'process.on("SIGTERM", () => { console.log("release took its code back"); process.exit(0); }); console.log("release ready"); setTimeout(() => process.exit(3), 10_000);');
+      const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, windowsHide: true }).stdout.toString().trim();
+      writeFileSync(join(updates, "current.json"), JSON.stringify({ source_revision: revision, directory: release }));
+      mkdirSync(join(scratchDir, "config"));
+      writeFileSync(join(scratchDir, "config", ".env"), `PORT=${server.port}\n`);
+      const child = Bun.spawn([process.execPath, "scripts/plugin.ts", "link", "--code"], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: {
+        ...process.env, HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: root, HERDR_PLUGIN_CONFIG_DIR: join(scratchDir, "config"),
+        HERDR_PLUGIN_STATE_DIR: join(scratchDir, "plugin-state"), OVIS_STATE_DIR: join(scratchDir, "app-state"),
+      } });
+      const decoder = new TextDecoder();
+      let stdout = "";
+      const reader = child.stdout.getReader();
+      while (!stdout.includes("release ready")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stdout += decoder.decode(chunk.value, { stream: true });
+      }
+      child.kill("SIGTERM");
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        stdout += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(stdout).toContain("release took its code back");
+      expect(await child.exited).toBe(0);
     } finally { server.stop(true); }
   });
 });
