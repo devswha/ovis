@@ -839,6 +839,64 @@ try {
   await page.goBack();
   await page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, pane);
   await videoLink.waitFor();
+
+  // Reopen files on return (#3179): the file's entry keeps it under the move, Back shows it again on
+  // its pane, and a switch back from the sidebar opens it over the move's entry as an entry of its own
+  const setReopen = async (on: boolean) => {
+    await page.evaluate((on) => {
+      const { reopenFileOnReturn: _, ...settings } = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
+      localStorage.setItem("ovis:settings", JSON.stringify(on ? { ...settings, reopenFileOnReturn: true } : settings));
+    }, on);
+    await page.reload();
+    await videoLink.waitFor();
+    if (await showSidebar.count()) await showSidebar.click();
+    await rowOf(otherPane).waitFor();
+  };
+  const onPane = (paneId: string) => page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, paneId);
+  const fileEntry = () => page.evaluate(() => (history.state?.["ovis:file-preview"] as { paneId?: string } | undefined)?.paneId ?? null);
+  await setReopen(true);
+  // the pane's own entry: the moves below go back to it, so the steps after them start from it again
+  const entryIndex = () => page.evaluate(() => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index);
+  const startIndex = await entryIndex();
+  await notesLink.press("Enter");
+  await panel.getByText("File preview history regression", { exact: true }).waitFor();
+  const keptLength = await page.evaluate(() => history.length);
+  await rowOf(otherPane).click();
+  await onPane(otherPane);
+  await panel.waitFor({ state: "detached", timeout: 5_000 }).catch(() => {});
+  assert.equal(await panel.count(), 0, "with Reopen files on return, the file still closes on a switch to another tab");
+  assert.equal(await page.evaluate(() => history.length), keptLength + 1, "the move is pushed over the file's entry, which keeps the file");
+  assert.equal(await fileEntry(), null, "the other pane's entry holds no file");
+  await page.goBack();
+  await onPane(pane);
+  await panel.getByText("File preview history regression", { exact: true }).waitFor();
+  assert.equal(await fileEntry(), pane, "Back to the first tab shows its file again from its own entry");
+  await rowOf(otherPane).click();
+  await onPane(otherPane);
+  await panel.waitFor({ state: "detached", timeout: 5_000 }).catch(() => {});
+  await rowOf(pane).click();
+  await onPane(pane);
+  await panel.getByText("File preview history regression", { exact: true }).waitFor();
+  assert.equal(await fileEntry(), pane, "a switch back from the sidebar opens the file on an entry of its own");
+  await panel.getByRole("button", { name: "Close file", exact: true }).click();
+  await panel.waitFor({ state: "detached" });
+  assert.equal(await selectedPane(), pane, "closing the reopened file steps back onto the move's entry, on the same pane");
+  assert.equal(await fileEntry(), null, "Close leaves no file entry");
+  await rowOf(otherPane).click();
+  await onPane(otherPane);
+  await rowOf(pane).click();
+  await onPane(pane);
+  await videoLink.waitFor();
+  await panel.waitFor({ state: "attached", timeout: 1_000 }).catch(() => {});
+  assert.equal(await panel.count(), 0, "a file closed on its tab stays closed on the next return");
+  const steps = startIndex - await entryIndex();
+  await page.evaluate((steps) => { history.go(steps); }, steps);
+  await page.waitForFunction((startIndex) => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index === startIndex, startIndex);
+  await onPane(pane);
+  await setReopen(false);
+  assert.equal(await fileEntry(), null, "back on the pane's own entry, which holds no file");
+  console.log("PASS Reopen files on return: Back and a sidebar switch show the file again; one closed on its tab stays closed");
+
   await workspaceClose(otherWorkspace);
   otherWorkspace = undefined;
   await rowOf(otherPane).waitFor({ state: "detached" });
