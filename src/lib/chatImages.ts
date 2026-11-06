@@ -3,6 +3,7 @@ import type { ConversationPart } from "../../shared/protocol.ts";
 import { fileUrl } from "./api.ts";
 import type { Translate } from "./i18n.ts";
 import { attachmentFileName, mentionFileName } from "./imageViewer.ts";
+import { folderPattern, pasteFolder } from "./pasteFolders.ts";
 import type { GalleryImage } from "./imageViewer.ts";
 import type { WorkImage } from "./workImages.ts";
 
@@ -15,6 +16,24 @@ export function toolGalleryImage(machineId: string, paneId: string, image: WorkI
   };
 }
 
+const MENTION_PATH = String.raw`(?:\/|[a-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/]))[^\r\n\t]){0,1024}?[\\/]\.ovis[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/])|\.(?:png|jpe?g|gif|webp)\s)[^\r\n\t]){0,1024}?[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$))|\S+\.(?:png|jpe?g|gif|webp)(?=\s|$)`;
+const MENTION = new RegExp(String.raw`(?:^|\s)@(${MENTION_PATH})`, "gi");
+const mentionsUnder = new Map<string, RegExp>();
+
+/**
+ * MENTION, and before it an upload in the folder `OVIS_PASTE_DIR` names on the message's PC, taken whole
+ * even where that folder holds a word ending in an image's extension (#2771).
+ */
+function mentionPattern(folder: string | undefined): RegExp {
+  if (!folder) return MENTION;
+  let pattern = mentionsUnder.get(folder);
+  if (pattern === undefined) {
+    pattern = new RegExp(String.raw`(?:^|\s)@(${folderPattern(folder)}[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$)|${MENTION_PATH})`, "gi");
+    mentionsUnder.set(folder, pattern);
+  }
+  return pattern;
+}
+
 /** Pasted pictures first, then image files mentioned as @path, in the message's order. */
 export function userGalleryImages(machineId: string, paneId: string, parts: readonly ConversationPart[], text: string, t: Translate): GalleryImage[] {
   const pasted = parts.filter((part): part is Extract<ConversationPart, { kind: "image" }> => part.kind === "image");
@@ -23,9 +42,9 @@ export function userGalleryImages(machineId: string, paneId: string, parts: read
   // <HHMMSS>-<8 hex>.<ext>`), so prose after another @mention never reads as a file; it stops at a
   // line break, the next mention or path (a folder's " @" followed by a space is part of it), as
   // lib/tabLabels.ts reads it, and is bounded so a long line stays quick to scan. Only an upload in its
-  // folder `.ovis` may run past a word ending in an image's extension (#2682). It is tried first, so a
+  // folder `.ovis`, or the one its PC's OVIS_PASTE_DIR names (#2771), may run past a word ending in an image's extension (#2682). It is tried first, so a
   // spaced folder named like an image never ends the upload's path early.
-  const mentioned = [...new Set([...text.matchAll(/(?:^|\s)@((?:\/|[a-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/]))[^\r\n\t]){0,1024}?[\\/]\.ovis[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$)|(?:(?!\s(?:@\S|[\\/]|~[\\/]|[a-z]:[\\/])|\.(?:png|jpe?g|gif|webp)\s)[^\r\n\t]){0,1024}?[\\/][^\s\\/]*-\d{8}-\d{6}-[0-9a-f]{8}\.(?:png|jpe?g|gif|webp)(?=\s|$))|\S+\.(?:png|jpe?g|gif|webp)(?=\s|$))/gi)].map((match) => match[1] ?? ""))];
+  const mentioned = [...new Set([...text.matchAll(mentionPattern(pasteFolder(machineId)))].map((match) => match[1] ?? ""))];
   return [
     ...pasted.map((part, index): GalleryImage => ({
       src: machinePath(machineId, `pane/conversation/image?${new URLSearchParams({ pane_id: paneId, ref: part.ref }).toString()}`),
