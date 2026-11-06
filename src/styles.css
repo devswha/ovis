@@ -2407,6 +2407,25 @@ button {
   box-shadow: none;
 }
 
+/* a touch screen wide enough for the header's row (a tablet): each tab is a finger tall, and its menu,
+   its close and the + a finger's size */
+@media (pointer: coarse) {
+  .header-tabs .tab-strip-item {
+    height: 44px;
+  }
+
+  .header-tabs .tab-strip-menu,
+  .header-tabs .tab-strip-item:is(.is-active, :hover) .tab-strip-close,
+  .header-tabs .tab-strip-add {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+
+  .header-tabs .tab-strip-item.is-active {
+    min-width: 160px;
+  }
+}
+
 /* a tab at rest is set off from the next by a short rule; none beside the open tab or one hovered */
 .header-tabs .tab-strip-item:not(.is-active, :hover) + .tab-strip-item:not(.is-active, :hover)::before {
   content: "";
