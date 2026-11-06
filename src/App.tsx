@@ -406,7 +406,8 @@ export function App() {
   // Pictures in the terminal not chosen on this device: what the PC's terminal connection does (its
   // `terminal-history`, as PaneTerminal reads it), the health read only until that connection listed its features
   const shownTerminal = machineSessions.peek(selectedMachineId)?.socket;
-  const picturesByDefault = shownTerminal?.featuresListed() ? shownTerminal.hasTerminalHistory() : shownHerdr?.runtime === "herdr-core" && shownHerdr.terminal_attach !== false;
+  const picturesByDefault = shownTerminal?.hasTerminalHistory() === true
+    || (shownTerminal?.featuresListed() !== true && shownHerdr?.runtime === "herdr-core" && shownHerdr.terminal_attach !== false);
   const selectedTitle = selectedPane ? displayPaneTitle(selectedPane) : null;
   // the tab that governs the pane region, so the strip's tabs and the pane they select are
   // one thing to a screen reader (A4); null while no tab owns this pane

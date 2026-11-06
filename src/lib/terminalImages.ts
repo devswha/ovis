@@ -70,8 +70,12 @@ const loaded = new WeakMap<Terminal, Loaded>();
 const holding = new WeakMap<Terminal, { resumes: Array<() => void>; timer: ReturnType<typeof setTimeout> }>();
 /** the addon's chunk did not load: no output waits for it again */
 let unavailable = false;
-/** how long output waits for the addon's chunk: a stalled fetch (a phone on a slow link) must not stop the pane */
-const PICTURES_WAIT_MS = 3000;
+/**
+ * How long output waits for the addon's chunk: a stalled fetch (a phone on a slow link) must not stop the
+ * pane. Held frames are not acknowledged, and the server ends a connection whose output went unread for
+ * 2 s (OUTPUT_STALL_MS in server/output-window.ts): the wait stays well under it.
+ */
+const PICTURES_WAIT_MS = 1000;
 /** terminals that waited that long once: their output no longer waits, a picture before the addon is lost */
 const waitedOut = new WeakSet<Terminal>();
 const release = (terminal: Terminal): void => {
@@ -88,8 +92,11 @@ const release = (terminal: Terminal): void => {
  * features, as the first output comes (#3184). True when `resume` is called once useTerminalImages has
  * turned pictures on or off for this terminal, or once PICTURES_WAIT_MS passed; false when nothing need wait.
  */
+/** a DCS or an OSC 1337, or a frame ending where one may begin (its introducer split across two frames) */
+const PICTURE_START = /\x1bP|1337;|\x1b(?:\](?:1(?:3(?:37?)?)?)?)?$/;
+
 export function holdForPictures(terminal: Terminal, data: string, resume: () => void): boolean {
-  if (unavailable || waitedOut.has(terminal) || loaded.get(terminal)?.enabled === true || !/\x1bP|1337;/.test(data)) return false;
+  if (unavailable || waitedOut.has(terminal) || loaded.get(terminal)?.enabled === true || !PICTURE_START.test(data)) return false;
   const held = holding.get(terminal);
   if (held) held.resumes.push(resume);
   else holding.set(terminal, { resumes: [resume], timer: setTimeout(() => { waitedOut.add(terminal); release(terminal); }, PICTURES_WAIT_MS) });
