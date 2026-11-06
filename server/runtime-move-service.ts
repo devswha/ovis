@@ -12,7 +12,7 @@ import { findHc } from "./herdr-core/discovery.ts";
 import { hcEnv } from "./herdr-core/runtime.ts";
 import { LAYOUT_DOC } from "./herdr-core/snapshot.ts";
 import { moveUnavailable, planMove, storeResume, type MoveFacts } from "./runtime-move.ts";
-import { journalStatus, runMove, setAsideJournal, settleJournal, type MoveDestination, type MoveSource } from "./runtime-move-run.ts";
+import { journalStatus, runMove, setAsideJournal, settleJournal, switchedMove, type MoveDestination, type MoveSource } from "./runtime-move-run.ts";
 import type { SessionHistoryOptions } from "./session-history.ts";
 
 /** How often a waiting move looks whether every pane is done. */
@@ -29,6 +29,8 @@ export interface MoveServiceOptions {
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** asks the launcher to switch to herdr-core; an error message when it refuses */
   switchRuntime: () => string | null;
+  /** the launcher took this server past its startup check: until then it may still roll back to herdr */
+  accepted: () => boolean;
 }
 
 export interface MoveService {
@@ -123,7 +125,11 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
  * the wait is cancelled). The plan it runs is read afresh at that moment.
  */
 export function moveService(options: MoveServiceOptions): MoveService {
-  let status: MoveStatus = journalStatus(settleJournal(options.stateDir, options.port, options.serving())) ?? { state: "idle" };
+  // a move that switched is done only once the launcher keeps the herdr-core server it switched to
+  const settle = (): MoveStatus => options.serving() === "herdr-core" && !options.accepted() && switchedMove(options.stateDir, options.port)
+    ? { state: "moving", step: "switching", done: 0, total: 1 }
+    : journalStatus(settleJournal(options.stateDir, options.port, options.serving())) ?? { state: "idle" };
+  let status: MoveStatus = settle();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = false;
   /** a start between its first check and its plan: a second one, or a runtime switch, waits for none */
@@ -179,6 +185,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
   };
   return {
     read: async () => {
+      if (status.state === "moving" && status.step === "switching" && !running) status = settle();
       const reason = moveUnavailable(options.serving(), options.facts());
       if (reason !== null) return { available: false, reason, status };
       return { available: true, plan: await plan(), status };
@@ -187,9 +194,9 @@ export function moveService(options: MoveServiceOptions): MoveService {
       if (moveUnavailable(options.serving(), options.facts()) !== null) return "unavailable";
       if (starting || running || status.state === "moving" || status.state === "waiting") return "already_moving";
       starting = true;
-      // a new start after a move a stopped server left: the person has seen it; it is set aside, never deleted
-      if (status.state === "interrupted" || status.state === "rolled_back") { setAsideJournal(options.stateDir, options.port); status = { state: "idle" }; }
       try {
+        // a new start after a move a stopped server left: the person has seen it; it is set aside, never deleted
+        if (status.state === "interrupted" || status.state === "rolled_back") { setAsideJournal(options.stateDir, options.port); status = { state: "idle" }; }
         const current = await plan();
         if (current.revision !== revision) return "plan_changed";
         if (current.ready) { void go(current); return null; }
@@ -221,14 +228,18 @@ export function moveService(options: MoveServiceOptions): MoveService {
   };
 }
 
-/** The same workspaces, tabs, panes and splits, and each pane that was not busy then the same now. */
+/**
+ * The same workspaces, tabs, panes, splits, folders and names as shown, and each pane as it was shown:
+ * one that was busy or waited for the person may only have become what its own agent (or shell) becomes.
+ */
 export function sameShape(shown: MovePlan, now: MovePlan): boolean {
   if (JSON.stringify(shown.workspaces) !== JSON.stringify(now.workspaces)) return false;
   const before = new Map(shown.panes.map((pane) => [pane.pane_id, pane]));
   return now.panes.length === shown.panes.length && now.panes.every((pane) => {
     const was = before.get(pane.pane_id);
-    if (!was) return false;
-    // a pane that was busy may be anything now that it is done; any other one is as it was shown
-    return was.verdict.kind === "busy" || was.verdict.kind === "needs_you" || JSON.stringify(was.verdict) === JSON.stringify(pane.verdict);
+    if (!was || was.cwd !== pane.cwd || was.name !== pane.name) return false;
+    const agentOf = (verdict: typeof pane.verdict): string | null => verdict.kind === "shell" ? null : verdict.kind === "busy" ? verdict.agent : verdict.agent;
+    if (was.verdict.kind === "busy" || was.verdict.kind === "needs_you") return agentOf(was.verdict) === agentOf(pane.verdict);
+    return JSON.stringify(was.verdict) === JSON.stringify(pane.verdict);
   });
 }

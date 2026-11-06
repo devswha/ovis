@@ -81,6 +81,12 @@ export function readJournal(stateDir: string, port: number): MoveJournal | null 
   }
 }
 
+/** A move that asked for the switch: `switching` or `committed`, not yet settled by a server the launcher kept. */
+export function switchedMove(stateDir: string, port: number): boolean {
+  const state = readJournal(stateDir, port)?.state;
+  return state === "switching" || state === "committed";
+}
+
 /** Moves a settled journal aside (`runtime-move-<port>.<id>.json`), so a new move can start and the old one stays readable. */
 export function setAsideJournal(stateDir: string, port: number): void {
   const journal = readJournal(stateDir, port);
