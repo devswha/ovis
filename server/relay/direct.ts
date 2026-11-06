@@ -36,6 +36,9 @@ const HANDSHAKE_MS = 5_000;
 const SIGN_IN_MS = 15_000;
 /** How long a client that has not signed in keeps its place against newer ones. */
 const GRACE_MS = 1_000;
+/** How long an address a device signed in from keeps places of its own (makeRoom), and how many such addresses. */
+const TRUSTED_MS = 24 * 60 * 60_000;
+const MAX_TRUSTED = 64;
 const REFRESH_MS = 30_000;
 
 /** Adapters a phone on the PC's network is not on: containers, VMs, VPNs and tunnels. */
@@ -112,12 +115,43 @@ interface Carrier {
   release?: () => void;
 }
 
+/**
+ * Who gives way so one more client from `source` can wait to sign in (DirectCarrier.makeRoom), or null when
+ * nobody may: per address MAX_PENDING_PER_SOURCE, MAX_PENDING across untrusted addresses, a client within
+ * GRACE_MS of opening never giving way, a trusted address's clients never giving way to another address.
+ */
+export function admissionDrops<T extends { readonly source: string; readonly openedAt: number; readonly order: number }>(
+  waiting: readonly T[], source: string, trusted: (address: string) => boolean, now: number): T[] | null {
+  const pending = [...waiting].sort((a, b) => a.order - b.order);
+  const old = (carrier: T): boolean => now - carrier.openedAt >= GRACE_MS;
+  const drops: T[] = [];
+  const own = pending.filter((carrier) => carrier.source === source);
+  if (own.length >= MAX_PENDING_PER_SOURCE) {
+    const oldest = own.find(old);
+    if (!oldest) return null;
+    drops.push(oldest);
+  }
+  if (!trusted(source)) {
+    const shared = pending.filter((carrier) => !trusted(carrier.source) && !drops.includes(carrier));
+    if (shared.length >= MAX_PENDING) {
+      const counts = new Map<string, number>();
+      for (const carrier of shared) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
+      const oldest = shared.filter(old).sort((a, b) => (counts.get(b.source)! - counts.get(a.source)!) || a.order - b.order)[0];
+      if (!oldest) return null;
+      drops.push(oldest);
+    }
+  }
+  return drops;
+}
+
 export class DirectCarrier {
   private listeners: Bun.Server<SocketData>[] = [];
   private bound: { addresses: readonly string[]; port: number } | null = null;
   private readonly carriers = new Map<string, Carrier>();
   private stopped = false;
   private opened = 0;
+  /** addresses devices signed in from, and when last */
+  private readonly trusted = new Map<string, number>();
   private cancelRefresh: (() => void) | undefined;
   private readonly clock: MuxClock;
   private readonly signedIn: SignedInSessions;
@@ -204,7 +238,8 @@ export class DirectCarrier {
         if (this.stopped) return new Response(null, { status: 503 });
         // only a WebSocket upgrade may take a place: any other request changes nothing here
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket" || !request.headers.has("sec-websocket-key")) return new Response(null, { status: 426 });
-        if (!this.makeRoom(source)) return new Response(null, { status: 503 });
+        // asked only: nobody gives way until the upgrade has happened (open)
+        if (!this.makeRoom(source, false)) return new Response(null, { status: 503 });
         return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex") } })
           ? undefined : new Response(null, { status: 426 });
       },
@@ -221,30 +256,21 @@ export class DirectCarrier {
   }
 
   /**
-   * Room for one more client that has not signed in, or false. A client gets GRACE_MS to finish its
-   * handshake untouched (a phone on the network needs a fraction of that); after it, a newer attempt
-   * takes its place: past the address's share its own oldest, past every place the oldest of the
-   * busiest address. Someone flooding the network can at most keep the phone on the relay, where it
-   * falls back by itself; it cannot take a place a phone already holds within its grace.
+   * Room for one more client that has not signed in, or false; `apply` false only asks. A client gets
+   * GRACE_MS to finish its handshake untouched (a phone on the network needs a fraction of that); after
+   * it, a newer attempt takes its place: past the address's share its own oldest, past every place the
+   * oldest of the busiest address. An address a device signed in from lately (`trusted`) is outside
+   * the shared places: others never count against it nor take its places. Someone flooding the network
+   * from other addresses can at most keep a phone at a new address on the relay, where it falls back
+   * by itself.
    */
-  private makeRoom(source: string): boolean {
+  private makeRoom(source: string, apply: boolean): boolean {
     const now = this.clock.now();
-    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId).sort((a, b) => a.order - b.order);
-    const old = (carrier: Carrier): boolean => now - carrier.openedAt >= GRACE_MS;
-    const own = pending.filter((carrier) => carrier.source === source);
-    if (own.length >= MAX_PENDING_PER_SOURCE) {
-      const oldest = own.find(old);
-      if (!oldest) return false;
-      pending.splice(pending.indexOf(oldest), 1);
-      this.drop(oldest);
-    }
-    if (pending.length >= MAX_PENDING) {
-      const counts = new Map<string, number>();
-      for (const carrier of pending) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
-      const oldest = pending.filter(old).sort((a, b) => (counts.get(b.source)! - counts.get(a.source)!) || a.order - b.order)[0];
-      if (!oldest) return false;
-      this.drop(oldest);
-    }
+    for (const [address, at] of this.trusted) if (now - at > TRUSTED_MS) this.trusted.delete(address);
+    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId);
+    const drops = admissionDrops(pending, source, (address) => this.trusted.has(address), now);
+    if (drops === null) return false;
+    if (apply) for (const carrier of drops) this.drop(carrier);
     return true;
   }
 
@@ -262,6 +288,8 @@ export class DirectCarrier {
   private open(socket: Bun.ServerWebSocket<SocketData>): void {
     const { id, source } = socket.data;
     if (this.stopped) { socket.close(1001, "Direct connections stopped"); return; }
+    // the upgrade happened: now someone may give way (or, if the places filled meanwhile, this one goes)
+    if (!this.makeRoom(source, true)) { socket.close(1013, "Try again"); return; }
     const transport: Transport = {
       onmessage: null, onclose: null, onerror: null,
       // a record Bun dropped (0) would break the protected stream after it: the carrier ends instead
@@ -320,6 +348,9 @@ export class DirectCarrier {
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
     carrier.release = this.signedIn.admit(deviceId, () => carrier.session?.close("resource_exhausted"));
+    this.trusted.delete(carrier.source);
+    this.trusted.set(carrier.source, this.clock.now());
+    while (this.trusted.size > MAX_TRUSTED) this.trusted.delete(this.trusted.keys().next().value!);
   }
 
   /** Stops listening and ends every carrier, signed in or not. */

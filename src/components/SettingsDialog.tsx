@@ -1284,7 +1284,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <SettingsRow label={t("Connect a device")} keywords={t("phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs")}>
           <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Connect")}</button>
         </SettingsRow>
-        {relayOffered(relay) && <RelayDirectRow relay={relay} readOnly={relayReadOnly} />}
+        {/* in the hosted shell too (a phone reaching this PC through the relay or directly), there without the switch */}
+        {(relayOffered(relay) || inRelayShell()) && <RelayDirectRow relay={relay} readOnly={relayReadOnly || inRelayShell()} />}
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
           <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} />

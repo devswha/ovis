@@ -6,7 +6,7 @@ import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts
 import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { SignedInSessions } from "./admissions.ts";
-import { DirectCarrier, rankLanAddresses } from "./direct.ts";
+import { admissionDrops, DirectCarrier, rankLanAddresses } from "./direct.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
@@ -163,6 +163,32 @@ describe("direct carrier", () => {
     expect(response.status).toBe(426);
     expect(firstClosed).toBe(false);
     expect(first.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("lets no failed upgrade take a place", async () => {
+    // Given two silent clients from one address, past their grace
+    const clock = new TestClock();
+    const { url } = await directFixture(clock);
+    const first = new WebSocket(url());
+    const second = new WebSocket(url());
+    cleanup.push(() => first.close(), () => second.close());
+    await opened(first);
+    await opened(second);
+    let firstClosed = false;
+    first.onclose = () => { firstClosed = true; };
+    clock.advance(1_000);
+    // When an upgrade request that the server cannot complete comes from the same address
+    const response = await fetch(url().replace("ws://", "http://"), { headers: { upgrade: "websocket", connection: "Upgrade", "sec-websocket-key": "not a key", "sec-websocket-version": "99" } });
+    // Then it is turned away and nobody gave way
+    expect(response.status).not.toBe(101);
+    // a ping on the first client's own connection: its pong comes after any close the server sent it
+    const fenced = await bounded(new Promise<string>((resolve) => {
+      first.addEventListener("close", () => resolve("closed"));
+      first.addEventListener("pong" as never, () => resolve("pong"));
+      (first as unknown as { ping(): void }).ping();
+    }));
+    expect(fenced).toBe("pong");
+    expect(firstClosed).toBe(false);
   });
 
   it("refuses a browser page: a socket that names an origin", async () => {
@@ -393,5 +419,31 @@ describe("direct connections with the relay", () => {
     const base = `http://127.0.0.1:${fixture.app.port}`;
     const response = await fetch(`${base}/api/relay/direct`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ on: false }) });
     expect(response.status).toBe(409);
+  });
+});
+
+describe("who gives way to a new client", () => {
+  const client = (source: string, order: number, openedAt = 0) => ({ source, order, openedAt });
+  const none = () => false;
+
+  it("lets a phone at an address a device signed in from in, past eight strangers within their grace", () => {
+    const strangers = Array.from({ length: 8 }, (_, index) => client(`192.168.0.${100 + index}`, index, 900));
+    expect(admissionDrops(strangers, "192.168.0.20", none, 1_000)).toBeNull();
+    expect(admissionDrops(strangers, "192.168.0.20", (address) => address === "192.168.0.20", 1_000)).toEqual([]);
+  });
+
+  it("never takes a trusted address's waiting client for a stranger", () => {
+    const waiting = [client("192.168.0.20", 0), ...Array.from({ length: 7 }, (_, index) => client(`192.168.0.${100 + index}`, index + 1))];
+    const trusted = (address: string) => address === "192.168.0.20";
+    const drops = admissionDrops(waiting, "192.168.0.200", trusted, 5_000);
+    expect(drops).toEqual([]);
+    const full = [...waiting, client("192.168.0.107", 8)];
+    expect(admissionDrops(full, "192.168.0.200", trusted, 5_000)?.map((carrier) => carrier.source)).toEqual(["192.168.0.100"]);
+  });
+
+  it("takes the busiest address's oldest client past its grace, and none within it", () => {
+    const waiting = [client("10.0.0.1", 0), client("10.0.0.1", 1), ...Array.from({ length: 6 }, (_, index) => client(`10.0.0.${10 + index}`, index + 2))];
+    expect(admissionDrops(waiting, "10.0.0.50", none, 500)).toBeNull();
+    expect(admissionDrops(waiting, "10.0.0.50", none, 1_000)?.map((carrier) => carrier.order)).toEqual([0]);
   });
 });

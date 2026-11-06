@@ -738,11 +738,13 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   `AUTH_OK` `direct`: up to four `ws://<private IPv4>:<port>` addresses, checked on both ends. It
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
   PC offers or answers nothing, and nothing changes for it.
-- **Bounded, and never locked.** A socket that names an `Origin` (any browser page, on the network or
-  not) is refused: the apps' sockets name none. At most two clients that have not signed in per source
-  address and eight in all, apart from the relay's places; the newest attempt always gets in (its
-  address's oldest gives way, then the oldest of the busiest address), so filling the places cannot
-  shut a paired phone out, and a phone that still cannot finish uses the relay; 5 s to finish the handshake and
+- **Bounded, and never locked out.** A socket that names an `Origin` (any browser page, on the network
+  or not) is refused: the apps' sockets name none. At most two clients that have not signed in per
+  source address and eight in all, apart from the relay's places. A client keeps its place for 1 s;
+  after that a newer one may take it (its address's oldest, then the oldest of the busiest address),
+  and only once the newer one's upgrade has happened. An address a device signed in from in the last
+  day has places of its own that strangers neither count against nor take. A phone that still cannot
+  get in stays on the relay, where it falls back by itself; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
   eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
