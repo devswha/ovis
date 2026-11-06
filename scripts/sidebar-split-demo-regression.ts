@@ -1,17 +1,81 @@
 /**
  * The PCs/Agents height divider on the real demo, never a live herdr session: default, drag,
  * persistence, reset, keyboard, snap-fold, scrolling, a short window and both section orders.
- * UI_EVIDENCE_DIR saves synthetic screenshots at 390 and 1280 in light and dark.
+ * Also checks actual workspace visibility with 47 agents across two PCs, and a short single-PC tree.
+ * BROWSER_ENGINE=webkit selects WebKit; --only=roster runs just the visibility/fold/rotation matrix.
+ * UI_EVIDENCE_DIR saves demo screenshots and geometry at 390 and 1280.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import { chromium, webkit, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
+// These cases expand the demo snapshots, not the application or a live herdr session.
+const ROSTER = String.raw`(() => {
+  const scene = localStorage.getItem("split-fixture:roster");
+  if (!scene) return;
+  const small = scene === "small";
+  const fetchDemo = window.fetch.bind(window), SourceDemo = window.EventSource, SocketDemo = window.WebSocket;
+  const grow = (input, count = small ? 2 : 24) => {
+    const snapshot = structuredClone(input);
+    if (!snapshot || snapshot.panes.some((pane) => pane.pane_id.includes("split-extra"))) return snapshot;
+    if (small) {
+      const workspace = snapshot.workspaces[0].workspace_id;
+      snapshot.workspaces = snapshot.workspaces.slice(0, 1);
+      for (const key of ["tabs", "layouts", "panes", "agents"]) snapshot[key] = snapshot[key].filter((row) => row.workspace_id === workspace);
+    }
+    const pane = snapshot.panes.find((row) => row.agent), agent = snapshot.agents.find((row) => row.pane_id === pane.pane_id);
+    const extra = count - snapshot.agents.length;
+    for (let i = 0; i < extra; i++) {
+      const workspace = snapshot.workspaces[i % snapshot.workspaces.length];
+      const tab = snapshot.tabs.find((row) => row.workspace_id === workspace.workspace_id);
+      const ids = { pane_id: workspace.workspace_id + ":split-extra-" + i, terminal_id: "split-extra-" + i, workspace_id: workspace.workspace_id, tab_id: tab.tab_id, focused: false, agent_status: "idle" };
+      snapshot.panes.push({ ...structuredClone(pane), ...ids, label: "Fixture agent " + i });
+      snapshot.agents.push({ ...structuredClone(agent), ...ids });
+    }
+    return snapshot;
+  };
+  const roster = (machines) => {
+    const local = machines.find((machine) => machine.id === "local");
+    return (small ? ["local"] : ["local", "work"]).map((id, i) => ({
+      ...structuredClone(local), id, kind: i ? "ssh" : "local", name: i ? "Work PC" : "Laptop",
+      snapshot: grow(local.snapshot, small ? 2 : i ? 23 : 24),
+    }));
+  };
+  window.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    const response = await fetchDemo(input, init);
+    if (url.pathname === "/api/machines") { const body = await response.json(); return Response.json({ ...body, machines: roster(body.machines) }); }
+    if (url.pathname === "/api/session") { const body = await response.json(); return Response.json({ ...body, snapshot: grow(body.snapshot) }); }
+    return response;
+  };
+  window.EventSource = class extends EventTarget {
+    constructor(url, options) {
+      super(); this.inner = new SourceDemo(url, options); this.readyState = 1;
+      this.inner.onmessage = (event) => {
+        const body = JSON.parse(event.data);
+        if (body.type === "machines") body.machines = roster(body.machines);
+        this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(body) }));
+      };
+      this.inner.onerror = (event) => this.onerror?.(event);
+      this.inner.onopen = (event) => this.onopen?.(event);
+    }
+    close() { this.inner.close(); this.readyState = 2; }
+  };
+  window.WebSocket = function(url, protocols) {
+    const socket = new SocketDemo(url, protocols), push = socket.push.bind(socket);
+    socket.push = (frame) => push(frame.type === "snapshot" ? { ...frame, snapshot: grow(frame.snapshot) } : frame);
+    return socket;
+  };
+  for (const key of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Object.defineProperty(window.WebSocket, key, { value: SocketDemo[key] });
+})();`;
+
+const useWebkit = process.env["BROWSER_ENGINE"] === "webkit";
+const rosterOnly = process.argv.includes("--only=roster");
 const app = mkdtempSync(join(tmpdir(), "ovis-sidebar-split-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const metrics = (page: Page) => page.evaluate(() => {
@@ -33,7 +97,8 @@ const metrics = (page: Page) => page.evaluate(() => {
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
+  writeFileSync(join(app, "split-roster.js"), ROSTER);
+  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./split-roster.js"></script><script type="module"'));
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     let file: string;
     try { file = decodeURIComponent(new URL(request.url).pathname.slice(1)); }
@@ -44,9 +109,96 @@ try {
     return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
   } });
   try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+    const browser = useWebkit ? await webkit.launch() : await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      for (const width of [1280, 390]) for (const mode of ["light", "dark"] as const) for (const grouped of [false, true]) {
+      for (const width of [390, 1280]) for (const grouped of [false, true]) for (const scene of ["many", "small"]) {
+        const label = `${useWebkit ? "webkit" : "chromium"}/${width}/${grouped ? "agents" : "pcs"}/${scene}`;
+        const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: width === 390, isMobile: width === 390, locale: "en-US" });
+        try {
+          await context.addInitScript(({ grouped, scene }) => {
+            if (localStorage.getItem("split-fixture:roster")) return;
+            localStorage.setItem("split-fixture:roster", scene);
+            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", defaultView: "chat" }));
+            localStorage.setItem("ovis:agent-groups", String(grouped));
+            localStorage.setItem("ovis:agents-collapsed", "0");
+            localStorage.setItem("ovis:pcs-collapsed", "1");
+          }, { grouped, scene });
+          const page = await context.newPage();
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          const settle = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+          const open = async () => {
+            await page.locator(".conn-live").waitFor({ state: "attached" });
+            if (width === 390) {
+              if (await page.locator(".sidebar.is-open").count() === 0) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+              await page.waitForFunction(() => (document.querySelector(".sidebar.is-open")?.getBoundingClientRect().left ?? -1) >= -0.5);
+            }
+            await page.locator(".sidebar-split").waitFor();
+            await page.waitForFunction((rows) => document.querySelectorAll(".agent-row").length === rows, scene === "many" ? 47 : 2);
+            await page.evaluate(() => document.fonts.ready);
+            await settle();
+          };
+          const visibleWorkspace = async (phase: string) => {
+            await settle();
+            const geometry = await page.locator(".machine-list").evaluate((list) => {
+              const bounds = list.getBoundingClientRect();
+              const rows = [...list.querySelectorAll(".workspace-header")].map((row) => row.getBoundingClientRect());
+              return { height: bounds.height, scrollHeight: list.scrollHeight, workspaces: rows.length,
+                visible: rows.some((row) => row.width > 0 && row.height > 0
+                  && row.left >= Math.max(0, bounds.left) - 1 && row.right <= Math.min(innerWidth, bounds.right) + 1
+                  && row.top >= Math.max(0, bounds.top) - 1 && row.bottom <= Math.min(innerHeight, bounds.bottom) + 1),
+                pcsBasis: getComputedStyle(list.closest(".pcs-sidebar")!).flexBasis,
+                viewport: { width: innerWidth, height: innerHeight }, listLeft: bounds.left, listRight: bounds.right,
+                listTop: bounds.top, listBottom: bounds.bottom,
+                rows: rows.map((row) => ({ left: row.left, right: row.right, top: row.top, bottom: row.bottom })) };
+            });
+            if (evidence) {
+              mkdirSync(evidence, { recursive: true });
+              const file = join(evidence, label.replaceAll("/", "-") + "-" + phase);
+              writeFileSync(file + ".json", JSON.stringify({ ...geometry, sections: await metrics(page) }, null, 2));
+              await page.screenshot({ path: file + ".png", animations: "disabled" });
+            }
+            assert.equal(geometry.workspaces, scene === "many" ? 12 : 1, label + " workspaces remain in the real tree");
+            assert.ok(geometry.visible, label + " " + phase + ": an expanded PC exposes a full workspace row, not just its PC header; " + JSON.stringify(geometry));
+            const m = await metrics(page);
+            assert.ok(m.footer.bottom <= m.shell.bottom + 1, label + " footer remains reachable");
+            if (scene === "small") assert.ok(m.pcs.height <= geometry.scrollHeight + m.topHead + 1, label + " a short PC list keeps its content cap");
+          };
+          await page.goto(`http://127.0.0.1:${server.port}/`); await open();
+          const toggle = page.locator(".pcs-sidebar .sidebar-section-toggle");
+          assert.equal(await toggle.getAttribute("aria-expanded"), "false", label + " explicit PC fold survives opening");
+          await toggle.click(); await visibleWorkspace("expanded");
+          await toggle.click();
+          assert.equal(await page.locator(".machine-list").isVisible(), false, label + " explicit PC fold hides the tree");
+          await toggle.click(); await visibleWorkspace("reopened");
+          if (scene === "many") {
+            const machine = page.locator(".machine-group").first();
+            const machineToggle = machine.locator(".machine-toggle");
+            await machineToggle.click();
+            assert.equal(await machineToggle.getAttribute("aria-expanded"), "false", label + " an individual PC still folds");
+            assert.equal(await machine.locator(".workspace-header").first().isVisible(), false, label + " a folded PC hides its workspaces");
+            await machineToggle.click(); await visibleWorkspace("pc-reopened");
+          }
+          const line = page.getByRole("separator", { name: "Resize PCs and Agents", exact: true });
+          await line.focus(); await page.keyboard.press("ArrowDown");
+          const key = grouped ? "ovis:sidebar-split-agents-first" : "ovis:sidebar-split";
+          const stored = await page.evaluate((key) => localStorage.getItem(key), key);
+          assert.notEqual(stored, null, label + " divider still saves an explicit allocation");
+          await page.reload(); await open(); await visibleWorkspace("saved");
+          if (width === 390) {
+            await page.setViewportSize({ width: 844, height: 390 }); await settle();
+            const rotated = await metrics(page);
+            assert.ok(rotated.footer.bottom <= rotated.shell.bottom + 1, label + " landscape keeps the footer reachable");
+            assert.ok(rotated.pcs.height >= rotated.bottomHead - 1, label + " landscape preserves the PC heading");
+            await page.setViewportSize({ width: 390, height: 844 }); await open(); await visibleWorkspace("portrait");
+            assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), stored, label + " rotation does not overwrite the chosen split");
+          }
+          assert.deepEqual(errors, [], label + " no browser errors");
+          console.log("PASS " + label + ": workspace geometry, fold/reopen, saved divider and rotation");
+        } finally { await context.close(); }
+      }
+
+      for (const width of (rosterOnly ? [] : [1280, 390])) for (const mode of ["light", "dark"] as const) for (const grouped of [false, true]) {
         const phone = width === 390;
         const label = `${width}/${mode}/${grouped ? "agents-first" : "pcs-first"}`;
         const key = grouped ? "ovis:sidebar-split-agents-first" : "ovis:sidebar-split";
@@ -94,7 +246,7 @@ try {
           const drag = async (to: number, beforeRelease?: () => Promise<void>) => {
             const box = (await line.boundingBox())!;
             const x = box.x + box.width / 2, y = box.y + box.height / 2;
-            if (phone) {
+            if (phone && !useWebkit) {
               const cdp = await context.newCDPSession(page);
               try {
                 await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });

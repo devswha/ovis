@@ -934,7 +934,8 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 /* The PCs get free space first, up to their rows; Agents starts with half the whole shell,
    as before, and gets the space a short PCs list leaves. Neither grows past its own content. */
 .sidebar-shell > .pcs-sidebar {
-  flex: var(--pcs-flex, 1000 1 0);
+  /* A percentage zero keeps WebKit's intrinsic height cap from shrinking PCs to their minimum. */
+  flex: var(--pcs-flex, 1000 1 0%);
   min-height: var(--split-pcs-min, 0px);
   max-height: var(--section-max, max-content);
 }
