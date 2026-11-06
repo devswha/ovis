@@ -39,6 +39,24 @@ Var pid
   !endif
 !macroend
 
+; Removing the app (not the old version's uninstall an update runs) stops the herdr-core server the
+; app started (HC_SESSION=ovis, from its copy in the app's data folder, README.md): quitting the app
+; leaves it running on purpose, but with the app gone nothing could stop or update it. Best effort,
+; at most 15 seconds, and the removal goes on whatever it answers. Then the folder electron-builder
+; keeps the installer's copy in for later updates (about 170 MB) goes, with any update downloaded
+; there: it is named after this package (package.json name, as electron-updater names it).
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    ${if} ${FileExists} "$APPDATA\${PRODUCT_NAME}\bin\herdr-core.exe"
+      System::Call 'kernel32::SetEnvironmentVariable(t "HC_SESSION", t "ovis")'
+      nsExec::ExecToLog /TIMEOUT=15000 '"$APPDATA\${PRODUCT_NAME}\bin\herdr-core.exe" server stop'
+      Pop $0
+      DetailPrint "Stopping the herdr-core server: $0"
+    ${endIf}
+    RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}-updater"
+  ${endIf}
+!macroend
+
 !macro customInstall
   StrCpy $1 "0"
   ${if} ${FileExists} "$newStartMenuLink"
