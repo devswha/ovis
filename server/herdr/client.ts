@@ -874,18 +874,19 @@ export async function paneSwapWith(paneId: string, targetPaneId: string, socketP
 /**
  * The panes of a tab whose focused pane `paneMoveBeside` takes out and back in: herdr hands one of
  * them its focus for a moment (a pane_focused event, measured on 0.9.5) that the user never gave.
- * A hold lasts until herdr's focus lands on a pane it does not name, or the move ends without
- * asking herdr for such a focus; a lost event costs it at most PASSING_FOCUS_MS.
+ * A hold lasts until herdr's focus lands on the moved pane, or the move ends without asking herdr
+ * for that focus; a lost event costs it at most PASSING_FOCUS_MS.
  */
-const passingFocus = new Set<Set<string>>();
+interface PassingFocus { moved: Set<string>; siblings: Set<string> }
+const passingFocus = new Set<PassingFocus>();
 const PASSING_FOCUS_MS = 5_000;
 
-/** Whether herdr's focus on `paneId` is a move's passing one, not the user's. A focus elsewhere ends the holds. */
+/** Whether herdr's focus on `paneId` is a move's passing one, not the user's. The moved pane's focus ends its hold. */
 export function focusFromMove(paneId: string): boolean {
   let held = false;
   for (const hold of passingFocus) {
-    if (hold.has(paneId)) held = true;
-    else passingFocus.delete(hold);
+    if (hold.siblings.has(paneId)) held = true;
+    else if (hold.moved.has(paneId)) passingFocus.delete(hold);
   }
   return held;
 }
@@ -922,7 +923,7 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         // Already inside the focus queue: do not enqueue recursively.
         if (at !== wanted && took(at)) {
           await herdrRpc("pane.focus", { pane_id: wanted }, socket);
-          refocused = hold?.has(wanted) === false;
+          if (hold?.moved.has(wanted)) refocused = true;
         }
       } catch (error) {
         // The layout is already committed, as after a swap.
@@ -931,9 +932,9 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
     };
     // where herdr's focus went when the focused pane left its tab: the move's doing, not the user's
     let left: string | null = null;
-    // the panes herdr's focus may pass over (`passingFocus`), and whether herdr was last asked to
-    // focus a pane outside them, whose pane_focused then ends the hold
-    let hold: Set<string> | null = null;
+    // the panes herdr's focus may pass over (`passingFocus`), and whether herdr was asked to focus
+    // the moved pane, whose pane_focused then ends the hold
+    let hold: PassingFocus | null = null;
     let refocused = false;
     /** Whether herdr's snapshot lists `out` in its tab again; false without one. */
     const inTab = (now: { panes: PaneInfo[] } | null, out: string) => now?.panes.some((candidate) => candidate.pane_id === out && candidate.tab_id === target.tab_id) === true;
@@ -964,7 +965,7 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         // herdr moves no pane out of a zoomed tab (its PaneMoveReason zoomed_tab)
         if (before.layouts.find((layout) => layout.tab_id === target.tab_id)?.zoomed) return { changed: false, reason: "zoomed_tab" };
         if (before.focused_pane_id === paneId) {
-          hold = new Set(before.panes.filter((candidate) => candidate.tab_id === target.tab_id && candidate.pane_id !== paneId).map((candidate) => candidate.pane_id));
+          hold = { moved: new Set([paneId]), siblings: new Set(before.panes.filter((candidate) => candidate.tab_id === target.tab_id && candidate.pane_id !== paneId).map((candidate) => candidate.pane_id)) };
           passingFocus.add(hold);
         }
         let passing: Moved;
@@ -977,17 +978,20 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
           if (!out) throw error;
           const at = now?.panes.find((candidate) => candidate.pane_id === now.focused_pane_id);
           if (before.focused_pane_id === paneId && at?.tab_id === target.tab_id) left = at.pane_id;
-          return strayed(out.pane_id, failed(error));
+          hold?.moved.add(out.pane_id);
+          // awaited, or the finally below would end the hold while the pane is still on its way back
+          return await strayed(out.pane_id, failed(error));
         }
         if (passing.changed === false) return { changed: false, reason: passing.reason ?? null };
         const out = passing.pane.pane_id;
+        hold?.moved.add(out);
         if (before.focused_pane_id === paneId) left = passing.source_layout?.focused_pane_id ?? null;
         try {
           moved = await move(out, into);
         } catch (error) {
-          return strayed(out, failed(error));
+          return await strayed(out, failed(error));
         }
-        if (moved.changed === false) return strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`));
+        if (moved.changed === false) return await strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`));
       }
       if (moved.changed === false) return { changed: false, reason: moved.reason ?? null };
       const id = moved.pane.pane_id;
@@ -1012,7 +1016,10 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
             return first ? { changed: true, reason: null } : { changed: false, reason: failed(error).code };
           });
         // an explicit swap focuses its source, the moved pane
-        if (swap.changed) refocused = hold?.has(id) === false;
+        if (swap.changed && hold !== null) {
+          hold.moved.add(id);
+          refocused = true;
+        }
         await restore(kept, (at) => at === id || (left !== null && at === left));
         if (!swap.changed) return { changed: true, reason: swap.reason ?? "unchanged" };
       } else if (left !== null) await restore(id, (at) => at === left);

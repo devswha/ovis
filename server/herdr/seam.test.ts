@@ -377,9 +377,10 @@ it("tells herdr's passing focus on a sibling apart from the user's, until the mo
   for (const side of ["right", "up"] as const) {
     state.focus = "source";
     const during: boolean[] = [];
-    state.onInto = () => { during.push(focusFromMove("sibling"), focusFromMove("target")); };
+    // a focus frame from before the move, on a pane outside the tab, does not end the hold
+    state.onInto = () => { during.push(focusFromMove("other"), focusFromMove("sibling"), focusFromMove("target")); };
     await paneMoveBeside("source", "target", side, path);
-    expect(during).toEqual([true, true]);
+    expect(during).toEqual([false, true, true]);
     // herdr's pane_focused for the moved pane may arrive after the answer: until then the hold stays
     expect(focusFromMove("sibling")).toBe(true);
     expect(focusFromMove("source")).toBe(false);
@@ -388,9 +389,20 @@ it("tells herdr's passing focus on a sibling apart from the user's, until the mo
     state.focus = "source";
     state.onInto = () => { state.focus = "other"; };
     await paneMoveBeside("source", "target", side, path);
+    // herdr's frames in order: the pick, and for up the swap's focus of its source
     expect(focusFromMove("other")).toBe(false);
+    if (side === "up") expect(focusFromMove("source")).toBe(false);
     expect(focusFromMove("sibling")).toBe(false);
   }
+  // the hold lasts through a recovery: herdr refuses the move back, and the pane goes back beside another
+  state.focus = "source";
+  state.failInto = 1;
+  const recovering: boolean[] = [];
+  state.onInto = () => { recovering.push(focusFromMove("sibling")); };
+  await rejection(paneMoveBeside("source", "target", "right", path));
+  expect(recovering).toEqual([true, true]);
+  expect(focusFromMove("source")).toBe(false);
+  expect(focusFromMove("sibling")).toBe(false);
   // a pane moved without herdr's focus takes nobody's
   state.focus = "elsewhere";
   state.onInto = () => { expect(focusFromMove("sibling")).toBe(false); };
