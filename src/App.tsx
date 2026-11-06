@@ -52,7 +52,7 @@ import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { liveGroupKeys, movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { loadSettings, pcLoadOn, useSettings } from "./lib/settings.ts";
+import { pcLoadOn, useSettings } from "./lib/settings.ts";
 import { useHiddenMachines, useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
 import { useHerdrPrefixKeys } from "./lib/herdrKeys.ts";
@@ -121,6 +121,7 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
+import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
 const APP_TITLE = "Ovis";
@@ -374,13 +375,13 @@ export function App() {
   // shown, in either half, the view goes with it (#1503). Nothing is sent: held text waits for its Send or Discard
   const followPaneMove = (machineId: string, from: string, to: string): void => {
     carryMovedPane(machineId, from, to);
-    // its lock goes with its pin (lib/paneLocks.ts); the locks as last saved, as this call may come from an older render's event
-    const { lockedAgents: locks, agentGroupOf } = loadSettings();
-    const movedLocks = movedSidebarPins(locks, machineId, from, to);
-    if (movedLocks !== locks) updateSettings({ lockedAgents: [...movedLocks] });
-    // its named group goes with it the same way (lib/namedAgentGroups.ts)
-    const movedGroups = movedAgentGroup(agentGroupOf, machineId, from, to);
-    if (movedGroups !== agentGroupOf) updateSettings({ agentGroupOf: { ...movedGroups } });
+    // its lock goes with its pin (lib/paneLocks.ts), and its named group the same way (lib/namedAgentGroups.ts): read from
+    // the settings as this save stores them, when the change applies: this call may come from an older render's event,
+    // another tab may have saved since, and storage may refuse writes (#2977)
+    updateSettings(({ lockedAgents, agentGroupOf }) => ({
+      lockedAgents: [...movedSidebarPins(lockedAgents, machineId, from, to)],
+      agentGroupOf: { ...movedAgentGroup(agentGroupOf, machineId, from, to) },
+    }));
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);
@@ -556,10 +557,21 @@ export function App() {
         const found = newTabTarget(target);
         if (!found) return;
         const asked = selectionRef.current;
-        const created = await createTab({ workspace_id: found.workspace.workspace_id, cwd: found.cwd, label: null, agent: null }, found.machineId);
+        // the keys typed from now on are the new tab's (lib/typeAhead.ts)
+        const ahead = catchTypeAhead();
+        let created: Awaited<ReturnType<typeof createTab>>;
+        try {
+          created = await createTab({ workspace_id: found.workspace.workspace_id, cwd: found.cwd, label: null, agent: null }, found.machineId);
+        } catch (reason) {
+          ahead?.drop();
+          throw reason;
+        }
         void load();
         // what the user went to while herdr answered is theirs to keep
-        if (selectionStill(asked, selectionRef.current)) selectTargetRef.current(found.machineId, created.pane_id);
+        const still = selectionStill(asked, selectionRef.current);
+        // the keys typed ahead are this tab's either way: held for it when the user went elsewhere meanwhile
+        ahead?.handTo(found.machineId, created.pane_id, still);
+        if (still) selectTargetRef.current(found.machineId, created.pane_id);
       },
       moveTabToWorkspace: async ({ machineId, tabId, workspaceId, notice }) => {
         const roster = machinesRef.current.find((m) => m.id === machineId)?.snapshot;
@@ -1078,7 +1090,7 @@ export function App() {
                     No tabIndex - the terminal (PaneTerminal) and the composer are the focusable things inside it. */}
                 <main className="terminal-host">
                   <div id={slotPanelId} className="terminal-tabpanel" role={slotPanelLabel === null ? undefined : "tabpanel"} aria-label={slotPanelLabel ?? undefined}>
-                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined}
+                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={auth?.role === "watch"}
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}

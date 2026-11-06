@@ -164,6 +164,9 @@ export interface Settings {
   /** the split view takes more than two panes, in rows and columns, and its boundaries move (lib/split.ts);
    *  off: two halves side by side, as before */
   splitGrid: boolean;
+  /** a plain drag in a Codex pane is Codex's, which selects and scrolls its own history (lib/useTerminalMount.ts);
+   *  off: Ovis's selection, which stops at the screen's edge but copies on every device */
+  codexDrag: boolean;
   /** this device opens the pane herdr's own focus moves to (a `pane-focused` frame from the selected PC), as
    *  herdr's window does after `herdr tab focus` or a click there; off: only this device's own picks move it */
   followHerdrFocus: boolean;
@@ -294,14 +297,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, splitGrid, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, the agent groups, the
+ * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, splitGrid, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, the agent groups, the
  * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "filesDocuments" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
-  | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "splitGrid" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "splitGrid" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "chatRequestDetails" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "markdownOutline" | "fileFontSize" | "fileFontBase" | "editTextFiles">;
 
@@ -395,6 +398,8 @@ export const SETTING_SCOPE = {
   followHerdrFocus: "device",
   // a wide desk splits its pane area into rows and columns where a laptop keeps two halves
   splitGrid: "device",
+  // a desk's mouse, where Codex's copy reaches or not
+  codexDrag: "device",
   // a desk's mouse, which a phone has not
   sidebarPeek: "device",
   // a phone's short list may set the workers apart while a desk keeps herdr's order, as with the filter
@@ -478,6 +483,7 @@ export const DEFAULT_SETTINGS: Settings = {
   releasePaneAway: false,
   followHerdrFocus: false,
   splitGrid: false,
+  codexDrag: false,
   sidebarPeek: false,
   sidebarBackgroundWorkspaces: false,
   chatFontSize: null,
@@ -716,6 +722,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
     splitGrid: record["splitGrid"] === true,
+    codexDrag: record["codexDrag"] === true,
     sidebarPeek: record["sidebarPeek"] === true,
     sidebarBackgroundWorkspaces: record["sidebarBackgroundWorkspaces"] === true,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),
@@ -1114,7 +1121,12 @@ interface SettingsContextValue {
   resolvedEntry: ThemeEntry;
   /** the language after resolving `system` against the browser's */
   resolvedLanguage: Language;
-  update: (patch: Partial<Settings>) => void;
+  /**
+   * a change, or one made from the settings as this save would store them: storage's copy (another tab of this browser
+   * may have saved since this one heard), with this tab's own changes not yet stored over it (a blocked storage holds
+   * none of them, #2977)
+   */
+  update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -1163,11 +1175,24 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     applyToDocument(settings, resolvedEntry, resolvedLanguage);
   }, [settings, resolvedEntry, resolvedLanguage]);
 
-  const update = useCallback((patch: Partial<Settings>) => {
+  const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
+    // StrictMode runs the updater twice on the same state: the first run's save must not change what the second one reads
+    let made: Partial<Settings> | undefined;
     setSettings((current) => {
-      const next = sanitizeSettings({ ...current, ...patch });
-      // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
+      // storage that no longer reads, or holds no record or a broken one, has nothing newer: this tab's own copy stands
+      const readable = (): boolean => {
+        try {
+          const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+          if (raw === null) return false;
+          JSON.parse(raw);
+          return true;
+        } catch { return false; }
+      };
+      const latest = (): Settings => !readable() ? current
+        : sanitizeSettings({ ...loadSettings(), ...Object.fromEntries(Object.entries(current).filter(([key, value]) => differs(key, value, stored.current))) });
+      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? made ??= patch(latest()) : patch) });
+      // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));
       if (saveSettings(sanitizeSettings({ ...loadSettings(), ...changed }))) stored.current = next;
       return next;

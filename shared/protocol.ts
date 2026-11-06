@@ -450,6 +450,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         409 repository_without_commits when no base is named and the repository has no commit yet;
  *         both worktree routes refuse a label over MAX_LABEL_CHARS with 400 label_too_long)
  *  GET    /api/worktree/list?workspace_id= -> WorktreeListing (worktree.list: the repo's checkouts)
+ *  GET    /api/worktree/inventory?workspace_id=&workspace_id=... -> WorktreeInventory (the same listing for up to
+ *         MAX_INVENTORY_WORKSPACES workspaces in one read, each with its listing or the error the list route would give;
+ *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
  *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
@@ -804,7 +807,7 @@ export type { AgentKind } from "./agents.ts";
 
 export type { AgentIntegration, IntegrationsResponse } from "./integrations.ts";
 
-export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
+export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorktreeInventory, WorktreeInventoryEntry, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
 
 /** POST /api/agent/rename: the live name of the agent in the pane; null clears it. */
 export interface AgentRenameRequest {
@@ -1245,8 +1248,10 @@ export type ServerMessage =
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
-   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
-  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot.
+   * `paste_dir`: the absolute folder `OVIS_PASTE_DIR` sends this PC's uploads to, so the page reads an upload's
+   * path whole through it (src/lib/pasteFolders.ts, #2771); absent when uploads go to each pane's `<cwd>/.ovis` */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */
