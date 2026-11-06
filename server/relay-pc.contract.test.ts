@@ -7,7 +7,7 @@ import type { HerdrIdentity, Machine, MachineEvent } from "../shared/machines.ts
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { createServer } from "./index.ts";
 import { RelayService } from "./relay/service.ts";
-import { openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
+import { newRouteProbes, openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { bounded, deferred } from "./relay/test-helpers.ts";
 
@@ -27,7 +27,7 @@ const LAN = "10.99.0.1";
  * PC B with the relay on, PC A that adds it through the relay, and the local relay between them. `direct`: B also
  * listens on its network, and A reaches that address on the dials `reachable` lets through (else nothing answers).
  */
-async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean; held?: (dial: number) => Promise<void> | undefined } } = {}) {
+async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] } } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -52,7 +52,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
   };
   const bState = stateDir();
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
-    ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => [`ws://${LAN}:${port}`], peerAllowed: () => true, preferredPort: 0 } } : {}) });
+    ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: options.direct.named ?? ((port: number) => [`ws://${LAN}:${port}`]), peerAllowed: () => true, preferredPort: 0 } } : {}) });
   const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
@@ -69,10 +69,12 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
   expect(approvals.localOnlyOpen()).toBe(true);
   const { url: link } = await offered.json() as { url: string };
   const aState = stateDir();
-  const lan = { dials: 0 };
+  const lan = { dials: 0, dialed: [] as string[] };
   const onLan = (url: string): WebSocket => {
     const target = new URL(url);
-    expect(target.hostname).toBe(LAN);
+    lan.dialed.push(target.host);
+    // anything but B's own address goes nowhere (and is recorded)
+    if (target.hostname !== LAN) return new WebSocket("ws://127.0.0.1:1/");
     // port 1 on loopback refuses at once, as an address of another network does
     const dial = ++lan.dials;
     const port = options.direct?.reachable(dial) ? target.port : "1";
@@ -425,4 +427,38 @@ it("checks the direct route again when this PC's addresses change, and moves the
   await bounded(moved.promise);
   expect(tunnel.route).toBe("direct");
   expect(lost).toEqual([]);
+}, 60_000);
+
+it("dials none of the carriers a PC names off its listener's port family or on link-local, and uses the one it may", async () => {
+  // Given B naming, inside its AUTH_OK, a link-local address and a service port beside its real carrier
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => true,
+    named: (port) => ["ws://169.254.169.254:7319", `ws://${LAN}:80`, `ws://${LAN}:${port}`] } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const moved = deferred<void>();
+  // When A pairs and checks B's direct routes
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, onMoved: () => moved.resolve() });
+  cleanup.push(() => tunnel.close());
+  await bounded(moved.promise);
+  // Then it only ever dialed B's listener, and keeps only that one
+  expect(lan.dialed.every((host) => host.startsWith(`${LAN}:`) && !host.endsWith(":80"))).toBe(true);
+  expect(key.direct.every((carrier) => carrier.startsWith(`ws://${LAN}:`) && !carrier.endsWith(":80"))).toBe(true);
+}, 60_000);
+
+it("keeps a PC's probe deadline across its tunnels, so a reconnect does not probe again at once", async () => {
+  // Given B's address that does not answer, and A's per-PC probe state
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => false } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const probes = newRouteProbes();
+  const first = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+  // a check starts as its tunnel is handed over: its probe has dialed by now
+  expect(lan.dials).toBe(1);
+  first.close();
+  // When the connection comes back right away (a relay that keeps dropping it, say)
+  const { code: _code, ...signIn } = offer;
+  const second = await openRelayPcTunnel(signIn, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+  cleanup.push(() => second.close());
+  // Then only its sign-in tried the saved address: no second probe before the deadline
+  expect(lan.dials).toBe(2);
 }, 60_000);
