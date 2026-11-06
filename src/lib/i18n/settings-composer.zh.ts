@@ -19,4 +19,5 @@ export const SETTINGS_COMPOSER_ZH: Record<string, string> = {
   "herdr's prefix, then a key herdr's config.toml on this PC binds, runs that action here: the ones listed below. The prefix no longer reaches the pane: press it twice to send it. Fields, dialogs and IME input keep their keys.": "按下 herdr 前缀键后，再按此 PC 的 herdr config.toml 绑定的键，即可在这里执行下方列出的操作。前缀键将不再发送到窗格：按两次即可发送。输入框、对话框和输入法输入保留其按键。",
   "Codex panes: let Codex select and scroll": "Codex 窗格：由 Codex 选择和滚动",
 "Split into rows and columns": "按行和列拆分",
+  "On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.": "在此设备上，Codex 窗格中的拖动交给 Codex，它会在完整历史中选择，并在拖动停在顶部或底部边缘之外时滚动历史。Ctrl+C 或 Enter 复制所选内容，但在 herdr 上该复制不会到达此设备的剪贴板：Shift+拖动（Mac 上为 Option+拖动）仍会在 Ovis 中选择、复制和引用，直到屏幕边缘。",
 };
