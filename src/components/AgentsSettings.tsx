@@ -100,8 +100,9 @@ function AgentOwnRows({ agentId }: { agentId: string }) {
   }
 }
 
-/** The agents that have settings of their own. */
-const OWN_ROWS = new Set(["claude", "codex", "omp"]);
+/** The agents that have settings of their own, and their names where the PC has no row for them. */
+const OWN_NAMES: Readonly<Record<string, string>> = { claude: "Claude Code", codex: "Codex", omp: "Oh My Pi" };
+const OWN_ROWS = new Set(Object.keys(OWN_NAMES));
 
 /**
  * herdr's integration for one agent (`integration.list`), read only: installing one writes into the
@@ -370,6 +371,9 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
   const providers = settings.showUsage ? usage.report?.providers ?? [] : [];
   const page = agents === null && catalogError === null ? null : agentsPage({ agents: agents ?? [], providers, missing: settings.showUsage ? usage.report?.missing_commands ?? [] : [], integrations: integrationOutcome?.kind === "list" ? integrationOutcome.integrations : [], accountsHere: local });
   const removed = settings.showUsage ? usage.report?.removed ?? [] : [];
+  const ownGroups = searching ? [...OWN_ROWS]
+    : page === null ? (catalogError === null ? [] : [...OWN_ROWS])
+      : [...OWN_ROWS].filter((id) => !page.rows.some((entry) => entry.agent.id === id));
   // a provider whose every account was removed keeps its group, for Restore
   const otherProviders = [...new Set([...(page?.otherProviders ?? providers.map((entry) => entry.id)),
     ...removed.map((entry) => entry.id).filter((id) => !page?.rows.some((row) => row.provider === id))])];
@@ -388,10 +392,6 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
         </SettingsRow>
       </SettingsGroup>}
 
-      {searching && page?.rows.filter((entry) => OWN_ROWS.has(entry.agent.id)).map((entry) => <SettingsGroup key={entry.agent.id} title={entry.agent.name} section={`agent-${entry.agent.id}`}>
-        <AgentOwnRows agentId={entry.agent.id} />
-      </SettingsGroup>)}
-
       <section className="settings-section" data-section="agents-installed" tabIndex={-1} aria-labelledby="settings-agents-here">
         <SectionHead id="settings-agents-here" title={t("On this PC")}>
           <button type="button" ref={checkAgain} className="btn btn-ghost" onClick={() => setReads((count) => count + 1)}><RotateCw aria-hidden="true" />{t("Check again")}</button>
@@ -408,6 +408,12 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
               </ul>}
         {integrationNote}
       </section>
+
+      {/* the settings live on this device and start the agent on any PC: one the PC shown has no row for (not
+          installed, or its catalog unread) keeps its own group, and a search finds every one in a group */}
+      {ownGroups.map((id) => <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`}>
+        <AgentOwnRows agentId={id} />
+      </SettingsGroup>)}
 
       {page !== null && [
         { title: t("Other agents herdr found"), section: "integrations", rows: page.otherIntegrations.filter((integration) => integration.available) },

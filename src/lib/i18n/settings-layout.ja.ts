@@ -12,5 +12,4 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "More settings": "その他の設定",
   "Experimental": "試験的な機能",
   "{count} changed": "{count} 件変更",
-  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC は「設定 → デバイスと PC（古い Ovis では スマートフォンとデバイス）」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
 };

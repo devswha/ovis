@@ -432,6 +432,7 @@ const BASE: Record<string, string> = {
   "Side conversations chip (experimental)": "サイド会話チップ（実験的）",
   "Permission mode": "権限モード",
   "Sandbox and approvals": "サンドボックスと承認",
+  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC は「設定 → デバイスと PC（古い Ovis では スマートフォンとデバイス）」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -583,6 +583,9 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
       await openSettings(page);
       await dialog.getByRole("searchbox", { name: "Search settings", exact: true }).fill("sidebar on hover");
       await dialog.getByRole("region", { name: "Search results", exact: true }).getByRole("switch", { name: "Show the sidebar on hover", exact: true }).waitFor();
+      // an agent's own setting is found with its agent's row shut, in a group named after it
+      await dialog.getByRole("searchbox", { name: "Search settings", exact: true }).fill("sandbox");
+      await dialog.getByRole("region", { name: "Search results", exact: true }).getByLabel("Sandbox and approvals", { exact: true }).waitFor();
       await closeSettings(page);
 
       // a link to a group inside a fold opens it on that group

@@ -106,7 +106,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Update PC bridges automatically": "PC ブリッジを自動更新",
   "When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.": "アプリの更新で新しいブリッジが必要になった場合、保存済みのキーで接続する PC はバックグラウンドで更新されます。パスワードが必要な PC では先に確認します。",
   "Sign out of this browser?": "このブラウザーからサインアウトしますか？",
-  "Getting back in takes the access token, or a pairing code from the PC: Settings → Devices and PCs there, or the pair command in its terminal.": "再び入るにはアクセストークンか、PC のペアリングコードが必要です。コードは PC の設定 → Phone & devices か、PC のターミナルの pair コマンドで表示されます。",
+  "Getting back in takes the access token, or a pairing code from the PC: Settings → Devices and PCs there, or the pair command in its terminal.": "再び入るにはアクセストークンか、PC のペアリングコードが必要です。コードは PC の設定 → デバイスと PC か、PC のターミナルの pair コマンドで表示されます。",
   "Forget this browser's sign-in. Getting back in takes the access token or a pairing code.": "このブラウザーのサインインを消去します。再び入るにはアクセストークンかペアリングコードが必要です。",
   "Forget this browser's sign-in. Getting back in means signing in through Portal again.": "このブラウザーのサインインを消去します。再び入るには Portal で再度サインインする必要があります。",
   "Getting back in means signing in through Portal again.": "再び入るには Portal で再度サインインする必要があります。",
