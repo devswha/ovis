@@ -53,13 +53,13 @@ public class SaveImagePlugin extends Plugin {
         }
         boolean handedOn = false;
         try {
-            if (!budget.take(SystemClock.elapsedRealtime())) {
-                call.reject("Too many pictures saved in a minute.");
-                return;
-            }
             byte[] bytes = SavedImage.decode(call.getString("data"));
             if (bytes == null) {
                 call.reject("The picture is empty, too large or not base64.");
+                return;
+            }
+            if (!budget.take(SystemClock.elapsedRealtime(), bytes.length)) {
+                call.reject("Too many pictures saved; try again later.");
                 return;
             }
             String name = SavedImage.fileName(call.getString("name"));
@@ -119,10 +119,16 @@ public class SaveImagePlugin extends Plugin {
         File folder = new File(root, UUID.randomUUID().toString());
         if (!folder.mkdirs()) throw new IOException("no folder for the picture");
         File file = new File(folder, name);
-        try (OutputStream out = new FileOutputStream(file)) {
-            out.write(bytes);
+        Uri uri;
+        try {
+            try (OutputStream out = new FileOutputStream(file)) {
+                out.write(bytes);
+            }
+            uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", file);
+        } catch (IOException | RuntimeException failed) {
+            remove(folder);
+            throw failed;
         }
-        Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", file);
         Intent send = new Intent(Intent.ACTION_SEND)
             .setType(type)
             .putExtra(Intent.EXTRA_STREAM, uri)

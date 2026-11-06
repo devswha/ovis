@@ -15,6 +15,11 @@ final class SavedImage {
     /** Saves a page may start in one minute: a user tapping Download stays far below it. */
     static final int MAX_PER_MINUTE = 10;
 
+    /** Saves, and their bytes, in one run of the app: past either, saving waits for a restart. */
+    static final int MAX_PER_RUN = 100;
+
+    static final long MAX_BYTES_PER_RUN = 500L * 1024 * 1024;
+
     /** A file name's limit is 255 bytes; this leaves room for Downloads' " (1)" on a repeat. */
     private static final int MAX_NAME_BYTES = 200;
 
@@ -63,15 +68,21 @@ final class SavedImage {
         return text.getBytes(StandardCharsets.UTF_8).length;
     }
 
-    /** Saves started in the last minute, so a page cannot write to Downloads without end. */
+    /** Saves started in the last minute and in this run, so a page cannot write to Downloads without end. */
     static final class Budget {
         private final ArrayDeque<Long> started = new ArrayDeque<>();
 
-        /** Whether a save may start at `now` (ms); counts it when it may. */
-        synchronized boolean take(long now) {
+        private int saves;
+
+        private long bytes;
+
+        /** Whether a save of `size` bytes may start at `now` (ms); counts it when it may. */
+        synchronized boolean take(long now, int size) {
             while (!started.isEmpty() && now - started.peekFirst() >= 60_000) started.removeFirst();
-            if (started.size() >= MAX_PER_MINUTE) return false;
+            if (started.size() >= MAX_PER_MINUTE || saves >= MAX_PER_RUN || bytes + size > MAX_BYTES_PER_RUN) return false;
             started.addLast(now);
+            saves++;
+            bytes += size;
             return true;
         }
     }

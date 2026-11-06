@@ -64,6 +64,8 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const [saveFailed, setSaveFailed] = useState(false);
   const [saved, setSaved] = useState(false);
   const preparing = useRef<AbortController | null>(null);
+  // a tap while a save runs is dropped, so taps never hold several copies of the picture
+  const busy = useRef(false);
   const shown = useRef(image?.src);
   shown.current = image?.src;
   useEffect(() => () => preparing.current?.abort(), []);
@@ -80,7 +82,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   };
   const ready = prepared !== null && prepared.src === image?.src ? prepared : null;
   const save = (): void => {
-    if (ready === null) return;
+    if (ready === null || busy.current) return;
     if (ready.file === null) {
       // the read failed: say so, and read again for the next tap
       setSaveFailed(true);
@@ -88,7 +90,9 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
       return;
     }
     // a result for a picture the viewer has stepped away from says nothing under the next one
+    busy.current = true;
     void (route === "app" ? saveInApp(ready.file) : shareFile(ready.file)).then((result) => {
+      busy.current = false;
       if (shown.current !== ready.src) return;
       setSaveFailed(result === "failed");
       setSaved(result === "saved");
