@@ -42,6 +42,8 @@ const FREE: Record<string, string[]> = {
   'an answer quoting a list': ['• Press these:', '  enter select · esc back', '', '› Ask Codex to do anything', STATUS, ROWS],
   'a warning beside the footer': ['› Ask Codex to do anything', STATUS, '  ← for agents · ? for shortcuts            ⚠ 1 warning · f2 to view'],
   'a blank screen': [''],
+  'a draft whose last line reads as keys, the footer gone': ['» Please follow these steps', '  enter select · esc back', STATUS],
+  'a status row wrapped onto a thread named as a key': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  esc back', ROWS],
 };
 const screen = (rows: string[]) => ['  >_ OpenAI Codex (v0.166.0)', '     /fixture', '', ...rows, '', ''].join('\n');
 

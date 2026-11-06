@@ -285,10 +285,17 @@ const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|mediu
  * which saves a model as the default for every new session, or in the transcript view rewinds the
  * conversation. Each draws its key hints last on the screen, with its last two rows at most (/resume),
  * so only whole hints there count: the composer's rows hold a draft, and under it a folder and a thread's name.
+ * With the composer's own footer last (`? for shortcuts`) nothing holds it, whatever a wrapped status row
+ * above says; and rows between the composer's mark and its status row are its draft, so only rows under
+ * that status row count (the transcript view and /statusline draw their keys there).
  */
 export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
-  return rows.slice(-2).some((row) => !/^[›»]/.test(row) && !CODEX_STATUS_ROW_RE.test(row)
+  if (/\? for shortc/.test(rows.at(-1) ?? "")) return false;
+  const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
+  const status = findLastIndex(rows, (row) => !/^[›»]/.test(row) && CODEX_STATUS_ROW_RE.test(row));
+  const from = Math.max(rows.length - 2, composer >= 0 && status > composer ? status + 1 : 0);
+  return rows.slice(from).some((row) => !/^[›»]/.test(row) && !CODEX_STATUS_ROW_RE.test(row)
     && row.split(/\s+·\s+|\s{2,}/).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
 }
 

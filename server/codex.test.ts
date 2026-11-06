@@ -1120,6 +1120,11 @@ describe("Codex submitted first exchange", () => {
     expect(matchCodexFirstExchange(`OpenAI Codex (v1.0)\n\n\u203a ${prompt}\n\n\u00bb Ask Codex to do anything\n`, [row()], started)).toBeNull();
   });
 
+  it("reads a \u00bb row inside an answer as the answer's, not the box: only the last prompt row can be the box", () => {
+    const longer = `OpenAI Codex (v1.0)\n\n\u203a ${prompt}\n\n\u2022 ${answer}\n\u00bb And more of another answer.\n\n\u203a Ask Codex to do anything\n`;
+    expect(matchCodexFirstExchange(longer, [row()], started)).toBeNull();
+  });
+
   it("takes no draft in the \u00bb box for an answer: what was typed may quote another conversation's", () => {
     const said = "An answer long and varied enough to count, 0123456789 with every single word its own.";
     const candidate = { path: "other", text: jsonl(message("user", prompt), message("assistant", said, "final_answer")) };

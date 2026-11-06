@@ -62,7 +62,7 @@ export function validGeometry(cols: unknown, rows: unknown): { cols: number; row
  * The server's terminals. `stopped` is read through a getter, as `stop()` sets it later, and `end`
  * is called through one, as the connections are built after the terminals.
  */
-export function createTerminalRegistry({ options, clients, stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending, holdPendingPane, attached, transcriptChanged, inputReady, end }: {
+export function createTerminalRegistry({ options, clients, stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending, holdPendingPane, attached, transcriptChanged, inputReady, screenChanged, end }: {
   options: { codexHome?: string; devinDbPath?: string; opencodeDb?: string; hermesHome?: string; grokHome?: string; museData?: string };
   clients: Set<Client>;
   stopped: () => boolean;
@@ -79,6 +79,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   transcriptChanged?: (paneId: string) => void;
   /** the pane's terminal takes input again: a pending message waiting for a typist may go now */
   inputReady: (paneId: string) => void;
+  /** the pane drew output: a pending message refused for its screen alone may go now */
+  screenChanged?: (paneId: string) => void;
   end: (client: Client, reason: "stalled" | "revoked" | "closed") => void;
 }) {
   const attachments = new Map<string, PaneAttachment>();
@@ -159,7 +161,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     for (const client of attachment.clients) send(client, message);
   }
 
-  const { spawnAttachment } = createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
+  const { spawnAttachment } = createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, screenChanged, holdFor, heldRetry, retryFor, relookupFor });
 
   function closeAttachment(paneId: string): void {
     const attachment = attachments.get(paneId);

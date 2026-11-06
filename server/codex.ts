@@ -1002,11 +1002,18 @@ const markedDisplay = (text: string): string => text.normalize("NFKC").replace(/
  * the indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor a
  * tool's call or output is evidence of the conversation shown: any may quote any conversation's answer.
  */
+/** The input box's row: the last row Codex starts with `›` or `»`. Only there is `»` the box (at Ultra), never in an answer above it. */
+function codexBoxAt(lines: readonly string[]): number {
+  return lines.findLastIndex((line) => /^[\u203a\u00bb](?:[ \t]|$)/.test(line));
+}
+
 function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text: string }[] {
   const parts: { prompt: boolean; tool?: true; text: string }[] = [];
-  for (const line of screen.split("\n")) {
+  const lines = screen.split("\n");
+  const box = codexBoxAt(lines);
+  for (const [index, line] of lines.entries()) {
     const last = parts.at(-1);
-    const prompt = /^(?:[\u203a\u00bb]|\s*\u21b3(?:\s|$))/.test(line);
+    const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line) || (index === box && line.startsWith("\u00bb"));
     // "You ran": a shell command the user ran from the composer, as Codex 0.163 titles it. An answer that
     // starts with one of these words is taken for a call too: telling them apart could show another's chat
     const tool = !prompt && (/^\s+\u2514(?:\s|$)/.test(line)
@@ -1682,7 +1689,8 @@ function displayedFirstExchange(screen: string, keepCompletionFooter = false): C
   }
   if (answerAt < 0) return null;
   const user = lines.slice(promptAt, answerAt).map((line, index) => index === 0 ? line.slice(1) : line).join("\n");
-  const nextPrompt = lines.findIndex((line, index) => index > answerAt && /^[›»](?:[ \t]|$)/.test(line));
+  const box = codexBoxAt(lines);
+  const nextPrompt = lines.findIndex((line, index) => index > answerAt && (/^›(?:[ \t]|$)/.test(line) || (index === box && line.startsWith("»"))));
   const responseLines = lines.slice(answerAt, nextPrompt < 0 ? undefined : nextPrompt);
   // Codex's completed-turn footer is terminal chrome, after a blank line and before the composer.
   const footer = responseLines.findIndex((line, index) => index > 0 && responseLines[index - 1]!.trim() === ""

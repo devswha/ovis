@@ -3,7 +3,8 @@
   /permissions, /review, /theme, /resume, /statusline, /rename, the agents and transcript views),
   which herdr reports at rest: the paste was dropped and its Enter took the row under the cursor,
   which could save a model as the default for every new session. It is refused before anything is
-  typed and stays in the message box.
+  typed and stays in the message box. A queued message refused so is tried again as soon as the pane
+  redraws, instead of waiting up to a minute after the list closes.
 - Codex at Ultra reasoning effort, which draws its composer as `»`: the still-open notice arms, a
   fresh pane opens as an empty chat with its model and effort, and its first answer is matched to
   the conversation instead of leaving the chat unavailable.
