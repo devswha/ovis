@@ -396,8 +396,9 @@ export class DirectCarrier {
     if (this.carriers.get(id) !== carrier) return;
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
+    const line = carrier.session ? { route: inTailnet(carrier.source) ? "tailscale" as const : "lan" as const, since: Date.now(), mux: carrier.session.mux } : undefined;
     // an app racing its carriers drops all but one: only the one it uses makes its device's older sessions give way
-    const admission = this.signedIn.candidate(deviceId, () => carrier.session?.close("resource_exhausted"));
+    const admission = this.signedIn.candidate(deviceId, () => carrier.session?.close("resource_exhausted"), line);
     carrier.release = admission.release;
     carrier.chosen = admission.chosen;
   }

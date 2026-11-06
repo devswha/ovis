@@ -356,8 +356,9 @@ export class RelayLink {
     if (this.data.get(id) !== entry) return;
     entry.cancelTimeout();
     entry.deviceId = deviceId;
+    const line = entry.session ? { route: "relay" as const, relay: this.options.relay, since: Date.now(), mux: entry.session.mux } : undefined;
     // an app racing its carriers drops all but one: only the one it uses makes its device's older sessions give way
-    const admission = this.signedIn.candidate(deviceId, () => entry.session?.close("resource_exhausted"));
+    const admission = this.signedIn.candidate(deviceId, () => entry.session?.close("resource_exhausted"), line);
     entry.release = admission.release;
     entry.chosen = admission.chosen;
   }
