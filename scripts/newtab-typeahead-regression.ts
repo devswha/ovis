@@ -173,9 +173,52 @@ const CASES: Case[] = [
   },
 ];
 
+/** A composition still open when the tab arrives keeps its field until it ends, then goes after what came before it. */
+async function composingAcrossHandOver(browser: Browser, origin: string): Promise<void> {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-newtab-ime" });
+  const workspaceId = created.workspace.workspace_id;
+  const first = created.root_pane.pane_id;
+  const context = await browser.newContext({ viewport: desktop, locale: "en-US" });
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  try {
+    const page = await context.newPage();
+    page.setDefaultTimeout(10_000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const { sent, ready } = watch(page);
+    let held: Route | null = null;
+    await page.route("**/api/**tab/create", (route) => { held = route; });
+    await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
+    await page.locator(".conn-live").waitFor();
+    await until(() => ready.has(first), "the first terminal accepts input");
+    await choose(page, first, { name: "ime", way: "plus", viewport: desktop, type: async () => {}, ran: null }, sent);
+    await page.keyboard.type("echo ");
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Input.imeSetComposition", { text: "하", selectionStart: 1, selectionEnd: 1 });
+    await until(() => held !== null, "the page asked herdr for the tab");
+    await held!.continue();
+    let second: string | undefined;
+    await until(async () => (second = (await sessionSnapshot()).panes.find((pane) => pane.workspace_id === workspaceId && pane.pane_id !== first)?.pane_id) !== undefined, "herdr has the new tab");
+    await until(() => ready.has(second!), "the new terminal accepts input");
+    await until(() => textOf(sent, second!) === "echo ", "what came before the composition reaches the new tab");
+    assert.equal(await page.evaluate(() => document.activeElement?.className), "type-ahead", "the composition keeps its field across the hand-over");
+    await cdp.send("Input.insertText", { text: "한" });
+    await page.keyboard.press("Enter");
+    await until(() => textOf(sent, second!) === "echo 한\r", "the composed syllable, then Enter, follow in order");
+    assert.equal(textOf(sent, first), "", "no key goes to the old tab");
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+    await workspaceClose(workspaceId).catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 export async function checkNewTabTypeAhead(browser: Browser, origin: string): Promise<void> {
   for (const item of CASES) await typeAhead(browser, origin, item);
-  console.log("PASS keys typed right after New terminal, the tab list's New terminal (mouse and touch) and the New tab dialog's Start reach the new tab in order (arrows too), none the old, and open no other tab; a paste or keys left behind are held for review");
+  await composingAcrossHandOver(browser, origin);
+  console.log("PASS keys typed right after New terminal, the tab list's New terminal (mouse and touch) and the New tab dialog's Start reach the new tab in order (arrows and an open composition too), none the old, and open no other tab; a paste or keys left behind are held for review");
 }
 
 if (import.meta.main) {

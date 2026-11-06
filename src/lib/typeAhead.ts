@@ -59,6 +59,8 @@ interface Pending {
 }
 
 let pending: Pending | null = null;
+/** a field handed over with its composition still open: it keeps the keyboard until that composition ends */
+let lingering: HTMLTextAreaElement | null = null;
 
 const KEY_INPUT: Record<string, string> = { Enter: "\r", Tab: "\t", Backspace: "\x7f", Escape: "\x1b" };
 const ARROW_INPUT: Record<string, string> = { ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D" };
@@ -99,7 +101,8 @@ export function catchTypeAhead(): TypeAheadCatch | null {
     field.value = "";
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.isComposing || event.keyCode === 229) return;
+    // an app shortcut (window, capture phase) took this key: it is not typed too
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
     const item = typeAheadKey(event);
     if (item === null) return;
     event.preventDefault();
@@ -127,6 +130,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   const end = (): boolean => {
     if (!open) return false;
     open = false;
+    if (lingering === field) lingering = null;
     field.removeEventListener("blur", onBlur);
     const focused = document.activeElement === field;
     // a blur commits a composition still open: its text comes before the field goes
@@ -177,7 +181,8 @@ export function catchTypeAhead(): TypeAheadCatch | null {
 
 /** Whether the keys typed for a new tab are being caught now: what closes behind the choice (a menu), and a pick's own focus, leave the focus be; only the hand-over moves it. */
 export function typeAheadFocused(): boolean {
-  return pending !== null && document.activeElement === pending.field;
+  const field = pending?.field ?? lingering;
+  return field != null && document.activeElement === field;
 }
 
 /**
@@ -191,6 +196,7 @@ export function takeTypeAhead(pane: string, later: TypeAheadLater): TypeAhead | 
   const items = caught.items.splice(0);
   if (caught.composing && document.activeElement === caught.field) {
     caught.later = later;
+    lingering = caught.field;
     return { items, since: caught.since, at: caught.at, held: caught.held, pasteRefused: caught.pasteRefused, focused: false };
   }
   const focused = caught.end();
