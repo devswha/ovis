@@ -99,6 +99,8 @@ export interface SettingsDialogProps {
   herdrCore?: HerdrCoreFacts | null;
   /** which runtime the server serves and what Settings may switch it to, from the same check */
   herdrRuntimeFacts?: HerdrRuntimeFacts | null;
+  /** the PC shown now passes pictures (herdr-core, its panes attached): what Pictures in the terminal does there until a device chooses */
+  picturesByDefault?: boolean;
   /** the server's boot id from the same check: a new one after a switch is the restarted server */
   bootId?: string | null;
   /** a runtime switch's restarted server answers: the app reads its facts and terminals again */
@@ -657,7 +659,7 @@ function ChatPage() {
   );
 }
 
-function TerminalPage({ keyBarButtonRef, onEditKeyBar, herdrRuntime }: { keyBarButtonRef: RefObject<HTMLButtonElement | null>; onEditKeyBar: () => void; herdrRuntime: "herdr" | "herdr-core" | null }) {
+function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault }: { keyBarButtonRef: RefObject<HTMLButtonElement | null>; onEditKeyBar: () => void; picturesByDefault: boolean }) {
   const { settings, update } = useSettings();
   const t = useT();
   const searching = useContext(SettingsQuery).length > 0;
@@ -691,7 +693,7 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar, herdrRuntime }: { keyBarB
           <Toggle label={t("Clipboard from a pane")} checked={settings.paneClipboard} onChange={(paneClipboard) => update({ paneClipboard })} />
         </SettingsRow>
         <SettingsRow label={t("Pictures in the terminal")} icon={ImageIcon} reset={["terminalImages"]}>
-          <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages ?? herdrRuntime === "herdr-core"} onChange={(terminalImages) => update({ terminalImages })} />
+          <Toggle label={t("Pictures in the terminal")} checked={settings.terminalImages ?? picturesByDefault} onChange={(terminalImages) => update({ terminalImages })} />
         </SettingsRow>
         <SettingsRow label={t("Split into rows and columns")} icon={LayoutGrid} reset={["splitGrid"]}>
           <Toggle label={t("Split into rows and columns")} checked={settings.splitGrid} onChange={(splitGrid) => update({ splitGrid })} />
@@ -1575,7 +1577,7 @@ function SaveFailure({ error, paused, retrying, onRetry }: { error: UserError; p
   </div>;
 }
 
-function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
+function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
   // opened by Forward, the dialog shows what that entry of the history showed
@@ -1754,7 +1756,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     switch (page) {
       case "appearance": return <AppearancePage />;
       case "chat": return <ChatPage />;
-      case "terminal": return <TerminalPage keyBarButtonRef={keyBarButtonRef} onEditKeyBar={openKeyBar} herdrRuntime={herdrRuntime} />;
+      case "terminal": return <TerminalPage keyBarButtonRef={keyBarButtonRef} onEditKeyBar={openKeyBar} picturesByDefault={picturesByDefault} />;
       case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} machines={machines} />;
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;

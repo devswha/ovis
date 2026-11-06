@@ -25,6 +25,7 @@ describe("saved theme migration", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
       getItem: (key: string) => records.get(key) ?? null,
       setItem: (key: string, value: string) => records.set(key, value),
+      removeItem: (key: string) => records.delete(key),
     } } });
   });
   afterEach(() => {
@@ -206,6 +207,13 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalImages).toBe(true);
     records.set("ovis:terminal-pictures", "false");
     expect(loadSettings().terminalImages).toBe(false);
+  });
+
+  it("keeps a reset of pictures after an earlier version's on", () => {
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    saveSettings({ ...loadSettings(), terminalImages: null });
+    expect(loadSettings().terminalImages).toBe(null);
   });
 
   it("keeps the terminal's Attach files button in its own key, out of an old tab's whole-record save", () => {

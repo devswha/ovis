@@ -1064,6 +1064,8 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(FOLD_HELPERS_STORAGE_KEY, JSON.stringify(foldHelpers));
     window.localStorage.setItem(SIDEBAR_AGENT_TREE_STORAGE_KEY, JSON.stringify(sidebarAgentTree));
     window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
+    // the earlier key's true would come back under a reset to null
+    if (window.localStorage.getItem(LEGACY_TERMINAL_IMAGES_STORAGE_KEY) !== null) window.localStorage.removeItem(LEGACY_TERMINAL_IMAGES_STORAGE_KEY);
     window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
     window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
     window.localStorage.setItem(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, JSON.stringify(terminalFoldKeyBar));
