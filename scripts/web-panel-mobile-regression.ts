@@ -112,6 +112,8 @@ try {
     const reportLink = page.getByRole("link", { name: "same-host report" });
     // armed before the tap: the popup's frame is attached before its report commits, later on a busy machine
     const popupReport = page.waitForEvent("framenavigated", { predicate: (navigated) => navigated !== page.mainFrame() && navigated.url() === reportUrl });
+    // a step failing before the await leaves this wait to end with the page: its error is that step's, not this one
+    popupReport.catch(() => undefined);
     await reportLink.tap();
     const dialog = page.getByRole("dialog");
     await dialog.waitFor();
@@ -205,6 +207,7 @@ try {
     await page.setViewportSize({ width: 1280, height: 800 });
     // armed before the click: the panel's frame is attached before its report commits, later on a busy machine
     const docked = page.waitForEvent("framenavigated", { predicate: (navigated) => navigated !== page.mainFrame() && navigated.url() === reportUrl });
+    docked.catch(() => undefined);
     await page.getByRole("link", { name: "same-host report" }).click();
     await page.locator(".web-panel").waitFor();
     const frame = await docked;
