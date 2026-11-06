@@ -280,14 +280,17 @@ plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); f
 
 ```bash
 bun scripts/plugin.ts link            # sign in to your account, then approve the device that adds this PC
-bun scripts/plugin.ts link --google   # the same, signed in with Google
+bun scripts/plugin.ts link --google   # the same, at Google's own device page (--github: GitHub's)
 bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
 
 Both turn the relay on first when it is off, and wait until it is online.
 
-- **`link`** signs in with the provider's device flow, the way a PC's own page does: it prints the
-  provider's device page and a code to enter there, on any device. Then it lists this PC in your
+- **`link`** signs in the way a PC's own page does: it prints the Ovis sign-in page
+  (`https://account.ovis.sh/link`), a code and a QR code of the page with the code filled in. On any
+  device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
+  in, and confirm. An account service without that page, or `--github` / `--google`, uses the
+  provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists this PC in your
   account ([Adding a PC](account.md#adding-a-pc)) and waits. On a phone already in your account,
   tap **Add** on this PC; the terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
@@ -770,7 +773,12 @@ encrypt end to end whichever relay passes the frames on, and each relay sees wha
 While the relay is on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
-([`server/relay/direct.ts`](../server/relay/direct.ts)). A phone that can reach one of them opens
+([`server/relay/direct.ts`](../server/relay/direct.ts)). It also listens on the PC's Tailscale IPv4
+address (100.64.0.0/10) on the same port, when one is up: a Tailscale-range address on Tailscale's
+own adapter (`tailscale0`, Windows' `Tailscale`), or on a macOS `utun` only when it is the address
+`tailscale status` names (with one named, only that one); never one on a real adapter (an ISP's
+shared address space) or another VPN's tunnel. It keeps one of the four
+places. A phone that can reach one of them opens
 it there instead of through `relay.ovis.sh`. The iOS and Android apps open it through their OvisDirect
 plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser stays on the relay.
 
@@ -785,7 +793,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
 - **Told inside the channel.** A phone that offers `direct-carrier` in `HELLO` is told in
   `AUTH_OK` `direct`: up to four `ws://<private IPv4>:<port>` addresses, checked on both ends. It
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
-  PC offers or answers nothing, and nothing changes for it.
+  PC offers or answers nothing, and nothing changes for it. The Tailscale address is named only to
+  a phone that also offers `direct-tailnet` (an app whose plugin answers `features` with
+  `tailnet: true`): an older phone would refuse the whole `AUTH_OK` over an address it does not take.
 - **Bounded, and never locked out.** A socket that names an `Origin` (any browser page, on the network
   or not) is refused: the apps' sockets name none. A gate in front ([`direct-gate.ts`](../server/relay/direct-gate.ts))
   counts connections before reading a byte (8 per address, 128 in all) and gives a request head 5 s
@@ -797,7 +807,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   back by itself; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
-  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
+  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
+  every peer outside Tailscale's range (each listener takes only its own network's peers). Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
   tries the PC's direct carriers first, one at a time within 1.5 s, whenever it connects or
@@ -812,7 +823,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   relay. The carriers are saved with the pairing for the next start. A browser has no such socket
   and always uses the relay.
 - **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
-  Wi-Fi direct connection on" (who can sign in there) with its switch. `/api/health` names the
+  Wi-Fi direct connection on" (who can sign in there, and that it is on Tailscale too when it is)
+  with its one switch, which turns both off. `/api/health` names the
   listener to a client that got in (`lan_exposure` with `direct: true`), and the app's banner
   says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
   only; starting the relay closes the pairing gate, so it never applies while this listener runs.
