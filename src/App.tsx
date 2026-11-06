@@ -96,6 +96,8 @@ import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionC
 import { useHeaderConnection } from "./lib/headerConnection.ts";
 import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
+import logoDark from "./assets/brand/logo-dark.png";
+import logoLight from "./assets/brand/logo-light.png";
 import { nextWaitingPane, sessionCounts, tabPosition } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
@@ -172,7 +174,7 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
 function SidebarBrand({ dark }: { dark: boolean }) {
   return (
     <h1 className="brand sidebar-brand">
-      <img src={dark ? "/brand/logo-dark.png" : "/brand/logo-light.png"} alt="Ovis" width="68" height="24" />
+      <img src={dark ? logoDark : logoLight} alt="Ovis" width="68" height="24" />
     </h1>
   );
 }
@@ -715,8 +717,6 @@ export function App() {
   const stripInHeader = wideScreen && !splitOn && !tabsInHeader && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
   // from 769px the pane column ends in the Herdr app's status bar: where the pane is, its branch, the connection
   const statusBarShown = wideScreen && selectedPane !== null && !guideShown;
-  // the lens the pane shows: a peek is the terminal over the chat, and the toggle ends it (actions.toggleView)
-  const shownLens: PaneView = terminalPeek !== null ? "terminal" : view;
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when
@@ -856,15 +856,15 @@ export function App() {
         {/* both lenses, the open one on a thumb that slides to it (Apple's segmented control): the chat in the
             rounded face with its bubble, the terminal in the mono face with its prompt. Mod+Shift+J switches too */}
         {selectedPane && (
-          <div className="view-switch" data-view={shownLens} role="group" aria-label="Pane view">
-            <button type="button" className="lens-option is-chat" aria-pressed={shownLens === "chat"} aria-label={t("Chat")} title={t("Chat transcript (⌘⇧J)")}
-              onClick={() => { if (shownLens !== "chat") actions.toggleView(); }}>
+          <div className="view-switch" data-view={view} role="group" aria-label="Pane view">
+            <button type="button" className="lens-option is-chat" aria-pressed={view === "chat"} aria-label={t("Chat")} title={t("Chat transcript (⌘⇧J)")}
+              onClick={() => { setView("chat"); setDrawerOpen(false); }}>
               <MessageCircle aria-hidden="true" />
               <span className="lens-label">{t("Chat")}</span>
             </button>
-            <button type="button" className="lens-option is-terminal" aria-pressed={shownLens === "terminal"} aria-label={t("Terminal")}
+            <button type="button" className="lens-option is-terminal" aria-pressed={view === "terminal"} aria-label={t("Terminal")}
               title={terminalAttach ? t("Live terminal (⌘⇧J)") : t("Live terminal: coming to Windows PCs once herdr can attach there")}
-              onClick={() => { if (shownLens !== "terminal") actions.toggleView(); }}>
+              onClick={() => { setView("terminal"); setDrawerOpen(false); }}>
               <SquareTerminal aria-hidden="true" />
               <span className="lens-label">{t("Terminal")}</span>
               {!terminalAttach && <span className="pill pill-soon">{t("soon")}</span>}
@@ -1147,10 +1147,11 @@ export function App() {
           <SplitDropPreview visible={splitDragOn && (paneDragging || tabDrag !== null)} side={dropAt} grid={gridPreview} />
         </div>}
         {statusBarShown && selectedPane && crumb && <StatusBar machineId={selectedMachineId} workspaceId={selectedPane.workspace_id}
-          place={crumb.folder === null ? crumb.place : `${crumb.place} › ${crumb.folder}`} path={crumb.path}
+          machine={crumb.machine} place={crumb.folder === null ? crumb.workspace : `${crumb.workspace} › ${crumb.folder}`} path={crumb.path}
           session={sessionShort.length > 0 ? sessionShort.join(" · ") : null} watching={auth?.role === "watch"}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)}
-          connected={connected} connectionWord={connWord} />}
+          connection={headerConnection ?? (connected ? "live" : "lost")}
+          connectionWord={headerConnection === "reconnecting" ? t("Reconnecting…") : connected ? t("Connected") : connWord} />}
         </div>
         </WebPanelContext.Provider>
         </OpenFileContext.Provider>

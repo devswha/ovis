@@ -857,8 +857,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   PC › workspace › folder crumb; the Chat/Terminal switch; the connection chip while the bridge is
   not live, the offline pill and the More menu (`⋯`). From `769px` with one pane in view the row is
   a browser's tab strip (Chrome's, sized after the Herdr app's tab bar, THIRD_PARTY_NOTICES.md):
-  the sidebar's head (`.header-side`: the Ovis wordmark, `/brand/logo-light.png` or
-  `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
+  the sidebar's head (`.header-side`: the Ovis wordmark, `src/assets/brand/logo-light.png`
+  or `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
   app orders them), then the workspace's tabs (`.header-tabs`), `+` right after the last tab,
   flexible space, and at the far end the Chat/Terminal switch, Files (`.header-files-button`, its
   glyph alone) and More as compact pills. The row is tinted with the accent (16% of `--accent`

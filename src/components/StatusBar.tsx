@@ -15,24 +15,26 @@ import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 export interface StatusBarProps {
   machineId: string;
   workspaceId: string;
+  machine: string;
   place: string;
   path: string | null;
   session: string | null;
   watching: boolean;
   waiting: number;
   onNextWaiting: (() => void) | null;
-  connected: boolean;
+  /** live, reconnecting (lost after it was up), connected (back, for a moment: lib/headerConnection.ts) or lost */
+  connection: "live" | "reconnecting" | "connected" | "lost";
   connectionWord: string;
 }
 
-export function StatusBar({ machineId, workspaceId, place, path, session, watching, waiting, onNextWaiting, connected, connectionWord }: StatusBarProps) {
+export function StatusBar({ machineId, workspaceId, machine, place, path, session, watching, waiting, onNextWaiting, connection, connectionWord }: StatusBarProps) {
   const t = useT();
   const branch = usePaneBranch(machineId, workspaceId);
   return (
     <footer className="status-bar">
       <span className="status-bar-item status-bar-place" title={path ?? undefined}>
         <Monitor aria-hidden="true" />
-        <span className="status-bar-text">{place}</span>
+        <span className="status-bar-text"><span className="machine-context-name">{machine}</span> › {place}</span>
       </span>
       {branch !== null && <span className="status-bar-item">
         <GitBranch aria-hidden="true" />
@@ -46,9 +48,9 @@ export function StatusBar({ machineId, workspaceId, place, path, session, watchi
           <CircleHelp aria-hidden="true" />
           {t("{count} waiting for you", { count: waiting })}
         </button>}
-        <span className={`status-bar-item status-bar-conn${connected ? "" : " is-lost"}`}>
+        <span className={`status-bar-item status-bar-conn${connection === "reconnecting" || connection === "lost" ? " is-lost" : ""}`} data-state={connection}>
           <span className="status-bar-dot" aria-hidden="true" />
-          {connected ? t("Connected") : connectionWord}
+          {connectionWord}
         </span>
       </span>
     </footer>
