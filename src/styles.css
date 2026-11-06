@@ -2750,6 +2750,24 @@ button {
   }
 }
 
+/* Ovis for Mac's window folds its title bar away the same way (app/mac/Resources/title-bar.js): the
+   header takes the bar's height, which the app hands in with the traffic lights' right edge, and
+   starts clear of them. The app moves the window from the header's bare surface itself. */
+:root[data-mac-title-bar] {
+  --header-h: var(--mac-title-bar-h);
+  --header-h-wide: var(--mac-title-bar-h);
+}
+
+:root[data-mac-title-bar] .app-header {
+  padding-left: calc(var(--space-3) + var(--mac-title-bar-inset));
+}
+
+@media (min-width: 769px) {
+  :root[data-mac-title-bar] .app:not(.sidebar-collapsed) .header-side {
+    padding-left: calc(var(--space-3) + var(--mac-title-bar-inset));
+  }
+}
+
 /* ---------- primitives ---------- */
 
 .icon-button {
