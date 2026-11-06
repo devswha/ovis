@@ -557,10 +557,10 @@ export function App() {
         }
         void load();
         // what the user went to while herdr answered is theirs to keep
-        if (selectionStill(asked, selectionRef.current)) {
-          ahead?.handTo(found.machineId, created.pane_id);
-          selectTargetRef.current(found.machineId, created.pane_id);
-        } else ahead?.drop();
+        const still = selectionStill(asked, selectionRef.current);
+        // the keys typed ahead are this tab's either way: held for it when the user went elsewhere meanwhile
+        ahead?.handTo(found.machineId, created.pane_id, still);
+        if (still) selectTargetRef.current(found.machineId, created.pane_id);
       },
       moveTabToWorkspace: async ({ machineId, tabId, workspaceId, notice }) => {
         const roster = machinesRef.current.find((m) => m.id === machineId)?.snapshot;

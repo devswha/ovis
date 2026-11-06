@@ -1187,10 +1187,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const take = (items: TypeAheadItem[], heldNow: boolean): void => {
           held ||= heldNow || !socket.connected || (socket.connectedSince ?? Infinity) > at;
           for (const item of items) {
+            // as typing here: a masked prompt on screen now makes it secret (never held, never kept for a receipt),
+            // and a draft held for this pane (a late attach held what came first) takes what follows it
+            const secret = secretRef.current !== null;
             const arrow = item.arrow !== undefined ? terminalChord(item.arrow, NO_STICKY_MODIFIERS) : null;
-            const typed: Typed = { input: item.input, keys: arrow !== null ? [arrow] : null, chord: false, stop: false, secret: false };
-            if (held) retainTyped(pane, typed, secretRef.current !== null);
-            else if (resumeInput !== null && resumeInput.pane === pane) resumeInput.items.push(typed);
+            const typed: Typed = { input: item.input, keys: arrow !== null ? [arrow] : null, chord: false, stop: false, secret };
+            if (held || draftHeldForRef.current === pane) retainTyped(pane, typed, secret);
+            else if (!secret && resumeInput !== null && resumeInput.pane === pane) resumeInput.items.push(typed);
             else if (paneRef.current === pane) sendTyped(pane, typed);
           }
         };

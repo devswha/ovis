@@ -17,8 +17,8 @@ export interface TypeAheadItem {
 }
 
 export interface TypeAheadCatch {
-  /** the tab the keys are for: its terminal takes them (takeTypeAhead) */
-  handTo: (machineId: string, paneId: string) => void;
+  /** the tab the keys are for: its terminal takes them (takeTypeAhead). A tab not shown (the user went to another meanwhile) takes them held, and the field stops catching */
+  handTo: (machineId: string, paneId: string, shown?: boolean) => void;
   /** no tab came of it: what was typed goes nowhere, and the focus back where it was */
   drop: () => void;
 }
@@ -58,31 +58,48 @@ interface Pending {
   end: () => boolean;
 }
 
-let pending: Pending | null = null;
+/** every catch whose tab is not made or not taken yet: a second New terminal leaves the first's keys for its own tab */
+const pending: Pending[] = [];
 /** a field handed over with its composition still open: it keeps the keyboard until that composition ends */
 let lingering: HTMLTextAreaElement | null = null;
 
-const KEY_INPUT: Record<string, string> = { Enter: "\r", Tab: "\t", Backspace: "\x7f", Escape: "\x1b" };
 const ARROW_INPUT: Record<string, string> = { ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D" };
+const PLAIN_INPUT: Record<string, string> = { Enter: "\r", Tab: "\t", Escape: "\x1b", Delete: "\x1b[3~", Home: "\x1b[H", End: "\x1b[F" };
+const EDITING = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home", "End", ...Object.keys(ARROW_INPUT)]);
 
-/** The input a key typed in the field stands for; null for one the field leaves to the browser (text, its own shortcuts). */
-export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | null {
-  if (event.metaKey || event.altKey) return null;
-  if (event.ctrlKey) {
-    // a control character, as a terminal sends it; Ctrl+V stays the browser's paste
-    if (event.shiftKey || !/^[a-z]$/i.test(event.key) || event.key.toLowerCase() === "v") return null;
-    return { input: String.fromCharCode(event.key.toLowerCase().charCodeAt(0) & 0x1f) };
+/**
+ * The input a key typed in the field stands for, as the terminal (xterm) sends it; "hold" for an editing key the
+ * field cannot be sure of (a word move, a modified Enter): the catch is then held for review, so nothing runs that
+ * the user did not see. null for one the field leaves to the browser (text, its own shortcuts).
+ */
+export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | "hold" | null {
+  const { key, ctrlKey: ctrl, metaKey: meta, altKey: alt, shiftKey: shift } = event;
+  if (key === "Backspace") {
+    // Cmd+Backspace erases the line as the terminal's own does (useTerminalMount); Alt and Ctrl as xterm sends them
+    if (meta) return ctrl || alt ? "hold" : { input: "\x15" };
+    return { input: `${alt ? "\x1b" : ""}${ctrl ? "\b" : "\x7f"}` };
   }
-  const arrow = ARROW_INPUT[event.key];
-  if (arrow !== undefined) return event.shiftKey ? null : { input: arrow, arrow: event.key };
-  const input = KEY_INPUT[event.key];
-  if (event.shiftKey && event.key === "Enter") return { input: "\x1b\r" };
-  return input === undefined || event.shiftKey ? null : { input };
+  if (ctrl && !meta && !alt && !shift && /^[a-z]$/i.test(key)) {
+    // a control character; Ctrl+V stays the browser's paste
+    return key.toLowerCase() === "v" ? null : { input: String.fromCharCode(key.toLowerCase().charCodeAt(0) & 0x1f) };
+  }
+  if (!EDITING.has(key)) return alt && !ctrl && !meta && key.length === 1 ? "hold" : null;
+  const modified = ctrl || meta || alt;
+  if (!modified && !shift) {
+    const arrow = ARROW_INPUT[key];
+    return arrow !== undefined ? { input: arrow, arrow: key } : { input: PLAIN_INPUT[key]! };
+  }
+  if (!modified && key === "Enter") return { input: "\x1b\r" };
+  if (!modified && key === "Tab") return { input: "\x1b[Z" };
+  // Cmd+Left and Cmd+Right go to the line's ends, as the terminal's own do on a Mac
+  if (meta && !ctrl && !alt && !shift && (key === "ArrowLeft" || key === "ArrowRight")) return { input: key === "ArrowLeft" ? "\x01" : "\x05" };
+  return "hold";
 }
 
 export function catchTypeAhead(): TypeAheadCatch | null {
   if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
-  pending?.end();
+  // the keyboard went on to another New terminal: what the one before caught waits for its tab, held
+  for (const before of pending) if (before.end()) before.held = true;
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const field = document.createElement("textarea");
   field.className = "type-ahead";
@@ -106,6 +123,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
     const item = typeAheadKey(event);
     if (item === null) return;
     event.preventDefault();
+    if (item === "hold") { caught.held = true; return; }
     commit();
     caught.items.push(item);
   };
@@ -164,16 +182,21 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   field.addEventListener("blur", onBlur);
   document.body.appendChild(field);
   field.focus({ preventScroll: true });
-  pending = caught;
+  pending.push(caught);
+  const listed = (): boolean => pending.includes(caught);
   return {
-    handTo: (machineId, paneId) => {
-      if (pending !== caught) return;
+    handTo: (machineId, paneId, shown = true) => {
+      if (!listed()) return;
       caught.pane = paneStorageId(machineId, paneId);
       caught.paneId = paneId;
+      if (!shown) {
+        caught.held = true;
+        caught.end();
+      }
     },
     drop: () => {
-      if (pending !== caught) return;
-      pending = null;
+      if (!listed()) return;
+      pending.splice(pending.indexOf(caught), 1);
       if (end() && previous?.isConnected) previous.focus({ preventScroll: true });
     },
   };
@@ -181,8 +204,8 @@ export function catchTypeAhead(): TypeAheadCatch | null {
 
 /** Whether the keys typed for a new tab are being caught now: what closes behind the choice (a menu), and a pick's own focus, leave the focus be; only the hand-over moves it. */
 export function typeAheadFocused(): boolean {
-  const field = pending?.field ?? lingering;
-  return field != null && document.activeElement === field;
+  const active = document.activeElement;
+  return active !== null && (active === lingering || pending.some((caught) => caught.field === active));
 }
 
 /**
@@ -190,9 +213,9 @@ export function typeAheadFocused(): boolean {
  * A composition still open keeps the field until it ends: its text comes through `later`.
  */
 export function takeTypeAhead(pane: string, later: TypeAheadLater): TypeAhead | null {
-  const caught = pending;
-  if (caught === null || caught.pane !== pane) return null;
-  pending = null;
+  const caught = pending.find((candidate) => candidate.pane === pane);
+  if (caught === undefined) return null;
+  pending.splice(pending.indexOf(caught), 1);
   const items = caught.items.splice(0);
   if (caught.composing && document.activeElement === caught.field) {
     caught.later = later;

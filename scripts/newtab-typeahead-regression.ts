@@ -155,6 +155,24 @@ const CASES: Case[] = [
     },
   },
   {
+    // the dialog's focus trap leaves Tab to the keys typed ahead while it waits for herdr
+    name: "dialog-tab", way: "dialog", viewport: desktop, ran: "ahead-tab", sent: "echo ahead-tab\t\r", holdCreate: true,
+    type: async (page) => {
+      await page.keyboard.type("echo ahead-tab");
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Enter");
+    },
+  },
+  {
+    name: "word-erase", way: "plus", viewport: desktop, ran: "ahead-ok", holdCreate: true,
+    type: async (page) => {
+      await page.keyboard.type("echo ahead-bsx");
+      await page.keyboard.press("Alt+Backspace");
+      await page.keyboard.type("ok");
+      await page.keyboard.press("Enter");
+    },
+  },
+  {
     name: "paste", way: "plus", viewport: desktop, ran: null, holdCreate: true,
     type: async (page) => {
       const refused = await page.evaluate(() => !document.activeElement?.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true })));
@@ -215,10 +233,100 @@ async function composingAcrossHandOver(browser: Browser, origin: string): Promis
   }
 }
 
+async function ownedPage(browser: Browser, origin: string, label: string) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-newtab-typeahead-")));
+  const created = await workspaceCreate({ cwd: root, label });
+  const context = await browser.newContext({ viewport: desktop, locale: "en-US" });
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const { sent, ready } = watch(page);
+  const held: Route[] = [];
+  await page.route("**/api/**tab/create", (route) => { held.push(route); });
+  const first = created.root_pane.pane_id;
+  await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
+  await page.locator(".conn-live").waitFor();
+  await until(() => ready.has(first), "the first terminal accepts input");
+  const workspaceId = created.workspace.workspace_id;
+  const added = async (known: string[]) => (await sessionSnapshot()).panes.find((pane) => pane.workspace_id === workspaceId && pane.pane_id !== first && !known.includes(pane.pane_id))?.pane_id;
+  const close = async () => {
+    await context.close();
+    await workspaceClose(workspaceId).catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  };
+  return { page, context, errors, sent, ready, held, first, added, close };
+}
+
+/** A second New terminal before the first tab is made: each tab gets what was typed for it (the first's held, as the user moved on). */
+async function twoCatches(browser: Browser, origin: string): Promise<void> {
+  const owned = await ownedPage(browser, origin, "ovis-test-newtab-two");
+  const { page, sent, ready, held, first, added, errors } = owned;
+  try {
+    await screenOf(page, first).click();
+    sent.length = 0;
+    await page.locator(".tab-strip-add").click();
+    await page.keyboard.type("echo ahead-one");
+    await page.locator(".tab-strip-add").click();
+    await page.keyboard.type("echo ahead-two");
+    await page.keyboard.press("Enter");
+    await until(() => held.length === 2, "the page asked herdr for both tabs");
+    // the second tab is made first: it is shown, and takes the keys typed for it
+    await held[1]!.continue();
+    let second: string | undefined;
+    await until(async () => (second = await added([])) !== undefined, "herdr has the second tab");
+    await until(() => ready.has(second!), "the second tab accepts input");
+    await until(() => textOf(sent, second!) === "echo ahead-two\r", "the second tab gets what was typed for it");
+    await held[0]!.continue();
+    let other: string | undefined;
+    await until(async () => (other = await added([second!])) !== undefined, "herdr has the first tab");
+    assert.equal(textOf(sent, other!), "", "the first tab, not shown, is sent nothing");
+    const tab = (await sessionSnapshot()).panes.find((pane) => pane.pane_id === other)!.tab_id;
+    await page.locator(`[data-tab-id=${JSON.stringify(tab)}]`).click();
+    const frame = page.locator(`[data-layout-pane=${JSON.stringify(other!)}]`);
+    await frame.getByRole("button", { name: "Discard held input", exact: true }).waitFor();
+    assert.match(await frame.innerText(), /echo ahead-one/, "the first tab holds what was typed for it, for review");
+    assert.equal(textOf(sent, other!), "", "held, never sent by itself");
+    assert.equal(textOf(sent, first), "", "no key goes to the old tab");
+    assert.deepEqual(errors, []);
+  } finally { await owned.close(); }
+}
+
+/** What an open composition commits after the new tab shows a masked prompt goes as a secret: no receipt keeps it. */
+async function secretAfterComposition(browser: Browser, origin: string): Promise<void> {
+  const owned = await ownedPage(browser, origin, "ovis-test-newtab-secret");
+  const { page, context, sent, ready, held, first, added, errors } = owned;
+  try {
+    await screenOf(page, first).click();
+    sent.length = 0;
+    await page.locator(".tab-strip-add").click();
+    await page.keyboard.type("read -s -p 'Password:' pw");
+    await page.keyboard.press("Enter");
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Input.imeSetComposition", { text: "하", selectionStart: 1, selectionEnd: 1 });
+    await until(() => held.length === 1, "the page asked herdr for the tab");
+    await held[0]!.continue();
+    let second: string | undefined;
+    await until(async () => (second = await added([])) !== undefined, "herdr has the new tab");
+    await until(() => ready.has(second!), "the new tab accepts input");
+    await until(async () => /Password:\s*$/.test((await paneRead({ paneId: second!, source: "visible", stripAnsi: true })).text.trimEnd()), "the new tab shows the masked prompt");
+    await page.locator(`[data-layout-pane=${JSON.stringify(second!)}] .secret-input`).waitFor();
+    if (await page.evaluate(() => document.activeElement?.className) === "type-ahead") await cdp.send("Input.insertText", { text: "한" });
+    let composed: Sent | undefined;
+    await until(() => (composed = sent.find((message) => message.pane_id === second && /[하한]/.test(message.text ?? ""))) !== undefined, "the composed text reaches the prompt");
+    assert.equal((composed as { id?: number }).id, undefined, "typed into a masked prompt, it is sent as a secret: no receipt keeps it");
+    assert.equal(textOf(sent, first), "", "no key goes to the old tab");
+    assert.deepEqual(errors, []);
+  } finally { await owned.close(); }
+}
+
 export async function checkNewTabTypeAhead(browser: Browser, origin: string): Promise<void> {
   for (const item of CASES) await typeAhead(browser, origin, item);
   await composingAcrossHandOver(browser, origin);
-  console.log("PASS keys typed right after New terminal, the tab list's New terminal (mouse and touch) and the New tab dialog's Start reach the new tab in order (arrows and an open composition too), none the old, and open no other tab; a paste or keys left behind are held for review");
+  await twoCatches(browser, origin);
+  await secretAfterComposition(browser, origin);
+  console.log("PASS keys typed right after New terminal, the tab list's New terminal (mouse and touch) and the New tab dialog's Start reach the new tab in order (arrows, word erase, Tab in the dialog and an open composition too, a masked prompt's text as a secret), none the old, and open no other tab; a paste or keys left behind (a second New terminal's first tab too) are held for review");
 }
 
 if (import.meta.main) {
