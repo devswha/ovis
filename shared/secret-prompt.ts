@@ -1,3 +1,15 @@
+// East Asian Wide and Fullwidth ranges (Hangul, CJK, kana, fullwidth forms, wide emoji) take two
+// terminal columns; combining marks and zero-width characters take none.
+const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}]/u;
+const ZERO_WIDTH = /[\p{Mn}\p{Me}\u200b-\u200f\ufe00-\ufe0f]/u;
+
+/** Terminal columns a row of text fills. */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const char of text) width += ZERO_WIDTH.test(char) ? 0 : WIDE.test(char) ? 2 : 1;
+  return width;
+}
+
 /** Deliberately narrow: prose mentioning passwords must not become an input prompt. */
 export function secretPrompt(screen: string, columns = Infinity): string | null {
   const lines = screen.split(/\r?\n/);
@@ -10,8 +22,14 @@ export function secretPrompt(screen: string, columns = Infinity): string | null 
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();
-    if (!previous || previous.length < columns - 1 || previous.length > columns) return null;
-    line = (previous.padEnd(columns) + line).trimStart();
+    // Rows are measured in columns, as the terminal fills them.
+    const width = previous ? displayWidth(previous) : 0;
+    if (!previous || width < columns - 1 || width > columns) return null;
+    // A wide character that does not fit in the last column moves to the next row, leaving it
+    // empty; otherwise the missing column was a trimmed space. No trim of the joined text: a
+    // wrapped row's leading space is part of the prompt (the candidate is trimmed).
+    const wideWrap = width === columns - 1 && WIDE.test(String.fromCodePoint(line.codePointAt(0) ?? 32));
+    line = previous + " ".repeat(wideWrap ? 0 : columns - width) + line;
   }
 }
 
