@@ -1,5 +1,6 @@
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
+import { SETTINGS_AGENTS_JA } from "./i18n/settings-agents.ja.ts";
 import { SETTINGS_COMPOSER_JA } from "./i18n/settings-composer.ja.ts";
 import { SETTINGS_LAYOUT_JA } from "./i18n/settings-layout.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
@@ -29,6 +30,7 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
   "Sign out": "サインアウト",
@@ -40,10 +42,20 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "{provider} でサインイン中",
   "Signing in…": "サインイン中…",
   "The sign-in did not finish. Try again.": "サインインが完了しませんでした。もう一度お試しください。",
-  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub を開いてこのコードを入力してください。このページで自分で始めたサインインのときだけ入力してください。",
-  "Waiting for GitHub…": "GitHub の承認を待っています…",
-  "Open GitHub": "GitHub を開く",
-  "GitHub refused the sign-in.": "GitHub でサインインが拒否されました。",
+  "Open {provider} and enter this code. Enter it only if you started this sign-in on this page.": "{provider} を開いてこのコードを入力してください。このページで自分で始めたサインインのときだけ入力してください。",
+  "Waiting for {provider}…": "{provider} の承認を待っています…",
+  "Open {provider}": "{provider} を開く",
+  "{provider} refused the sign-in.": "{provider} でサインインが拒否されました。",
+  "Your account already signs in with {provider}.": "このアカウントはすでに {provider} でサインインできます。",
+  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "この {provider} のサインインはすでに別の Ovis アカウントに使われています。何も変更されていません。",
+  "Add another way to sign in before removing this one.": "この方法を削除する前に、別のサインイン方法を追加してください。",
+  "The sign-in method could not be removed. Try again.": "サインイン方法を削除できませんでした。もう一度お試しください。",
+  "Ways to sign in": "サインイン方法",
+  "Sign in again": "もう一度サインイン",
+  "Added {date}": "{date} に追加",
+  "To change how you sign in, sign in again with {provider} first.": "サインイン方法を変更するには、先に {provider} でもう一度サインインしてください。",
+  "Add another way to sign in from the Ovis desktop app.": "別のサインイン方法は Ovis デスクトップアプリから追加してください。",
+  "Add {provider}": "{provider} を追加",
   "The code expired. Sign in again to get a new one.": "コードの有効期限が切れました。もう一度サインインして新しいコードを受け取ってください。",
   "This account service can't sign in a browser on this PC yet.": "このアカウントサービスは、この PC のブラウザーでのサインインにまだ対応していません。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
@@ -192,10 +204,7 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
   "Via the local network": "ローカルネットワーク経由",
   "Straight to this address": "このアドレスへ直接",
-  "Sessions on this PC": "この PC のセッション",
-  "{count} working": "作業中 {count} 件",
   "{count} waiting for you": "応答待ち {count} 件",
-  "{count} done": "完了 {count} 件",
   "Open the next session waiting for you": "応答を待っている次のセッションを開く",
   "Tab {index} of {count}": "タブ {index}/{count}",
   "Tabs of {workspace}": "{workspace} のタブ",
@@ -225,6 +234,7 @@ const BASE: Record<string, string> = {
   "No matching folders": "一致するフォルダーはありません",
   "This folder cannot be opened.": "このフォルダーは開けません。",
   "Folders could not be loaded.": "フォルダーを読み込めませんでした。",
+  "Unlock agent": "エージェントのロックを解除",
 
   // ---- files ----
   "Files": "ファイル",
@@ -251,7 +261,6 @@ const BASE: Record<string, string> = {
   "New code": "新しいコード",
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
-  "Connect a phone": "スマートフォンを接続",
   "Pairing code": "ペアリングコード",
   "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
   "{agent} is ready": "{agent} の準備ができました",
@@ -435,7 +444,6 @@ const BASE: Record<string, string> = {
   "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
   "Effort": "推論レベル",
   "Sandbox and approvals": "サンドボックスと承認",
-  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC は「設定 → デバイスと PC（古い Ovis では スマートフォンとデバイス）」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
   "Add this PC to my account": "このPCをアカウントに追加",
   "Add this PC to your account, so every device of your account can use it with one approval.": "このPCをアカウントに追加すると、一度の承認でアカウントのすべてのデバイスから使えます。",
   "Every device of your account can use this PC after that.": "その後は、アカウントのすべてのデバイスからこのPCを使えます。",
@@ -445,12 +453,21 @@ const BASE: Record<string, string> = {
   "New terminal": "新しいターミナル",
   "New terminal failed: {reason}": "新しいターミナルを開けませんでした: {reason}",
   "herdr prefix: press a key": "herdrプレフィックス: キーを押してください",
+  "Connect a device": "デバイスを接続",
+  "This device": "このデバイス",
+  "Sign out of {provider}": "{provider} からサインアウト",
+  "Ovis relay": "Ovis リレー",
+  "Reset relay identity": "リレー ID をリセット",
+  "Reset the relay identity?": "リレー ID をリセットしますか？",
+  "Phones paired through the relay will need to scan a new code.": "リレー経由でペアリングしたスマートフォンは、新しいコードを読み取り直す必要があります。",
+  "Pairs this phone through the relay, so Ovis keeps working away from home.": "このスマートフォンをリレー経由でペアリングし、外出先でも Ovis を使えるようにします。",
+  "This PC": "この PC",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA },
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,

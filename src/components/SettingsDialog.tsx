@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { AppWindow, ArrowLeft, Bell, Bot, ChevronLeft, ChevronRight, ClipboardCopy, Command, Image as ImageIcon, Info, Keyboard, LayoutGrid, MessageSquare, Monitor, Mouse, MousePointer2, Palette, Plus, Search, Smartphone, SquareTerminal, Star, TextCursorInput, X, type LucideIcon } from "lucide-react";
+import { AppWindow, ArrowLeft, Bell, Bot, ChevronLeft, ChevronRight, ClipboardCopy, Command, Image as ImageIcon, Info, Keyboard, LayoutGrid, MessageSquare, Mouse, MousePointer2, Palette, Plus, Search, Smartphone, SquareTerminal, Star, TextCursorInput, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -8,7 +8,7 @@ import { useInstallPrompt } from "../lib/install.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { canReuseExternalLinkTab } from "../lib/terminalFileLinks.ts";
 import { loadRelayShell } from "../lib/relay.ts";
-import { inRelayShell, useRelay } from "../lib/useRelay.ts";
+import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { SHORTCUTS, bindingDisplayKeys, formatKeys, isMacPlatform, setShortcutRecording, shortcutDisplayKeys, shortcutKeys, shortcutConflict, type ShortcutId } from "../lib/shortcuts.ts";
 import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib/shortcutRecorder.ts";
@@ -19,7 +19,7 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
-import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
+import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
 import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
@@ -38,11 +38,9 @@ import { canListInstalledFonts, filterFamilies, isMonospaceFamily, queryInstalle
 import type { UpdatesModel } from "../lib/updates.ts";
 import type { UserError } from "../lib/userError.ts";
 import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings } from "../../shared/machines.ts";
-import { codeFailureText, typedCodeFailure } from "./codeFailureText.ts";
-import { KeyId } from "./KeyId.tsx";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
-import { addFoundRelayPc, addRelayPc, ApiError, findRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
+import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
 import type { HealthAuth, PluginActions, RemoteAccess } from "../../shared/protocol.ts";
@@ -52,11 +50,15 @@ import type { VoiceStatus } from "../../shared/voice.ts";
 import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
-import { PortalPanel } from "./PortalPanel.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
-import { statusText } from "./RelayPanel.tsx";
-import { AccountSection } from "./AccountSection.tsx";
-import { ConnectPhoneDialog, defaultRoute, relayOffered, type ConnectRoute } from "./ConnectPhoneDialog.tsx";
+import { failureText, openOwnOffer, statusText } from "./RelayPanel.tsx";
+import { AccountSection, accountOffered, type AccountState } from "./AccountSection.tsx";
+import { accountPcStateText } from "./AccountPcs.tsx";
+import { STATE_WORD } from "./MachineSidebar.tsx";
+import { pcAccountStatus } from "../lib/account/join.ts";
+import { apiFetch } from "../lib/api-request-id.ts";
+import type { MyPc } from "../lib/account/myPcs.ts";
+import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -144,7 +146,10 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
   const t = useT();
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+  // typed and not yet saved: only that is saved when the field goes, never a value put back meanwhile (a row's ↺)
+  const typed = useRef(false);
   const commit = (): void => {
+    typed.current = false;
     const next = sanitizeFontFamily(draft);
     setDraft(next);
     if (next !== value) onCommit(next);
@@ -152,7 +157,7 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
   // closing the dialog with Escape unmounts the field without a blur
   const commitRef = useRef(commit);
   commitRef.current = commit;
-  useEffect(() => () => commitRef.current(), []);
+  useEffect(() => () => { if (typed.current) commitRef.current(); }, []);
   const [families, setFamilies] = useState<string[] | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [query, setQuery] = useState("");
@@ -200,7 +205,7 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => { typed.current = true; setDraft(event.target.value); }}
           onBlur={commit}
           onKeyDown={(event) => {
             // an IME keeps its Enter, including the committing one WebKit can send after compositionend as key code 229
@@ -327,8 +332,10 @@ function ThemeCard({ id, side, checked, onPick }: { id: ThemeId; side: Mode; che
   const t = useT();
   const row = rowFor(id, side);
   const c = row.preview;
+  // a theme of the other kind says so: it draws that way on this side
+  const kind = row.mode === side ? undefined : `${t(THEME_NAMES[id])} · ${t(row.mode === "dark" ? "Dark" : "Light")}`;
   return (
-    <button type="button" role="radio" aria-checked={checked} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={id} onClick={onPick}>
+    <button type="button" role="radio" aria-checked={checked} aria-label={kind} title={kind} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={id} onClick={onPick}>
       <span className="theme-card-art" aria-hidden="true" style={{ background: row.bg, borderColor: c.border }}>
         <span className="theme-card-side" style={{ background: row.bgPanel, borderColor: c.border }}>
           <i style={{ background: c.accent }} /><i style={{ background: c.textDim }} /><i style={{ background: c.textDim }} />
@@ -347,14 +354,16 @@ function ThemeCard({ id, side, checked, onPick }: { id: ThemeId; side: Mode; che
  * swipe, or the arrows at its ends), the chosen one brought into view: the row stays one card tall
  * however many themes there are. The side drawn now opens first; Dark and Light switch it. The side's
  * own kind comes first, then after a rule the other kind, which that side draws as it is (a dark theme
- * chosen for light mode draws dark, as in herdr). Arrow keys move along the row; Enter or Space picks.
+ * chosen for light mode draws dark, as in herdr). Arrow keys, Home and End pick along the row, as a radio group's do.
  */
 function ThemePicker() {
   const { settings, update } = useSettings();
   const t = useT();
   const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
   const drawn: Mode = settings.theme === "system" ? (systemDark ? "dark" : "light") : settings.theme;
-  const [side, setSide] = useState<Mode>(drawn);
+  // the side drawn now, until Dark or Light here is chosen
+  const [picked, setPicked] = useState<Mode | null>(null);
+  const side = picked ?? drawn;
   const strip = useRef<HTMLDivElement>(null);
   const [ends, setEnds] = useState({ start: true, end: true });
   const current = side === "dark" ? settings.darkTheme : settings.lightTheme;
@@ -366,14 +375,15 @@ function ThemePicker() {
     const el = strip.current;
     if (el) setEnds({ start: el.scrollLeft <= 1, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 1 });
   }, []);
-  // the chosen card in view when the side changes, by the row's own scroll so the page stays put;
-  // a pick made in the row leaves it where it is
+  // the chosen card in view when it is not (a side switched, a reset), by the row's own scroll so the
+  // page stays put; a pick already in view leaves the row where it is
   useLayoutEffect(() => {
     const el = strip.current;
     const card = el?.querySelector<HTMLElement>(`[data-theme-card="${current}"]`);
-    if (el && card) el.scrollLeft = card.offsetLeft - (el.clientWidth - card.offsetWidth) / 2;
+    const shown = el && card && card.offsetLeft >= el.scrollLeft && card.offsetLeft + card.offsetWidth <= el.scrollLeft + el.clientWidth;
+    if (el && card && !shown) el.scrollLeft = card.offsetLeft - (el.clientWidth - card.offsetWidth) / 2;
     measure();
-  }, [side, measure]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [side, current, measure]);
   useEffect(() => {
     const el = strip.current;
     if (!el) return;
@@ -386,8 +396,11 @@ function ThemePicker() {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
     const cards = [...(strip.current?.querySelectorAll<HTMLElement>("[data-theme-card]") ?? [])];
     const at = cards.indexOf(document.activeElement as HTMLElement);
-    const next = event.key === "Home" ? 0 : event.key === "End" ? cards.length - 1 : Math.min(cards.length - 1, Math.max(0, at + (event.key === "ArrowRight" ? 1 : -1)));
+    const next = event.key === "Home" ? 0 : event.key === "End" ? cards.length - 1 : (at + (event.key === "ArrowRight" ? 1 : -1) + cards.length) % cards.length;
     event.preventDefault();
+    // a radio group's arrows pick as they move
+    const id = cards[next]?.dataset["themeCard"];
+    if (id && isThemeId(id)) update(pickTheme(settings, side, id));
     cards[next]?.focus();
     cards[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
@@ -395,7 +408,7 @@ function ThemePicker() {
   return (
     <>
       <SettingsRow label={label} keywords={`${t("Dark theme")} ${t("Light theme")} ${t("Shown in dark mode")} ${t("Shown in light mode")}`} reset={[side === "dark" ? "darkTheme" : "lightTheme"]}>
-        <Segmented label={`${t("Dark theme")} · ${t("Light theme")}`} value={side} onChange={setSide} options={[{ value: "dark", label: t("Dark"), name: t("Show dark themes") }, { value: "light", label: t("Light"), name: t("Show light themes") }]} />
+        <Segmented label={`${t("Dark theme")} · ${t("Light theme")}`} value={side} onChange={setPicked} options={[{ value: "dark", label: t("Dark"), name: t("Show dark themes") }, { value: "light", label: t("Light"), name: t("Show light themes") }]} />
       </SettingsRow>
       <div className="settings-item theme-strip">
         <div className="theme-strip-frame">
@@ -421,6 +434,8 @@ function InterfaceFontRows() {
   const t = useT();
   const preset = uiFontPreset(settings.uiFontFamily);
   const [customOpen, setCustomOpen] = useState(preset === "custom");
+  // a family put back from elsewhere (the row's ↺) closes the custom field it was typed in
+  useEffect(() => { if (settings.uiFontFamily === DEFAULT_SETTINGS.uiFontFamily) setCustomOpen(false); }, [settings.uiFontFamily]);
   const custom = customOpen || preset === "custom";
   const interfaceFontDescription = t("Menus, lists, dialogs and the sidebar; the chat's text follows it until it has a font of its own. The terminal and code keep theirs. System is this device's own interface font.");
   const choose = (next: UiFontPreset | "custom"): void => {
@@ -500,13 +515,14 @@ function AppearancePage() {
       {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
         <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
       </SettingsRow>}
-      <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")} reset={["autoTabNames"]}>
-        <Toggle label={t("Name tabs from the first message")} checked={settings.autoTabNames} onChange={(autoTabNames) => update({ autoTabNames })} />
-      </SettingsRow>
     </SettingsGroup>
 
-    <SettingsFold kind="more" keys={["sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentNamedGroups", "agentMarks", "statusIndicators", "fileFontSize"]}>
+    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentNamedGroups", "agentMarks", "statusIndicators", "fileFontSize"]}>
       <SettingsGroup title={t("Sidebar")} section="sidebar-more">
+        <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}
+          condition={<span className="settings-condition">{t("Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}</span>} reset={["autoTabNames"]}>
+          <Toggle label={t("Name tabs from the first message")} checked={settings.autoTabNames} onChange={(autoTabNames) => update({ autoTabNames })} />
+        </SettingsRow>
         <SettingsRow label={t("Sidebar filter")} description={t("Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.")}>
           <Toggle label={t("Sidebar filter")} checked={settings.sidebarFilter} onChange={(sidebarFilter) => update({ sidebarFilter })} />
         </SettingsRow>
@@ -538,10 +554,14 @@ function AppearancePage() {
         <FileTextSizeRow />
       </SettingsGroup>
     </SettingsFold>
-    <SettingsFold kind="experimental" keys={["agentLocks"]}>
+    <SettingsFold kind="experimental" keys={["agentLocks", "opencodeParentEnds"]}>
       <SettingsGroup>
-        <SettingsRow label={t("Lock pinned agents (experimental)")} description={t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")}>
+        <SettingsRow label={t("Lock pinned agents (experimental)")} description={t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")}
+          condition={<span className="settings-condition">{t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")}</span>}>
           <Toggle label={t("Lock pinned agents (experimental)")} checked={settings.agentLocks} onChange={(agentLocks) => update({ agentLocks })} />
+        </SettingsRow>
+        <SettingsRow label={t("Read OpenCode subagent ends from their session (experimental)")} description={t("An OpenCode subagent counts as running, and holds its turn's BG wait, until the session that started it is told it ended, not as soon as the subagent goes idle. Its own background work may still run then. When off, the subagent's own rows tell.")}>
+          <Toggle label={t("Read OpenCode subagent ends from their session (experimental)")} checked={settings.opencodeParentEnds} onChange={(opencodeParentEnds) => update({ opencodeParentEnds })} />
         </SettingsRow>
       </SettingsGroup>
     </SettingsFold>
@@ -584,7 +604,7 @@ function ChatPage() {
         <SettingsRow label={t("Show above the message box")} description={t("One-tap messages above the message box, on this device. Each is sent as if typed: queued while the agent works, an answer when a question is open.")}>
           <Toggle label={t("Show above the message box")} checked={settings.showQuickReplies} onChange={(showQuickReplies) => update({ showQuickReplies })} />
         </SettingsRow>
-        <div className="settings-item">
+        {settings.showQuickReplies && <div className="settings-item">
           <ol className="quick-replies-list">
             {settings.quickReplies.map((reply, index) => (
               <li key={index}>
@@ -608,13 +628,10 @@ function ChatPage() {
             <button type="button" className="btn" disabled={settings.quickReplies.length >= QUICK_REPLIES_MAX} onClick={() => update({ quickReplies: [...settings.quickReplies, ""] })}><Plus aria-hidden="true" />{t("Add reply")}</button>
             <button type="button" className="btn btn-ghost" onClick={() => update({ quickReplies: [...DEFAULT_SETTINGS.quickReplies] })}>{t("Restore defaults")}</button>
           </div>
-        </div>
+        </div>}
       </SettingsGroup>
 
       <SettingsGroup title={t("File viewer")} section="file-viewer">
-        <SettingsRow label={t("Wrap long lines")}>
-          <Toggle label={t("Wrap long lines")} checked={settings.wrapCode} onChange={(wrapCode) => update({ wrapCode })} />
-        </SettingsRow>
         <SettingsRow label={t("Open files")} description={t("On a wide window, text and code can open beside the pane. Media, PDFs and folders always open in a popup, and the viewer's header button moves the file open now.")} wide>
           <Segmented label={t("Open files")} value={settings.fileOpen} onChange={(fileOpen) => update({ fileOpen })} options={FILE_OPEN_TARGETS.map((fileOpen) => ({ value: fileOpen, label: fileOpen === "panel" ? t("Beside the pane") : t("In a popup") }))} />
         </SettingsRow>
@@ -625,7 +642,7 @@ function ChatPage() {
 
       <VoiceMain />
 
-      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "autoSendQueued", "composerPasteSend", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", "voiceEngine", "voicePolishChat", "voicePolishTerminal"]}>
+      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", ...(settings.voiceInput === "off" ? [] : ["voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"] as const)]}>
         <SettingsGroup title={t("Chat")} section="chat-more">
           <SettingsRow label={t("Collapse work")} description={t("A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message")}>
             <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
@@ -643,6 +660,9 @@ function ChatPage() {
           </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title={t("File viewer")} section="file-viewer-more">
+          <SettingsRow label={t("Wrap long lines")}>
+            <Toggle label={t("Wrap long lines")} checked={settings.wrapCode} onChange={(wrapCode) => update({ wrapCode })} />
+          </SettingsRow>
           <SettingsRow label={t("Edit text files")} description={t("Adds Edit to the file viewer for a text file in the pane's folder. Saving asks first, and stops if the file changed since you opened it.")}>
             <Toggle label={t("Edit text files")} checked={settings.editTextFiles} onChange={(editTextFiles) => update({ editTextFiles })} />
           </SettingsRow>
@@ -721,15 +741,6 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     <>
     <SettingsGroup note={t("For this device. An alert waits a little first, and none comes when the pane changes meanwhile, as when you answer at the PC.")}>
       <PushTestControls onEnable={onEnableNotifications} />
-      <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
-        <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
-      </SettingsRow>
-      <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
-        <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
-      </SettingsRow>
-      <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
-        <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
-      </SettingsRow>
       <SettingsRow label={t("Sound")} description={t("While a tab of the app is open, it chimes for these alerts, also when a Focus or Do Not Disturb silences notifications.")}>
         <Toggle label={t("Sound")} checked={settings.alertSound} onChange={(alertSound) => {
           update({ alertSound });
@@ -743,11 +754,24 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     <AlertPcsGroup machines={machines} />
     {/* a destination's last failed post is said in its group, so the group stays in sight */}
     <AlertWebhookGroup />
-    <SettingsFold kind="more" keys={["alertInApp"]}>
-      <SettingsGroup section="alerts-more">
+    {/* which alerts come: nearly everyone keeps the defaults, so they wait in the fold */}
+    <SettingsFold kind="more" keys={["alertInput", "alertDone", "alertInApp"]}
+      elsewhere={alertFiltersChanged(filters, settings.alertInput)}>
+      <SettingsGroup title={t("Alert me when")} section="alert-kinds">
+        <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
+          <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
+        </SettingsRow>
+        <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
+          <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
+        </SettingsRow>
+        <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
+          <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
+        </SettingsRow>
         <SettingsRow label={t("Stopped on an error")} description={t("A turn that ended on an error, as OmO and GJC report it")}>
           <Toggle label={t("Stopped on an error")} checked={filters.error === true} onChange={(error) => updateAlertFilters({ error })} />
         </SettingsRow>
+      </SettingsGroup>
+      <SettingsGroup section="alerts-more">
         <SettingsRow label={t("In the app")} description={t("While the app is open, these drop in from the top of the screen at once. Tap one to open its pane.")}>
           <Toggle label={t("In the app")} checked={settings.alertInApp} onChange={(alertInApp) => update({ alertInApp })} />
         </SettingsRow>
@@ -802,7 +826,7 @@ function DictationLanguageSelect() {
   );
 }
 
-/** Settings → Chat → Voice input: whether the microphone button shows, and the language it listens for. */
+/** Settings → Chat → Voice input: whether the microphone button shows; the language it listens for is in Chat's folded part (VoiceMore). */
 function VoiceMain() {
   const { settings, update } = useSettings();
   const t = useT();
@@ -825,16 +849,11 @@ function VoiceMain() {
       <SettingsRow label={t("Microphone button")} description={<>{t("Auto: in the chat on a desktop, where dictation can work. On: on a phone and in the terminal input line too.")}{micProblem !== null && <span className="voice-error">{micProblem}</span>}</>} wide>
         <Segmented label={t("Microphone button")} value={settings.voiceInput} onChange={(voiceInput) => void chooseVoiceInput(voiceInput)} options={VOICE_BUTTONS.map((voiceInput) => ({ value: voiceInput, label: t(voiceInput === "auto" ? "Auto" : voiceInput === "on" ? "On" : "Off") }))} />
       </SettingsRow>
-      {settings.voiceInput !== "off" && (
-        <SettingsRow label={t("Dictation language")} description={t("Auto listens for the app's language, or for the browser's when the app is not translated into it")} htmlFor="settings-voice-language" wide>
-          <DictationLanguageSelect />
-        </SettingsRow>
-      )}
     </SettingsGroup>
   );
 }
 
-/** Chat's folded part for voice input: the speech recognition, tidying dictated text, and the OpenAI key. */
+/** Chat's folded part for voice input: the dictation language, the speech recognition, tidying dictated text, and the OpenAI key. */
 function VoiceMore() {
   const { settings, update } = useSettings();
   const t = useT();
@@ -860,6 +879,9 @@ function VoiceMore() {
     <>
       {settings.voiceInput !== "off" && <>
         <SettingsGroup section="voice-more">
+          <SettingsRow label={t("Dictation language")} description={t("Auto listens for the app's language, or for the browser's when the app is not translated into it")} htmlFor="settings-voice-language" wide>
+            <DictationLanguageSelect />
+          </SettingsRow>
           <SettingsRow label={t("Speech recognition")} description={<>{t(settings.voiceEngine === "auto" ? "Auto uses the API key when one is saved, else the browser" : settings.voiceEngine === "browser" ? "The browser recognizes the speech, even with a key saved" : "Only the API key below transcribes")}{settings.voiceEngine === "server" && voice && !voice.configured && <span className="voice-error">{t("Save an API key to use the mic")}</span>}</>} wide>
             <Segmented label={t("Speech recognition")} value={settings.voiceEngine} onChange={(voiceEngine) => update({ voiceEngine })} options={VOICE_ENGINES.map((voiceEngine) => ({ value: voiceEngine, label: t(voiceEngine === "auto" ? "Auto" : voiceEngine === "browser" ? "Browser" : "API key") }))} />
           </SettingsRow>
@@ -1145,7 +1167,37 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
   );
 }
 
-function DevicesPage({ auth, security, onSignOut, onRevokedAll, pcs, pcsMore }: { auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void; /** the PCs' groups (RemotePcs), after the devices */ pcs: ReactNode; /** and their folded rows (RemotePcsMore) */ pcsMore: ReactNode }) {
+/**
+ * Groups of Devices and PCs that merged into My devices (Connect a device holds the ways in, Portal among them),
+ * by their old link names (`?settings=devices&section=…`).
+ */
+const MOVED_GROUPS: Readonly<Record<string, string>> = { phone: "devices", remote: "devices", portal: "devices" };
+
+/**
+ * What a paired device is, read from the label the app first gave it (lib/phone.ts deviceLabel, "iPhone · Safari");
+ * a device renamed since says nothing of what it is, so its row carries no pill rather than a guess.
+ */
+function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
+  const named = /^(iPhone|iPad|Android|Mac|Windows|Chromebook|Linux|Device)( · (Edge|Firefox|Chrome|Safari))?$/.exec(label);
+  if (named === null) return null;
+  if (named[1] === "iPhone" || named[1] === "Android") return t("Phone");
+  if (named[1] === "iPad") return t("Tablet");
+  return t("Browser");
+}
+
+/** a relay ID in groups of four, as KeyId draws it, on one line */
+const groupedId = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
+
+/**
+ * Settings → Devices and PCs, as WhatsApp's Linked devices: the account on top, then one list of everything
+ * that uses or joins this PC (this PC with its ID, the other PCs shown here and, signed in, the account's,
+ * then the paired phones and browsers), with one Connect a device whose dialog holds every way in. What few
+ * people change waits in More settings.
+ */
+function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc }: {
+  auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void;
+  machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void; openAddPc: () => void;
+}) {
   const { settings, update } = useSettings();
   const t = useT();
   const installPrompt = useInstallPrompt();
@@ -1167,79 +1219,209 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, pcs, pcsMore }: 
   const pairUrl = plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin;
   // what keeps the switch from working here, only while it does (lib/wakeLock.ts asks for the same two)
   const wakeLockProblem = !window.isSecureContext ? t("Needs HTTPS or localhost.") : !("wakeLock" in navigator) ? t("This browser can't keep the screen on.") : null;
-  // one relay state for the Connect a phone row and its dialog, so the row shows the dialog's change at once
   const relay = useRelay();
   const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
-  // the dialog with the ways a phone connects, and the way it opens on; null while it is closed
-  const [connecting, setConnecting] = useState<{ route: ConnectRoute; startCode: boolean } | null>(null);
-  const closeConnect = useCallback(() => setConnecting(null), []);
-  // a relay this PC can turn on: offered here and nothing blocking it (a serve-only install, an unreadable identity)
-  const relayUsable = relayOffered(relay) && relay.status?.blocked === null;
-  const connectSummary = relayOffered(relay) && relay.status?.phase === "online" ? t("Ready through the Ovis relay.")
-    : plan.kind === "here" || plan.kind === "served" ? (relayUsable ? t("Ready at {url}. Or use the Ovis relay, no Tailscale needed.", { url: plan.url }) : t("Ready at {url}.", { url: plan.url }))
-    : relayUsable ? t("The Ovis relay works from anywhere with nothing to install, or use Tailscale.")
-    : t("Use Tailscale or a pairing code.");
+  const [connecting, setConnecting] = useState(false);
+  const closeConnect = useCallback(() => setConnecting(false), []);
+  // a reset relay identity is a new ID for this PC: My devices reads it again
+  const [identityResets, setIdentityResets] = useState(0);
+  // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
+  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null });
+  // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
+  // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
+  const [pcAccount, setPcAccount] = useState<string | null>(null);
+  useEffect(() => {
+    if (account.account === null) { setPcAccount(null); return; }
+    let live = true;
+    pcAccountStatus(apiFetch).then((status) => { if (live) setPcAccount(status.account); }, () => { if (live) setPcAccount(null); });
+    return () => { live = false; };
+  }, [account.account, connecting]);
+  const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
+  const signIn = useCallback(() => {
+    setConnecting(false);
+    // the account's own sign-in, at the top of this page
+    const group = document.querySelector<HTMLElement>('.settings-dialog [data-section="account"]');
+    group?.scrollIntoView({ block: "start" });
+    group?.querySelector<HTMLElement>("button")?.focus();
+  }, []);
+  // a touch phone on this PC's own address pairs itself through the relay in one tap: beside its own row
+  const touchPhone = useMediaQuery("(pointer: coarse)");
+  const selfRelay = touchPhone && relayOffered(relay) && relay.status?.phase === "online" && !relayReadOnly ? <UseRelayHere /> : null;
   return (
     <>
-      <SettingsGroup title={t("Phone")} section="phone">
-        {nativeApp && (
-          <SettingsRow label={t("Change PC")} description={window.location.protocol === "capacitor:" ? t("This is the demo. Go back to the app's list of PCs to open yours.") : t("This app shows {address}. Go back to its list of PCs to open another.", { address: window.location.host })}>
-            <button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button>
+      {(nativeApp || relayPc !== null) && (
+        <SettingsGroup title={t("This app")} section="this-app">
+          {nativeApp && (
+            <SettingsRow label={t("Change PC")} description={window.location.protocol === "capacitor:" ? t("This is the demo. Go back to the app's list of PCs to open yours.") : t("This app shows {address}. Go back to its list of PCs to open another.", { address: window.location.host })}>
+              <button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button>
+            </SettingsRow>
+          )}
+          {relayPc !== null && (
+            <>
+              <SettingsRow label={t("Change PC")} description={t("This page shows one PC. The front page lists every PC this phone is paired with.")}>
+                <button type="button" className="btn" onClick={() => window.location.assign("/")}>{t("Change PC")}</button>
+              </SettingsRow>
+              <SettingsRow label={t("Forget this PC")} description={t("Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.")}>
+                <button type="button" className="btn" onClick={() => setConfirmForget(true)}>{t("Forget this PC")}</button>
+              </SettingsRow>
+              {confirmForget && (
+                <ConfirmDialog title={t("Forget this PC?")}
+                  body={t("This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.")}
+                  confirmLabel={t("Forget")} onClose={() => setConfirmForget(false)}
+                  onConfirm={async () => { await (await loadRelayShell()).forgetSavedPc(relayPc); window.location.assign("/"); }} />
+              )}
+            </>
+          )}
+        </SettingsGroup>
+      )}
+
+      <AccountSection onAccount={setAccount} />
+
+      <SettingsGroup title={t("My devices")} section="devices">
+        <SettingsRow label={t("Connect a device")} keywords={t("phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs")}>
+          <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Connect")}</button>
+        </SettingsRow>
+        <div className="settings-item my-devices">
+          <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
+          <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} />
+        </div>
+        <DamagedPcFiles pcSettings={pcSettings} />
+        {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} label={t("Sign out of this PC")} />}
+      </SettingsGroup>
+
+      <SettingsFold kind="more" keys={["keepScreenOn", "pcLoad"]}>
+        <SettingsGroup title={t("This device")} section="phone-more">
+          <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
+            <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
           </SettingsRow>
-        )}
-        {relayPc !== null && (
-          <>
-            <SettingsRow label={t("Change PC")} description={t("This page shows one PC. The front page lists every PC this phone is paired with.")}>
-              <button type="button" className="btn" onClick={() => window.location.assign("/")}>{t("Change PC")}</button>
-            </SettingsRow>
-            <SettingsRow label={t("Forget this PC")} description={t("Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.")}>
-              <button type="button" className="btn" onClick={() => setConfirmForget(true)}>{t("Forget this PC")}</button>
-            </SettingsRow>
-            {confirmForget && (
-              <ConfirmDialog title={t("Forget this PC?")}
-                body={t("This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.")}
-                confirmLabel={t("Forget")} onClose={() => setConfirmForget(false)}
-                onConfirm={async () => { await (await loadRelayShell()).forgetSavedPc(relayPc); window.location.assign("/"); }} />
-            )}
-          </>
-        )}
-        {/* the relay's state lives here; its switch, reset and failures are in the Connect a phone dialog */}
-        <SettingsRow label={t("Connect a phone")} description={<>
-          <span className="connect-phone-summary">{connectSummary}</span>
-          {relayOffered(relay) && relay.status !== null && <span className="relay-status">{t("Ovis relay: {state}", { state: statusText(t, relay.status) })}</span>}
-        </>}>
-          <button type="button" className="btn btn-primary" onClick={() => setConnecting({ route: defaultRoute(plan, relay), startCode: false })}>{t("Connect")}</button>
-        </SettingsRow>
-        <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
-          <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
-        </SettingsRow>
-        <SettingsRow label={t("Install")} description={installPrompt.installed ? t("Installed") : installPrompt.canInstall ? undefined : installPrompt.help}>
-          {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
-        </SettingsRow>
-      </SettingsGroup>
-
-      <PortalPanel readOnly={auth?.role === "watch" || auth?.via === "portal"} />
-
-      <AccountSection />
-
-      <SettingsGroup title={t("Devices")} section="devices">
-        <div className="settings-item"><DevicesPanel onPair={() => setConnecting({ route: "code", startCode: true })} onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} /></div>
-        {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} />}
-      </SettingsGroup>
-
-      {pcs}
-
-      <SettingsFold kind="more" keys={["pcLoad"]}>
+          {/* the steps where the browser holds no prompt (Safari has none): the only way to learn how to install */}
+          <SettingsRow label={t("Install")} description={installPrompt.installed ? t("Installed") : installPrompt.canInstall ? undefined : installPrompt.help}>
+            {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
+          </SettingsRow>
+        </SettingsGroup>
+        {relayOffered(relay) && !relayReadOnly && <RelayControls relay={relay} closesGate={closesGate} onReset={() => setIdentityResets((count) => count + 1)} />}
+        <SidebarPcsGroup machines={machines} />
         <AccessFacts facts={security} />
-        {pcsMore}
+        <RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={onPcSettings} />
       </SettingsFold>
 
-      {connecting !== null && (
-        <ConnectPhoneDialog route={connecting.route} startCode={connecting.startCode} plan={plan} loading={access === undefined} onRefresh={loadAccess} pairUrl={pairUrl}
-          relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"} onClose={closeConnect} />
+      {connecting && (
+        <ConnectPhoneDialog plan={plan} loading={access === undefined} onRefresh={loadAccess} pairUrl={pairUrl}
+          relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
+          joinBySignIn={joinBySignIn} onSignIn={accountOffered() && !account.signedIn ? signIn : null}
+          onAddPcSsh={() => { setConnecting(false); openAddPc(); }} onClose={closeConnect} />
       )}
     </>
+  );
+}
+
+/** This phone through the relay, from its own row: its offer opens here as a QR code would on a phone that scanned it. */
+function UseRelayHere() {
+  const t = useT();
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <>
+      <button type="button" className="btn" disabled={opening} title={t("Pairs this phone through the relay, so Ovis keeps working away from home.")} onClick={() => {
+        setError(null);
+        setOpening(true);
+        requestRelayOffer().then((offer) => openOwnOffer(offer.url)).catch((reason: unknown) => setError(failureText(reason))).finally(() => setOpening(false));
+      }}>{t("Use the relay")}</button>
+      {error !== null && <span className="settings-hint relay-error" role="alert">{error}</span>}
+    </>
+  );
+}
+
+/** The relay's switch and its identity reset: rarely touched once it is on, so in More settings (Connect a device turns it on). */
+function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; closesGate: boolean; onReset: () => void }) {
+  const t = useT();
+  const { status, pending, request } = relay;
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const resetButton = useRef<HTMLButtonElement>(null);
+  if (status === null) return null;
+  const on = status.blocked === null && status.phase !== "off";
+  const run = async (action: "start" | "stop") => {
+    setError(null);
+    try { await request(action); } catch (reason) { setError(failureText(reason)); }
+  };
+  return (
+    <SettingsGroup title={t("Ovis relay")} section="relay">
+      <SettingsRow label={t("Ovis relay")} description={statusText(t, status)}>
+        {status.blocked === null && <Toggle label={t("Ovis relay")} checked={on} onChange={(next) => { if (!pending) void run(next ? "start" : "stop"); }} />}
+      </SettingsRow>
+      {closesGate && !on && status.blocked === null && <p className="settings-item settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+      {error !== null && <p className="settings-item settings-hint relay-error" role="alert">{error}</p>}
+      {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
+      {status.blocked !== "serve_only" && (
+        <SettingsRow label={t("Reset relay identity")}>
+          <button ref={resetButton} type="button" className="btn" disabled={pending} onClick={() => setConfirmingReset(true)}>{t("Reset")}</button>
+        </SettingsRow>
+      )}
+      {confirmingReset && (
+        <ConfirmDialog title={t("Reset the relay identity?")} body={t("Phones paired through the relay will need to scan a new code.")}
+          confirmLabel={t("Reset")} onClose={() => setConfirmingReset(false)} onConfirm={async () => {
+            await request("reset-identity");
+            setConfirmingReset(false);
+            onReset();
+            // the confirmation hands focus back only when it is dismissed: after the reset it goes back here
+            window.requestAnimationFrame(() => resetButton.current?.focus());
+          }} />
+      )}
+    </SettingsGroup>
+  );
+}
+
+/**
+ * The PCs at the top of My devices: this PC with its relay ID (what a device that typed this PC's code compares,
+ * AddRelayPc and the hosted app's code screen), the PCs this app shows (SSH, relay, herdr-core machines), and,
+ * signed in, the account's other PCs. One PC is one row: an account PC this app already shows is not listed twice.
+ * The ID is read again whenever the relay's state or identity changes (`relayKey`): turning the relay on can make
+ * this PC's first ID, and a reset makes a new one, before the roster's next read would say so; a new ID in the roster
+ * (a reset in another window) is read again too. Removing a PC stays
+ * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
+ */
+function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string }) {
+  const t = useT();
+  const local = machines.find((machine) => machine.kind === "local");
+  const [ownId, setOwnId] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchMachines().then((list) => { if (live) setOwnId(list.find((machine) => machine.kind === "local")?.server_id ?? null); }, () => undefined);
+    return () => { live = false; };
+  }, [relayKey, local?.server_id]);
+  const id = ownId ?? local?.server_id;
+  const others = machines.filter((machine) => machine.kind !== "local");
+  const shown = new Set<string>([id, local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
+  const fromAccount = (accountPcs ?? []).filter((pc) => !shown.has(pc.server_id));
+  return (
+    <ul className="devices-list my-pcs">
+      {local !== undefined && (
+        <li className="devices-row my-device-self" data-testid="this-pc">
+          <div className="devices-name">
+            <span className="settings-label">{local.name}<span className="devices-kind is-self">{t("This PC")}</span></span>
+            {id !== undefined && <span className="settings-description my-device-id">{t("ID {id}", { id: groupedId(id) })}</span>}
+          </div>
+        </li>
+      )}
+      {others.map((machine) => (
+        <li key={machine.id} className="devices-row">
+          <div className="devices-name">
+            <span className="settings-label">{machine.name}<span className="devices-kind">PC</span></span>
+            <span className="settings-description">{t(STATE_WORD[machine.state])}</span>
+          </div>
+        </li>
+      ))}
+      {fromAccount.map((pc) => (
+        <li key={pc.server_id} className="devices-row" data-pc-state={pc.state}>
+          <div className="devices-name">
+            <span className="settings-label">{pc.name}<span className="devices-kind">PC</span></span>
+            <span className="settings-description">{accountPcStateText(pc, t)}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1266,95 +1448,21 @@ function SidebarPcsGroup({ machines }: { machines: readonly Machine[] }) {
   );
 }
 
-/**
- * Another PC through the Ovis relay, no SSH: its pairing link (Settings → Phone & devices → Copy link there), or the code
- * it shows (Show a code to type), pairs this PC's server with it as a phone would. Both hold a one-time code, so they
- * stay in the input, never in state. A typed code first finds the PC, and the person matches its ID with the one that
- * PC shows before it is added, as the hosted app's code screen asks (RelayShell.tsx).
- */
-export function AddRelayPc() {
-  const t = useT();
-  const input = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
-  const [found, setFound] = useState<{ ticket: string; server_id: string; name: string | null } | null>(null);
-  const [result, setResult] = useState<{ error: boolean; text: string } | null>(null);
-  const added = (machine: Machine) => setResult({ error: false, text: t("{name} was added. Its workspaces join the sidebar.", { name: machine.name }) });
-  const failed = (error: unknown) => {
-    const failure = error instanceof ApiError ? typedCodeFailure(error.code) : null;
-    setResult({ error: true, text: failure !== null ? codeFailureText(t, failure) : error instanceof Error ? error.message : String(error) });
-  };
-  const run = async (work: () => Promise<void>) => {
-    setBusy(true);
-    setResult(null);
-    try { await work(); } catch (error) { failed(error); } finally { setBusy(false); }
-  };
-  const submit = () => {
-    const field = input.current;
-    const value = field?.value.trim() ?? "";
-    if (!field || !value) return;
-    // a link carries its offer; anything else is taken as a typed code
-    const link = /^https?:\/\//i.test(value);
-    void run(async () => {
-      if (link) { added((await addRelayPc(value)).machine); field.value = ""; return; }
-      // one try per tap, as on the phone: the code is not kept for another
-      field.value = "";
-      setFound(await findRelayPc(value));
-    });
-  };
-  const match = (ticket: string) => void run(async () => {
-    try { added((await addFoundRelayPc(ticket)).machine); } finally { setFound(null); }
-  });
-  if (found !== null) {
-    const pc = found.name ?? t("this PC");
-    return (
-      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.")} held wide>
-        <div className="relay-pc-found">
-          <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
-          <div className="relay-pc-actions">
-            <button type="button" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => match(found.ticket)}>{t("It matches")}</button>
-            <button type="button" className="btn" disabled={busy} onClick={() => setFound(null)}>{t("Cancel")}</button>
-          </div>
-        </div>
-      </SettingsRow>
-    );
-  }
-  return (
-    <>
-      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Devices and PCs (Phone & devices on an older Ovis). Paste its link here (Copy link), or type the code it shows (Show a code to type).")} wide>
-        <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-          <input ref={input} className="input relay-pc-input" type="text" placeholder={t("Link or code")} aria-label={t("Pairing link or code")}
-            autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy} />
-          <button type="submit" className="btn" disabled={busy} aria-busy={busy || undefined} aria-label={t("Add a PC through the relay")}>{t("Add PC")}</button>
-        </form>
-      </SettingsRow>
-      {result && <p className="settings-item settings-hint" role={result.error ? "alert" : "status"}>{result.text}</p>}
-    </>
-  );
-}
-
 /** a set-aside copy of machines.json (the PCs added in this app), not of herdr-profile-state.json */
 const heldAddedPcs = (name: string): boolean => name.startsWith("machines.json.");
 
-/** Settings → Devices and PCs: the PCs added here, and which of them this device shows. */
-function RemotePcs({ actions, machines, pcSettings }: { actions: AppActions; machines: readonly Machine[]; pcSettings: MachineSettings | null }) {
+/** A crash can leave the saved PCs unreadable: the server set the file aside and started without them. */
+function DamagedPcFiles({ pcSettings }: { pcSettings: MachineSettings | null }) {
   const t = useT();
+  // machines.json held the PCs added here; herdr-profile-state.json only the permission to connect to herdr's own
   return (
     <>
-    <SettingsGroup title={t("Remote PCs")} section="remote">
-      <SettingsRow label={t("Add PC")} description={t("Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.")}>
-        <button type="button" className="btn" onClick={actions.openAddPc}><Monitor aria-hidden="true" />{t("Add PC")}</button>
-      </SettingsRow>
-      <AddRelayPc />
-      {/* a crash can leave the saved PCs unreadable: the server set the file aside and started without them.
-          machines.json held the PCs added here; herdr-profile-state.json only the permission to connect to herdr's own */}
       {pcSettings?.set_aside?.some(heldAddedPcs) && <p className="settings-item settings-hint">
         {t("Saved PC data was damaged and could not be read when the app started. It was set aside as {files}; add any missing PC again.", { files: pcSettings.set_aside.filter(heldAddedPcs).join(", ") })}
       </p>}
       {pcSettings?.set_aside?.some((name) => !heldAddedPcs(name)) && <p className="settings-item settings-hint">
         {t("The permission to connect to the PCs saved in herdr was damaged and could not be read when the app started. It was set aside as {files}; choose Connect on those PCs again.", { files: pcSettings.set_aside.filter((name) => !heldAddedPcs(name)).join(", ") })}
       </p>}
-    </SettingsGroup>
-    <SidebarPcsGroup machines={machines} />
     </>
   );
 }
@@ -1649,7 +1757,9 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
     } else if (before === null) {
       // a button that points at Updates opens on it, and the focus goes there too; so does a link
       // to a group, and a group the palette named
-      const named = section === "updates" ? "updates" : asked?.section ?? (linked && linkSection ? linkSection : null);
+      const asName = section === "updates" ? "updates" : asked?.section ?? (linked && linkSection ? linkSection : null);
+      // a group that moved keeps its old links: they land where its rows went
+      const named = asName === null ? null : MOVED_GROUPS[asName] ?? asName;
       const pointed = named ? settingsBodyRef.current?.querySelector<HTMLElement>(`[data-section="${CSS.escape(named)}"]`) : null;
       if (pointed) {
         openFolds(pointed);
@@ -1761,9 +1871,8 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
-      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh}
-        pcs={<RemotePcs actions={actions} machines={machines} pcSettings={pcSettings} />}
-        pcsMore={<RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />} />;
+      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc}
+        machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} bridgesFollow={pcSettings?.auto_update_bridges === true} />;
       default: return null;
     }

@@ -10,7 +10,7 @@ import { openSettingsFolds, openSettingsPage, sheetRisen, themeSide } from "./se
 import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
-import { terminalTheme } from "../src/lib/settings.ts";
+import { DEFAULT_SETTINGS, terminalTheme } from "../src/lib/settings.ts";
 import { rowFor, THEME_IDS, type ThemeId } from "../src/lib/themes.ts";
 import baseline from "../src/lib/themes.legacy-baseline.json";
 import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
@@ -55,10 +55,8 @@ const cutOff = (page: Page): Promise<string[]> => page.locator(".settings-body:n
       const box = node.getBoundingClientRect();
       // a control is held by its card, where it has one; a card by the page
       const card = node.classList.contains("settings-card") ? null : node.closest<HTMLElement>(".settings-card");
-      // one in a row that scrolls sideways on purpose (the theme cards) is held by that row's scroll, inside the card
-      for (let up = node.parentElement; up && up !== card && up !== body; up = up.parentElement) {
-        if (/auto|scroll/.test(getComputedStyle(up).overflowX)) return false;
-      }
+      // a theme card is held by the row of cards that scrolls sideways on purpose; the row itself is checked against its card
+      if (!node.classList.contains("theme-cards") && node.closest(".theme-cards")) return false;
       const within = card ? card.getBoundingClientRect() : edge;
       return box.width > 0 && (box.right > within.right + 0.5 || box.left < within.left - 0.5);
     })
@@ -612,9 +610,8 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
  * the terminal alone; each choice is kept through a reload.
  */
 /**
- * Signed in on a PC's own page, Settings > Devices and PCs lists the account's PCs as the relay
- * shell does: one row each with a hairline under it, though the relay shell's own styles are not
- * loaded there. The sign-in is a fixture in this page's IndexedDB and the account service a route
+ * Signed in on a PC's own page, Settings > Devices and PCs lists the account's PCs in My devices, one
+ * row each with a hairline under it and a PC pill, after this PC; the Account group lists none of its own. The sign-in is a fixture in this page's IndexedDB and the account service a route
  * of this context: nothing reaches GitHub or account.ovis.sh.
  */
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
@@ -655,13 +652,16 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       }), service);
       await openSettings(page);
       await openSettingsPage(page, "Devices and PCs");
-      const list = page.locator("[data-section='account'] .relay-shell-pcs");
-      await list.locator(".relay-shell-pc").nth(1).waitFor();
+      const list = page.locator("[data-section='devices'] .my-pcs");
+      const accountRows = list.locator(".devices-row").filter({ hasText: /home-server|office-mac/ });
+      await accountRows.nth(1).waitFor();
+      assert.deepEqual(await accountRows.locator(".devices-kind").allTextContents(), ["PC", "PC"], `each account PC is marked PC (${width}px, ${theme})`);
       const style = await list.evaluate((node) => {
-        const row = node.querySelector(".relay-shell-pc")!;
+        const row = node.querySelector(".devices-row:not([data-testid='this-pc'])")!;
         return { listStyle: getComputedStyle(node).listStyleType, display: getComputedStyle(row).display, border: getComputedStyle(row).borderBottomStyle };
       });
-      assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in Settings (${width}px, ${theme})`);
+      assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in My devices (${width}px, ${theme})`);
+      assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
       if (process.env.UI_EVIDENCE_DIR) {
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
@@ -671,7 +671,171 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       await context.close();
     }
   }
-  console.log("PASS the account's PCs in Settings are styled rows at 390 and 1280px, light and dark");
+  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark");
+}
+
+/**
+ * Continue with Google on a PC's own page: the button shows under GitHub's only while the account
+ * service lists Google for a PC's page (`GET /v1/providers`), and once signed in the Account group
+ * lists the account's ways to sign in, with Remove on every one but the one this page signed in
+ * with. The account service is a route of this context: nothing reaches Google, GitHub or account.ovis.sh.
+ */
+async function accountGoogle(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const service = "https://account.ovis.sh";
+  for (const width of [390, 1280] as const) {
+    for (const offered of [["github", "google"], ["github"]] as const) {
+      for (const signedIn of [false, true]) {
+        if (signedIn && offered.length === 1) continue;
+        const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+        try {
+          await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme: "light" }));
+          await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
+            const response = await route.fetch();
+            await route.fulfill({ response, body: (await response.text()).replace("</head>", `<meta name="ovis-pc-account-service" content="${service}" />\n</head>`) });
+          });
+          await context.route(`${service}/**`, (route) => {
+            const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
+            if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+            switch (new URL(route.request().url()).pathname) {
+              case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
+              case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
+              case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [
+                { provider: "github", added_at: "2026-11-01T00:00:00Z" },
+                { provider: "google", added_at: "2026-11-06T00:00:00Z" },
+              ] } });
+              default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
+            }
+          });
+          const page = await context.newPage();
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(url);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (signedIn) {
+            await page.evaluate((service) => new Promise<void>((resolve, reject) => {
+              const request = indexedDB.open("ovis-account", 1);
+              request.onupgradeneeded = () => { request.result.createObjectStore("account"); };
+              request.onerror = () => reject(request.error);
+              request.onsuccess = () => {
+                const tx = request.result.transaction("account", "readwrite");
+                tx.objectStore("account").put({ service, account: "fixture", provider: "google", access_token: "fixture-access", refresh_token: "fixture-refresh", expires_at: Date.now() + 3_600_000 }, "session");
+                tx.oncomplete = () => { request.result.close(); resolve(); };
+                tx.onabort = () => reject(tx.error);
+              };
+            }), service);
+          }
+          await openSettings(page);
+          await openSettingsPage(page, "Devices and PCs");
+          const account = page.locator("[data-section='account']");
+          const shot = async (name: string) => {
+            if (!process.env.UI_EVIDENCE_DIR) return;
+            await account.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
+          };
+          if (!signedIn) {
+            const buttons = account.locator(".account-provider");
+            if (offered.length === 2) {
+              await buttons.nth(1).waitFor();
+              assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub", "Continue with Google"], `Google sits under GitHub (${width}px)`);
+              assert.equal(await account.locator("[data-provider='google'] svg path").count(), 4, "Google's G keeps its four colours");
+              await shot("account-google-signin");
+            } else {
+              // once the service's answer is on screen, GitHub stays alone
+              await account.locator("[data-offer='service'] .account-provider").first().waitFor();
+              assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub"], `no Google button while the service offers none (${width}px)`);
+            }
+          } else {
+            const methods = account.locator(".account-method");
+            await methods.nth(1).waitFor();
+            assert.equal(await account.getByText("Signed in with Google").count(), 1, "the account row names Google");
+            assert.deepEqual(await methods.evaluateAll((rows) => rows.map((row) => [row.getAttribute("data-provider"), row.querySelector("button") !== null])), [["github", true], ["google", false]],
+              "every way to sign in can be removed but the one this page signed in with");
+            await shot("account-google-methods");
+          }
+          assert.deepEqual(errors, []);
+        } finally {
+          await context.close();
+        }
+      }
+    }
+  }
+  console.log("PASS Continue with Google shows under GitHub only while the service offers it, and the account lists its ways to sign in, at 390 and 1280px");
+}
+
+/**
+ * Appearance's ↺ beside a changed row, and its theme cards by keyboard: ↺ shows only off the default,
+ * puts back every key of its row (a font and its size; a theme and the palette it draws) and goes; the
+ * arrows pick along the row as a radio group's do; the cards follow the Theme mode until a side is chosen.
+ */
+async function rowResets(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!) as Record<string, unknown>);
+    const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
+    await page.goto(`${url}?settings=appearance`);
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    await page.locator(".theme-cards").waitFor();
+    // the cards follow the Theme mode while no side is chosen here
+    const mode = page.getByRole("group", { name: "Theme", exact: true });
+    await mode.getByRole("button", { name: "Light", exact: true }).click();
+    await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
+    await mode.getByRole("button", { name: "Dark", exact: true }).click();
+    await page.getByRole("radiogroup", { name: "Dark theme", exact: true }).waitFor();
+
+    assert.equal(await reset("Terminal font").count(), 0, "no ↺ while the terminal font and size are the defaults");
+    await page.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
+    await reset("Terminal font").waitFor();
+    assert.equal((await saved())["terminalFontSize"], DEFAULT_SETTINGS.terminalFontSize + 1);
+    await reset("Terminal font").focus();
+    await page.keyboard.press("Enter");
+    await reset("Terminal font").waitFor({ state: "detached" });
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".settings-row")?.querySelector(".settings-label")?.textContent), "Terminal font", "the row keeps the focus once its ↺ goes");
+    const fonts = await saved();
+    assert.deepEqual([fonts["terminalFontSize"], fonts["terminalFontFamily"] ?? DEFAULT_SETTINGS.terminalFontFamily], [DEFAULT_SETTINGS.terminalFontSize, DEFAULT_SETTINGS.terminalFontFamily], "↺ puts back the size and the font of its row");
+
+    // a custom interface font put back: the field closes and the typed list is not saved again as it goes
+    const uiFont = page.getByLabel("Interface font", { exact: true });
+    await uiFont.selectOption("custom");
+    const custom = page.getByRole("textbox", { name: "Custom interface font", exact: true });
+    await custom.fill('"Noto Sans JP"');
+    await custom.press("Enter");
+    await reset("Interface font").click();
+    await custom.waitFor({ state: "detached" });
+    assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
+    // a reload closes Settings: open the page again from its address
+    await page.goto(`${url}?settings=appearance`);
+    await page.locator(".theme-cards").waitFor();
+    assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
+
+    const dark = themeSide(page, "dark");
+    await dark.selectOption("dracula");
+    await page.waitForFunction(() => document.documentElement.dataset.palette === "dracula");
+    await reset("Dark theme").click();
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, DEFAULT_SETTINGS.darkTheme);
+    assert.deepEqual([(await saved())["darkTheme"], (await saved())["palette"]], [DEFAULT_SETTINGS.darkTheme, DEFAULT_SETTINGS.darkTheme], "↺ puts back the dark theme and the palette it draws");
+    assert.equal(await reset("Dark theme").count(), 0, "↺ goes once the theme is back");
+
+    // the arrows pick along the row, Home goes to its first card
+    const cards = page.getByRole("radiogroup", { name: "Dark theme", exact: true });
+    const listed = await dark.listed();
+    await cards.locator('[role="radio"][aria-checked="true"]').focus();
+    await page.keyboard.press("ArrowRight");
+    const next = listed[listed.indexOf(DEFAULT_SETTINGS.darkTheme) + 1]!;
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, next);
+    assert.equal(await cards.locator('[role="radio"][aria-checked="true"]').getAttribute("data-theme-card"), next, "ArrowRight picks the next card");
+    assert.equal(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset["themeCard"]), next, "the picked card takes the focus");
+    await page.keyboard.press("Home");
+    await page.waitForFunction((id) => document.documentElement.dataset.palette === id, listed[0]!);
+
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS Appearance: ↺ shows only off the default and puts back its row's keys; theme cards pick by arrow and follow the Theme mode");
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {
@@ -949,6 +1113,12 @@ try {
             await openSettingsPage(page, "Chat");
             const replies = page.locator(".quick-replies-list li");
             assert.ok(await replies.count() > 0);
+            // the list is edited only while the replies show; off, the row stands alone
+            const showReplies = page.getByRole("switch", { name: "Show above the message box", exact: true });
+            await showReplies.tap();
+            await page.locator(".quick-replies-list").waitFor({ state: "detached" });
+            await showReplies.tap();
+            await replies.first().waitFor();
             await page.getByRole("button", { name: "Remove quick reply 1", exact: true }).tap();
             assert.equal(await replies.count(), (JSON.parse(await page.evaluate(() => localStorage.getItem("ovis:settings")!)) as { quickReplies: string[] }).quickReplies.length);
             await page.getByRole("button", { name: "Restore defaults", exact: true }).tap();
@@ -1319,7 +1489,9 @@ try {
       await dialogSearch(browser, url);
       await foldedGroups(browser, url);
       await mergedRows(browser, url);
+      await rowResets(browser, url);
       await accountPcList(browser, url);
+      await accountGoogle(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();
