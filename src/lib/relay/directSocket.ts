@@ -1,6 +1,6 @@
 /**
- * The PC's direct carriers (`ws://<private IPv4>:<port>/v1/ws?v=1`, docs/relay.md "Direct on the same
- * network") through the phone apps' OvisDirect plugin (app/ios/App/App/OvisDirectPlugin.swift,
+ * The PC's direct carriers (`ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1`, docs/relay.md "Direct on
+ * the same network") through the phone apps' OvisDirect plugin (app/ios/App/App/OvisDirectPlugin.swift,
  * app/android/app/src/main/java/sh/ovis/app/OvisDirectPlugin.java): a page on https cannot open plain
  * `ws://`. Frames cross the bridge in an envelope `{ id, kind, data }`, a binary one as base64, so text
  * and binary stay apart; the plugin delivers them in order and keeps at most 4 MiB or 16,384 messages
@@ -229,6 +229,25 @@ export function directSocketFactory(bridge: DirectBridge): (url: string) => Rela
 }
 
 let shared: ((url: string) => RelaySocket) | undefined;
+let tailnet: Promise<boolean> | undefined;
+
+/**
+ * Whether the app's plugin also opens a carrier on the PC's Tailscale address (100.64.0.0/10), as its
+ * `features` answers; an app built before that has no `features`, and one that does not answer at once is
+ * taken for such an app.
+ */
+export function nativeDirectTailnet(): Promise<boolean> {
+  const call = (globalThis as { Capacitor?: CapacitorEvents }).Capacitor?.nativePromise;
+  if (!call) return Promise.resolve(false);
+  tailnet ??= new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), 1_000);
+    call(DIRECT_PLUGIN, "features").then(
+      (answer) => (answer as { tailnet?: unknown } | null)?.tailnet === true,
+      () => false,
+    ).then((supported) => { clearTimeout(timer); resolve(supported); });
+  });
+  return tailnet;
+}
 
 /**
  * The direct socket factory for the relay transport, or undefined where the PC is reached through
