@@ -1,5 +1,5 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +23,7 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
  * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
  */
-async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" }) {
   spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
   if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
   if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
@@ -33,7 +33,15 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc" }: 
     shown.onProcessRead?.();
     return { pane_id: "p", shell_pid: 41000, foreground_processes: shown.foreground };
   });
-  spyOn(client, "paneRead").mockImplementation(async () => ({ text: shown.screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  // OpenCode's autocomplete with the skill's row selected, as the skill key's own screen reads see it; `tabRace` changes
+  // the pane during the read right before its Tab
+  let visible = 0;
+  const selected = readFileSync(join(import.meta.dir, "../fixtures/opencode-autocomplete-2.0.32-ansi-first-selected.ansi"), "utf8");
+  spyOn(client, "paneRead").mockImplementation(async (options) => {
+    if (mode !== "skill" || options.source !== "visible") return { text: shown.screen } as Awaited<ReturnType<typeof client.paneRead>>;
+    if (++visible === 2 && tabRace === "birth") shown.birth = 2_000;
+    return { text: tabRace === "masked" && visible >= 2 ? `${selected}\n${PROMPT}` : selected } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
   const skillsToType = opencode.openCodeSkillsToType;
   spyOn(opencode, "openCodeSkillsToType").mockImplementation(async (...args: Parameters<typeof skillsToType>) => {
     const result = mode === "skill" ? { sent: {} as never, skills: ["effect"] } : await skillsToType(...args);
@@ -164,4 +172,12 @@ it("keeps a Pi receipt waiting while the agent's start reads as unknown for a mo
     await delivery.reconcilePiDeliveries("p");
     expect(frames.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toContainEqual(expect.objectContaining({ outcome: "consumed" }));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("sends no skill-accept Tab to another process that took the agent's PID during its autocomplete read", async () => {
+  expect(await drain({ mode: "skill", tabRace: "birth" })).toEqual(["paste"]);
+});
+
+it("sends no skill-accept Tab when its autocomplete read shows a masked prompt", async () => {
+  expect(await drain({ mode: "skill", tabRace: "masked" })).toEqual(["paste"]);
 });

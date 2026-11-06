@@ -51,6 +51,8 @@ export type FirstMessageOwner = { readonly firstMessages: true };
 export const FIRST_MESSAGE_OWNER: FirstMessageOwner = { firstMessages: true };
 export type PendingOwner = Client | FirstMessageOwner;
 const isClient = (owner: PendingOwner): owner is Client => owner !== FIRST_MESSAGE_OWNER;
+/** A visible screen's text without its colour and cursor escapes, as the masked-prompt check reads a screen. */
+const withoutEscapes = (screen: string): string => screen.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
 type PendingItem = PendingRecord<PendingOwner, PendingLease | null>;
 /** `refusal`: a queued request's own input_draft refusal, kept for its submit-result's draft actions; never sent as is */
@@ -673,7 +675,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // and the screen last, as before the plain paste: no skill key goes into a masked prompt that came up meanwhile
           await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
-        const result = await typeWithSkills(text, skills, typing, herdrSkillAttachIo(paneId), revalidate).catch((error: unknown) => {
+        // the skill-accept key goes on a screen read after revalidate: no masked prompt on it, and still the bound process
+        const beforeKey = async (screen: string): Promise<void> => {
+          if (secretPrompt(withoutEscapes(screen), lease.sighting.facts().cols) !== null) {
+            throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
+          }
+          await sameStart(identity);
+        };
+        const result = await typeWithSkills(text, skills, typing, herdrSkillAttachIo(paneId), revalidate, beforeKey).catch((error: unknown) => {
           // nothing was written before a refused check or guard: the message is unsent, not uncertain
           if (!typed) {
             wrote = false;
