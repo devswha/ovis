@@ -914,6 +914,27 @@ describe("the OpenCode subagent tracker", () => {
     expect(changes).toEqual([["w1:p1", 1, 1, NOW - 10 * MIN, false], ["w1:p1", 0, 0, NOW - 10 * MIN, true]]);
   });
 
+  it("takes a notice set aside for a waited call once that call is answered as having joined the notice's job", async () => {
+    const s = store("ses_parent", "opencode");
+    const tracker = new OpencodeSubagentStatus({ store: () => s.path, now: () => NOW, parentEnds: () => true, onChange: () => undefined });
+    s.prompt(s.parent, NOW - 30 * MIN);
+    s.session("ses_child", NOW - 20 * MIN);
+    s.call("ses_child", NOW - 20 * MIN, "background");
+    s.prompt("ses_child", NOW - 20 * MIN);
+    // called again while that job runs: the call is written running before it joins the job (subagent.ts progress)
+    s.call("ses_child", NOW - 10 * MIN, "running", { sessionID: "ses_child" });
+    s.prompt("ses_child", NOW - 10 * MIN);
+    s.idle("ses_child", NOW - 9 * MIN);
+    s.notice("ses_child", NOW - 8 * MIN, "completed", NOW - 20 * MIN);
+    s.prompt(s.parent, NOW - 7 * MIN);
+    await tracker.refresh([pane(s.parent)]);
+    expect(tracker.countOf("w1:p1")).toBe(1);
+    // then answered as gone to the background: it had joined the job that notice ended
+    s.answer(NOW - 6 * MIN, "ses_child", NOW - 10 * MIN, "background", { sessionID: "ses_child" });
+    await tracker.poll();
+    expect(tracker.countOf("w1:p1")).toBe(0);
+  });
+
   it("keeps the count while the store cannot be read", () => {
     const s = store();
     let path = s.path;

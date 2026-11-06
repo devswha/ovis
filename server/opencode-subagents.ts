@@ -105,7 +105,11 @@ function runEnd(run: ChildRun): End | null {
  * the row it is in. `end` null: it runs, a foreground call not answered yet (`waiting`) or a background one not yet
  * said to have ended.
  */
-interface Told { id: string; seq: number; end: End | null; waiting: boolean; updated: number; named: number | null; notice: boolean }
+interface Told {
+  id: string; seq: number; end: End | null; waiting: boolean; updated: number; named: number | null; notice: boolean;
+  /** a waited call that a notice named before it was set aside for (newer): read anew once the call is answered */
+  setAside?: boolean;
+}
 
 /**
  * When OpenCode named a row, read from its id (Identifier.ascending in @opencode/schema: "msg_", then the low 48 bits of
@@ -233,18 +237,24 @@ function parentStep(db: Database, scan: Scan): void {
       const told = new Map(log.told);
       let whole = rows === log.rows && kept === new Set([...log.told.values()].map((said) => said.id)).size;
       if (whole) {
-        // the rows the log took a word from, as each was written when read: one written again since, at any time, is read again
+        // the rows the log took a word from that were written again since, at any time (looked up by id, each one)
         const stamps = JSON.stringify([...new Map([...log.told.values()].map((said) => [said.id, said.updated]))]);
+        // CROSS JOIN keeps json_each outside, so each is a lookup by primary key, not a pass over the session's rows
+        const rewritten = db.query<{ id: string }, [string, string]>(`SELECT m.id FROM json_each(?2) AS k
+          CROSS JOIN session_message AS m ON m.id = json_extract(k.value, '$[0]') WHERE +m.session_id = ?1 AND m.time_updated IS NOT json_extract(k.value, '$[1]')`,
+        ).all(sid, stamps).map((row) => row.id);
+        const reread = JSON.stringify([...new Set([...(JSON.parse(changed) as string[]), ...rewritten])]);
         // rows written in place since: what each says now stands in for what it said
-        for (const row of db.query<ParentRow, [string, string, string, string]>(`${PARENT_ROW}
-          WHERE +m.session_id = ? AND ((m.id IN (SELECT value FROM json_each(?)) AND (${NAMES_SUBAGENT} OR m.id IN (SELECT value FROM json_each(?))))
-            OR m.id IN (SELECT json_extract(k.value, '$[0]') FROM json_each(?) AS k WHERE json_extract(k.value, '$[1]') IS NOT m.time_updated))`,
-        ).all(sid, changed, ids, stamps)) {
+        for (const row of db.query<ParentRow, [string, string, string]>(`${PARENT_ROW}
+          WHERE +m.session_id = ? AND m.id IN (SELECT value FROM json_each(?)) AND (${NAMES_SUBAGENT} OR m.id IN (SELECT value FROM json_each(?)))`,
+        ).all(sid, reread, ids)) {
           const now = parentRow(row);
           // a child this row was the newest word on and no longer names: what an older row said is not kept, so read anew
           if ([...told].some(([child, said]) => said.id === row.id && !now.some((entry) => entry.child === child))) { whole = false; break; }
+          // a waited call a notice was set aside for, answered since: that notice may be its job's after all, so read anew
+          if (now.some((said) => !said.waiting && told.get(said.child)?.id === said.id && told.get(said.child)?.setAside)) { whole = false; break; }
           // the row's own word stands in for what it said; another row's only when newer
-          for (const { child, ...said } of now) if (told.get(child)?.id === said.id || newer(said, told.get(child))) told.set(child, said);
+          for (const { child, ...said } of now) if (told.get(child)?.id === said.id || newer(said, told.get(child))) told.set(child, { ...said, setAside: told.get(child)?.id === said.id && told.get(child)?.setAside });
         }
       }
       log = whole ? { ...log, told } : NO_LOG;
@@ -259,7 +269,11 @@ function parentStep(db: Database, scan: Scan): void {
   ).get(sid, log.after, scan.end)?.seq ?? null;
   if (upto !== null && log.after < scan.newest) {
     for (const row of db.query<ParentRow, [string, number, number]>(`${PARENT_ROW} WHERE m.session_id = ? AND m.seq > ? AND m.seq <= ? AND ${NAMES_SUBAGENT}`).all(sid, log.after, upto)) {
-      for (const { child, ...said } of parentRow(row)) if (newer(said, told.get(child))) told.set(child, said);
+      for (const { child, ...said } of parentRow(row)) {
+        const was = told.get(child);
+        if (newer(said, was)) told.set(child, said);
+        else if (said.notice && was !== undefined && was.waiting && said.seq > was.seq) told.set(child, { ...was, setAside: true });
+      }
     }
     scan.log = { ...log, after: Math.min(upto, scan.newest) };
     if (scan.log.after < scan.newest) return;
