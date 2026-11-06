@@ -30,6 +30,10 @@ const DIRECT_PROBE_EVERY_MS = 5 * 60_000;
 /** A switch to a direct carrier waits for no request to be under way, checking this often, this many times. */
 const DIRECT_IDLE_CHECK_MS = 5_000;
 const DIRECT_IDLE_CHECKS = 12;
+/** A switch also waits until no WebSocket sent anything for this long: someone may be typing into a terminal. */
+const SOCKET_QUIET_MS = 3_000;
+/** When a relay WebSocket last sent (performance.now). */
+let lastSocketSend = -Infinity;
 
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
@@ -146,6 +150,8 @@ export class RelayTransport implements Transport {
   private directCarriers: readonly string[] | undefined;
   /** HTTP requests whose stream is open: a switch to a direct carrier waits until there are none */
   private openHttp = 0;
+  /** requests whose body is still being read before they open (Firefox buffers it) */
+  private preparingHttp = 0;
   /** a probe or a wait to switch is under way, and when the latest probe began */
   private upgrading = false;
   private probedAt = -Infinity;
@@ -203,7 +209,8 @@ export class RelayTransport implements Transport {
         this.endUpgrade();
         this.channel = undefined;
         this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
-        this.options.onClose?.(error);
+        // a switch to a direct carrier is no lost carrier: nobody is told of it
+        if (!switching) this.options.onClose?.(error);
         // closed on purpose to come back on a direct carrier: at once, with no pause
         if (switching) void this.connect().catch((failure: unknown) => this.failed(failure));
         else this.failed(error);
@@ -276,16 +283,22 @@ export class RelayTransport implements Transport {
   private upgrade(channel: RelayChannel): void {
     const socket = this.options.directSocket;
     const carriers = this.directCarriers ?? [];
-    if (!socket || carriers.length === 0 || this.upgrading || performance.now() - this.probedAt < DIRECT_PROBE_EVERY_MS) return;
+    const timers = this.options.clock ?? clock;
+    if (!socket || carriers.length === 0 || this.upgrading) return;
+    const wait = this.probedAt + DIRECT_PROBE_EVERY_MS - timers.now();
+    if (wait > 0) {
+      // probed a moment ago (before a reconnect, say): the next probe still comes, when its time is up
+      if (!this.cancelProbe) this.cancelProbe = timers.setTimeout(() => { this.cancelProbe = undefined; if (this.channel === channel) this.upgrade(channel); }, wait);
+      return;
+    }
     this.upgrading = true;
     this.reprobe = false;
-    this.probedAt = performance.now();
+    this.probedAt = timers.now();
     this.cancelProbe?.();
     this.cancelProbe = undefined;
     const ending = new AbortController();
     this.upgradeAbort = ending;
     const current = (): boolean => !this.stopped && this.channel === channel && !ending.signal.aborted;
-    const timers = this.options.clock ?? clock;
     void (async () => {
       let proven = false;
       for (const direct of carriers) {
@@ -300,7 +313,7 @@ export class RelayTransport implements Transport {
       if (!proven) return;
       for (let check = 0; check < DIRECT_IDLE_CHECKS; check++) {
         if (!current()) return;
-        if (this.openHttp === 0 && this.waitingHttp.size === 0) {
+        if (this.openHttp === 0 && this.preparingHttp === 0 && this.waitingHttp.size === 0 && performance.now() - lastSocketSend >= SOCKET_QUIET_MS) {
           this.switching = channel;
           channel.close();
           return;
@@ -442,7 +455,10 @@ export class RelayTransport implements Transport {
     if (!buffered) upload = request.body;
     else if (request.method === "GET" || request.method === "HEAD") upload = null;
     else {
-      const blob = await request.blob();
+      this.preparingHttp++;
+      let blob: Blob;
+      try { blob = await request.blob(); }
+      finally { this.preparingHttp--; }
       request.signal.throwIfAborted();
       connected();
       if (blob.size > LIMITS_V1.max_request_body_bytes) throw tooLarge();
@@ -613,6 +629,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     if (this.state === this.CONNECTING) throw new DOMException("Socket is connecting", "InvalidStateError");
     const size = typeof data === "string" ? utf8Length(data) : data instanceof Blob ? data.size : data.byteLength;
+    lastSocketSend = performance.now();
     if (this.readyState !== this.OPEN) { this.pendingBytes += size; return; }
     const stream = this.stream;
     if (!stream) return;

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { startBunRelay } from "../../../relay/bun.ts";
 import { createServer } from "../../../server/index.ts";
 import { RelayService } from "../../../server/relay/service.ts";
-import { bounded, deferred } from "../../../server/relay/test-helpers.ts";
+import { bounded, deferred, TestClock } from "../../../server/relay/test-helpers.ts";
 import { openRelayChannel } from "./channel.ts";
 import { DirectCarrierUnusableError, probeDirect } from "../../../shared/relay-channel.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
@@ -167,6 +167,30 @@ describe("direct carriers that do not all answer", () => {
     // Then it lands on the PC's own carrier
     const direct = await bounded(moved, 15_000);
     expect(direct.direct).toBe(`ws://${LAN}:${pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1)}`);
+    expect(transport.route).toBe("direct");
+  });
+});
+
+describe("probing again", () => {
+  it("still probes five minutes on after a relay reconnect came in between", async () => {
+    // Given a phone on the relay whose PC's direct carrier does not answer yet
+    const pc = await pcFixture();
+    const store = new MemoryStore();
+    const clock = new TestClock();
+    let reachable = false;
+    const socketFor = (url: string): WebSocket => new WebSocket(reachable ? url.replace(`ws://${LAN}:`, "ws://127.0.0.1:") : "ws://127.0.0.1:1/v1/ws?v=1");
+    const reconnected = pc.opened().then(() => pc.opened());
+    const transport = await transportFor(pc, store, pc.offer, { directSocket: socketFor, clock });
+    // When the relay channel drops and comes back within those five minutes
+    pc.channels[0]!.close();
+    clock.advance(1_000);
+    expect((await reconnected).direct).toBeUndefined();
+    // and the carrier answers once the five minutes are up
+    reachable = true;
+    const moved = pc.opened();
+    clock.advance(5 * 60_000);
+    // Then the phone probes again and comes back on it
+    expect((await moved).direct).toBeDefined();
     expect(transport.route).toBe("direct");
   });
 });
