@@ -27,7 +27,8 @@ describe("extractedAppDir", () => {
   });
 });
 
-describe("othersRunFrom", () => {
+// Linux's /proc, stood in for by POSIX symlinks
+describe.skipIf(process.platform === "win32")("othersRunFrom", () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
