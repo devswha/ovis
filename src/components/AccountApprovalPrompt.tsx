@@ -24,8 +24,11 @@ export interface AccountApprovalPromptProps {
   pcName: string;
   /** how many PCs of the account the device joins, from this device's own list */
   pcCount: number;
-  /** what the account service saw of the device asking (GET /v1/admissions); null until known, or for a request for this PC only */
-  asker?: Asker | null;
+  /**
+   * What the account service saw of the device asking (GET /v1/admissions): undefined while it is
+   * read, when Approve waits for it; null for a request for this PC only, which has none.
+   */
+  asker: Asker | null | undefined;
   onDecide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
 }
 
@@ -47,7 +50,8 @@ export function AccountAsker({ asker, language }: { asker: Asker; language: stri
   );
 }
 
-export function AccountApprovalPrompt({ request, pcName, pcCount, asker = null, onDecide }: AccountApprovalPromptProps) {
+/** The approval surface: AccountApprovalPrompt puts it on document.body. */
+export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide }: AccountApprovalPromptProps) {
   const t = useT();
   const { resolvedLanguage } = useSettings();
   // Korean takes 을 or 를 by how the name ends, so the name carries it there
@@ -76,13 +80,13 @@ export function AccountApprovalPrompt({ request, pcName, pcCount, asker = null, 
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  return createPortal(
+  return (
     <div className="modal-scrim">
       <div ref={surface} className="modal account-approval" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} data-testid="account-approval">
         <div className="account-approval-mark" aria-hidden="true"><MonitorSmartphone /></div>
         <h2 className="account-approval-title" id={`${id}-title`}>{t("Add {device}?", { device: asObject })}</h2>
         <p className="account-approval-via">{request.intent === "account" ? t("Through {pc} · joins your {n} PCs", { pc: pcName, n: pcCount }) : t("Only for {pc}", { pc: pcName })}</p>
-        {asker !== null && <AccountAsker asker={asker} language={resolvedLanguage} />}
+        {asker != null && <AccountAsker asker={asker} language={resolvedLanguage} />}
         <p className="account-approval-ask" id={`${id}-ask`}>{t("Pick the number on {device}", { device: request.label })}</p>
         <div className="account-approval-choices" role="radiogroup" aria-labelledby={`${id}-ask`}>
           {request.choices.map((choice) => (
@@ -93,11 +97,14 @@ export function AccountApprovalPrompt({ request, pcName, pcCount, asker = null, 
         {error !== null && <p className="account-approval-error" role="alert">{error}</p>}
         <div className="account-approval-actions">
           <button ref={deny} type="button" className="btn" disabled={busy} onClick={() => void decide("decline")}>{t("Deny")}</button>
-          <button type="button" className="btn btn-primary" disabled={busy || picked === null} onClick={() => void decide("approve")}>{t("Approve")}</button>
+          <button type="button" className="btn btn-primary" disabled={busy || picked === null || asker === undefined} onClick={() => void decide("approve")}>{t("Approve")}</button>
         </div>
         <p className="account-approval-note">{t("Approve only if you started this yourself just now. Didn't ask for it? Deny it.")}</p>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
+}
+
+export function AccountApprovalPrompt(props: AccountApprovalPromptProps) {
+  return createPortal(<AccountApprovalCard {...props} />, document.body);
 }

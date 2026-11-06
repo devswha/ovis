@@ -10,7 +10,7 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
 import { newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
-import { admitToAccount, approveJoin, enrollOnPc, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
+import { admitToAccount, approveJoin, enrollOnPc, vouchedAdmission, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
 import { leaveAccount, removeFromAccount } from "./leave.ts";
 import { myPcs } from "./myPcs.ts";
 import { AccountService } from "./service.ts";
@@ -656,6 +656,26 @@ describe("approving a device that asks to join the account", () => {
     });
     expect(decisions).toEqual(["approve:222222"]);
     expect(admitted).toBe(true);
+  });
+
+  it("adds the device under the name it gave the account service, not the one the PC shows", async () => {
+    const { service, mac, X } = await setUp();
+    let joining = "";
+    await approveJoin({
+      request: { id: "r1", label: "Hako's Mac", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: mac.public_spki },
+      digits: "111111", through: X, service, decide: async () => {}, admit: async (admission) => { joining = admission.label; },
+    });
+    expect(joining).toBe("Mac app");
+  });
+
+  it("vouches with the newest fresh admission of that key at that PC, whatever order the service lists them in", () => {
+    const now = Date.parse("2026-11-07T00:10:00.000Z");
+    const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+    const admission = (label: string, minutesAgo: number, server_id = "pc-x", key = "k") => ({ key, label, server_id, at: at(minutesAgo), os: null, country: null, city: null });
+    const listed = [admission("newest", 1), admission("older", 5), admission("stale", 11), admission("other pc", 0, "pc-y"), admission("other key", 0, "pc-x", "k2")];
+    expect(vouchedAdmission(listed, "pc-x", "k", now)?.label).toBe("newest");
+    expect(vouchedAdmission([...listed].reverse(), "pc-x", "k", now)?.label).toBe("newest");
+    expect(vouchedAdmission([admission("stale", 11)], "pc-x", "k", now)).toBeUndefined();
   });
 
   it("approves a request for this PC only without adding the device to the account", async () => {
