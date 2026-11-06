@@ -54,7 +54,11 @@ it("gives a native program its arguments through Windows PowerShell 5.1 as they 
   for (const arg of ['say "hi"', "", "C:\\dir with space\\"]) expect(() => powershellNativeArgs("pwsh", [arg])).toThrow();
   // cmd reads an agent's arguments again when PowerShell finds it as a .cmd file: `&` there runs the rest
   for (const program of ["powershell", "pwsh"] as const) {
-    for (const arg of ['fix "a&echo ran&b" now', "a&b", "x|y", "a<b", "a>b", "^caret", "%PATH%"]) expect(() => powershellNativeArgs(program, [arg])).toThrow();
+    for (const arg of ['fix "a&echo ran&b" now', "a&b", "x|y", "a<b", "a>b", "^caret", "%PATH%", "a b %OS%"]) expect(() => powershellNativeArgs(program, [arg])).toThrow();
+    // unless PowerShell puts it in quotes, for a space or a tab and no `"`, where cmd reads all but a % as text
+    // (live-verified, 5.1.26100 and 7.6 to an npm-style .cmd shim): a profile folder named R&D (#3084)
+    const quoted = ["C:\\Users\\R&D\\AppData\\Local\\ovis\\claude settings\\a.json", "fix A & B", "x | y", "a < b > c", "up ^ caret", "tab\tA&B"];
+    expect(powershellNativeArgs(program, quoted)).toEqual(quoted);
   }
 });
 
