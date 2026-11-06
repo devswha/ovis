@@ -1,5 +1,6 @@
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
+import { SETTINGS_AGENTS_KO } from "./i18n/settings-agents.ko.ts";
 import { SETTINGS_COMPOSER_KO } from "./i18n/settings-composer.ko.ts";
 import { SETTINGS_LAYOUT_KO } from "./i18n/settings-layout.ko.ts";
 import { TERMINAL_KO } from "./i18n/terminal.ko.ts";
@@ -38,10 +39,20 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "{provider}로 로그인함",
   "Signing in…": "로그인하는 중…",
   "The sign-in did not finish. Try again.": "로그인을 끝내지 못했습니다. 다시 시도하세요.",
-  "Open GitHub and enter this code. Enter it only if you started this sign-in on this page.": "GitHub를 열고 이 코드를 입력하세요. 이 페이지에서 직접 시작한 로그인일 때만 입력하세요.",
-  "Waiting for GitHub…": "GitHub 승인을 기다리는 중…",
-  "Open GitHub": "GitHub 열기",
-  "GitHub refused the sign-in.": "GitHub에서 로그인을 거절했습니다.",
+  "Open {provider} and enter this code. Enter it only if you started this sign-in on this page.": "{provider}을(를) 열고 이 코드를 입력하세요. 이 페이지에서 직접 시작한 로그인일 때만 입력하세요.",
+  "Waiting for {provider}…": "{provider} 승인을 기다리는 중…",
+  "Open {provider}": "{provider} 열기",
+  "{provider} refused the sign-in.": "{provider}에서 로그인을 거절했습니다.",
+  "Your account already signs in with {provider}.": "이 계정은 이미 {provider}(으)로 로그인할 수 있습니다.",
+  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "이 {provider} 로그인은 이미 다른 Ovis 계정에 연결되어 있습니다. 아무것도 바뀌지 않았습니다.",
+  "Add another way to sign in before removing this one.": "이 방법을 지우기 전에 다른 로그인 방법을 먼저 추가하세요.",
+  "The sign-in method could not be removed. Try again.": "로그인 방법을 지우지 못했습니다. 다시 시도하세요.",
+  "Ways to sign in": "로그인 방법",
+  "Sign in again": "다시 로그인",
+  "Added {date}": "{date}에 추가됨",
+  "To change how you sign in, sign in again with {provider} first.": "로그인 방법을 바꾸려면 먼저 {provider}(으)로 다시 로그인하세요.",
+  "Add another way to sign in from the Ovis desktop app.": "다른 로그인 방법은 Ovis 데스크톱 앱에서 추가하세요.",
+  "Add {provider}": "{provider} 추가",
   "The code expired. Sign in again to get a new one.": "코드가 만료되었습니다. 다시 로그인해 새 코드를 받으세요.",
   "This account service can't sign in a browser on this PC yet.": "이 계정 서비스는 아직 이 PC의 브라우저 로그인을 지원하지 않습니다.",
   "Your sign-in ended. Sign in again to see every PC of your account.": "로그인이 끝났습니다. 계정의 PC를 모두 보려면 다시 로그인하세요.",
@@ -250,7 +261,6 @@ const BASE: Record<string, string> = {
   "New code": "새 코드",
   "Paired: {name}.": "페어링됨: {name}.",
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
-  "Connect a phone": "폰 연결",
   "Pairing code": "페어링 코드",
   "Open this address on your phone": "폰에서 이 주소를 여세요",
   "{agent} is ready": "{agent} 준비 완료",
@@ -434,7 +444,6 @@ const BASE: Record<string, string> = {
   "One model name, without spaces.": "띄어쓰기 없는 모델 이름 하나를 적으세요.",
   "Effort": "노력 수준",
   "Sandbox and approvals": "샌드박스와 승인",
-  "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC는 설정 → 기기와 PC(이전 Ovis에서는 폰 및 기기)의 코드 아래에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
   "Add this PC to my account": "이 PC를 내 계정에 추가",
   "Add this PC to your account, so every device of your account can use it with one approval.": "이 PC를 계정에 추가하면 한 번만 승인해서 계정의 모든 기기가 쓸 수 있습니다.",
   "Every device of your account can use this PC after that.": "그 뒤에는 계정의 모든 기기가 이 PC를 쓸 수 있습니다.",
@@ -444,12 +453,21 @@ const BASE: Record<string, string> = {
   "New terminal": "새 터미널",
   "New terminal failed: {reason}": "새 터미널 열기 실패: {reason}",
   "herdr prefix: press a key": "herdr 접두키: 키를 누르세요",
+  "Connect a device": "기기 연결",
+  "This device": "이 기기",
+  "Sign out of {provider}": "{provider} 로그아웃",
+  "Ovis relay": "Ovis 릴레이",
+  "Reset relay identity": "릴레이 신원 재설정",
+  "Reset the relay identity?": "릴레이 신원을 재설정할까요?",
+  "Phones paired through the relay will need to scan a new code.": "릴레이로 페어링된 폰은 새 코드를 다시 스캔해야 합니다.",
+  "Pairs this phone through the relay, so Ovis keeps working away from home.": "이 폰을 릴레이로 페어링해 집 밖에서도 Ovis를 쓸 수 있게 합니다.",
+  "This PC": "이 PC",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const KO_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO },
+  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO, ...SETTINGS_AGENTS_KO },
   terminal: TERMINAL_KO,
   composer: COMPOSER_KO,
   chat: CHAT_KO,
