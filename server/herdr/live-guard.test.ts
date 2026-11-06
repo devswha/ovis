@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { herdrRpc, herdrSocketPath } from "./client.ts";
 import { spawnHcConnect } from "../herdr-core/connection.ts";
+import { coreSocket } from "../herdr-core/discovery.ts";
 
 // A script that names a test session but never ran scripts/test-herdr.ts (an import Bun drops
 // because its binding is unused) is left on herdr's default socket: the user's own session.
@@ -44,4 +45,7 @@ it("refuses hc's default core to a process that names a test session, not a core
   expect(codeOf(refused)).toBe("live_core_refused");
   const named = (() => { try { spawnHcConnect(join(home, "no-such-hc"), { HC_SOCKET: join(home, "hc.sock") }); return null; } catch (error) { return error; } })();
   expect(codeOf(named)).not.toBe("live_core_refused");
+  // an inherited HC_SOCKET that names the default core is the user's core all the same
+  const inherited = (() => { try { spawnHcConnect(join(home, "no-such-hc"), { HC_SOCKET: coreSocket({ env: { ...process.env, HC_SOCKET: undefined, HC_SESSION: undefined } }).path }); return null; } catch (error) { return error; } })();
+  expect(codeOf(inherited)).toBe("live_core_refused");
 });

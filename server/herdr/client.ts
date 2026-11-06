@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { ConnectionDiagnostics, transportFailureCode } from "../connection-diagnostics.ts";
 import type {
@@ -40,8 +40,9 @@ export function liveSessionsRefused(env: Record<string, string | undefined> = pr
 }
 
 /** One spelling of a socket: absolute, through the links of its folder, and on Windows the pipe's name in one case. */
-function sameSocket(path: string): string {
-  if (process.platform === "win32") return path.replace(/^\\\\\.\\pipe\\/i, "").toLowerCase();
+export function sameSocket(path: string): string {
+  // Windows resolves `..` and `.` in a \\.\ device path, a pipe's too: one name, in one case
+  if (process.platform === "win32") return win32.normalize(path.replace(/^\\\\\.\\pipe\\/i, "")).toLowerCase();
   const absolute = resolve(path);
   try { return join(realpathSync(dirname(absolute)), basename(absolute)); } catch { return absolute; }
 }
