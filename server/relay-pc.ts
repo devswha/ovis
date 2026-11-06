@@ -540,6 +540,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       // from the relay, and no carrier answered at all: a sign-in skips them until the next check is due. Not when a
       // later direct route carries the channel (it works), nor when one answered but the move had to wait.
       if (from?.direct === undefined && !answered) probes.failed = true;
+      // a carrier that proved to be the PC is one a sign-in tries, whatever an earlier try found
+      if (answered) probes.failed = false;
       if (unusable) probes.backoff = Math.min(probes.backoff * 2, 12);
     })().catch(() => { /* a probe that fails is a route that is not there: the current one stays */ }).finally(() => {
       checking = false;

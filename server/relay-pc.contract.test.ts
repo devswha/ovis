@@ -511,8 +511,9 @@ it("still signs in on a working Tailscale route after a check of its same-networ
   const open = (from: RelayOffer, moved?: () => void) => openRelayPcTunnel(from, key, { socket: local as never, directSocket: onLan as never,
     onLost: () => {}, ...(moved ? { onMoved: moved } : {}), probes, network: () => network.now, networkCheckMs: 50 });
   const moved = deferred<void>();
-  (await open(offer, () => moved.resolve())).close;
+  const first = await open(offer, () => moved.resolve());
   await bounded(moved.promise);
+  first.close();
   const { code: _code, ...signIn } = offer;
   const second = await open(signIn);
   expect(second.route).toBe("direct");
@@ -527,4 +528,21 @@ it("still signs in on a working Tailscale route after a check of its same-networ
   const third = await open(signIn);
   cleanup.push(() => third.close());
   expect(third.route).toBe("direct");
+}, 60_000);
+
+it("lets a sign-in try the direct routes again once a check found one answering, even if it could not move", async () => {
+  // Given a PC whose direct routes were found silent a while ago (the next check is due in a moment)
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: (dial) => dial === 1 } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const probes = { ...newRouteProbes(), failed: true, at: performance.now() - 5 * 60_000 + 300 };
+  // When that check's probe finds B answering (dial 1) but the move's sign-in there fails (dial 2)
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+  cleanup.push(() => tunnel.close());
+  await until(() => lan.ended.length >= 2);
+  // the check settles in the turn the move's socket closed
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // Then the next sign-in is not held back from the route that answered
+  expect(tunnel.route).toBe("relay");
+  expect(probes.failed).toBe(false);
 }, 60_000);
