@@ -65,7 +65,7 @@ interface Read {
 
 /** a Claude record longer than this, its pictures' bytes left out, is not read for its links (as the chat's branch reader) */
 const CHAIN_LINE = 1024 * 1024;
-/** the most records since an answer (or hanging from a held echo) that are kept: past it, as after a record too long to read, no fork is told until the next answer (the echo is dropped) */
+/** the most records since an answer (or hanging from a held echo) that are kept: past it, as after a record too long to read, no fork is told until the next answer (a held echo forks) */
 const MAX_SINCE = 10_000;
 
 interface ClaudeChain {
@@ -156,7 +156,8 @@ function followChain(chain: ClaudeChain, line: string): void {
   const echo = chain.echo;
   const prompt = !answer && (echo !== undefined || offChain) && opensTurn("claude-transcript", text, null) !== false;
   if (echo && typeof parent === "string" && echo.line.has(parent)) {
-    if (prompt) { chain.forked = echo.forked; chain.echo = undefined; } else if (echo.line.add(uuid).size > MAX_SINCE) chain.echo = undefined;
+    // past the bound the echo is taken as the fork it may become, as a line too long to read is
+    if (prompt || echo.line.add(uuid).size > MAX_SINCE) { chain.forked = echo.forked; chain.echo = undefined; }
   } else if (prompt) chain.echo = undefined;
   if (offChain && prompt) chain.forked = {};
   else if (offChain && claudeCommandEchoRecord(entry)) chain.echo = { line: new Set([uuid]), forked: {} };
