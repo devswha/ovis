@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Mic, Monitor, Palette, Plus, Search, Smartphone, SquareTerminal, Star, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Monitor, Palette, Plus, Search, Smartphone, SquareTerminal, Star, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -13,6 +13,9 @@ import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { SHORTCUTS, bindingDisplayKeys, formatKeys, isMacPlatform, setShortcutRecording, shortcutDisplayKeys, shortcutKeys, shortcutConflict, type ShortcutId } from "../lib/shortcuts.ts";
 import { MENU_SHORTCUT_KEYS, recordShortcut, shortcutMatchesQuery } from "../lib/shortcutRecorder.ts";
 import { exactChordRisk, isReservedShortcutKey, parseExactChord } from "../lib/shortcutBindings.ts";
+import { compileHerdrKeys } from "../lib/herdrKeys.ts";
+import { herdrKeys, loadHerdrUi } from "../lib/herdrUi.ts";
+import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "../../shared/herdr-keys.ts";
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
@@ -38,7 +41,7 @@ import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts,
 import { codeFailureText, typedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
-import { updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
 import { addFoundRelayPc, addRelayPc, ApiError, findRelayPc, fetchRemoteAccess, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
@@ -263,11 +266,9 @@ export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "chat", icon: MessageSquare },
   { id: "terminal", icon: SquareTerminal },
   { id: "alerts", icon: Bell },
-  { id: "voice", icon: Mic },
   { id: "agents", icon: Bot },
   { id: "shortcuts", icon: Keyboard },
   { id: "devices", icon: Smartphone },
-  { id: "remote", icon: Monitor },
   { id: "about", icon: Info },
 ];
 
@@ -413,16 +414,20 @@ function AppearancePage() {
       <SettingsRow label={t("Sidebar rows")} description={t("Name each workspace on one line, or show what its agent is doing with the workspace under it")} wide>
         <Segmented label={t("Sidebar rows")} value={settings.sidebarRows} onChange={(sidebarRows) => update({ sidebarRows })} options={[{ value: "one", label: t("One line") }, { value: "two", label: t("Two lines") }]} />
       </SettingsRow>
-      <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last; herdr's own order is not changed")} wide>
-        <Segmented label={t("Agents order")} value={settings.agentOrder} onChange={(agentOrder) => update({ agentOrder })} options={[{ value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }]} />
+      <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last. By state lists the agents above the workspaces on this device: the ones that need you first, then working, done and idle. herdr's own order is not changed.")} wide>
+        {/* By state is this device's grouping (agentGroups); Workspaces and Activity are every browser's order (agentOrder), the grouping off */}
+        <Segmented label={t("Agents order")} value={settings.agentGroups ? "state" : settings.agentOrder} onChange={(order) => update(order === "state" ? { agentGroups: true } : { agentOrder: order, agentGroups: false })} options={[{ value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }, { value: "state", label: t("By state") }] as const} />
       </SettingsRow>
-      <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}>
-        <Toggle label={t("Name tabs from the first message")} checked={settings.autoTabNames} onChange={(autoTabNames) => update({ autoTabNames })} />
-      </SettingsRow>
+      {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
+        <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
+      </SettingsRow>}
     </SettingsGroup>
 
-    <SettingsFold kind="more" keys={["sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "agentGroups", "agentGroupSort", "foldHelpers", "agentNamedGroups", "agentMarks", "statusIndicators", "uiFontFamily", "fileFontSize"]}>
+    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentNamedGroups", "agentMarks", "statusIndicators", "uiFontFamily", "fileFontSize"]}>
       <SettingsGroup title={t("Sidebar")} section="sidebar-more">
+        <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}>
+          <Toggle label={t("Name tabs from the first message")} checked={settings.autoTabNames} onChange={(autoTabNames) => update({ autoTabNames })} />
+        </SettingsRow>
         <SettingsRow label={t("Sidebar filter")} description={t("Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.")}>
           <Toggle label={t("Sidebar filter")} checked={settings.sidebarFilter} onChange={(sidebarFilter) => update({ sidebarFilter })} />
         </SettingsRow>
@@ -438,12 +443,6 @@ function AppearancePage() {
         <SettingsRow label={t("Agents under workspaces")} description={t("On this device, list each workspace's agents under it in the PCs list, so every PC shows its workspaces and the agents running in them. The Agents list stays as it is.")}>
           <Toggle label={t("Agents under workspaces")} checked={settings.sidebarAgentTree} onChange={(sidebarAgentTree) => update({ sidebarAgentTree })} />
         </SettingsRow>
-        <SettingsRow label={t("Group agents by state")} description={t("On this device, list the agents above the workspaces: the ones that need you first, then working, done and idle. Pinned agents stay on top.")}>
-          <Toggle label={t("Group agents by state")} checked={settings.agentGroups} onChange={(agentGroups) => update({ agentGroups })} />
-        </SettingsRow>
-        {settings.agentGroups && <SettingsRow label={t("Within a state")} wide>
-          <Segmented label={t("Within a state")} value={settings.agentGroupSort} onChange={(agentGroupSort) => update({ agentGroupSort })} options={[{ value: "wait", label: t("Longest wait") }, { value: "recent", label: t("Recent") }, { value: "name", label: t("Name") }]} />
-        </SettingsRow>}
         <FoldHelpersRow />
         <SettingsRow label={t("Named agent groups")} description={t("Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.")}>
           <Toggle label={t("Named agent groups")} checked={settings.agentNamedGroups} onChange={(agentNamedGroups) => update({ agentNamedGroups })} />
@@ -488,15 +487,10 @@ function ChatPage() {
             update({ defaultView });
           }} />
         </SettingsRow>
-        <SettingsRow label={t("Show thinking")} description={t("Include the agent's reasoning blocks")}>
-          <Toggle label={t("Show thinking")} checked={settings.showThinking} onChange={(showThinking) => update({ showThinking })} />
+        {/* showThinking is every browser's, whether reasoning starts open (expandThinking) this device's */}
+        <SettingsRow label={t("Show thinking")} description={t("The agent's reasoning blocks: left out, folded to one line, or open. One you open or fold stays that way for its message.")} wide>
+          <Segmented label={t("Show thinking")} value={!settings.showThinking ? "hidden" : settings.expandThinking ? "expanded" : "folded"} onChange={(shown) => update(shown === "hidden" ? { showThinking: false } : { showThinking: true, expandThinking: shown === "expanded" })} options={[{ value: "hidden", label: t("Hidden") }, { value: "folded", label: t("Folded") }, { value: "expanded", label: t("Expanded") }] as const} />
         </SettingsRow>
-        {/* reasoning the chat does not show has no fold to start in */}
-        {settings.showThinking && (
-          <SettingsRow label={t("Expand thinking")} description={t("Reasoning starts open instead of folded. One you open or fold stays that way for its message")}>
-            <Toggle label={t("Expand thinking")} checked={settings.expandThinking} onChange={(expandThinking) => update({ expandThinking })} />
-          </SettingsRow>
-        )}
         <SettingsRow label={t("Chat width")} description={t("How wide the conversation and the message box run on a large screen")} wide>
           <Segmented label={t("Chat width")} value={settings.chatWidth} onChange={(chatWidth) => update({ chatWidth })} options={CHAT_WIDTHS.map((chatWidth) => ({ value: chatWidth, label: t(chatWidth === "narrow" ? "Narrow" : chatWidth === "wide" ? "Wide" : chatWidth === "full" ? "Full" : "Default") }))} />
         </SettingsRow>
@@ -515,7 +509,7 @@ function ChatPage() {
         <SettingsRow label={t("Show above the message box")} description={t("One-tap messages above the message box, on this device. Each is sent as if typed: queued while the agent works, an answer when a question is open.")}>
           <Toggle label={t("Show above the message box")} checked={settings.showQuickReplies} onChange={(showQuickReplies) => update({ showQuickReplies })} />
         </SettingsRow>
-        <div className="settings-item">
+        {settings.showQuickReplies && <div className="settings-item">
           <ol className="quick-replies-list">
             {settings.quickReplies.map((reply, index) => (
               <li key={index}>
@@ -539,13 +533,10 @@ function ChatPage() {
             <button type="button" className="btn" disabled={settings.quickReplies.length >= QUICK_REPLIES_MAX} onClick={() => update({ quickReplies: [...settings.quickReplies, ""] })}><Plus aria-hidden="true" />{t("Add reply")}</button>
             <button type="button" className="btn btn-ghost" onClick={() => update({ quickReplies: [...DEFAULT_SETTINGS.quickReplies] })}>{t("Restore defaults")}</button>
           </div>
-        </div>
+        </div>}
       </SettingsGroup>
 
       <SettingsGroup title={t("File viewer")} section="file-viewer">
-        <SettingsRow label={t("Wrap long lines")}>
-          <Toggle label={t("Wrap long lines")} checked={settings.wrapCode} onChange={(wrapCode) => update({ wrapCode })} />
-        </SettingsRow>
         <SettingsRow label={t("Open files")} description={t("On a wide window, text and code can open beside the pane. Media, PDFs and folders always open in a popup, and the viewer's header button moves the file open now.")} wide>
           <Segmented label={t("Open files")} value={settings.fileOpen} onChange={(fileOpen) => update({ fileOpen })} options={FILE_OPEN_TARGETS.map((fileOpen) => ({ value: fileOpen, label: fileOpen === "panel" ? t("Beside the pane") : t("In a popup") }))} />
         </SettingsRow>
@@ -554,7 +545,9 @@ function ChatPage() {
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "chatFontFamily", "autoSendQueued", "composerArtifacts", "composerPasteSend", "suggestionChip", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab"]}>
+      <VoiceMain />
+
+      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "chatFontFamily", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", ...(settings.voiceInput === "off" ? [] : ["voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"] as const)]}>
         <SettingsGroup title={t("Chat")} section="chat-more">
           <SettingsRow label={t("Collapse work")} description={t("A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message")}>
             <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
@@ -570,19 +563,14 @@ function ChatPage() {
           <SettingsRow label={t("Send queued messages automatically")} description={t("A message sent while the agent works goes by itself when the turn ends. When off, it waits until you press Send now.")}>
             <Toggle label={t("Send queued messages automatically")} checked={settings.autoSendQueued} onChange={(autoSendQueued) => update({ autoSendQueued })} />
           </SettingsRow>
-          <SettingsRow label={t("Artifacts chip")} description={t("A chip in a Claude Code pane's message box lists the pages its session published with the Artifact tool.")}>
-            <Toggle label={t("Artifacts chip")} checked={settings.composerArtifacts} onChange={(composerArtifacts) => update({ composerArtifacts })} />
-          </SettingsRow>
           <SettingsRow label={t("Paste and send button")} description={t("A button in the empty message box sends the text copied on this device as a message.")}>
             <Toggle label={t("Paste and send button")} checked={settings.composerPasteSend} onChange={(composerPasteSend) => update({ composerPasteSend })} />
           </SettingsRow>
-          {touch && (
-            <SettingsRow label={t("Suggestion chip")} description={t("A chip above the message box puts the prompt Claude Code suggests next into the box. With a keyboard, Tab does it.")}>
-              <Toggle label={t("Suggestion chip")} checked={settings.suggestionChip} onChange={(suggestionChip) => update({ suggestionChip })} />
-            </SettingsRow>
-          )}
         </SettingsGroup>
         <SettingsGroup title={t("File viewer")} section="file-viewer-more">
+          <SettingsRow label={t("Wrap long lines")}>
+            <Toggle label={t("Wrap long lines")} checked={settings.wrapCode} onChange={(wrapCode) => update({ wrapCode })} />
+          </SettingsRow>
           <SettingsRow label={t("Edit text files")} description={t("Adds Edit to the file viewer for a text file in the pane's folder. Saving asks first, and stops if the file changed since you opened it.")}>
             <Toggle label={t("Edit text files")} checked={settings.editTextFiles} onChange={(editTextFiles) => update({ editTextFiles })} />
           </SettingsRow>
@@ -593,13 +581,7 @@ function ChatPage() {
             <Toggle label={t("Reuse tab for external links")} checked={settings.reuseExternalLinkTab} onChange={(reuseExternalLinkTab) => update({ reuseExternalLinkTab })} />
           </SettingsRow>}
         </SettingsGroup>
-      </SettingsFold>
-      <SettingsFold kind="experimental" keys={["composerBtw"]}>
-        <SettingsGroup section="chat-experimental">
-          <SettingsRow label={t("Side conversations chip (experimental)")} description={t("A chip in an OMP pane's message box lists the side conversations its session saved with /btw.")}>
-            <Toggle label={t("Side conversations chip (experimental)")} checked={settings.composerBtw} onChange={(composerBtw) => update({ composerBtw })} />
-          </SettingsRow>
-        </SettingsGroup>
+        <VoiceMore />
       </SettingsFold>
     </>
   );
@@ -665,6 +647,13 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
         </SettingsRow>
       </SettingsGroup>
     </SettingsFold>
+    <SettingsFold kind="experimental" keys={["codexDrag"]}>
+      <SettingsGroup>
+        <SettingsRow label={t("Codex panes: let Codex select and scroll")} description={t("On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.")}>
+          <Toggle label={t("Codex panes: let Codex select and scroll")} checked={settings.codexDrag} onChange={(codexDrag) => update({ codexDrag })} />
+        </SettingsRow>
+      </SettingsGroup>
+    </SettingsFold>
     </>
   );
 }
@@ -679,15 +668,6 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     <>
     <SettingsGroup note={t("For this device. An alert waits a little first, and none comes when the pane changes meanwhile, as when you answer at the PC.")}>
       <PushTestControls onEnable={onEnableNotifications} />
-      <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
-        <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
-      </SettingsRow>
-      <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
-        <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
-      </SettingsRow>
-      <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
-        <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
-      </SettingsRow>
       <SettingsRow label={t("Sound")} description={t("While a tab of the app is open, it chimes for these alerts, also when a Focus or Do Not Disturb silences notifications.")}>
         <Toggle label={t("Sound")} checked={settings.alertSound} onChange={(alertSound) => {
           update({ alertSound });
@@ -701,11 +681,24 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     <AlertPcsGroup machines={machines} />
     {/* a destination's last failed post is said in its group, so the group stays in sight */}
     <AlertWebhookGroup />
-    <SettingsFold kind="more" keys={["alertInApp"]}>
-      <SettingsGroup section="alerts-more">
+    {/* which alerts come: nearly everyone keeps the defaults, so they wait in the fold */}
+    <SettingsFold kind="more" keys={["alertInput", "alertDone", "alertInApp"]}
+      elsewhere={alertFiltersChanged(filters, settings.alertInput)}>
+      <SettingsGroup title={t("Alert me when")} section="alert-kinds">
+        <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
+          <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
+        </SettingsRow>
+        <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
+          <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
+        </SettingsRow>
+        <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
+          <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
+        </SettingsRow>
         <SettingsRow label={t("Stopped on an error")} description={t("A turn that ended on an error, as OmO and GJC report it")}>
           <Toggle label={t("Stopped on an error")} checked={filters.error === true} onChange={(error) => updateAlertFilters({ error })} />
         </SettingsRow>
+      </SettingsGroup>
+      <SettingsGroup section="alerts-more">
         <SettingsRow label={t("In the app")} description={t("While the app is open, these drop in from the top of the screen at once. Tap one to open its pane.")}>
           <Toggle label={t("In the app")} checked={settings.alertInApp} onChange={(alertInApp) => update({ alertInApp })} />
         </SettingsRow>
@@ -760,16 +753,11 @@ function DictationLanguageSelect() {
   );
 }
 
-function VoicePage() {
+/** Settings → Chat → Voice input: whether the microphone button shows; the language it listens for is in Chat's folded part (VoiceMore). */
+function VoiceMain() {
   const { settings, update } = useSettings();
   const t = useT();
-  // the server only says whether it holds a key; the key typed here is never kept past a save
-  const [voice, setVoice] = useState<VoiceStatus | null>(null);
-  const [voiceKey, setVoiceKey] = useState("");
-  const [voiceBusy, setVoiceBusy] = useState(false);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [micDenied, setMicDenied] = useState(false);
-  useEffect(() => { fetchVoiceStatus().then(setVoice, () => setVoice(null)); }, []);
   /**
    * On asks now, so the first dictation does not stop at the browser's permission prompt. Not in an
    * iPhone home-screen app, which this request closed or reloaded (#2343): there the first tap of the mic asks.
@@ -782,6 +770,26 @@ function VoicePage() {
     try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((track) => track.stop()); }
     catch { setMicDenied(true); }
   };
+  const micProblem = settings.voiceInput === "off" ? null : !window.isSecureContext ? t("Voice input needs HTTPS") : micDenied ? t("Microphone permission was denied") : null;
+  return (
+    <SettingsGroup title={t("Voice input")} section="voice">
+      <SettingsRow label={t("Microphone button")} description={<>{t("Auto: in the chat on a desktop, where dictation can work. On: on a phone and in the terminal input line too.")}{micProblem !== null && <span className="voice-error">{micProblem}</span>}</>} wide>
+        <Segmented label={t("Microphone button")} value={settings.voiceInput} onChange={(voiceInput) => void chooseVoiceInput(voiceInput)} options={VOICE_BUTTONS.map((voiceInput) => ({ value: voiceInput, label: t(voiceInput === "auto" ? "Auto" : voiceInput === "on" ? "On" : "Off") }))} />
+      </SettingsRow>
+    </SettingsGroup>
+  );
+}
+
+/** Chat's folded part for voice input: the dictation language, the speech recognition, tidying dictated text, and the OpenAI key. */
+function VoiceMore() {
+  const { settings, update } = useSettings();
+  const t = useT();
+  // the server only says whether it holds a key; the key typed here is never kept past a save
+  const [voice, setVoice] = useState<VoiceStatus | null>(null);
+  const [voiceKey, setVoiceKey] = useState("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  useEffect(() => { fetchVoiceStatus().then(setVoice, () => setVoice(null)); }, []);
   const changeVoiceKey = async (api_key: string | null) => {
     setVoiceBusy(true);
     try {
@@ -794,40 +802,25 @@ function VoicePage() {
     } catch (e) { setVoiceError(e instanceof Error ? e.message : String(e)); }
     finally { setVoiceBusy(false); }
   };
-  const micProblem = settings.voiceInput === "off" ? null : !window.isSecureContext ? t("Voice input needs HTTPS") : micDenied ? t("Microphone permission was denied") : null;
   return (
     <>
-      <SettingsGroup>
-        <SettingsRow label={t("Microphone button")} description={<>{t("Auto: in the chat on a desktop, where dictation can work. On: on a phone and in the terminal input line too.")}{micProblem !== null && <span className="voice-error">{micProblem}</span>}</>} wide>
-          <Segmented label={t("Microphone button")} value={settings.voiceInput} onChange={(voiceInput) => void chooseVoiceInput(voiceInput)} options={VOICE_BUTTONS.map((voiceInput) => ({ value: voiceInput, label: t(voiceInput === "auto" ? "Auto" : voiceInput === "on" ? "On" : "Off") }))} />
-        </SettingsRow>
-        {settings.voiceInput !== "off" && (
+      {settings.voiceInput !== "off" && <>
+        <SettingsGroup section="voice-more">
           <SettingsRow label={t("Dictation language")} description={t("Auto listens for the app's language, or for the browser's when the app is not translated into it")} htmlFor="settings-voice-language" wide>
             <DictationLanguageSelect />
           </SettingsRow>
-        )}
-      </SettingsGroup>
-
-      {settings.voiceInput !== "off" && (
-        <SettingsFold kind="more" keys={["voiceEngine", "voicePolishChat", "voicePolishTerminal"]}>
-          <SettingsGroup section="voice-more">
-            <SettingsRow label={t("Speech recognition")} description={<>{t(settings.voiceEngine === "auto" ? "Auto uses the API key when one is saved, else the browser" : settings.voiceEngine === "browser" ? "The browser recognizes the speech, even with a key saved" : "Only the API key below transcribes")}{settings.voiceEngine === "server" && voice && !voice.configured && <span className="voice-error">{t("Save an API key to use the mic")}</span>}</>} wide>
-              <Segmented label={t("Speech recognition")} value={settings.voiceEngine} onChange={(voiceEngine) => update({ voiceEngine })} options={VOICE_ENGINES.map((voiceEngine) => ({ value: voiceEngine, label: t(voiceEngine === "auto" ? "Auto" : voiceEngine === "browser" ? "Browser" : "API key") }))} />
+          <SettingsRow label={t("Speech recognition")} description={<>{t(settings.voiceEngine === "auto" ? "Auto uses the API key when one is saved, else the browser" : settings.voiceEngine === "browser" ? "The browser recognizes the speech, even with a key saved" : "Only the API key below transcribes")}{settings.voiceEngine === "server" && voice && !voice.configured && <span className="voice-error">{t("Save an API key to use the mic")}</span>}</>} wide>
+            <Segmented label={t("Speech recognition")} value={settings.voiceEngine} onChange={(voiceEngine) => update({ voiceEngine })} options={VOICE_ENGINES.map((voiceEngine) => ({ value: voiceEngine, label: t(voiceEngine === "auto" ? "Auto" : voiceEngine === "browser" ? "Browser" : "API key") }))} />
+          </SettingsRow>
+        </SettingsGroup>
+        {settings.voiceEngine !== "browser" && (
+          <SettingsGroup section="tidy-dictation">
+            <SettingsRow label={t("Tidy dictated text")} description={t("Drops fillers and fixes spacing; code and paths stay as spoken. Where it is off, the text stays exactly as transcribed.")} wide>
+              <Segmented label={t("Tidy dictated text")} value={settings.voicePolishChat ? (settings.voicePolishTerminal ? "both" : "chat") : settings.voicePolishTerminal ? "terminal" : "off"} onChange={(where) => update({ voicePolishChat: where === "chat" || where === "both", voicePolishTerminal: where === "terminal" || where === "both" })} options={[{ value: "off", label: t("Off") }, { value: "chat", label: t("Chat") }, { value: "terminal", label: t("Terminal") }, { value: "both", label: t("Both") }] as const} />
             </SettingsRow>
           </SettingsGroup>
-          {settings.voiceEngine !== "browser" && (
-            <SettingsGroup title={t("Tidy dictated text")} section="tidy-dictation">
-              <SettingsRow label={t("In chat")} description={t("Drops fillers and fixes spacing; code and paths stay as spoken")}>
-                <Toggle label={t("Tidy dictated text in chat")} checked={settings.voicePolishChat} onChange={(voicePolishChat) => update({ voicePolishChat })} />
-              </SettingsRow>
-              <SettingsRow label={t("In the terminal")} description={t("Off keeps a command exactly as transcribed")}>
-                <Toggle label={t("Tidy dictated text in the terminal")} checked={settings.voicePolishTerminal} onChange={(voicePolishTerminal) => update({ voicePolishTerminal })} />
-              </SettingsRow>
-            </SettingsGroup>
-          )}
-        </SettingsFold>
-      )}
-
+        )}
+      </>}
       <SettingsGroup title={t("OpenAI API key")} section="openai-key">
         <div className="settings-item">
           {voice && (
@@ -982,7 +975,69 @@ function ShortcutsPage() {
           update({ shortcutOverrides: {} });
         }}>{t("Reset shortcuts")}</button>
       </div>
+      <HerdrPrefixKeys />
     </>
+  );
+}
+
+/** What each herdr action runs here (lib/herdrKeys.ts runHerdrAction), named as the app names it. */
+const HERDR_ACTION_LABELS: Readonly<Record<HerdrPrefixAction, string>> = {
+  help: "Command palette",
+  settings: "Settings",
+  workspace_picker: "Command palette",
+  goto: "Command palette",
+  new_workspace: "New workspace",
+  previous_workspace: "Previous workspace",
+  next_workspace: "Next workspace",
+  new_tab: "New terminal",
+  rename_tab: "Rename tab",
+  previous_tab: "Previous tab",
+  next_tab: "Next tab",
+  switch_tab: "Go to tab 1-9",
+  split_vertical: "Split pane right",
+  split_horizontal: "Split pane down",
+  zoom: "Zoom or unzoom pane",
+  toggle_sidebar: "Toggle sidebar",
+};
+
+/** The opt-in to herdr's prefix keys, and the bindings it read from this PC's herdr config while on. */
+function HerdrPrefixKeys() {
+  const { settings, update } = useSettings();
+  const t = useT();
+  const on = settings.herdrPrefixKeys;
+  const [keys, setKeys] = useState<{ read: HerdrKeys | null } | null>(null);
+  useEffect(() => {
+    if (!on) return;
+    let live = true;
+    void loadHerdrUi().then(() => { if (live) setKeys({ read: herdrKeys() }); });
+    return () => { live = false; };
+  }, [on]);
+  const read = keys?.read ?? null;
+  const map = read ? compileHerdrKeys(read) : null;
+  const bound = read === null || map === null ? [] : HERDR_PREFIX_ACTIONS.filter((action) => read.bindings[action].length > 0);
+  const rows = [...new Set(bound.map((action) => HERDR_ACTION_LABELS[action]))]
+    .map((label) => ({ label, keys: bound.filter((action) => HERDR_ACTION_LABELS[action] === label).flatMap((action) => read?.bindings[action] ?? []) }));
+  const status = !on || keys === null ? null
+    : read === null ? t("This PC's server does not report herdr's keys yet.")
+    : map === null ? t("herdr's prefix in its config.toml cannot be used here, so no key is taken.")
+    : null;
+  return (
+    <SettingsGroup title={t("herdr prefix keys")} section="herdr-keys">
+      <SettingsRow label={t("Use herdr's prefix keys")} description={t("herdr's prefix, then a key herdr's config.toml on this PC binds, runs that action here: the ones listed below. The prefix no longer reaches the pane: press it twice to send it. Fields, dialogs and IME input keep their keys.")}>
+        <Toggle label={t("Use herdr's prefix keys")} checked={on} onChange={(herdrPrefixKeys) => update({ herdrPrefixKeys })} />
+      </SettingsRow>
+      {status !== null && <p className="settings-item settings-description" role="status">{status}</p>}
+      {on && read !== null && map !== null && <>
+        <SettingsRow label={t("Prefix")}>
+          <span className="settings-keys">{read.prefixes.map((prefix) => <kbd className="kbd" key={prefix}>{prefix}</kbd>)}</span>
+        </SettingsRow>
+        {rows.map((row) => (
+          <SettingsRow key={row.label} label={t(row.label)}>
+            <span className="settings-keys">{row.keys.map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span>
+          </SettingsRow>
+        ))}
+      </>}
+    </SettingsGroup>
   );
 }
 
@@ -1030,7 +1085,7 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
   );
 }
 
-function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void }) {
+function DevicesPage({ auth, security, onSignOut, onRevokedAll, pcs, pcsMore }: { auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void; /** the PCs' groups (RemotePcs), after the devices */ pcs: ReactNode; /** and their folded rows (RemotePcsMore) */ pcsMore: ReactNode }) {
   const { settings, update } = useSettings();
   const t = useT();
   const installPrompt = useInstallPrompt();
@@ -1096,9 +1151,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
         </>}>
           <button type="button" className="btn btn-primary" onClick={() => setConnecting({ route: defaultRoute(plan, relay), startCode: false })}>{t("Connect")}</button>
         </SettingsRow>
-        <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
-          <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
-        </SettingsRow>
         <SettingsRow label={t("Install")} description={installPrompt.installed ? t("Installed") : installPrompt.canInstall ? undefined : installPrompt.help}>
           {!installPrompt.installed && installPrompt.canInstall && <button type="button" className="btn btn-primary" onClick={() => void installPrompt.install()}>{t("Install app")}</button>}
         </SettingsRow>
@@ -1113,8 +1165,16 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: Health
         {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} />}
       </SettingsGroup>
 
-      <SettingsFold kind="more" keys={[]}>
+      {pcs}
+
+      <SettingsFold kind="more" keys={["keepScreenOn", "pcLoad"]}>
+        <SettingsGroup section="phone-more">
+          <SettingsRow label={t("Keep screen on")} description={<>{t("While a terminal or chat pane is open.")}{wakeLockProblem !== null && <span className="settings-condition">{wakeLockProblem}</span>}</>}>
+            <Toggle label={t("Keep screen on")} checked={settings.keepScreenOn} onChange={(keepScreenOn) => update({ keepScreenOn })} />
+          </SettingsRow>
+        </SettingsGroup>
         <AccessFacts facts={security} />
+        {pcsMore}
       </SettingsFold>
 
       {connecting !== null && (
@@ -1189,7 +1249,7 @@ export function AddRelayPc() {
   if (found !== null) {
     const pc = found.name ?? t("this PC");
     return (
-      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Phone & devices. Pair only if every group matches.")} held wide>
+      <SettingsRow label={t("Does {name}'s screen show this ID?", { name: pc })} description={t("The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.")} held wide>
         <div className="relay-pc-found">
           <KeyId id={found.server_id} label={t("ID of the PC this code found")} />
           <div className="relay-pc-actions">
@@ -1202,7 +1262,7 @@ export function AddRelayPc() {
   }
   return (
     <>
-      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Phone & devices. Paste its link here (Copy link), or type the code it shows (Show a code to type).")} wide>
+      <SettingsRow label={t("Add a PC through the relay")} description={t("No SSH or open port. On the other PC, turn the relay on in Settings → Devices and PCs (Phone & devices on an older Ovis). Paste its link here (Copy link), or type the code it shows (Show a code to type).")} wide>
         <form className="relay-pc-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
           <input ref={input} className="input relay-pc-input" type="text" placeholder={t("Link or code")} aria-label={t("Pairing link or code")}
             autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy} />
@@ -1217,11 +1277,12 @@ export function AddRelayPc() {
 /** a set-aside copy of machines.json (the PCs added in this app), not of herdr-profile-state.json */
 const heldAddedPcs = (name: string): boolean => name.startsWith("machines.json.");
 
-function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSettings }: { actions: AppActions; machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void }) {
+/** Settings → Devices and PCs: the PCs added here, and which of them this device shows. */
+function RemotePcs({ actions, machines, pcSettings }: { actions: AppActions; machines: readonly Machine[]; pcSettings: MachineSettings | null }) {
   const t = useT();
   return (
     <>
-    <SettingsGroup>
+    <SettingsGroup title={t("Remote PCs")} section="remote">
       <SettingsRow label={t("Add PC")} description={t("Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.")}>
         <button type="button" className="btn" onClick={actions.openAddPc}><Monitor aria-hidden="true" />{t("Add PC")}</button>
       </SettingsRow>
@@ -1236,20 +1297,25 @@ function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSet
       </p>}
     </SettingsGroup>
     <SidebarPcsGroup machines={machines} />
-    <SettingsFold kind="more" keys={["pcLoad"]}>
-      <SettingsGroup section="remote-more">
-        {/* the switch is the server's and waits for its answer; Add PC never does */}
-        {pcSettings && (
-          <SettingsRow label={t("Update PC bridges automatically")} description={t("When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.")}>
-            <Toggle label={t("Update PC bridges automatically")} checked={pcSettings.auto_update_bridges} onChange={(auto_update_bridges) => onPcSettings({ auto_update_bridges })} />
-          </SettingsRow>
-        )}
-        {/* a refused change of the switch above, beside it: in a search too */}
-        {pcSettingsError && <p className="settings-item settings-hint" role="alert">{pcSettingsError}</p>}
-        <PcLoadSetting machines={machines} />
-      </SettingsGroup>
-    </SettingsFold>
     </>
+  );
+}
+
+/** The PCs' rarely changed rows, in the page's More settings fold: the server's bridge updates and the load line. */
+function RemotePcsMore({ machines, pcSettings, pcSettingsError, onPcSettings }: { machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void }) {
+  const t = useT();
+  return (
+    <SettingsGroup section="remote-more">
+      {/* the switch is the server's and waits for its answer; Add PC never does */}
+      {pcSettings && (
+        <SettingsRow label={t("Update PC bridges automatically")} description={t("When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.")}>
+          <Toggle label={t("Update PC bridges automatically")} checked={pcSettings.auto_update_bridges} onChange={(auto_update_bridges) => onPcSettings({ auto_update_bridges })} />
+        </SettingsRow>
+      )}
+      {/* a refused change of the switch above, beside it: in a search too */}
+      {pcSettingsError && <p className="settings-item settings-hint" role="alert">{pcSettingsError}</p>}
+      <PcLoadSetting machines={machines} />
+    </SettingsGroup>
   );
 }
 
@@ -1491,8 +1557,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const following = useRef<{ group: HTMLElement; page: SettingsPage | null } | null>(null);
   // the group a landing named that was not drawn yet, waited for until the reader moves the page
   const awaited = useRef<{ named: string; page: SettingsPage | null } | null>(null);
-  const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "voice" ? "Voice input"
-    : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Phone & devices" : id === "remote" ? "Remote PCs" : "About");
+  const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Devices and PCs" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
   // Settings' search: every page's rows that hold all the words typed, each where it can be changed
   // at once, under its page's name, as Zed's and VS Code's settings searches show them
@@ -1587,7 +1652,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const [pcSettingsError, setPcSettingsError] = useState<string | null>(null);
   // asked when a page that shows them opens, so a request that failed earlier is made again
   useEffect(() => {
-    if (page !== "remote" && page !== "about" && !searching) return;
+    if (page !== "devices" && page !== "about" && !searching) return;
     let live = true;
     machineRequest<MachineSettings>("/settings").then((settings) => { if (live) setPcSettings(settings); }, () => { if (live) setPcSettings(null); });
     return () => { live = false; };
@@ -1635,12 +1700,12 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "chat": return <ChatPage />;
       case "terminal": return <TerminalPage keyBarButtonRef={keyBarButtonRef} onEditKeyBar={openKeyBar} />;
       case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} machines={machines} />;
-      case "voice": return <VoicePage />;
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
-      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} />;
-      case "remote": return <RemotePcsPage actions={actions} machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
+      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh}
+        pcs={<RemotePcs actions={actions} machines={machines} pcSettings={pcSettings} />}
+        pcsMore={<RemotePcsMore machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />} />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} bridgesFollow={pcSettings?.auto_update_bridges === true} />;
       default: return null;
     }

@@ -448,6 +448,15 @@ it("keeps the split view to two halves until this device turns on rows and colum
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("splitGrid");
 });
 
+it("keeps a Codex pane's drag Ovis's until this device hands it to Codex, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.codexDrag).toBe(false);
+  expect(sanitizeSettings({}).codexDrag).toBe(false);
+  expect(sanitizeSettings({ codexDrag: true }).codexDrag).toBe(true);
+  expect(sanitizeSettings({ codexDrag: "true" }).codexDrag).toBe(false);
+  expect(SETTING_SCOPE.codexDrag).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("codexDrag");
+});
+
 it("keeps the sidebar's hover peek off until this device turns it on, and keeps that choice its own", () => {
   expect(DEFAULT_SETTINGS.sidebarPeek).toBe(false);
   expect(sanitizeSettings({}).sidebarPeek).toBe(false);
@@ -455,6 +464,13 @@ it("keeps the sidebar's hover peek off until this device turns it on, and keeps 
   expect(sanitizeSettings({ sidebarPeek: "true" }).sidebarPeek).toBe(false);
   expect(SETTING_SCOPE.sidebarPeek).toBe("device");
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("sidebarPeek");
+});
+
+it("keeps herdr's prefix keys off until this device turns them on, and keeps that choice its own", () => {
+  expect(sanitizeSettings({}).herdrPrefixKeys).toBe(false);
+  expect(sanitizeSettings({ herdrPrefixKeys: true }).herdrPrefixKeys).toBe(true);
+  expect(sanitizeSettings({ herdrPrefixKeys: "true" }).herdrPrefixKeys).toBe(false);
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("herdrPrefixKeys");
 });
 
 it("keeps background workspaces in place until this device turns their part on, and keeps that choice its own", () => {
@@ -1402,6 +1418,16 @@ it("keeps where web links open to a tab or the panel, a tab by default", () => {
     expect(sanitizeSettings({ claudeLaunchMode: bad }).claudeLaunchMode).toBe("default");
     expect(sanitizeSettings({ codexLaunchMode: bad }).codexLaunchMode).toBe("default");
   }
+  // a new agent's model and effort: none set starts it on its own, and only what its launch takes is kept
+  expect(DEFAULT_SETTINGS).toMatchObject({ claudeLaunchModel: "", claudeLaunchEffort: "", codexLaunchModel: "", codexLaunchEffort: "" });
+  expect(sanitizeSettings({ claudeLaunchModel: "opus", claudeLaunchEffort: "max", codexLaunchModel: "gpt-5-codex", codexLaunchEffort: "ultra" }))
+    .toMatchObject({ claudeLaunchModel: "opus", claudeLaunchEffort: "max", codexLaunchModel: "gpt-5-codex", codexLaunchEffort: "ultra" });
+  for (const bad of ["opus --verbose", "-p", " ", 1, null, ["opus"]]) {
+    expect(sanitizeSettings({ claudeLaunchModel: bad }).claudeLaunchModel).toBe("");
+    expect(sanitizeSettings({ codexLaunchModel: bad }).codexLaunchModel).toBe("");
+  }
+  for (const bad of ["ultra", "ultracode", "High", "", null, 3]) expect(sanitizeSettings({ claudeLaunchEffort: bad }).claudeLaunchEffort).toBe("");
+  for (const bad of ["minimal", "High", null]) expect(sanitizeSettings({ codexLaunchEffort: bad }).codexLaunchEffort).toBe("");
 });
 
 describe("shared settings", () => {

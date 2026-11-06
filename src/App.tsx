@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, Target, X } from "lucide-react";
+import { Bell, ChevronDown, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, Target, X } from "lucide-react";
 
 import type { HerdrPane, PaneDirection } from "../shared/protocol.ts";
 import { authenticate, createTab, movePaneBeside, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
@@ -47,17 +47,19 @@ import { shellMode } from "./lib/shellMode.ts";
 import { usePairedNotices } from "./lib/usePairedNotices.ts";
 import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
-import { adjacentTabPane, adjacentWorkspacePane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
+import { adjacentTabPane, adjacentWorkspacePane, numberedTabPane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { liveGroupKeys, movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { loadSettings, pcLoadOn, useSettings } from "./lib/settings.ts";
+import { pcLoadOn, useSettings } from "./lib/settings.ts";
 import { useHiddenMachines, useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
+import { useHerdrPrefixKeys } from "./lib/herdrKeys.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { useAnnouncedText } from "./lib/useAnnouncedText.ts";
-import { CRAMPED_QUERY, loneTabHidden, paneContextPress } from "./lib/paneCanvas.ts";
+import { CRAMPED_QUERY, paneContextPress, tabRowHidden } from "./lib/paneCanvas.ts";
+import { useTabSheet } from "./lib/useTabSheet.ts";
 import type { AppActions, PaneView, PaneControls } from "./lib/actions.ts";
 import { removePushSubscription } from "./lib/push.ts";
 import { resetPushHealth } from "./lib/pushHealth.ts";
@@ -117,6 +119,7 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
+import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
 const APP_TITLE = "Ovis";
@@ -361,13 +364,13 @@ export function App() {
   // shown, in either half, the view goes with it (#1503). Nothing is sent: held text waits for its Send or Discard
   const followPaneMove = (machineId: string, from: string, to: string): void => {
     carryMovedPane(machineId, from, to);
-    // its lock goes with its pin (lib/paneLocks.ts); the locks as last saved, as this call may come from an older render's event
-    const { lockedAgents: locks, agentGroupOf } = loadSettings();
-    const movedLocks = movedSidebarPins(locks, machineId, from, to);
-    if (movedLocks !== locks) updateSettings({ lockedAgents: [...movedLocks] });
-    // its named group goes with it the same way (lib/namedAgentGroups.ts)
-    const movedGroups = movedAgentGroup(agentGroupOf, machineId, from, to);
-    if (movedGroups !== agentGroupOf) updateSettings({ agentGroupOf: { ...movedGroups } });
+    // its lock goes with its pin (lib/paneLocks.ts), and its named group the same way (lib/namedAgentGroups.ts): read from
+    // the settings as this save stores them, when the change applies: this call may come from an older render's event,
+    // another tab may have saved since, and storage may refuse writes (#2977)
+    updateSettings(({ lockedAgents, agentGroupOf }) => ({
+      lockedAgents: [...movedSidebarPins(lockedAgents, machineId, from, to)],
+      agentGroupOf: { ...movedAgentGroup(agentGroupOf, machineId, from, to) },
+    }));
     const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
     if (view.split !== null) setSplit(view.split);
     if (view.selection !== null) selectTargetRef.current(machineId, view.selection);
@@ -488,6 +491,12 @@ export function App() {
         const next = roster ? adjacentTabPane(roster, selectedPaneId, direction, viewed) : null;
         if (next) selectPane(next);
       },
+      selectTabNumber: (number) => {
+        const roster = snapshotRef.current;
+        const viewed: ViewedPane = (scope, id) => lastViewedPane(scope, selectedMachineId, id);
+        const next = roster ? numberedTabPane(roster, selectedPaneId, number, viewed) : null;
+        if (next) selectPane(next);
+      },
       selectAdjacentWorkspace: (direction) => {
         const roster = snapshotRef.current;
         if (!roster) return;
@@ -537,10 +546,21 @@ export function App() {
         const found = newTabTarget(target);
         if (!found) return;
         const asked = selectionRef.current;
-        const created = await createTab({ workspace_id: found.workspace.workspace_id, cwd: found.cwd, label: null, agent: null }, found.machineId);
+        // the keys typed from now on are the new tab's (lib/typeAhead.ts)
+        const ahead = catchTypeAhead();
+        let created: Awaited<ReturnType<typeof createTab>>;
+        try {
+          created = await createTab({ workspace_id: found.workspace.workspace_id, cwd: found.cwd, label: null, agent: null }, found.machineId);
+        } catch (reason) {
+          ahead?.drop();
+          throw reason;
+        }
         void load();
         // what the user went to while herdr answered is theirs to keep
-        if (selectionStill(asked, selectionRef.current)) selectTargetRef.current(found.machineId, created.pane_id);
+        const still = selectionStill(asked, selectionRef.current);
+        // the keys typed ahead are this tab's either way: held for it when the user went elsewhere meanwhile
+        ahead?.handTo(found.machineId, created.pane_id, still);
+        if (still) selectTargetRef.current(found.machineId, created.pane_id);
       },
       moveTabToWorkspace: async ({ machineId, tabId, workspaceId, notice }) => {
         const roster = machinesRef.current.find((m) => m.id === machineId)?.snapshot;
@@ -619,6 +639,7 @@ export function App() {
   );
 
   useShortcuts(actions, locked === false);
+  const herdrPrefixWaiting = useHerdrPrefixKeys(actions, locked === false, setLayoutNotice);
 
   // The header's More menu: what used to be three buttons of its own. Each item is there under
   // the condition its button had. At phone width the palette's button gives its room to the
@@ -653,13 +674,16 @@ export function App() {
   // the palette's shortcut, said beside its item where a hardware keyboard is likely (a fine pointer)
   const keyboardLikely = useMediaQuery("(hover: hover) and (pointer: fine)");
   const paletteKeys = keyboardLikely ? formatKeys(shortcutDisplayKeys("palette", settings.shortcutOverrides)).join("+") : "";
-  // a lone tab on a cramped phone draws no row (TabStrip) and its pane no ellipsis (PaneCanvas): the
-  // header's own ellipsis is the one menu there, so it carries the pane's and the tab's actions too.
+  // a phone (the sheets' width) draws no tab row: the header's title lists the tabs (TabStrip's sheet),
+  // as the Codex and Claude apps title a thread and list the others from it
+  const { tabsInHeader, sheet: tabSheet, toggle: toggleTabSheet, close: closeTabSheet } = useTabSheet(selectedPane !== null && !guideShown ? JSON.stringify([selectedMachineId, selectedPane.workspace_id]) : null);
+  // there, and for a lone tab on a cramped phone, the row and its pane's ellipsis are not drawn (TabStrip,
+  // PaneCanvas): the header's own ellipsis is the one menu, so it carries the pane's and the tab's actions too.
   // They come from the canvas's last render; each runs as the canvas's latest one has it, and does
   // nothing when that one no longer offers it (the pane or the layout changed while the menu was open)
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const paneMenuInMore = selectedPane !== null
-    && loneTabHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0);
+    && tabRowHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0, tabsInHeader);
   // on a phone the header's line is the title's: the sessions' one pill goes to the end of the tab row
   // under it. Where that row is not drawn (a lone tab on a cramped phone) More carries the jump instead,
   // its first item, with a waiting-coloured dot on its button
@@ -768,9 +792,9 @@ export function App() {
             <Search />
           </button>
         </div>
-        <HeaderNote note={note} />
+        <HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />
         {note !== null ? null : selectedPane && crumb ? (
-          <div className={`context${headerConnection === null ? "" : " has-connection"}`} title={crumb.tooltip}>
+          <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
               {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
               <span className="context-title-text">{selectedTitle}</span>
@@ -778,6 +802,11 @@ export function App() {
                 <span aria-hidden="true">{position.index}/{position.count}</span>
                 <span className="visually-hidden">{position.words}</span>
               </span>}
+              {/* the whole title is its target (styles.css .context-tabs::after) */}
+              {tabsInHeader && selectedWorkspace && !guideShown && <button type="button" className="context-tabs" aria-label={t("Tabs of {workspace}", { workspace: selectedWorkspace.label })}
+                aria-haspopup="dialog" aria-expanded={tabSheet !== null} onClick={(event) => toggleTabSheet(event.currentTarget)}>
+                <ChevronDown aria-hidden="true" />
+              </button>}
             </div>
             {/* lost and back, the connection takes the crumb's place in words, in the same box: nothing moves */}
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
@@ -1005,7 +1034,8 @@ export function App() {
                 <CrashProbe region="pane" />
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {slotSnapshot && pane && workspace && (
-                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd ?? (sessionsInStrip && active ? <div className="tab-strip-sessions">{sessionsPill}</div> : undefined)}
+                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect}
+                    inHeader={tabsInHeader} sheet={active ? tabSheet : null} onSheetClose={closeTabSheet} end={slotEnd ?? (sessionsInStrip && active ? <div className="tab-strip-sessions">{sessionsPill}</div> : undefined)}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     onRenameHandled={clearRenameRequest}
                     onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
@@ -1024,7 +1054,7 @@ export function App() {
                     No tabIndex - the terminal (PaneTerminal) and the composer are the focusable things inside it. */}
                 <main className="terminal-host">
                   <div id={slotPanelId} className="terminal-tabpanel" role={slotPanelLabel === null ? undefined : "tabpanel"} aria-label={slotPanelLabel ?? undefined}>
-                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined}
+                  <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={auth?.role === "watch"}
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
@@ -1032,6 +1062,7 @@ export function App() {
                     onNewTab={workspace ? () => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onNewTerminal={workspace ? () => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
+                    tabsInHeader={tabsInHeader}
                     renameRequest={active && pane && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     renderPane={(item, itemActive, herdrSplit) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId }) : null}>
                       <PaneTerminal

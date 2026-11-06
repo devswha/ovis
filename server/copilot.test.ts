@@ -42,6 +42,7 @@ async function logFixture(held: readonly string[]) {
       if (command === "close") closeSync(fd);
       else if (command === "open") fd = openSync(log, "a");
       else if (command === "extra") openSync(root + "/logs/process-200-" + process.pid + ".log", "w");
+      else if (command === "reread") openSync(log, "r");
       else throw new Error("unexpected fixture command: " + command);
       console.log("ok");
     });
@@ -68,6 +69,32 @@ async function logFixture(held: readonly string[]) {
     },
   };
 }
+
+it.skipIf(process.platform !== "linux")("reads a log Copilot opens a second time to copy it as the one log", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    const before = fixture.binding();
+    expect(before?.sessionId).toBe(session);
+    // Copilot 1.0 reads its open log on a second descriptor while it copies it for a rotation
+    await fixture.command("reread");
+    expect(fixture.binding()).toEqual(before);
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+    // another file under the same path, as after a rename between two looks, is another log
+    await fixture.command("extra");
+    const realLink = fs.readlinkSync;
+    const links = spyOn(fs, "readlinkSync").mockImplementation(((path: fs.PathLike) => {
+      const target = realLink(path, "utf8");
+      return target.endsWith(`/process-200-${pid}.log`) ? log : target;
+    }) as typeof fs.readlinkSync);
+    try { expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_ambiguous"); }
+    finally { links.mockRestore(); }
+    // as does another log of the same process
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_ambiguous");
+  } finally { await fixture.close(); }
+});
 
 for (const revoked of [false, true]) {
   it.skipIf(process.platform !== "linux")(`keeps ${revoked ? "denied" : "registered"} Copilot ownership when epoch start time changes`, async () => {
@@ -268,6 +295,46 @@ it.skipIf(process.platform !== "linux")("follows a second rotation that comes be
     rotate();
     appendFileSync(log, "after the second rotation\n");
     expect(fixture.binding()?.sessionId).toBe(session);
+  } finally { await fixture.close(); }
+});
+
+for (const between of ["output", "another registration"] as const) {
+  it.skipIf(process.platform !== "linux")(`waits out a rotation moving its copies up after ${between}, then follows it`, async () => {
+    const fixture = await logFixture([session, other]);
+    const { environment, log, pid } = fixture;
+    const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+    const read = () => readCopilotProcessSession(environment, ["copilot"], pid);
+    try {
+      appendFileSync(log, register(session));
+      const before = fixture.binding();
+      expect(before?.sessionId).toBe(session);
+      appendFileSync(log, between === "output" ? "later output\n" : register(other));
+      writeFileSync(copy(1), readFileSync(log));
+      fs.truncateSync(log, 0);
+      appendFileSync(log, "after the first rotation\n");
+      // Copilot 1.0 moves the copies up before it renames the new one into place
+      fs.renameSync(copy(1), copy(2));
+      expect(read().diagnostic).toBe("copilot_log_read_raced");
+      expect(read().diagnostic).toBe("copilot_log_read_raced");
+      writeFileSync(copy(1), readFileSync(log));
+      fs.truncateSync(log, 0);
+      appendFileSync(log, "after the second rotation\n");
+      if (between === "output") expect(fixture.binding()).toEqual(before);
+      else expect(fixture.binding()?.sessionId).toBe(other);
+    } finally { await fixture.close(); }
+  });
+}
+
+it.skipIf(process.platform !== "linux")("binds a registration in the open log while a log copy stays missing", async () => {
+  const fixture = await logFixture([session, other]);
+  const { environment, log, pid } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    writeFileSync(log.replace(/\.log$/, ".2.log"), readFileSync(log));
+    fs.truncateSync(log, 0);
+    appendFileSync(log, register(other));
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).session?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
 

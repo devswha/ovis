@@ -79,6 +79,7 @@ run_script scripts/terminal-touch-burst-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
+run_script scripts/codex-drag-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
 run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
@@ -116,6 +117,7 @@ run_script scripts/pane-input-focus-demo-regression.ts
 run_script scripts/terminal-keyboard-demo-regression.ts
 run_script scripts/unconfirmed-input-demo-regression.ts
 run_script scripts/shortcut-exact-modifiers-demo-regression.ts
+run_script scripts/herdr-prefix-keys-demo-regression.ts
 run_script scripts/portal-regression.ts
 run_script scripts/deep-link-demo-regression.ts
 run_script scripts/chat-history-browser-qa.ts
@@ -162,6 +164,7 @@ run_script scripts/keyboard-viewport-regression.ts
 run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
+run_script scripts/phone-safe-area-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts

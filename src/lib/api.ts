@@ -89,6 +89,7 @@ import type {
   PluginActionResult,
   PluginActions,
   PluginActionsResponse,
+  WorktreeInventory,
   WorktreeListing,
   WorktreeOpened,
   WorktreeRemoved,
@@ -293,9 +294,12 @@ export function cancelRelayCode(): Promise<{ readonly ok: true }> {
   return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
-/** POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC. */
-export function requestRelayLink(): Promise<{ readonly url: string }> {
-  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } });
+/**
+ * POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC.
+ * `localOnly`: this PC's screen waits to be added to an account, so what comes is approved on this PC only.
+ */
+export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string }> {
+  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
@@ -1270,6 +1274,14 @@ export async function createWorktree(request: CreateWorktreeRequest, machineId =
 /** GET /api/worktree/list: every checkout of the workspace's repository, with the workspace each is open in. */
 export function listWorktrees(workspaceId: string, machineId = "local"): Promise<WorktreeListing> {
   return getJson<WorktreeListing>(`${machinePath(machineId, "worktree/list")}?workspace_id=${encodeURIComponent(workspaceId)}`);
+}
+
+/**
+ * GET /api/worktree/inventory: what listWorktrees answers for each workspace, in one read (at most
+ * MAX_INVENTORY_WORKSPACES). A PC whose bridge is from before it answers 404 not_found (routeMissing).
+ */
+export function readWorktreeInventory(workspaceIds: readonly string[], machineId = "local"): Promise<WorktreeInventory> {
+  return getJson<WorktreeInventory>(`${machinePath(machineId, "worktree/inventory")}?${workspaceIds.map((id) => `workspace_id=${encodeURIComponent(id)}`).join("&")}`);
 }
 
 /** POST /api/worktree/open: an existing checkout as a workspace; the one it already has when it is open. */

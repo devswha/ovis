@@ -712,6 +712,15 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
   workspace, tab and worktree dialogs send (src/lib/agentLaunchMode.ts). `default` (the default)
   adds nothing, so the agent's own configuration decides. Both are shared across devices.
+  Beside each mode, the same agent's row has a model and an effort (`claudeLaunchModel`,
+  `claudeLaunchEffort`, `codexLaunchModel`, `codexLaunchEffort`, shared too). They fill the new
+  workspace and tab dialogs' Model and Effort fields as the dialog opens on that agent or the
+  agent is picked, and New worktree passes them as they are (`launchDefaults`). Empty adds no
+  flag. Only what that agent's launch takes is kept (`launchChoiceFault`: one `--model` name,
+  an effort level it names), so a value never reaches another agent's command line, and an
+  effort the reader picked in the dialog stays when the next agent has none set. Codex and the
+  Claude Code app keep a default model and effort per agent the same way; Ovis never writes the
+  agent's own config file for it.
   The viewer loads a Markdown file's first 256 KB through one bounded streaming reader, with abort
   on close or navigation and a 5 s deadline; any other text that fits 256 KB reads whole under the
   same budget, and a larger one reads up to 8 MB and 200 000 lines with a 30 s deadline
@@ -951,7 +960,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Modal (`.modal*`)
 - `.modal-scrim` centers an `aria-modal` dialog at `--z-modal`; `.modal` is a capped scrollable
   column with header, body and footer and `--shadow-pop`.
+- The scrim's padding is at least each safe-area inset, so a centered card (Settings on a phone held
+  sideways) keeps clear of the notch on either side and of the home indicator. Popovers placed by
+  script (`RowMenu`) clamp to the same safe area (`lib/safeArea.ts`).
 - At `<=640px`, it becomes a bottom sheet with top `--radius-xl` corners and safe-area padding.
+  As an iPhone's own sheets do, its top never reaches under the status bar or Dynamic Island: its
+  height is capped at `100%` less the top inset and `--space-2`, the search sheet's too.
   Every surface on a `.modal-scrim` (dialogs, the palette, the row sheet) rises from the bottom
   edge as an iPhone's sheet does (`--dur-sheet` on `--ease-spring`, the scrim darkening with it),
   follows a finger dragged down from its head or from a list at its top, and drops
@@ -1102,6 +1116,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A lone pane beside such a `⋯` draws no second ellipsis (its actions are in the tab's menu), on a
   desktop as on touch. The pane's own context menu carries pane actions; it opens at the pointer
   without changing which pane is focused. The pane header's ellipsis opens the same menu on touch.
+  A phone (at most 640px wide, the sheets' width) draws no tab row for any tab, which gives the pane
+  the row's 44px (header 96 -> 52px). The header's title is the way to the tabs, as the Codex and
+  Claude apps title the open conversation and list the others from it: a `ChevronDown` follows it, and
+  the whole title and crumb, grown to `--touch-target` tall, is one button ("Tabs of {workspace}",
+  `aria-haspopup="dialog"`, `aria-expanded`) that opens the workspace's tabs as a bottom sheet: each
+  tab with its state dot (hollow at rest), its agent's mark and a Close of its own ("Close {tab}",
+  its own stop after the tab in the arrow order), the open tab marked current, its state word for a
+  state; then the open tab's Move tab left / right, then New terminal and New tab with agent…. A
+  pick opens the tab where it was left; Close asks first as the row's does. Such a phone's More
+  carries the open tab's other actions as below, less the two new-tab items its title's list holds.
   A lone tab with no row (a phone at most 700px tall, including the iPhone Duo's 678-point outer
   display, landscape or a screen made short by its keyboard) draws no pane ellipsis either: a second
   `⋯` below the glass header would repeat the header's own. The header's `⋯` is then the one menu,
@@ -1831,7 +1855,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folder, and opens the new shell pane unless another pane was opened meanwhile; a refusal shows
   in the strip. An agent tab comes from the tab menu's New tab with agent…, which opens the dialog.
   Tabs retain their names, status dots, active underline, keyboard navigation, rename field and
-  close confirmation. A right-click opens tab actions at the pointer, including Move tab left/right
+  close confirmation. As the Herdr app's tabs show the program, each tab carries its agent's mark
+  (the pane it opens on, else its first agent) before its name, hidden from assistive tech so the
+  tab is named by its words; a working tab's dot is a ring with a gap that turns in 8 steps per
+  `--dur-spin`, the plain dot under reduced motion. A right-click opens tab actions at the pointer, including Move tab left/right
   when a neighbouring position exists. Tabs have no close buttons or chevrons. Touch and narrow layouts show a `⋯` beside
   the selected tab for a trimmed menu, and there a tab is at least `--touch-target` tall and wide, so a one- or
   two-character name (탭 1) is still a finger's target with the `⋯` a target of its own beside it; a desktop with a mouse draws the same `⋯` on the selected tab, hidden in its place
@@ -2369,10 +2396,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   At `<=480px` the header's line is the title's, as wide as without these: the figures become one
   pill (waiting, else running, else done, tinted with its state) at the end of the tab row under the
   header (`.tab-strip-sessions`), a full `--touch-target-header` target. Where that row is not drawn
-  (a lone tab on a cramped phone) More carries the jump: **Open the next session waiting for you** is
+  (a phone, whose title lists the tabs, or a lone tab on a cramped screen) More carries the jump: **Open the next session waiting for you** is
   its first item, and its button wears a `--status-blocked` dot (`.header-more-dot.is-waiting`, in
   place of the alerts-off dot) and says the count in its name. Below `420px` the tab's place leaves
-  the header: the tab row shows it.
+  the header: the title's list marks the open tab.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
@@ -3540,23 +3567,33 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   closed entry (the palette's), stays open: those steps, and the address the app writes on the entry
   left, are no Back of the user's. Its own step that lands over a second after it was asked for is
   taken for one, as Back then may be the user's.
-- Pages, in order: **Appearance** (theme, dark theme, light theme, density, language, sidebar rows; then
-  **Typography**: interface font size and interface font), **Chat**
-  (panes open in, show thinking, chat width, chat font size and family; then
-  **Composer**: Enter sends, send queued messages automatically, the Artifacts chip (off by default, the device setting
-  `composerArtifacts`), the Side conversations chip (experimental, off by default, the device setting
-  `composerBtw`), the Paste and send button (off by default, the device setting
-  `composerPasteSend`), and on a touch screen the suggestion chip (off by default); then
-  **Quick replies**; then **File viewer**: wrap long lines, Markdown outline (off by default, the device setting `markdownOutline`)), **Terminal** (font size, font family, wheel
-  speed, input mode, Key bar, Keyboard only from the key bar (off by default, the device setting
-  `terminalKeyboardOnRequest`), Fold the key bar (touch screens, off by default, the device setting
-  `terminalFoldKeyBar`), Clipboard from a pane, Pictures in the terminal (off by default, the
-  device setting `terminalImages`), Use alongside herdr's own window, Follow
-  herdr's focus), **Alerts**, **Voice input**, **Agents**,
-  **Shortcuts** (the platform-resolved global bindings), **Phone & devices** (Connect a phone,
-  Keep screen on, Install; then Portal, where the server offers it; then paired devices; then Access),
-  **Remote PCs** (Add PC, Update PC bridges automatically, PC load in the sidebar; then **Show in sidebar**), **About** (Updates, herdr, the repository links). A button that points at
-  Updates opens the dialog on About.
+- Pages, in order (eight): **Appearance** (theme, dark theme, light theme, density, language;
+  **Typography**: interface font size; **Sidebar**: sidebar rows, agents order), **Chat**
+  (panes open in, show thinking, chat width, chat font size; **Composer**: Enter sends; **Quick
+  replies**, whose list shows only while they are on; **File viewer**: open files, web links;
+  **Voice input**: microphone button), **Terminal** (font size, font family, input mode, Key bar),
+  **Alerts** (the test, sound and other destinations; which alerts come is the **Alert me when**
+  group of its More settings, as almost every install keeps them), **Agents**, **Shortcuts** (the
+  platform-resolved global bindings), **Devices and PCs**
+  (Phone: Connect a phone, Install; then Portal, Account and paired devices; then
+  **Remote PCs**: Add PC, Add a PC through the relay; then **Show in sidebar**), **About** (Updates,
+  herdr, the repository links). Each page's other rows are in its folds (above). Voice input was a
+  page and is Chat's group (its dictation language, speech recognition, tidying and OpenAI key in
+  Chat's More settings);
+  Remote PCs was a page and is a group of Devices and PCs; a link or a history entry naming either
+  old page opens the page it went to (lib/deepLink.ts). A button that points at Updates opens the
+  dialog on About.
+- Three rows each stand for two settings and keep both as they are stored: **Agents order** is
+  Workspaces, Activity (every browser's `agentOrder`) or By state (this device's `agentGroups`,
+  with **Within a state** under it); **Show thinking** is Hidden, Folded or Expanded
+  (`showThinking` and this device's `expandThinking`); **Tidy dictated text** is Off, Chat,
+  Terminal or Both (`voicePolishChat`, `voicePolishTerminal`), so no combination is lost.
+- **Agents** lists the agents on this PC, one row each that opens on its status (version, sign-in,
+  accounts, session resume) and the settings that belong to that agent alone: Claude Code's
+  permission mode, Artifacts chip and (on a touch screen) suggestion chip; Codex's sandbox and
+  approvals; OMP's side conversations chip (experimental). New workspace, New tab and New worktree
+  start the agent in that mode; Ovis never writes the agent's own configuration. A search shows each
+  installed agent's settings in a group of its own. An agent that is not on the PC offers none.
 - Every page is built from the same parts (`components/SettingsControls.tsx`). A group is an
   optional caption (`--fs-sm`, `--fw-semibold`, `--text-dim`, sentence case) over one card:
   `--bg-elevated`, hairline `--border`, `--radius-lg`, its rows parted by hairlines and never

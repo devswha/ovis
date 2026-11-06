@@ -231,6 +231,32 @@ describe("herdr-core adapter", () => {
     expect(claudeInputDraft(live, colors)).toBe(false);
   });
 
+  it("reads no history of a terminal on the alternate screen, which hc would scroll and repaint for every viewer (#3128)", async () => {
+    const preamble = "\u0018\u001b[!p\u001b[?2026l\u001b[?1004l\u001b[?1049l\u001b[?1047l\u001b[?47l\u001b[H\u001b[2J";
+    for (const shown of ["alternate", "main", "refused"] as const) {
+      const full = shown !== "main";
+      // as hc 0.1.14 paints with no history: its reset, the alternate screen if the program is on it, the screen
+      const paint = `${preamble}${shown === "alternate" ? "\u001b[?1049h" : ""}\u001b[H\u001b[0m\u203a Ask Codex\r\n\u001b[?9001l`;
+      const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
+        "terminal.read": (params) => ({ text: params["lines"] ? "older\n\u203a Ask Codex" : "\u203a Ask Codex", complete: true, how: params["lines"] ? "history" : "screen" }),
+        "terminal.attach": () => {
+          // a kept terminal whose program is lost: hc refuses its attach, yet reads its stored screen
+          if (shown === "refused") throw Object.assign(new Error("lost"), { kind: "lost" });
+          const core = cores.at(-1)!;
+          const channel = core.channel();
+          core.replyTail = encodeFrame(channel, FRAME_DATA, paint);
+          return { channel, terminal: terminal("t1", { rows: 4 }) };
+        },
+      });
+      const read = await paneRead({ paneId: "t1", source: "recent", lines: 400, stripAnsi: true }, socket);
+      const core = cores[0]!;
+      expect(core.calls.filter((call) => call.method === "terminal.read").map((call) => call.params["lines"])).toEqual([full ? 0 : 400]);
+      expect(core.calls.find((call) => call.method === "terminal.attach")?.params).toEqual({ terminal: "t1", cols: 100, rows: 4, history: 0, observe: true });
+      expect(read.text).toBe(full ? "\u203a Ask Codex" : "older\n\u203a Ask Codex");
+      expect(read.truncated).toBe(full);
+    }
+  });
+
   it("answers a colored read with hc's plain text when the watch-only attach brings no screen", async () => {
     for (const ends of [true, false]) {
       const { socket, cores } = await setup([terminal("t1", { rows: 4 })], {
@@ -1122,6 +1148,13 @@ describe("herdr-core adapter, agents on Windows", () => {
     // no Ctrl-U, which PowerShell would type into the line; the quote and the empty argument go as
     // Windows PowerShell must give them for the agent to read them back
     expect(typed()).toBe(`& 'claude' '--model' 'say \\"hi\\"' '""'\r`);
+  });
+
+  it("starts Claude Code with Ultracode's settings file from a profile folder holding & (#3084)", async () => {
+    const { socket, typed } = await windows(HC_SHELL, (line) => line ? [...idle, claude] : idle);
+    const settings = "C:\\Users\\R&D\\AppData\\Local\\ovis\\claude settings\\a.json";
+    await agentStart({ name: "claude-1", kind: "claude", paneId: "t1", args: ["--settings", settings] }, socket);
+    expect(typed()).toBe(`& 'claude' '--settings' '${settings}'\r`);
   });
 
   it("types into no pane whose own program runs a program: the app's own, a script, cmd /c, and no cmd that expands !", async () => {
