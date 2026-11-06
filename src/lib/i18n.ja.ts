@@ -433,6 +433,9 @@ const BASE: Record<string, string> = {
   "Permission mode": "権限モード",
   "Sandbox and approvals": "サンドボックスと承認",
   "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC は「設定 → デバイスと PC（古い Ovis では スマートフォンとデバイス）」のコードの下に自分の ID を表示します。すべてのまとまりが一致する場合だけペアリングしてください。",
+  "New terminal": "新しいターミナル",
+  "New terminal failed: {reason}": "新しいターミナルを開けませんでした: {reason}",
+  "herdr prefix: press a key": "herdrプレフィックス: キーを押してください",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -431,6 +431,9 @@ const BASE: Record<string, string> = {
   "Permission mode": "권한 모드",
   "Sandbox and approvals": "샌드박스와 승인",
   "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "PC는 설정 → 기기와 PC(이전 Ovis에서는 폰 및 기기)의 코드 아래에 자기 ID를 보여 줍니다. 모든 묶음이 같을 때만 페어링하세요.",
+  "New terminal": "새 터미널",
+  "New terminal failed: {reason}": "새 터미널 열기 실패: {reason}",
+  "herdr prefix: press a key": "herdr 접두키: 키를 누르세요",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

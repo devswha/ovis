@@ -435,6 +435,9 @@ const BASE: Record<string, string> = {
   "Permission mode": "权限模式",
   "Sandbox and approvals": "沙箱与审批",
   "The PC shows its ID under the code, in Settings → Devices and PCs (Phone & devices on an older Ovis). Pair only if every group matches.": "电脑会在“设置 → 设备和电脑（旧版 Ovis 中为 手机和设备）”中代码下方显示它的 ID。只有每一组都一致时才配对。",
+  "New terminal": "新建终端",
+  "New terminal failed: {reason}": "新建终端失败：{reason}",
+  "herdr prefix: press a key": "herdr 前缀键：请按一个键",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
