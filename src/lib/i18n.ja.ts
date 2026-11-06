@@ -31,6 +31,7 @@ import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "表示のみ",
   "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "貼り付けていません: ファイルのパスに改行があり、ターミナルが Enter として受け取ります。",
   "Attach files": "ファイルを添付",
   "Sign out": "サインアウト",
@@ -167,7 +168,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "コマンドパレット (⌘⇧K)",
   "Could not sign out. Try again.": "サインアウトできませんでした。もう一度お試しください。",
   "Retry": "再試行",
-  "Notify me when a pane needs input or finishes": "ペインが入力を待っているときや完了したときに通知します",
   "On, pushed to this device": "オン、この端末にプッシュ",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "通知オン。このデバイスにプッシュされます。アプリを閉じていても届きます。タップするとオフになります",
   "Off on this device": "この端末ではオフ",
@@ -204,10 +204,7 @@ const BASE: Record<string, string> = {
   "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
   "Via the local network": "ローカルネットワーク経由",
   "Straight to this address": "このアドレスへ直接",
-  "Sessions on this PC": "この PC のセッション",
-  "{count} working": "作業中 {count} 件",
   "{count} waiting for you": "応答待ち {count} 件",
-  "{count} done": "完了 {count} 件",
   "Open the next session waiting for you": "応答を待っている次のセッションを開く",
   "Tab {index} of {count}": "タブ {index}/{count}",
   "Tabs of {workspace}": "{workspace} のタブ",
@@ -441,7 +438,6 @@ const BASE: Record<string, string> = {
   "{used} of {window} tokens": "{used} / {window} トークン",
   "Suggestion chip": "提案チップ",
   "Artifacts chip": "アーティファクトチップ",
-  "Side conversations chip (experimental)": "サイド会話チップ（実験的）",
   "Permission mode": "権限モード",
   "Model": "モデル",
   "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",

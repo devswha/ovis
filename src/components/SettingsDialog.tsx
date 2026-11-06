@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ArrowLeft, Bell, Bot, ChevronRight, Info, Keyboard, MessageSquare, Palette, Plus, Search, Smartphone, SquareTerminal, Star, X, type LucideIcon } from "lucide-react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { ArrowLeft, Bell, Bot, Box, CheckCheck, ChevronLeft, ChevronRight, FlaskConical, Globe, Info, Keyboard, Lock, MessageCircleQuestionMark, MessageSquare, MessagesSquare, Monitor, MousePointer2, OctagonX, Palette, Plus, Puzzle, Search, ShieldAlert, Smartphone, SquareTerminal, Star, Tags, Timer, Volume2, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -19,7 +19,7 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
-import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
+import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT } from "../lib/i18n.ts";
 import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwitch.ts";
@@ -30,7 +30,7 @@ import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesDocumentsRow, FilesPanelRow } from "./FilesPanelRow.tsx";
 import { MarkdownOutlineRow } from "./MarkdownOutlineRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords } from "./SettingsControls.tsx";
+import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
 import { FONT_FAMILY_MAX_CHARS, sanitizeFontFamily } from "../lib/fontFamily.ts";
 import { UI_FONT_MAX, UI_FONT_MIN, UI_FONT_PRESET_FAMILY, uiFontPreset, type UiFontPreset } from "../lib/typography.ts";
@@ -145,7 +145,10 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
   const t = useT();
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+  // typed and not yet saved: only that is saved when the field goes, never a value put back meanwhile (a row's ↺)
+  const typed = useRef(false);
   const commit = (): void => {
+    typed.current = false;
     const next = sanitizeFontFamily(draft);
     setDraft(next);
     if (next !== value) onCommit(next);
@@ -153,7 +156,7 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
   // closing the dialog with Escape unmounts the field without a blur
   const commitRef = useRef(commit);
   commitRef.current = commit;
-  useEffect(() => () => commitRef.current(), []);
+  useEffect(() => () => { if (typed.current) commitRef.current(); }, []);
   const [families, setFamilies] = useState<string[] | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [query, setQuery] = useState("");
@@ -201,7 +204,7 @@ function FontFamilyInput({ value, label, onCommit, placeholder = FONT_FAMILY_PLA
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => { typed.current = true; setDraft(event.target.value); }}
           onBlur={commit}
           onKeyDown={(event) => {
             // an IME keeps its Enter, including the committing one WebKit can send after compositionend as key code 229
@@ -272,6 +275,7 @@ export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "agents", icon: Bot },
   { id: "shortcuts", icon: Keyboard },
   { id: "devices", icon: Smartphone },
+  { id: "experimental", icon: FlaskConical },
   { id: "about", icon: Info },
 ];
 
@@ -323,28 +327,101 @@ const THEME_NAMES: Record<ThemeId, string> = {
   vesper: "Vesper",
 };
 
-/**
- * Every theme, grouped by the kind of the row `side` draws it with - a both-mode theme by the
- * side's own kind, a single-kind theme by its only one - the side's own kind first. The other
- * kind is offered too: a dark theme chosen for light mode draws dark, as it does in herdr.
- */
-function themeGroups(side: Mode): { kind: Mode; ids: ThemeId[] }[] {
-  const other: Mode = side === "dark" ? "light" : "dark";
-  return [side, other].map((kind) => ({ kind, ids: THEME_IDS.filter((id) => rowFor(id, side).mode === kind) }));
+/** One theme as a small picture of the app in its own colours, a sidebar beside a pane, its name under it (the cards T3 Code and herdr-app show). */
+function ThemeCard({ id, side, checked, onPick }: { id: ThemeId; side: Mode; checked: boolean; onPick: () => void }) {
+  const t = useT();
+  const row = rowFor(id, side);
+  const c = row.preview;
+  // a theme of the other kind says so: it draws that way on this side
+  const kind = row.mode === side ? undefined : `${t(THEME_NAMES[id])} · ${t(row.mode === "dark" ? "Dark" : "Light")}`;
+  return (
+    <button type="button" role="radio" aria-checked={checked} aria-label={kind} title={kind} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={id} onClick={onPick}>
+      <span className="theme-card-art" aria-hidden="true" style={{ background: row.bg, borderColor: c.border }}>
+        <span className="theme-card-side" style={{ background: row.bgPanel, borderColor: c.border }}>
+          <i style={{ background: c.accent }} /><i style={{ background: c.textDim }} /><i style={{ background: c.textDim }} />
+        </span>
+        <span className="theme-card-pane" style={{ background: c.elevated, borderColor: c.border }}>
+          <i style={{ background: c.text }} /><i style={{ background: c.textDim }} /><b style={{ background: c.primary }} />
+        </span>
+      </span>
+      <span className="theme-card-name">{t(THEME_NAMES[id])}</span>
+    </button>
+  );
 }
 
-/** The theme of one side. Picking a paired theme also fills the other side with its sibling while that side is still untouched (pickTheme). */
-function ThemeSelect({ side }: { side: Mode }) {
+/**
+ * The themes of one side in one row of cards that scrolls sideways (a trackpad, Shift and the wheel, a
+ * swipe, or the arrows at its ends), the chosen one brought into view: the row stays one card tall
+ * however many themes there are. The side drawn now opens first; Dark and Light switch it. The side's
+ * own kind comes first, then after a rule the other kind, which that side draws as it is (a dark theme
+ * chosen for light mode draws dark, as in herdr). Arrow keys, Home and End pick along the row, as a radio group's do.
+ */
+function ThemePicker() {
   const { settings, update } = useSettings();
   const t = useT();
+  const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
+  const drawn: Mode = settings.theme === "system" ? (systemDark ? "dark" : "light") : settings.theme;
+  // the side drawn now, until Dark or Light here is chosen
+  const [picked, setPicked] = useState<Mode | null>(null);
+  const side = picked ?? drawn;
+  const strip = useRef<HTMLDivElement>(null);
+  const [ends, setEnds] = useState({ start: true, end: true });
+  const current = side === "dark" ? settings.darkTheme : settings.lightTheme;
+  const other: Mode = side === "dark" ? "light" : "dark";
+  const own = THEME_IDS.filter((id) => rowFor(id, side).mode === side);
+  const others = THEME_IDS.filter((id) => rowFor(id, side).mode === other);
+  const label = t(side === "dark" ? "Dark theme" : "Light theme");
+  const measure = useCallback(() => {
+    const el = strip.current;
+    if (el) setEnds({ start: el.scrollLeft <= 1, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 1 });
+  }, []);
+  // the chosen card in view when it is not (a side switched, a reset), by the row's own scroll so the
+  // page stays put; a pick already in view leaves the row where it is
+  useLayoutEffect(() => {
+    const el = strip.current;
+    const card = el?.querySelector<HTMLElement>(`[data-theme-card="${current}"]`);
+    const shown = el && card && card.offsetLeft >= el.scrollLeft && card.offsetLeft + card.offsetWidth <= el.scrollLeft + el.clientWidth;
+    if (el && card && !shown) el.scrollLeft = card.offsetLeft - (el.clientWidth - card.offsetWidth) / 2;
+    measure();
+  }, [side, current, measure]);
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measure]);
+  const card = (id: ThemeId) => <ThemeCard key={id} id={id} side={side} checked={current === id} onPick={() => update(pickTheme(settings, side, id))} />;
+  const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+    const cards = [...(strip.current?.querySelectorAll<HTMLElement>("[data-theme-card]") ?? [])];
+    const at = cards.indexOf(document.activeElement as HTMLElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? cards.length - 1 : (at + (event.key === "ArrowRight" ? 1 : -1) + cards.length) % cards.length;
+    event.preventDefault();
+    // a radio group's arrows pick as they move
+    const id = cards[next]?.dataset["themeCard"];
+    if (id && isThemeId(id)) update(pickTheme(settings, side, id));
+    cards[next]?.focus();
+    cards[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  const scroll = (direction: 1 | -1): void => strip.current?.scrollBy({ left: direction * strip.current.clientWidth * 0.8, behavior: "smooth" });
   return (
-    <SettingsSelect id={`settings-theme-${side}`} value={side === "dark" ? settings.darkTheme : settings.lightTheme} onChange={(event) => update(pickTheme(settings, side, event.target.value as ThemeId))}>
-      {themeGroups(side).map(({ kind, ids }) => (
-        <optgroup key={kind} label={kind === "dark" ? t("Dark") : t("Light")}>
-          {ids.map((id) => <option key={id} value={id}>{t(THEME_NAMES[id])}</option>)}
-        </optgroup>
-      ))}
-    </SettingsSelect>
+    <>
+      <SettingsRow label={label} keywords={`${t("Dark theme")} ${t("Light theme")} ${t("Shown in dark mode")} ${t("Shown in light mode")}`} reset={[side === "dark" ? "darkTheme" : "lightTheme"]}>
+        <Segmented label={`${t("Dark theme")} · ${t("Light theme")}`} value={side} onChange={setPicked} options={[{ value: "dark", label: t("Dark"), name: t("Show dark themes") }, { value: "light", label: t("Light"), name: t("Show light themes") }]} />
+      </SettingsRow>
+      <div className="settings-item theme-strip">
+        <div className="theme-strip-frame">
+          <div ref={strip} className="theme-cards" role="radiogroup" aria-label={label} onScroll={measure} onKeyDown={step}>
+            {own.map(card)}
+            {others.length > 0 && <span className="theme-cards-rule" aria-hidden="true" />}
+            {others.map(card)}
+          </div>
+          {!ends.start && <button type="button" className="icon-button theme-strip-arrow is-start" aria-label={t("Earlier themes")} tabIndex={-1} onClick={() => scroll(-1)}><ChevronLeft aria-hidden="true" /></button>}
+          {!ends.end && <button type="button" className="icon-button theme-strip-arrow is-end" aria-label={t("Later themes")} tabIndex={-1} onClick={() => scroll(1)}><ChevronRight aria-hidden="true" /></button>}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -357,6 +434,8 @@ function InterfaceFontRows() {
   const t = useT();
   const preset = uiFontPreset(settings.uiFontFamily);
   const [customOpen, setCustomOpen] = useState(preset === "custom");
+  // a family put back from elsewhere (the row's ↺) closes the custom field it was typed in
+  useEffect(() => { if (settings.uiFontFamily === DEFAULT_SETTINGS.uiFontFamily) setCustomOpen(false); }, [settings.uiFontFamily]);
   const custom = customOpen || preset === "custom";
   const interfaceFontDescription = t("Menus, lists, dialogs and the sidebar; the chat's text follows it until it has a font of its own. The terminal and code keep theirs. System is this device's own interface font.");
   const choose = (next: UiFontPreset | "custom"): void => {
@@ -365,7 +444,7 @@ function InterfaceFontRows() {
   };
   return (
     <>
-      <SettingsRow label={t("Interface font")} description={interfaceFontDescription} htmlFor="settings-ui-font">
+      <SettingsRow label={t("Interface font")} description={interfaceFontDescription} htmlFor="settings-ui-font" reset={["uiFontFamily"]}>
         <SettingsSelect id="settings-ui-font" value={custom ? "custom" : preset} onChange={(event) => choose(event.target.value as UiFontPreset | "custom")}>
           <option value="default">{t("Default")}</option>
           <option value="system">{t("System")}</option>
@@ -385,39 +464,51 @@ function InterfaceFontRows() {
 function AppearancePage() {
   const { settings, update } = useSettings();
   const t = useT();
+  // herdr-app's Look page: theme, then size and fonts (the terminal's and the chat's too), each row a label and its control
   return (
-    <>
+    <SettingsBare.Provider value={true}>
     <SettingsGroup>
-      <SettingsRow label={t("Theme")} wide>
+      <SettingsRow label={t("Theme")} wide reset={["theme"]}>
         <Segmented label={t("Theme")} value={settings.theme} onChange={(theme) => update({ theme })} options={[{ value: "dark", label: t("Dark") }, { value: "light", label: t("Light") }, { value: "system", label: t("System") }]} />
       </SettingsRow>
-      <SettingsRow label={t("Dark theme")} description={t("Shown in dark mode")} htmlFor="settings-theme-dark" wide>
-        <ThemeSelect side="dark" />
+      <ThemePicker />
+    </SettingsGroup>
+
+    <SettingsGroup title={t("Typography")} section="typography">
+      <SettingsRow label={t("Interface font size")} description={t("Menus, lists, dialogs and the sidebar. The chat follows it until it has a size of its own; the terminal keeps its own.")} reset={["uiFontSize"]}>
+        <Stepper label={t("Interface font size")} value={uiFontSize(settings)} text={`${uiFontSize(settings)}px`} min={UI_FONT_MIN} max={UI_FONT_MAX} decreaseLabel={t("Decrease interface font size")} increaseLabel={t("Increase interface font size")} onChange={(size) => update({ uiFontSize: size })} />
       </SettingsRow>
-      <SettingsRow label={t("Light theme")} description={t("Shown in light mode")} htmlFor="settings-theme-light" wide>
-        <ThemeSelect side="light" />
+      <InterfaceFontRows />
+      <SettingsRow label={t("Terminal font")} description={t("Comma-separated, tried in order. A font this device does not have falls back to the default.")} keywords={`${t("Terminal font size")} ${t("Applied to every terminal pane")}`} wide reset={["terminalFontFamily", "terminalFontSize"]}>
+        <span className="settings-font-size">
+          <FontFamilyInput value={settings.terminalFontFamily} label={t("Terminal font")} fixedWidthFor="terminal" onCommit={(terminalFontFamily) => update({ terminalFontFamily })} />
+          <Stepper label={t("Terminal font size")} value={settings.terminalFontSize} text={`${settings.terminalFontSize}px`} min={TERMINAL_FONT_MIN} max={TERMINAL_FONT_MAX} decreaseLabel={t("Decrease terminal font size")} increaseLabel={t("Increase terminal font size")} onChange={(terminalFontSize) => update({ terminalFontSize })} />
+        </span>
       </SettingsRow>
-      <SettingsRow label={t("Density")}>
+      <SettingsRow label={t("Chat font")} description={t("Message text; code stays monospace. Comma-separated, tried in order. A font this device does not have falls back to the default.")} keywords={`${t("Chat font size")} ${t("Messages, code, prompt cards and the message box in the chat view")}`} wide reset={["chatFontFamily", "chatFontSize"]}>
+        <span className="settings-font-size">
+          <FontFamilyInput value={settings.chatFontFamily} label={t("Chat font")} onCommit={(chatFontFamily) => update({ chatFontFamily })} />
+          <Stepper label={t("Chat font size")} value={chatFontSize(settings)} text={`${chatFontSize(settings)}px`} min={CHAT_FONT_MIN} max={CHAT_FONT_MAX} decreaseLabel={t("Decrease chat font size")} increaseLabel={t("Increase chat font size")} onChange={(size) => update({ chatFontSize: size })} />
+        </span>
+      </SettingsRow>
+    </SettingsGroup>
+
+    <SettingsGroup>
+      <SettingsRow label={t("Density")} reset={["density"]}>
         <Segmented label={t("Density")} value={settings.density} onChange={(density) => update({ density })} options={[{ value: "comfortable", label: t("Comfortable") }, { value: "compact", label: t("Compact") }]} />
       </SettingsRow>
-      <SettingsRow label={t("Language")} description={t("Follows the browser unless you choose one")} htmlFor="settings-language">
+      <SettingsRow label={t("Language")} description={t("Follows the browser unless you choose one")} htmlFor="settings-language" reset={["language"]}>
         <SettingsSelect id="settings-language" value={settings.language} onChange={(event) => update({ language: event.target.value as typeof settings.language })}>
           {LANGUAGE_SETTINGS.map((language) => <option key={language} value={language}>{language === "system" ? t("System") : LANGUAGE_NAMES[language]}</option>)}
         </SettingsSelect>
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title={t("Typography")} section="typography">
-      <SettingsRow label={t("Interface font size")} description={t("Menus, lists, dialogs and the sidebar. The chat follows it until it has a size of its own; the terminal keeps its own.")}>
-        <Stepper label={t("Interface font size")} value={uiFontSize(settings)} text={`${uiFontSize(settings)}px`} min={UI_FONT_MIN} max={UI_FONT_MAX} decreaseLabel={t("Decrease interface font size")} increaseLabel={t("Increase interface font size")} onChange={(size) => update({ uiFontSize: size })} />
-      </SettingsRow>
-    </SettingsGroup>
-
     <SettingsGroup title={t("Sidebar")} section="sidebar">
-      <SettingsRow label={t("Sidebar rows")} description={t("Name each workspace on one line, or show what its agent is doing with the workspace under it")} wide>
+      <SettingsRow label={t("Sidebar rows")} description={t("Name each workspace on one line, or show what its agent is doing with the workspace under it")} wide reset={["sidebarRows"]}>
         <Segmented label={t("Sidebar rows")} value={settings.sidebarRows} onChange={(sidebarRows) => update({ sidebarRows })} options={[{ value: "one", label: t("One line") }, { value: "two", label: t("Two lines") }]} />
       </SettingsRow>
-      <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last. By state lists the agents above the workspaces on this device: the ones that need you first, then working, done and idle. herdr's own order is not changed.")} wide>
+      <SettingsRow label={t("Agents order")} description={t("Activity keeps a waiting agent on top, then the one that changed last. By state lists the agents above the workspaces on this device: the ones that need you first, then working, done and idle. herdr's own order is not changed.")} wide reset={["agentOrder", "agentGroups"]}>
         {/* By state is this device's grouping (agentGroups); Workspaces and Activity are every browser's order (agentOrder), the grouping off */}
         <Segmented label={t("Agents order")} value={settings.agentGroups ? "state" : settings.agentOrder} onChange={(order) => update(order === "state" ? { agentGroups: true } : { agentOrder: order, agentGroups: false })} options={[{ value: "workspace", label: t("Workspaces") }, { value: "activity", label: t("Activity") }, { value: "state", label: t("By state") }] as const} />
       </SettingsRow>
@@ -426,9 +517,10 @@ function AppearancePage() {
       </SettingsRow>}
     </SettingsGroup>
 
-    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentNamedGroups", "agentMarks", "statusIndicators", "uiFontFamily", "fileFontSize"]}>
+    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentMarks", "statusIndicators", "fileFontSize"]}>
       <SettingsGroup title={t("Sidebar")} section="sidebar-more">
-        <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}>
+        <SettingsRow label={t("Name tabs from the first message")} description={t("A tab still named by its number shows a few words of the first message sent to it, in every browser. A name you gave a tab is kept, and herdr's own tab names do not change. Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}
+          condition={<span className="settings-condition">{t("Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}</span>} reset={["autoTabNames"]}>
           <Toggle label={t("Name tabs from the first message")} checked={settings.autoTabNames} onChange={(autoTabNames) => update({ autoTabNames })} />
         </SettingsRow>
         <SettingsRow label={t("Sidebar filter")} description={t("Show the Filter field above the sidebar's lists on this device. When off, Filter workspaces and agents in the command palette opens it.")}>
@@ -447,10 +539,6 @@ function AppearancePage() {
           <Toggle label={t("Agents under workspaces")} checked={settings.sidebarAgentTree} onChange={(sidebarAgentTree) => update({ sidebarAgentTree })} />
         </SettingsRow>
         <FoldHelpersRow />
-        <SettingsRow label={t("Named agent groups")} description={t("Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.")}>
-          <Toggle label={t("Named agent groups")} checked={settings.agentNamedGroups} onChange={(agentNamedGroups) => update({ agentNamedGroups })} />
-        </SettingsRow>
-        {settings.agentNamedGroups && <AgentGroupNames />}
         <SettingsRow label={t("Agent logos")} description={t("Draw each agent's logo in its brand colors, or without color")} wide>
           <Segmented label={t("Agent logos")} value={settings.agentMarks} onChange={(agentMarks) => update({ agentMarks })} options={[{ value: "color", label: t("Color") }, { value: "mono", label: t("Mono") }]} />
         </SettingsRow>
@@ -459,21 +547,10 @@ function AppearancePage() {
         </SettingsRow>
       </SettingsGroup>
       <SettingsGroup title={t("Typography")} section="typography-more">
-        <InterfaceFontRows />
         <FileTextSizeRow />
       </SettingsGroup>
     </SettingsFold>
-    <SettingsFold kind="experimental" keys={["agentLocks", "opencodeParentEnds"]}>
-      <SettingsGroup>
-        <SettingsRow label={t("Lock pinned agents (experimental)")} description={t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")}>
-          <Toggle label={t("Lock pinned agents (experimental)")} checked={settings.agentLocks} onChange={(agentLocks) => update({ agentLocks })} />
-        </SettingsRow>
-        <SettingsRow label={t("Read OpenCode subagent ends from their session (experimental)")} description={t("An OpenCode subagent counts as running, and holds its turn's BG wait, until the session that started it is told it ended, not as soon as the subagent goes idle. Its own background work may still run then. When off, the subagent's own rows tell.")}>
-          <Toggle label={t("Read OpenCode subagent ends from their session (experimental)")} checked={settings.opencodeParentEnds} onChange={(opencodeParentEnds) => update({ opencodeParentEnds })} />
-        </SettingsRow>
-      </SettingsGroup>
-    </SettingsFold>
-    </>
+    </SettingsBare.Provider>
   );
 }
 
@@ -499,9 +576,6 @@ function ChatPage() {
         </SettingsRow>
         <SettingsRow label={t("Chat width")} description={t("How wide the conversation and the message box run on a large screen")} wide>
           <Segmented label={t("Chat width")} value={settings.chatWidth} onChange={(chatWidth) => update({ chatWidth })} options={CHAT_WIDTHS.map((chatWidth) => ({ value: chatWidth, label: t(chatWidth === "narrow" ? "Narrow" : chatWidth === "wide" ? "Wide" : chatWidth === "full" ? "Full" : "Default") }))} />
-        </SettingsRow>
-        <SettingsRow label={t("Chat font size")} description={t("Messages, code, prompt cards and the message box in the chat view")}>
-          <Stepper label={t("Chat font size")} value={chatFontSize(settings)} text={`${chatFontSize(settings)}px`} min={CHAT_FONT_MIN} max={CHAT_FONT_MAX} decreaseLabel={t("Decrease chat font size")} increaseLabel={t("Increase chat font size")} onChange={(size) => update({ chatFontSize: size })} />
         </SettingsRow>
       </SettingsGroup>
 
@@ -553,16 +627,13 @@ function ChatPage() {
 
       <VoiceMain />
 
-      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "chatFontFamily", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", ...(settings.voiceInput === "off" ? [] : ["voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"] as const)]}>
+      <SettingsFold kind="more" keys={["foldWork", "chatRequestDetails", "autoSendQueued", "composerPasteSend", "wrapCode", "editTextFiles", "markdownOutline", "filesPanel", "filesDocuments", "reuseExternalLinkTab", ...(settings.voiceInput === "off" ? [] : ["voiceLanguage", "voiceEngine", "voicePolishChat", "voicePolishTerminal"] as const)]}>
         <SettingsGroup title={t("Chat")} section="chat-more">
           <SettingsRow label={t("Collapse work")} description={t("A turn's work starts folded to one line, also while the agent works, unless it needs you. One you open or fold stays that way for its message")}>
             <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
           </SettingsRow>
           <SettingsRow label={t("Compaction and failed requests")} description={t("On this device, a compaction names the token counts the agent recorded with it, and each run of back-to-back failed requests shows as one row that opens to their errors. OmO, omp and pi record them.")}>
             <Toggle label={t("Compaction and failed requests")} checked={settings.chatRequestDetails} onChange={(chatRequestDetails) => update({ chatRequestDetails })} />
-          </SettingsRow>
-          <SettingsRow label={t("Chat font")} description={t("Message text; code stays monospace. Comma-separated, tried in order. A font this device does not have falls back to the default.")} wide>
-            <FontFamilyInput value={settings.chatFontFamily} label={t("Chat font")} onCommit={(chatFontFamily) => update({ chatFontFamily })} />
           </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title={t("Composer")} section="composer-more">
@@ -600,12 +671,6 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
   return (
     <>
     <SettingsGroup>
-      <SettingsRow label={t("Terminal font size")} description={t("Applied to every terminal pane")}>
-        <Stepper label={t("Terminal font size")} value={settings.terminalFontSize} text={`${settings.terminalFontSize}px`} min={TERMINAL_FONT_MIN} max={TERMINAL_FONT_MAX} decreaseLabel={t("Decrease terminal font size")} increaseLabel={t("Increase terminal font size")} onChange={(terminalFontSize) => update({ terminalFontSize })} />
-      </SettingsRow>
-      <SettingsRow label={t("Terminal font")} description={t("Comma-separated, tried in order. A font this device does not have falls back to the default.")} wide>
-        <FontFamilyInput value={settings.terminalFontFamily} label={t("Terminal font")} fixedWidthFor="terminal" onCommit={(terminalFontFamily) => update({ terminalFontFamily })} />
-      </SettingsRow>
       <SettingsRow label={t("Terminal input mode")} htmlFor="terminal-input-mode">
         {/* "auto", the stored default, types straight into the grid on every device: it reads as Direct typing */}
         <SettingsSelect id="terminal-input-mode" value={settings.terminalInputMode === "line" ? "line" : "direct"} onChange={(event) => update({ terminalInputMode: event.target.value as "line" | "direct" })}>
@@ -653,13 +718,6 @@ function TerminalPage({ keyBarButtonRef, onEditKeyBar }: { keyBarButtonRef: RefO
         </SettingsRow>
       </SettingsGroup>
     </SettingsFold>
-    <SettingsFold kind="experimental" keys={["codexDrag"]}>
-      <SettingsGroup>
-        <SettingsRow label={t("Codex panes: let Codex select and scroll")} description={t("On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.")}>
-          <Toggle label={t("Codex panes: let Codex select and scroll")} checked={settings.codexDrag} onChange={(codexDrag) => update({ codexDrag })} />
-        </SettingsRow>
-      </SettingsGroup>
-    </SettingsFold>
     </>
   );
 }
@@ -670,11 +728,28 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
   const filters = useAlertFilters();
   // the Sound switch as last set: the preview waits for the audio, and must not play once it is off
   const alertSoundWanted = useRef(settings.alertSound);
+  const permission = filters.permission ?? settings.alertInput;
+  // herdr-app's rows: each a name and its control. Which alerts come is one decision, so one line of chips
   return (
-    <>
+    <SettingsBare.Provider value={true}>
     <SettingsGroup note={t("For this device. An alert waits a little first, and none comes when the pane changes meanwhile, as when you answer at the PC.")}>
       <PushTestControls onEnable={onEnableNotifications} />
-      <SettingsRow label={t("Sound")} description={t("While a tab of the app is open, it chimes for these alerts, also when a Focus or Do Not Disturb silences notifications.")}>
+      {/* the rows these chips replaced are still found by their words */}
+      <SettingsRow label={t("Alert me when")} icon={Bell} wide
+        resetAlso={{ changed: alertFiltersChanged(filters, settings.alertInput) > 0, restore: () => updateAlertFilters({ permission: undefined, error: undefined }) }}
+        keywords={[t("Long turn finished"), t("Any turn finished"), t("Needs input"), t("An agent asks you something"), t("Needs permission"), t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input."), t("Finished"), t("Long turns: only work that took a minute or more"), t("Stopped on an error"), t("A turn that ended on an error, as OmO and GJC report it")].join(" ")}
+        reset={["alertInput", "alertDone"]}>
+        <ChipToggles label={t("Alert me when")} chips={[
+          { label: t("Needs input"), icon: MessageCircleQuestionMark, on: settings.alertInput, onChange: (alertInput) => update({ alertInput }) },
+          { label: t("Needs permission"), icon: ShieldAlert, on: permission, onChange: (on) => updateAlertFilters({ permission: on }) },
+          // the two Finished chips are the one setting's two levels, and every turn takes in the long ones:
+          // Any on lights Long too, Any off keeps Long, Long off turns both off
+          { label: t("Long turn finished"), icon: Timer, on: settings.alertDone !== "off", onChange: (on) => update({ alertDone: on ? "long" : "off" }) },
+          { label: t("Any turn finished"), icon: CheckCheck, on: settings.alertDone === "always", onChange: (on) => update({ alertDone: on ? "always" : "long" }) },
+          { label: t("Stopped on an error"), icon: OctagonX, on: filters.error === true, onChange: (error) => updateAlertFilters({ error }) },
+        ]} />
+      </SettingsRow>
+      <SettingsRow label={t("Sound")} icon={Volume2} description={t("While a tab of the app is open, it chimes for these alerts, also when a Focus or Do Not Disturb silences notifications.")} reset={["alertSound"]}>
         <Toggle label={t("Sound")} checked={settings.alertSound} onChange={(alertSound) => {
           update({ alertSound });
           alertSoundWanted.current = alertSound;
@@ -687,30 +762,38 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
     <AlertPcsGroup machines={machines} />
     {/* a destination's last failed post is said in its group, so the group stays in sight */}
     <AlertWebhookGroup />
-    {/* which alerts come: nearly everyone keeps the defaults, so they wait in the fold */}
-    <SettingsFold kind="more" keys={["alertInput", "alertDone", "alertInApp"]}
-      elsewhere={alertFiltersChanged(filters, settings.alertInput)}>
-      <SettingsGroup title={t("Alert me when")} section="alert-kinds">
-        <SettingsRow label={t("Needs input")} description={t("An agent asks you something")}>
-          <Toggle label={t("Needs input")} checked={settings.alertInput} onChange={(alertInput) => update({ alertInput })} />
+    </SettingsBare.Provider>
+  );
+}
+
+/** The switches still being shaped, on a page of their own as herdr-app and T3 Code keep them. */
+function ExperimentalPage() {
+  const { settings, update } = useSettings();
+  const t = useT();
+  return (
+    <SettingsBare.Provider value={true}>
+    <SettingsGroup>
+      <SettingsRow label={t("Named agent groups")} icon={Tags} description={t("Split the Agents list into groups you name, such as Agents, Replies or Tasks. New workspace and New tab offer them, and an agent's menu moves it. Every browser shares them.")} reset={["agentNamedGroups"]}>
+        <Toggle label={t("Named agent groups")} checked={settings.agentNamedGroups} onChange={(agentNamedGroups) => update({ agentNamedGroups })} />
+      </SettingsRow>
+      {settings.agentNamedGroups && <AgentGroupNames />}
+      <SettingsRow label={t("Lock pinned agents")} icon={Lock} description={t("A pinned agent's menu in the Agents list offers Lock agent. This app then offers no way to close a locked agent's pane, tab or workspace, in every browser. Closing from herdr itself or a script still works.")} reset={["agentLocks"]}>
+        <Toggle label={t("Lock pinned agents")} checked={settings.agentLocks} onChange={(agentLocks) => update({ agentLocks })} />
+      </SettingsRow>
+        <SettingsRow label={t("Codex panes: let Codex select and scroll")} icon={MousePointer2} reset={["codexDrag"]} description={t("On this device, a drag in a Codex pane goes to Codex, which selects through its whole history and scrolls it while the drag is held past the top or bottom edge. Ctrl+C or Enter copies it, but on herdr that copy does not reach this device's clipboard: Shift+drag (Option+drag on a Mac) still selects, copies and quotes in Ovis, up to the screen's edge.")}>
+          <Toggle label={t("Codex panes: let Codex select and scroll")} checked={settings.codexDrag} onChange={(codexDrag) => update({ codexDrag })} />
         </SettingsRow>
-        <SettingsRow label={t("Needs permission")} description={t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input.")}>
-          <Toggle label={t("Needs permission")} checked={filters.permission ?? settings.alertInput} onChange={(permission) => updateAlertFilters({ permission })} />
-        </SettingsRow>
-        <SettingsRow label={t("Finished")} description={t("Long turns: only work that took a minute or more")} wide>
-          <Segmented label={t("Finished")} value={settings.alertDone} onChange={(alertDone) => update({ alertDone })} options={[{ value: "off", label: t("Off") }, { value: "long", label: t("Long turns") }, { value: "always", label: t("Every turn") }]} />
-        </SettingsRow>
-        <SettingsRow label={t("Stopped on an error")} description={t("A turn that ended on an error, as OmO and GJC report it")}>
-          <Toggle label={t("Stopped on an error")} checked={filters.error === true} onChange={(error) => updateAlertFilters({ error })} />
-        </SettingsRow>
-      </SettingsGroup>
-      <SettingsGroup section="alerts-more">
-        <SettingsRow label={t("In the app")} description={t("While the app is open, these drop in from the top of the screen at once. Tap one to open its pane.")}>
-          <Toggle label={t("In the app")} checked={settings.alertInApp} onChange={(alertInApp) => update({ alertInApp })} />
-        </SettingsRow>
-      </SettingsGroup>
-    </SettingsFold>
-    </>
+    </SettingsGroup>
+    {/* one agent's own experiments, moved here from its row on Agents */}
+    <SettingsGroup title={t("Agents")} section="experimental-agents" heading>
+      <SettingsRow label={t("OMP: side conversations chip")} icon={MessagesSquare} description={t("A chip in an OMP pane's message box lists the side conversations its session saved with /btw.")} reset={["composerBtw"]}>
+        <Toggle label={t("OMP: side conversations chip")} checked={settings.composerBtw} onChange={(composerBtw) => update({ composerBtw })} />
+      </SettingsRow>
+      <SettingsRow label={t("OpenCode: subagent ends from their session")} icon={Bot} description={t("An OpenCode subagent counts as running, and holds its turn's BG wait, until the session that started it is told it ended, not as soon as the subagent goes idle. Its own background work may still run then. When off, the subagent's own rows tell.")} reset={["opencodeParentEnds"]}>
+        <Toggle label={t("OpenCode: subagent ends from their session")} checked={settings.opencodeParentEnds} onChange={(opencodeParentEnds) => update({ opencodeParentEnds })} />
+      </SettingsRow>
+    </SettingsGroup>
+    </SettingsBare.Provider>
   );
 }
 
@@ -725,11 +808,11 @@ function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   if (machines.length < 2) return null;
   const listed = [...machines].sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"));
   return (
-    <SettingsGroup title={t("Alerts from")} section="alert-pcs">
+    <SettingsGroup title={t("Alerts from")} section="alert-pcs" heading>
       {listed.map((machine) => {
         const key = pcAlertKey(machine);
         return (
-          <SettingsRow key={machine.id} label={machine.name}>
+          <SettingsRow key={machine.id} label={machine.name} icon={Monitor}>
             <Toggle label={t("Alerts from {name}", { name: machine.name })} checked={!pcsOff.includes(key) && !pcsOff.includes(machine.name)}
               onChange={(on) => updateAlertFilters({ pcsOff: on ? pcsOff.filter((item) => item !== key && item !== machine.name) : [...pcsOff, key] })} />
           </SettingsRow>
@@ -1422,7 +1505,16 @@ function PluginsGroup() {
     void api.fetchPluginActions().then((list) => { if (current) setPlugins(list); }, () => { if (current) setPlugins([]); });
     return () => { current = false; };
   }, [api]);
+  const bare = useContext(SettingsBare);
   if (plugins.length === 0) return null;
+  // one line: the plugins by name, a disabled one marked
+  if (bare) return (
+    <SettingsGroup className="settings-plugins">
+      <SettingsRow label={t("herdr plugins")} icon={Puzzle}>
+        <span className="settings-fact">{plugins.map((plugin) => `${plugin.name} ${plugin.version}${plugin.enabled ? "" : ` (${t("Disabled")})`}`).join(", ")}</span>
+      </SettingsRow>
+    </SettingsGroup>
+  );
   return (
     <SettingsGroup title={t("herdr plugins")} note={t("The command palette and its plugin actions are not available in the phone touch UI. Use a wider screen or a keyboard's command palette shortcut.")} className="settings-plugins">
       {plugins.map((plugin) => (
@@ -1477,10 +1569,6 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   if (served === null || (known === null && facts === null)) return null;
   const onCore = served === "herdr-core";
   const vars = { version: core?.version ?? "", setting: "OVIS_RUNTIME=herdr-core", command: "herdr plugin config-dir devswha.ovis" };
-  const coreVersion = known ?? core?.version ?? "";
-  const detail = !onCore ? (known !== null ? t("Version {version}.", { version: known }) : t("herdr's TUI server is not running."))
-    : core?.session ? t("herdr-core {version}, session {session}.", { version: coreVersion, session: core.session })
-    : t("herdr-core {version}.", { version: coreVersion });
   const target = facts?.switch_to ?? null;
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = facts?.fallback === "no_herdr_core" ? t("The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.")
@@ -1490,18 +1578,29 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
     : core.running ? t("The Herdr app's core (hc {version}) runs on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.", vars)
     : t("The Herdr app's core (hc {version}) is installed on this PC too. To show its terminals here instead, set {setting} and restart Ovis: in the .env file in the folder {command} prints when herdr's plugin starts Ovis, or in the environment of whatever else starts it.", vars);
   const toCore = target === "herdr-core";
+  // what this PC's server reports, never guessed: the runtime it serves with its version, then the
+  // others it found installed. With two installed the choice between them is right on the first line.
+  const coreInstalled = core?.version != null;
+  const tuiInstalled = facts?.tui.installed ?? !onCore;
+  const name = (runtime: "herdr" | "herdr-core") => (runtime === "herdr-core" ? "herdr-core" : "herdr");
+  const versionOf = (runtime: "herdr" | "herdr-core") => (runtime === served ? known ?? (onCore ? core?.version ?? null : null) : runtime === "herdr-core" ? core?.version ?? null : null);
+  const titled = (runtime: "herdr" | "herdr-core") => [name(runtime), versionOf(runtime)].filter(Boolean).join(" ");
+  // the switch names both runtimes with their versions; another one installed gets its own line only when there is no switch
+  const others = (["herdr", "herdr-core"] as const).filter((runtime) => runtime !== served && runtime !== target && (runtime === "herdr-core" ? coreInstalled : tuiInstalled));
   return (
     <SettingsGroup title={t("Terminals")} section="runtime">
-      <SettingsRow label={t("This PC serves")} description={detail}>
-        <span className="settings-fact">{onCore ? t("Herdr app") : t("herdr TUI")}</span>
+      <SettingsRow label={t("In use")} icon={SquareTerminal} wide={target !== null}
+        condition={!onCore && facts?.tui.running === false ? <span className="settings-hint">{t("herdr's TUI server is not running.")}</span> : undefined}>
+        {target !== null
+          ? <Segmented label={t("In use")} value={served} onChange={(runtime) => { if (runtime === target) setConfirming(true); }}
+            options={[served, target].sort().map((runtime) => ({ value: runtime, label: titled(runtime) }))} />
+          : <span className="settings-fact">{titled(served)}</span>}
       </SettingsRow>
-      {target !== null && (
-        <SettingsRow label={toCore ? t("Show the Herdr app's terminals") : t("Show herdr TUI's terminals")}
-          description={toCore ? t("Ovis restarts on the Herdr app's core (hc {version}).", { version: core?.version ?? "" })
-            : facts?.tui.running ? t("Ovis restarts on herdr's TUI server.") : t("Ovis restarts on herdr's TUI server, which is not running: start herdr after the switch.")}>
-          <button type="button" className="btn" onClick={() => setConfirming(true)}>{t("Switch")}</button>
+      {others.map((runtime) => (
+        <SettingsRow key={runtime} label={name(runtime)} icon={Box}>
+          <span className="settings-fact">{versionOf(runtime) ?? t("Installed")}</span>
         </SettingsRow>
-      )}
+      ))}
       {hint && <p className="settings-item settings-hint">{hint}</p>}
       {move}
       {confirming && target !== null && (
@@ -1509,7 +1608,7 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
           title={toCore ? t("Show the Herdr app's terminals?") : t("Show herdr TUI's terminals?")}
           body={toCore
             ? t("Ovis restarts and shows the Herdr app's terminals instead of herdr TUI's; this page reconnects by itself. herdr's panes keep running.")
-            : t("Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.")}
+            : `${t("Ovis restarts and shows herdr TUI's terminals instead of the Herdr app's; this page reconnects by itself. The app's terminals keep running.")}${facts?.tui.running === false ? ` ${t("herdr's TUI server is not running: start herdr after the switch.")}` : ""}`}
           confirmLabel={t("Switch and restart")}
           onConfirm={async () => {
             // the bridge answering now (its boot id needs no herdr): any other one after the switch is the restarted server
@@ -1534,24 +1633,27 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
 
 function AboutPage({ updates, herdrVersion, herdrRuntime, herdrCore, herdrRuntimeFacts, bootId, onServerRestarted, bridgesFollow }: { updates: UpdatesModel; herdrVersion: string | null; herdrRuntime: "herdr" | "herdr-core" | null; herdrCore: HerdrCoreFacts | null; herdrRuntimeFacts: HerdrRuntimeFacts | null; bootId: string | null; onServerRestarted?: () => void; bridgesFollow: boolean }) {
   const t = useT();
+  // herdr-app's About: each line a name and its value or action, no group captions or sentences
   return (
-    <>
-      <UpdateControls updates={updates} bridgesFollow={bridgesFollow} />
+    <SettingsBare.Provider value={true}>
+      {/* the facts read as one list, as herdr-app's About */}
+      <div className="settings-joined">
       <RuntimeFacts version={herdrVersion} runtime={herdrRuntime} core={herdrCore} facts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} />
+      <UpdateControls updates={updates} bridgesFollow={bridgesFollow} />
       {/* herdr's own version and update: on herdr-core there is no herdr TUI here, and Terminals names the core */}
-      {herdrRuntime !== "herdr-core" && <HerdrUpdateControls enabled herdrVersion={herdrVersion} />}
+      {herdrRuntime !== "herdr-core" && <HerdrUpdateControls enabled herdrVersion={herdrVersion} showVersion={(herdrRuntimeFacts?.serving ?? herdrRuntime) === null} />}
       <PluginsGroup />
       <TelemetryControls />
+      </div>
       <SettingsGroup title={t("About")} className="settings-about" section="about">
         <div className="settings-row">
           <div className="settings-row-text">
-            <span className="settings-label">Ovis</span>
-            <a className="settings-link" href="https://ovis.sh/" target="_blank" rel="noreferrer">ovis.sh</a>
+            <span className="settings-label-line"><Globe className="settings-row-icon" aria-hidden="true" /><a className="settings-link" href="https://ovis.sh/" target="_blank" rel="noreferrer">ovis.sh</a></span>
           </div>
           <a className="btn" href="https://github.com/devswha/ovis" target="_blank" rel="noreferrer"><Star aria-hidden="true" />{t("Star on GitHub")}</a>
         </div>
       </SettingsGroup>
-    </>
+    </SettingsBare.Provider>
   );
 }
 
@@ -1653,7 +1755,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const following = useRef<{ group: HTMLElement; page: SettingsPage | null } | null>(null);
   // the group a landing named that was not drawn yet, waited for until the reader moves the page
   const awaited = useRef<{ named: string; page: SettingsPage | null } | null>(null);
-  const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Devices and PCs" : "About");
+  const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Devices and PCs" : id === "experimental" ? "Experimental" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
   // Settings' search: every page's rows that hold all the words typed, each where it can be changed
   // at once, under its page's name, as Zed's and VS Code's settings searches show them
@@ -1803,6 +1905,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
       case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
+      case "experimental": return <ExperimentalPage />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} bridgesFollow={pcSettings?.auto_update_bridges === true} />;
       default: return null;
     }
