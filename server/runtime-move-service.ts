@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync } from "node:fs";
+import { chmodSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HerdrRuntimeFacts } from "../shared/machines.ts";
@@ -31,6 +31,8 @@ export interface MoveServiceOptions {
   holdsPending: (paneId: string) => boolean;
   /** the pane's input lane (core/input.ts `serialize`): the exit takes its place in it */
   lane: InputLane;
+  /** waits until a keystroke typed into the pane's pty can no longer arrive after an RPC key (core/input.ts) */
+  settleAfterTyping: (paneId: string) => Promise<void>;
   /** true: the agent's input line reads empty; false: something is typed; null: unreadable for this agent (the core's) */
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** asks the launcher to switch to herdr-core; an error message when it refuses */
@@ -58,9 +60,10 @@ export interface MoveService {
   /**
    * Ends the command a shell pane runs while the move waits, as the person would: Ctrl+C in the pane's
    * input lane, or with `force`, only after that Ctrl+C left the same command running FORCE_AFTER_MS,
-   * SIGTERM to the pane's foreground process group. An error code when it does nothing.
+   * SIGTERM to the pane's foreground process group. `command`, when given, is the one the person was
+   * shown: another one running there now is not ended (`changed`). An error code when it does nothing.
    */
-  stopPane: (paneId: string, force: boolean) => Promise<"not_waiting" | "not_running" | "not_tried" | "own_server" | null>;
+  stopPane: (paneId: string, force: boolean, command?: string) => Promise<"not_waiting" | "not_running" | "changed" | "not_tried" | "own_server" | null>;
   /** installs herdr-core where only that keeps the move from being offered; an error code when it is not offered, throws when the install fails */
   install: () => Promise<"unavailable" | "installing" | null>;
   /** a move waits or runs: no other runtime switch meanwhile */
@@ -174,6 +177,15 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   };
 }
 
+/** This server's own process group where the system tells it (Linux /proc), else null. */
+function ownGroup(): number | null {
+  try {
+    // after the command name's closing parenthesis: state, ppid, pgrp
+    const group = Number(readFileSync("/proc/self/stat", "utf8").replace(/^.*\) /s, "").split(" ")[2]);
+    return Number.isSafeInteger(group) ? group : null;
+  } catch { return null; }
+}
+
 /** The shell and the process group in front of it, when that group is a command's and not the shell's own. */
 function commandGroup(info: PaneProcessInfo | undefined): { shell: number; group: number } | null {
   const shell = info?.shell_pid;
@@ -266,37 +278,46 @@ export function moveService(options: MoveServiceOptions): MoveService {
       }
       const current = await plan();
       if (status.state !== "waiting" || tries.size === 0) return { available: true, plan: current, status };
-      // a pane whose command ended, or that runs another now, is no longer being stopped
+      // a pane whose command ended, or that runs another group now, is no longer being stopped: it offers End again
+      for (const [paneId, tried] of tries) {
+        const front = commandGroup(await facts.processInfo(paneId));
+        if (front === null || front.group !== tried.group || front.shell !== tried.shell) tries.delete(paneId);
+      }
       const stopping = [...tries].filter(([paneId]) => {
         const verdict = current.panes.find((pane) => pane.pane_id === paneId)?.verdict;
         return verdict?.kind === "busy" && verdict.reason === "command_running";
       }).map(([paneId, tried]) => ({ pane_id: paneId, force: Date.now() - tried.at >= FORCE_AFTER_MS }));
       return { available: true, plan: current, status: stopping.length === 0 ? status : { ...status, stopping } };
     },
-    stopPane: async (paneId, force) => {
+    stopPane: async (paneId, force, command) => {
       if (status.state !== "waiting") return "not_waiting";
       const wait = generation;
       const verdict = (await plan()).panes.find((pane) => pane.pane_id === paneId)?.verdict;
       if (verdict?.kind !== "busy" || verdict.reason !== "command_running") return "not_running";
+      if (command !== undefined && verdict.command !== command) return "changed";
       const info = await facts.processInfo(paneId);
       const front = commandGroup(info);
       if (front === null) return "not_running";
       // this server (or the launcher it runs under) in front of that shell: ending it would end the move
-      if (info?.foreground_processes?.some((entry) => entry.pid === process.pid || entry.pid === process.ppid)) return "own_server";
+      if (front.group === ownGroup() || info?.foreground_processes?.some((entry) => entry.pid === process.pid || entry.pid === process.ppid)) return "own_server";
       if (wait !== generation || status.state !== "waiting") return "not_waiting";
       if (!force) {
         // behind anything typed or sent before it, checked again there: the same command still in front
-        const sent = await options.lane(paneId, async () => {
+        const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | null> => {
+          // keys typed into the pty just before still on their way: Ctrl+C must not overtake them
+          await options.settleAfterTyping(paneId);
+          if (wait !== generation || status.state !== "waiting") return "not_waiting";
           const now = commandGroup(await facts.processInfo(paneId));
-          if (now === null || now.group !== front.group || now.shell !== front.shell) return false;
+          if (now === null || now.group !== front.group || now.shell !== front.shell) return "not_running";
           await paneSendKeys(paneId, ["ctrl+c"]);
-          return true;
+          return null;
         });
-        if (!sent) return "not_running";
+        if (sent !== null) return sent;
         if (wait === generation) tries.set(paneId, { ...front, at: Date.now() });
         return null;
       }
       const tried = tries.get(paneId);
+      if (tried && (tried.group !== front.group || tried.shell !== front.shell)) tries.delete(paneId);
       if (!tried || tried.group !== front.group || tried.shell !== front.shell || Date.now() - tried.at < FORCE_AFTER_MS) return "not_tried";
       try { process.kill(-front.group, "SIGTERM"); } catch (error) {
         // the group ended meanwhile: what the force was for

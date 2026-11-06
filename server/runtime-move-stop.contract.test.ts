@@ -93,10 +93,38 @@ describe("ending a busy pane from the move's wait", () => {
     const other = await running("move-stop-other", "sleep 600");
     await waitingMove();
     expect(await stop({ pane_id: agentPane })).toEqual({ status: 409, code: "not_running" });
-    expect(await stop({ pane_id: pane })).toEqual({ status: 200, code: null });
+    // the row showed another command than the one running now: nothing is sent
+    expect(await stop({ pane_id: pane, command: "top" })).toEqual({ status: 409, code: "changed" });
+    expect(await shellInFront(pane)).toBe(false);
+    expect(await stop({ pane_id: pane, command: "sleep" })).toEqual({ status: 200, code: null });
     await until("the stopped pane", () => shellInFront(pane), (front) => front);
     expect(await shellInFront(other)).toBe(false);
     expect((await read()).status.state).toBe("waiting");
+  }, WAIT_MS * 3);
+
+  it("refuses a request that is not this app's own or names no pane", async () => {
+    const pane = await running("move-stop-refusals", "sleep 600");
+    await waitingMove();
+    const foreign = { authorization: headers.authorization, "content-type": headers["content-type"] };
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/runtime/move/stop`, { method: "POST", headers: foreign, body: JSON.stringify({ pane_id: pane }) });
+    expect(response.status).toBe(403);
+    expect(await stop({})).toEqual({ status: 400, code: "invalid_pane" });
+    expect(await stop({ pane_id: pane, force: "yes" })).toEqual({ status: 400, code: "invalid_force" });
+    expect(await shellInFront(pane)).toBe(false);
+  }, WAIT_MS * 3);
+
+  it("offers End again for a new command once the one it stopped has ended", async () => {
+    const pane = await running("move-stop-again", "sleep 600");
+    await waitingMove();
+    expect(await stop({ pane_id: pane })).toEqual({ status: 200, code: null });
+    await until("the stopped pane", () => shellInFront(pane), (front) => front);
+    await paneSendText(pane, "sleep 600");
+    await paneSendKeys(pane, ["enter"]);
+    await until("the new command", () => shellInFront(pane), (front) => !front);
+    const { status } = await read();
+    expect(status.state === "waiting" && (status.stopping ?? []).some((entry) => entry.pane_id === pane)).toBe(false);
+    expect(await stop({ pane_id: pane })).toEqual({ status: 200, code: null });
+    await until("the new command's end", () => shellInFront(pane), (front) => front);
   }, WAIT_MS * 3);
 
   it("forces only after Ctrl+C was tried and the command still runs, and only that pane's group", async () => {

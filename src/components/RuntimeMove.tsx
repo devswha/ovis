@@ -14,7 +14,7 @@ import { X } from "lucide-react";
 
 import "./RuntimeMove.css";
 
-import type { MovePlanResponse } from "../../shared/runtime-move.ts";
+import type { MovePane, MovePlanResponse } from "../../shared/runtime-move.ts";
 import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import { ApiError, cancelMove, fetchBridgeHealth, fetchMovePlan, installHerdrCore, startMove, stopMovePane } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
@@ -176,17 +176,19 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const cancel = () => act(async () => { await cancelMove(); onAnswer(await fetchMovePlan()); });
   const again = () => act(async () => { onAnswer(await fetchMovePlan()); setAcknowledged(true); });
   const stopping = status.state === "waiting" ? status.stopping ?? [] : [];
-  const stop = (paneId: string, force: boolean) => act(async () => { await stopMovePane(paneId, force); onAnswer(await fetchMovePlan()); });
+  // the command each row shows: the server ends none that runs in its place
+  const shown = (pane: MovePane): string | null => pane.verdict.kind === "busy" ? pane.verdict.command : null;
+  const stop = (pane: MovePane, force: boolean) => act(async () => { await stopMovePane(pane.pane_id, shown(pane), force); onAnswer(await fetchMovePlan()); });
   // one at a time, in the plan's order: a refusal stops there, and its pane keeps the move waiting
-  const stopAll = (paneIds: readonly string[]) => act(async () => {
+  const stopAll = (panes: readonly MovePane[]) => act(async () => {
     setConfirming(false);
-    for (const paneId of paneIds) await stopMovePane(paneId);
+    for (const pane of panes) await stopMovePane(pane.pane_id, shown(pane));
     onAnswer(await fetchMovePlan());
   });
 
   if (!answer.available) return null;
   const { plan } = answer;
-  const untried = runningCommands(plan).filter((pane) => !stopping.some((entry) => entry.pane_id === pane.pane_id)).map((pane) => pane.pane_id);
+  const untried = runningCommands(plan).filter((pane) => !stopping.some((entry) => entry.pane_id === pane.pane_id));
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
       <div ref={surface} className="modal runtime-move" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-lead`} tabIndex={-1} data-view={view}>
@@ -196,7 +198,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
         </header>
         <div className="modal-body">
           {view === "plan" && <PlanView t={t} plan={plan} leadId={`${id}-lead`} />}
-          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? untried.length : null} stopping={stopping} pending={pending} onStop={(paneId, force) => void stop(paneId, force)} onOpenPane={onOpenPane} />}
+          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? untried.length : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
           {view === "moving" && status.state === "moving" && <MovingView t={t} status={status} leadId={`${id}-lead`} />}
           {view === "done" && <p className="runtime-move-lead" id={`${id}-lead`} role="status">{t("Now running on herdr-core. To go back to herdr, switch the runtime again.")}</p>}
           {view === "result" && (status.state === "rolled_back" || status.state === "interrupted") && <ResultView t={t} plan={plan} status={status} leadId={`${id}-lead`} />}

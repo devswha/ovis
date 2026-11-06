@@ -118,7 +118,7 @@ describe("ending busy panes from the move's wait", () => {
     expect(rowButtons("Answering")).toEqual(["Open the agent's pane"]);
 
     await press(row("top running").find((node) => node.type === "button"));
-    expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop", body: { pane_id: "p1" } }]);
+    expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop", body: { pane_id: "p1", command: "top" } }]);
 
     await press(button("Open the agent's pane"));
     expect(opened).toEqual([[LOCAL_MACHINE, "p3"]]);
@@ -137,7 +137,7 @@ describe("ending busy panes from the move's wait", () => {
 
     await press(button("End all and move now"));
     await press(button("End and move"));
-    expect(posts().map((request) => request.body)).toEqual([{ pane_id: "p1" }, { pane_id: "p2" }]);
+    expect(posts().map((request) => request.body)).toEqual([{ pane_id: "p1", command: "top" }, { pane_id: "p2", command: "python3" }]);
   });
 
   it("offers to force a pane only once the server says Ctrl+C had its time", async () => {
@@ -152,6 +152,6 @@ describe("ending busy panes from the move's wait", () => {
     await open();
     expect(rowButtons("top running")).toEqual(["Force end"]);
     await press(button("Force end"));
-    expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop", body: { pane_id: "p1", force: true } }]);
+    expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop", body: { pane_id: "p1", command: "top", force: true } }]);
   });
 });

@@ -235,10 +235,10 @@ export async function startMove(revision: string): Promise<void> {
   if (!response.ok) throw await errorFrom(url, response);
 }
 
-/** While the move waits: Ctrl+C to a shell pane running a command, or once the wait offers it, `force` (SIGTERM to its command). */
-export async function stopMovePane(paneId: string, force = false): Promise<void> {
+/** While the move waits: Ctrl+C to a shell pane running the command shown, or once the wait offers it, `force` (SIGTERM to its command). */
+export async function stopMovePane(paneId: string, command: string | null, force = false): Promise<void> {
   const url = "/api/runtime/move/stop";
-  const body: MoveStopRequest = force ? { pane_id: paneId, force: true } : { pane_id: paneId };
+  const body: MoveStopRequest = { pane_id: paneId, ...(command === null ? {} : { command }), ...(force ? { force: true } : {}) };
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
   if (!response.ok) throw await errorFrom(url, response);
 }

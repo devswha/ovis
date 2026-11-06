@@ -40,12 +40,14 @@ the person ends it, its conversation reopens on herdr-core.
 While it waits, the dialog lets the person end a shell's command where they would with Ctrl+C
 (`POST /api/runtime/move/stop`, only while the move waits and only for a shell running a command):
 
-- End sends Ctrl+C to that pane through its input lane, behind anything typed or sent before it,
-  once the same process group is still in front of the same shell.
+- End sends Ctrl+C to that pane through its input lane, behind anything typed or sent before it
+  (and after keys typed into its terminal have settled), once the same process group is still in
+  front of the same shell and the command is still the one the row showed.
 - Force end is offered only when Ctrl+C was sent at least 3 s earlier and that same group still
   runs; it sends SIGTERM to the pane's foreground process group (the group herdr names in
-  `pane.process_info`), never to a process found by name. A pane running this Ovis server or its
-  launcher is refused.
+  `pane.process_info`), never to a process found by name. The group is the job the shell runs, so
+  everything in it ends. A pane running this Ovis server, its process group or its launcher is
+  refused. This relies on herdr and the server sharing one PC's process ids, as the move does.
 - End all and move now asks once ("Ends N running commands. Unsaved work may be lost."), then
   sends Ctrl+C to each running command in turn.
 

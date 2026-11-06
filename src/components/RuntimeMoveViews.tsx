@@ -30,7 +30,7 @@ function PaneLine({ t, pane, action }: { t: Translate; pane: MovePane; action?: 
 interface WaitActions {
   stopping: readonly MoveStopping[];
   pending: boolean;
-  onStop: (paneId: string, force: boolean) => void;
+  onStop: (pane: MovePane, force: boolean) => void;
   /** null: this page cannot open a pane (no app around the dialog) */
   onOpenPane: ((paneId: string) => void) | null;
 }
@@ -43,9 +43,9 @@ function PaneAction({ t, pane, stopping, pending, onStop, onOpenPane }: WaitActi
   const { verdict } = pane;
   if (verdict.kind === "busy" && verdict.reason === "command_running") {
     const tried = stopping.find((entry) => entry.pane_id === pane.pane_id);
-    if (tried?.force) return <button type="button" className="btn btn-danger" disabled={pending} onClick={() => onStop(pane.pane_id, true)}>{t("Force end")}</button>;
+    if (tried?.force) return <button type="button" className="btn btn-danger" disabled={pending} onClick={() => onStop(pane, true)}>{t("Force end")}</button>;
     if (tried) return <button type="button" className="btn" disabled>{t("Ending…")}</button>;
-    return <button type="button" className="btn" disabled={pending} onClick={() => onStop(pane.pane_id, false)}>{t("End")}</button>;
+    return <button type="button" className="btn" disabled={pending} onClick={() => onStop(pane, false)}>{t("End")}</button>;
   }
   if (paneAgent(pane) === null || onOpenPane === null) return null;
   return <button type="button" className="btn" onClick={() => onOpenPane(pane.pane_id)}>{t("Open the agent's pane")}</button>;

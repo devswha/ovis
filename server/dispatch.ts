@@ -638,11 +638,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const paneId = fields["pane_id"];
     if (typeof paneId !== "string" || paneId === "") return badRequest("invalid_pane", "pane_id must name a pane of the plan");
     if (fields["force"] !== undefined && typeof fields["force"] !== "boolean") return badRequest("invalid_force", "force must be true or false");
+    const command = fields["command"];
+    if (command !== undefined && typeof command !== "string") return badRequest("invalid_command", "command must name the command shown");
     try {
-      const refused = await move.stopPane(paneId, fields["force"] === true);
+      const refused = await move.stopPane(paneId, fields["force"] === true, command);
       if (refused === null) return jsonResponse({ ok: true });
       const message = refused === "not_waiting" ? "no move is waiting" : refused === "not_running" ? "that pane is not a shell running a command"
-        : refused === "own_server" ? "that pane runs this Ovis server" : "send Ctrl+C first, and force only once it has had a few seconds";
+        : refused === "changed" ? "another command runs in that pane now: look again" : refused === "own_server" ? "that pane runs this Ovis server" : "send Ctrl+C first, and force only once it has had a few seconds";
       return jsonResponse({ error: { code: refused, message } }, 409);
     } catch (error) {
       return errorResponse(error);

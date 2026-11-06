@@ -93,10 +93,12 @@ export interface MoveStopping {
 /**
  * POST /api/runtime/move/stop, only while the move waits and only for a shell pane running a command:
  * Ctrl+C into that pane's input lane, or with `force`, once offered, SIGTERM to its foreground process group.
+ * `command`: the one the person was shown (the verdict's); another one running there now is not ended.
  */
 export interface MoveStopRequest {
   pane_id: string;
   force?: boolean;
+  command?: string;
 }
 
 /** POST /api/runtime/move: the plan's revision as shown. Busy panes make it wait; DELETE cancels a wait. */
