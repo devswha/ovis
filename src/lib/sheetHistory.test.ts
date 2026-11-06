@@ -178,6 +178,12 @@ describe("a phone's sheet in the history", () => {
     h.back(); await settled();
     h.forward(); await settled();
     expect(h.state).not.toHaveProperty("ovis:web-panel-below");
+    // a docked file that took a stacked page's entry over holds the count without the page's marks
+    h.replaceState({ "ovis:file-preview": { path: "/r/README.md", machineId: "local", paneId: "p" }, "ovis:web-panel-below": 2 }, "");
+    hooks.enter(() => {});
+    h.back(); await settled();
+    h.forward(); await settled();
+    expect(h.state).toMatchObject({ "ovis:web-panel-below": 3 });
   });
 
   it("keeps a sheet that opens while the step off a closed sheet's entry is on its way", async () => {

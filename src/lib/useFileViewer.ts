@@ -72,9 +72,13 @@ export function useFileViewer() {
     setViewing(next);
   }, []);
 
-  /** Hands the file's entry to a move to another pane: the file leaves it without a traversal, and the viewer closes. */
+  /**
+   * Hands the file's entry to a move to another pane, or to a web page that takes its place: the file
+   * leaves it without a traversal, and the viewer closes. The count of the web panel's entries under it
+   * stays, so a page taking the entry over still goes back past them on closing.
+   */
   const releaseFile = useCallback(() => {
-    const { [HISTORY_KEY]: _, [WEB_PANEL_BELOW_KEY]: _below, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
+    const { [HISTORY_KEY]: _, ...rest } = (window.history.state ?? {}) as Record<string, unknown>;
     window.history.replaceState(rest, "");
     setViewing(null);
   }, []);

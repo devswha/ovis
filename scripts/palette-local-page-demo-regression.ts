@@ -158,6 +158,31 @@ async function run(browser: Browser, origin: string, port: number, width: number
     await viewer.waitFor({ state: "detached" });
     assert.equal(await page.locator(".web-panel").count(), 0, `${tag}: no page comes back when the docked file closes`);
     assert.equal(page.url(), before, `${tag}: closing the docked file goes back to the pane`);
+
+    // a page opened over a file docked over two stacked pages takes the file's entry over: Close page
+    // goes back past both pages too (#3058)
+    await page.setViewportSize({ width, height: 844 });
+    for (const path of ["/#/graph", "/second"]) {
+      await page.keyboard.press("ControlOrMeta+Shift+K");
+      await search.fill(`localhost:${port}${path}`);
+      await search.press("Enter");
+      await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+      await page.waitForFunction((end) => window.history.state?.["ovis:web-panel"]?.url?.endsWith(end) === true && window.history.state?.["ovis:sheet"] === undefined, path);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForFunction(() => window.history.state?.["ovis:web-panel-docked"] === true);
+    await page.locator(".header-files-button").click();
+    await page.locator(".files-dialog-tabs").getByRole("button", { name: "Documents", exact: true }).click();
+    await page.locator(".md-docs .md-docs-item", { hasText: "README.md" }).click();
+    await viewer.waitFor();
+    await page.keyboard.press("ControlOrMeta+Shift+K");
+    await search.fill(`localhost:${port}/second`);
+    await search.press("Enter");
+    await page.getByRole("dialog", { name: "Command palette" }).waitFor({ state: "detached" });
+    await page.locator(".web-panel").waitFor();
+    await viewer.waitFor({ state: "detached" });
+    await closePage("Close page over a docked file over two pages");
+    assert.equal(await page.locator(".web-panel").count(), 0, `${tag}: no page comes back when the page over the docked file closes`);
     await page.setViewportSize({ width, height: 844 });
   } else {
     await page.getByRole("button", { name: "Close page", exact: true }).click();

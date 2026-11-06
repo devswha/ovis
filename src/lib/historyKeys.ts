@@ -26,9 +26,10 @@ export function webPagesBelow(state: Record<string, unknown>): number {
  * A phone sheet's entry copies the one it opened over, the web panel's marks included. Once it is an
  * ordinary entry (a reload, Forward onto it after Back closed the sheet), a copy of the panel's entry
  * is one more of the panel's entries over that one, which closing the panel goes back past too (#3058).
+ * So is a copy of a docked file's entry that holds the panel's count: closing the file goes past it.
  */
 export function overCopiedWebPanel(state: Record<string, unknown>): Record<string, unknown> {
-  if (state[WEB_PANEL_KEY] === undefined && state[WEB_PANEL_DOCKED_KEY] !== true) return state;
+  if (state[WEB_PANEL_KEY] === undefined && state[WEB_PANEL_DOCKED_KEY] !== true && webPagesBelow(state) === 0) return state;
   return { ...state, [WEB_PANEL_BELOW_KEY]: webPagesBelow(state) + 1 };
 }
 
