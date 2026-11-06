@@ -949,7 +949,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // bridge marked `replay` (the screen from before this attach) is presentation history, and a
       // copy request in it was answered when it was new. The flag holds from the frame's write
       // until its callback; xterm's own parser state says whether a replayed OSC is still open.
-      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; seq: number }[] = [];
+      const outputFrames: { data: string; replay: boolean; view?: boolean; done?: () => void; acknowledge?: () => void; seq: number }[] = [];
       let writingOutput = false;
       /** the queue waits for the picture addon (holdForPictures); writingOutput stays true meanwhile */
       let holdingForPictures = false;
@@ -1005,6 +1005,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // a picture is drawn only once the addon is in: pictures on, by choice or as herdr-core's default
         if (next && !disposed && (picturesChoiceRef.current ?? socket.hasTerminalHistory()) && holdForPictures(term, next.data, writeNextOutput)) {
           writingOutput = holdingForPictures = true;
+          // the server stops a connection whose output goes unacknowledged (server/output-window.ts): what
+          // waits here is taken, as xterm's own write buffer would take it
+          for (const frame of outputFrames) acknowledgeFrame(frame);
           return;
         }
         const frame = outputFrames.shift();
@@ -1028,14 +1031,22 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             oscStartFrame = term.oscStringState().open ? (oscStartFrame ?? frame.seq) : null;
           }
           try {
+            acknowledgeFrame(frame);
             frame.done?.();
           } finally {
             writeNextOutput();
           }
         });
       };
-      const writeOutput = (data: string, replay = false, done?: () => void, view = false): void => {
-        outputFrames.push({ data, replay, view, done, seq: ++framesReceived });
+      const acknowledgeFrame = (frame: { acknowledge?: () => void }): void => {
+        const acknowledge = frame.acknowledge;
+        frame.acknowledge = undefined;
+        acknowledge?.();
+      };
+      const writeOutput = (data: string, replay = false, done?: () => void, view = false, acknowledge?: () => void): void => {
+        const frame = { data, replay, view, done, acknowledge, seq: ++framesReceived };
+        outputFrames.push(frame);
+        if (holdingForPictures) acknowledgeFrame(frame);
         if (!writingOutput) writeNextOutput();
       };
       // A pane switch resets the parser, and a reconnect replays afresh: frames still queued from
@@ -1387,7 +1398,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           };
           const stamp = frameGateRef.current.enqueue(message.data, gridMatches());
           writeOutput(message.data, message.replay === true, () => {
-            acknowledge?.();
             if (disposed) return;
             if (paneRef.current !== owner || generation !== outputGeneration) {
               // output of a pane left behind, or of a dropped connection, was still queued in xterm
@@ -1411,7 +1421,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
-          });
+          }, false, acknowledge);
         } else if (message.type === "watch-data") {
           // a read-only view drawn for this grid: written as it comes, never acknowledged
           if (message.pane_id !== paneRef.current || !releasedRef.current || !watchingRef.current) return;
