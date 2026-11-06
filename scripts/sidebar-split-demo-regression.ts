@@ -129,7 +129,7 @@ try {
           const settle = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
           const open = async () => {
             await page.locator(".conn-live").waitFor({ state: "attached" });
-            if (width === 390) {
+            if (page.viewportSize()!.width <= 768) {
               if (await page.locator(".sidebar.is-open").count() === 0) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
               await page.waitForFunction(() => (document.querySelector(".sidebar.is-open")?.getBoundingClientRect().left ?? -1) >= -0.5);
             }
@@ -141,7 +141,10 @@ try {
           const visibleWorkspace = async (phase: string) => {
             await settle();
             const geometry = await page.locator(".machine-list").evaluate((list) => {
-              const bounds = list.getBoundingClientRect();
+              // The section clips the list (overflow: hidden), so a row must fit inside both.
+              const own = list.getBoundingClientRect(), section = list.closest(".pcs-sidebar")!.getBoundingClientRect();
+              const bounds = { left: Math.max(own.left, section.left), right: Math.min(own.right, section.right),
+                top: Math.max(own.top, section.top), bottom: Math.min(own.bottom, section.bottom), height: own.height };
               const rows = [...list.querySelectorAll(".workspace-header")].map((row) => row.getBoundingClientRect());
               return { height: bounds.height, scrollHeight: list.scrollHeight, workspaces: rows.length,
                 visible: rows.some((row) => row.width > 0 && row.height > 0
@@ -185,8 +188,10 @@ try {
           const stored = await page.evaluate((key) => localStorage.getItem(key), key);
           assert.notEqual(stored, null, label + " divider still saves an explicit allocation");
           await page.reload(); await open(); await visibleWorkspace("saved");
-          if (width === 390) {
-            await page.setViewportSize({ width: 844, height: 390 }); await settle();
+          // 667 x 375 keeps the phone drawer; 844 x 390 crosses its breakpoint into the desktop layout.
+          // A split saved in portrait leaves no room for a full row this short in any engine, so rows are checked in portrait.
+          if (width === 390) for (const landscape of [{ width: 667, height: 375 }, { width: 844, height: 390 }]) {
+            await page.setViewportSize(landscape); await open();
             const rotated = await metrics(page);
             assert.ok(rotated.footer.bottom <= rotated.shell.bottom + 1, label + " landscape keeps the footer reachable");
             assert.ok(rotated.pcs.height >= rotated.bottomHead - 1, label + " landscape preserves the PC heading");
