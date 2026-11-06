@@ -9,8 +9,8 @@ import { generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
-import { newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
-import { admitToAccount, approveJoin, enrollOnPc, vouchedAdmission, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
+import { newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
+import { AdmissionChangedError, admitToAccount, approveJoin, enrollOnPc, vouchedAdmission, enrollPc, keepRemovals, linkThisDevice, rememberDevice, needsLink, pcAccountStatus, planEnroll, takeIntroduction, UnverifiedJoinError, sendQueuedAdds } from "./join.ts";
 import { leaveAccount, removeFromAccount } from "./leave.ts";
 import { myPcs } from "./myPcs.ts";
 import { AccountService } from "./service.ts";
@@ -666,6 +666,31 @@ describe("approving a device that asks to join the account", () => {
       digits: "111111", through: X, service, decide: async () => {}, admit: async (admission) => { joining = admission.label; },
     });
     expect(joining).toBe("Mac app");
+  });
+
+  it("refuses to approve when the device asked again with other details after the card was shown", async () => {
+    const { service, mac, X } = await setUp();
+    const shown = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now())!;
+    await service.postAdmission(X, "Other name", mac.public_spki, "windows");
+    const decisions: string[] = [];
+    const outcome = approveJoin({
+      request: { id: "r1", label: "Mac app", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: mac.public_spki },
+      digits: "111111", through: X, service, shown, decide: async (decision) => { decisions.push(decision); }, admit: async () => {},
+    });
+    await expect(outcome).rejects.toBeInstanceOf(AdmissionChangedError);
+    expect(decisions).toEqual([]);
+  });
+
+  it("reads a device's name as one plain line a signed add takes: no bidi or control characters, single spaces", async () => {
+    const { service, X } = await setUp();
+    const phone = await accountKey();
+    await service.postAdmission(X, "  Hako\u202E's   iPhone\u2066 ", phone.public_spki);
+    const label = (await service.recentAdmissions()).find((admission) => admission.key === phone.public_spki)!.label;
+    expect(label).toBe("Hako's iPhone");
+    const member = await accountKey();
+    expect(await readAccountRecord(await signAccountRecord({
+      v: 1, kind: "add", account: ACCOUNT, key: phone.public_spki, label, role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: member.public_spki,
+    }, member.private_key))).not.toBeNull();
   });
 
   it("vouches with the newest fresh admission of that key at that PC, whatever order the service lists them in", () => {

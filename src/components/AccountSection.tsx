@@ -163,15 +163,18 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     deviceSignIn.current = null;
   };
 
-  const failureText = (error: unknown, provider: AccountProvider): string => {
-    const name = PROVIDER_NAMES[provider];
-    if (error instanceof AccountServiceError && error.code === "identity_exists") return t("Your account already signs in with {provider}.", { provider: name });
+  /** `provider` null: the link page, where the person picked GitHub or Google themselves, so the text names neither */
+  const failureText = (error: unknown, provider: AccountProvider | null): string => {
+    const name = provider === null ? null : PROVIDER_NAMES[provider];
+    if (error instanceof AccountServiceError && error.code === "identity_exists" && name !== null) return t("Your account already signs in with {provider}.", { provider: name });
     if (!(error instanceof SignInError)) return t("The sign-in did not finish. Try again.");
     switch (error.code) {
-      case "denied": return t("{provider} refused the sign-in.", { provider: name });
+      case "denied": return name === null ? t("The sign-in was refused.") : t("{provider} refused the sign-in.", { provider: name });
       case "expired": return t("The code expired. Sign in again to get a new one.");
       case "unsupported": return t("This account service can't sign in a browser on this PC yet.");
-      case "in_use": return t("This {provider} sign-in already belongs to another Ovis account. Nothing was changed.", { provider: name });
+      case "in_use": return name === null
+        ? t("This sign-in already belongs to another Ovis account. Nothing was changed.")
+        : t("This {provider} sign-in already belongs to another Ovis account. Nothing was changed.", { provider: name });
       case "no_sign_in": return t("The sign-in did not finish. Try again.");
     }
   };
@@ -212,7 +215,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
       // cancelled, or Settings closed: the page already moved on
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
-      setView({ kind: "signed-out", error: failureText(error, provider) });
+      setView({ kind: "signed-out", error: failureText(error, bridge === null && pcService !== null && linkPage ? null : provider) });
     });
   };
 
