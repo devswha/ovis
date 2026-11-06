@@ -975,6 +975,11 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       const [one, two, three] = await panesFor("grid-one", "grid-two", "grid-three") as [string, string, string];
       const sockets: WebSocket[] = [];
       const { page, errors } = await open([one, two, three], "terminal", async (context) => {
+        // the switch an older version stored turned off: it is ignored, the split still takes rows and columns
+        await context.addInitScript(() => {
+          const settings = JSON.parse(localStorage.getItem("ovis:settings") ?? "{}") as Record<string, unknown>;
+          localStorage.setItem("ovis:settings", JSON.stringify({ ...settings, splitGrid: false }));
+        });
         context.on("page", (opened) => opened.on("websocket", (socket) => sockets.push(socket)));
       });
       const slot = (id: string) => page.locator(`.pane-slot[data-slot="${id}"]`);
@@ -1043,8 +1048,10 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await page.waitForFunction(() => document.querySelector('.pane-slot[data-side="left"][data-slot="a"]') !== null);
       await slot("a").getByRole("button", { name: "Close this half", exact: true }).click();
       await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 1 && sessionStorage.getItem("ovis:split") === null);
+      await shows("c", three);
+      assert.equal(await active.evaluate((node) => node.isConnected), true, "the pane left keeps its terminal");
       assert.deepEqual(errors, []);
-      console.log("PASS rows and columns: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard, a reload keeps the layout and closing slots goes back to one pane");
+      console.log("PASS rows and columns, on a device that had turned them off: a pane opens below a slot, slots keep their terminals, a boundary moves from the keyboard, a reload keeps the layout and closing slots goes back to the active pane");
     }
 
     // A saved partner on a removed PC is discarded only after the roster arrives.
