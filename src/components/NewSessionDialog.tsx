@@ -20,7 +20,7 @@ import { loadSettings, useSettings } from "../lib/settings.ts";
 import { assignAgentGroup, folderAgentGroup, rememberFolderAgentGroup } from "../lib/namedAgentGroups.ts";
 import { sidebarPinKey } from "../lib/sidebarPins.ts";
 import { learnTabLabel } from "../lib/tabLabels.ts";
-import { launchCapabilities, modelSuggestions } from "../lib/agentLaunchMode.ts";
+import { launchCapabilities, launchDefaults, modelSuggestions } from "../lib/agentLaunchMode.ts";
 import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
 import { createRequest, dialogLaunch, firstMessageOutcome, startNewSession } from "../lib/newSession.ts";
 import { useMachineSessions } from "../lib/machineSessionContext.tsx";
@@ -164,8 +164,6 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const filled = prefillRef.current;
     setCwd(filled?.cwd ?? defaultCwdRef.current ?? "");
     setName(filled?.name ?? "");
-    setModel("");
-    setEffort("");
     setUltracode(false);
     setPrompt("");
     setGroupPicked(false);
@@ -182,6 +180,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const remembered = rememberedAgent();
     const stored = filled?.agent ?? remembered;
     setAgentKind(stored);
+    // the model and effort Settings > Agents sets for the agent, each still the reader's to change; none set is the agent's own
+    const preset = launchDefaults(stored, settings);
+    setModel(preset.model);
+    setEffort(preset.effort);
     let cancelled = false;
     const latest = agentReads.current();
     void fetchAgentKinds()
@@ -194,8 +196,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
           setAgentKind(kind);
           // what was chosen meanwhile for the agent that gave way goes as pickAgent's choices go
           const can = launchCapabilities(kind);
-          setModel("");
-          setEffort((current) => can.efforts.includes(current) ? current : "");
+          const fallback = launchDefaults(kind, settings);
+          setModel(fallback.model);
+          setEffort((current) => fallback.effort !== "" ? fallback.effort : current === preset.effort ? "" : can.efforts.includes(current) ? current : "");
           if (!can.ultracode) setUltracode(false);
         }
       })
@@ -272,8 +275,17 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     setSkills(null);
     // a choice the next agent's launch does not take goes back to the agent's own; a model names one agent's models
     const next = launchCapabilities(kind);
-    if (!next.model || kind !== agentKind) setModel("");
-    if (!next.efforts.includes(effort)) setEffort("");
+    let nextEffort = next.efforts.includes(effort) ? effort : "";
+    if (kind !== agentKind) {
+      // the next agent's model and effort from Settings > Agents; with no effort set there, a level the reader
+      // picked stays where the agent names it, and the one set for the last agent does not
+      const before = launchDefaults(agentKind, settings);
+      const after = launchDefaults(kind, settings);
+      setModel(after.model);
+      if (after.effort !== "") nextEffort = after.effort;
+      else if (effort === before.effort) nextEffort = "";
+    } else if (!next.model) setModel("");
+    setEffort(nextEffort);
     if (!next.ultracode) setUltracode(false);
   };
 

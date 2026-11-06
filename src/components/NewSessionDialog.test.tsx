@@ -112,4 +112,48 @@ describe("NewSessionDialog", () => {
       fetch.mockRestore();
     }
   });
+
+  it("fills the model and effort Settings > Agents sets for the agent picked, and starts it with them", async () => {
+    const bodies: unknown[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes("workspace/create")) { bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify({ workspace_id: "w9", pane_id: "w9:p1", agent_started: true }), { headers: { "content-type": "application/json" } }); }
+      return new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }, { kind: "codex", label: "Codex" }, { kind: "omp", label: "OMP" }] }), { headers: { "content-type": "application/json" } });
+    }, { preconnect: globalThis.fetch.preconnect }));
+    localStorage.setItem("ovis:settings", JSON.stringify({ claudeLaunchModel: "opus", claudeLaunchEffort: "high", codexLaunchEffort: "xhigh" }));
+    const view = createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", prefill: { cwd: null, name: null, agent: "claude" }, onClose: () => undefined, onCreated: () => undefined }) });
+    try {
+      await act(async () => { renderer = create(view); });
+      const value = (id: string) => renderer!.root.findByProps({ id }).props.value;
+      expect([value("new-session-model"), value("new-session-effort")]).toEqual(["opus", "high"]);
+      const pick = async (kind: string) => { await act(async () => { renderer!.root.findByProps({ labelledBy: "new-session-agent" }).props.onChange(kind); }); };
+      // Codex has an effort and no model set: its own model, the level set for it
+      await pick("codex");
+      expect([value("new-session-model"), value("new-session-effort")]).toEqual(["", "xhigh"]);
+      // every field stays the user's to change before Start
+      await act(async () => { renderer!.root.findByProps({ id: "new-session-model" }).props.onChange({ target: { value: "gpt-5-codex" } }); });
+      await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+      expect(bodies).toHaveLength(1);
+      expect((bodies[0] as { agent: unknown }).agent).toEqual({ kind: "codex", args: ["--model", "gpt-5-codex", "-c", "model_reasoning_effort=xhigh"] });
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("starts each agent on its own model and effort while Settings > Agents sets none", async () => {
+    const bodies: unknown[] = [];
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes("workspace/create")) { bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify({ workspace_id: "w9", pane_id: "w9:p1", agent_started: true }), { headers: { "content-type": "application/json" } }); }
+      return new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }] }), { headers: { "content-type": "application/json" } });
+    }, { preconnect: globalThis.fetch.preconnect }));
+    const view = createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", prefill: { cwd: null, name: null, agent: "claude" }, onClose: () => undefined, onCreated: () => undefined }) });
+    try {
+      await act(async () => { renderer = create(view); });
+      expect(renderer!.root.findByProps({ id: "new-session-model" }).props.value).toBe("");
+      expect(renderer!.root.findByProps({ id: "new-session-effort" }).props.value).toBe("");
+      await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+      expect((bodies[0] as { agent: unknown }).agent).toEqual({ kind: "claude" });
+    } finally {
+      fetch.mockRestore();
+    }
+  });
 });
