@@ -8,7 +8,7 @@ export interface SessionLine {
   /** when it signed in, ms since the epoch */
   readonly since: number;
   /** its mux: the keepalive's latest round trip, and a probe on demand (MuxEngine) */
-  readonly mux: { readonly rttMs: number | undefined; measure(): Promise<number | undefined> };
+  readonly mux: { readonly active: boolean; readonly rttMs: number | undefined; measure(): Promise<number | undefined> };
 }
 
 /** A check this soon after the last one answers with what that one measured. */
@@ -55,7 +55,8 @@ export class SignedInSessions {
   connections(): Map<string, DeviceConnection> {
     const best = new Map<string, { order: number; line: SessionLine }>();
     for (const { deviceId, order, line } of this.entries) {
-      if (!line) continue;
+      // a mux that ended counts until its socket closes, and is no way in meanwhile
+      if (!line?.mux.active) continue;
       const held = best.get(deviceId);
       if (!held || NEAR[line.route] < NEAR[held.line.route] || (NEAR[line.route] === NEAR[held.line.route] && order > held.order)) best.set(deviceId, { order, line });
     }

@@ -32,8 +32,10 @@ export interface PcCheckSockets {
 export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, probe: typeof probePc = probePc): Promise<Exclude<PcStatus, { kind: "checking" }>> {
   const offer: RelayOffer = { v: 1, server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay };
   const carriers = sockets.direct ? device.direct ?? [] : [];
-  for (const direct of carriers) {
-    const found = await probe(offer, { direct }, sockets.direct!, DIRECT_PROBE_MS / carriers.length);
+  // as a connection gives them (transport.ts): what an earlier carrier left unused goes to the ones after it
+  const deadline = Date.now() + DIRECT_PROBE_MS;
+  for (const [index, direct] of carriers.entries()) {
+    const found = await probe(offer, { direct }, sockets.direct!, Math.max(0, deadline - Date.now()) / (carriers.length - index));
     if (found.kind === "answered") return { kind: "connected", route: isTailnetCarrier(direct) ? "tailscale" : "lan", rttMs: found.ms };
   }
   let relay = device.relay;

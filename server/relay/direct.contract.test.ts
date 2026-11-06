@@ -388,11 +388,13 @@ describe("signed-in sessions over every way in", () => {
 
   it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {
     const sessions = new SignedInSessions(8, 4);
-    const mux = (rttMs: number | undefined) => ({ rttMs, measure: async () => rttMs });
+    const mux = (rttMs: number | undefined, active = true) => ({ active, rttMs, measure: async () => rttMs });
     sessions.admit("phone", () => {}, { route: "relay", relay: "wss://relay-ap.ovis.sh", since: 1_000, mux: mux(48) });
     const direct = sessions.admit("phone", () => {}, { route: "lan", since: 2_000, mux: mux(undefined) });
     sessions.admit("laptop", () => {}, { route: "tailscale", since: 3_000, mux: mux(21) });
     sessions.admit("script", () => {});
+    // a LAN session whose mux already ended is no way in, though it counts until its socket closes
+    sessions.admit("phone", () => {}, { route: "lan", since: 4_000, mux: mux(5, false) });
     expect(Object.fromEntries(sessions.connections())).toEqual({
       phone: { route: "lan", rtt_ms: null, since: new Date(2_000).toISOString() },
       laptop: { route: "tailscale", rtt_ms: 21, since: new Date(3_000).toISOString() },
@@ -404,8 +406,8 @@ describe("signed-in sessions over every way in", () => {
   it("check every connection now, giving up on one that does not answer in time", async () => {
     const sessions = new SignedInSessions(8, 4);
     let fast: number | undefined;
-    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { get rttMs() { return fast; }, measure: async () => (fast = 9) } });
-    sessions.admit("laptop", () => {}, { route: "relay", relay: "wss://relay.ovis.sh", since: 0, mux: { rttMs: 300, measure: () => new Promise<number | undefined>(() => {}) } });
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { active: true, get rttMs() { return fast; }, measure: async () => (fast = 9) } });
+    sessions.admit("laptop", () => {}, { route: "relay", relay: "wss://relay.ovis.sh", since: 0, mux: { active: true, rttMs: 300, measure: () => new Promise<number | undefined>(() => {}) } });
     await sessions.check(20);
     expect(sessions.connections().get("phone")?.rtt_ms).toBe(9);
     expect(sessions.connections().get("laptop")?.rtt_ms).toBe(300);
@@ -414,7 +416,7 @@ describe("signed-in sessions over every way in", () => {
   it("share one check among callers at once, and measure nothing again right after", async () => {
     const sessions = new SignedInSessions(8, 4);
     let measured = 0;
-    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { rttMs: 9, measure: async () => { measured++; return 9; } } });
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { active: true, rttMs: 9, measure: async () => { measured++; return 9; } } });
     await Promise.all([sessions.check(20, 10_000), sessions.check(20, 10_000)]);
     await sessions.check(20, 10_000 + CHECK_GAP_MS - 1);
     expect(measured).toBe(1);
@@ -425,7 +427,7 @@ describe("signed-in sessions over every way in", () => {
   it("tell how other devices are connected, and check them, only to a caller that may manage them", async () => {
     const sessions = new SignedInSessions(8, 4);
     let measured = 0;
-    sessions.admit("00112233445566aa", () => {}, { route: "tailscale", since: 0, mux: { rttMs: 33, measure: async () => { measured++; return 33; } } });
+    sessions.admit("00112233445566aa", () => {}, { route: "tailscale", since: 0, mux: { active: true, rttMs: 33, measure: async () => { measured++; return 33; } } });
     const row: PairedDevice = { id: "00112233445566aa", label: "Phone", role: "drive", created_at: "2026-11-01T00:00:00.000Z", last_seen_at: null, current: false, via_relay: true };
     const store = { error: null, list: () => [row] } as unknown as DeviceStore;
     const connections = { list: () => sessions.connections(), check: (ms: number) => sessions.check(ms) };

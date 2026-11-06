@@ -83,12 +83,15 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
   const pairingSelfLock = useRef(false);
   /** reads in the order they started: one answering after a newer one has landed answers for an older list */
   const reads = useRef({ started: 0, landed: 0 });
+  /** reads on their way, whatever their answer: the periodic refresh starts none over them */
+  const inFlight = useRef(0);
 
   /** `quiet`: a read the page did not ask for, which leaves the warning on screen and, should it fail, the list as it was */
   const load = useCallback(async ({ quiet = false, check = false } = {}) => {
     const started = generation.current;
     const read = ++reads.current.started;
     const stale = () => started !== generation.current || read < reads.current.landed;
+    inFlight.current++;
     try {
       const list = await fetchDevices(check);
       if (stale()) return;
@@ -108,11 +111,14 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
       reads.current.landed = read;
       setDevices([]);
       setError(e instanceof ApiError && e.status === 404 ? t("Devices are managed on a real server.") : e instanceof Error ? e.message : String(e));
+    } finally {
+      inFlight.current--;
     }
   }, [t, onDevicePaired]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    const timer = setInterval(() => void load({ quiet: true }), REFRESH_MS);
+    // never over a read still on its way: a later quiet read landing first would make a Check now's answer stale
+    const timer = setInterval(() => { if (inFlight.current === 0) void load({ quiet: true }); }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [load]);
   const [checking, setChecking] = useState(false);
