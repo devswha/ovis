@@ -113,8 +113,12 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
   const boundaryAt = (held: Press): number | null => {
     const row = strip.current;
     if (!row || !overStrip(held) || current.current.ids.length < 2 || current.current.fixed) return null;
-    const rects = [...row.querySelectorAll<HTMLElement>(".tab-strip-item")].map((item) => item.getBoundingClientRect());
-    return tabDropBoundary(rects, held.x);
+    const items = [...row.querySelectorAll<HTMLElement>(".tab-strip-item")];
+    const shown = tabDropBoundary(items.map((item) => item.getBoundingClientRect()), held.x);
+    // a row that leaves tabs out (TabStrip's More) names each drawn tab's place among them all
+    const place = (item: HTMLElement | undefined): number => Number(item?.dataset["tabIndex"]);
+    const boundary = shown < items.length ? place(items[shown]) : place(items[items.length - 1]) + 1;
+    return Number.isInteger(boundary) ? boundary : shown;
   };
   const paintDrag = (held: Press): void => {
     const boundary = boundaryAt(held);
