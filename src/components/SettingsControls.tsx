@@ -88,7 +88,9 @@ export function SettingsGroup({ title, note, className, section, children }: { t
  * more words a search finds it by, for a row opened by another. `held`: a row in the middle of a
  * step (a recording, a confirmation) stays in a search whatever its words have become.
  */
-export function SettingsRow({ label, description, keywords, held = false, htmlFor, wide = false, reset, icon: Icon, preview, condition, children }: { label: string; description?: ReactNode; keywords?: string; held?: boolean; htmlFor?: string; wide?: boolean; reset?: readonly (keyof Settings)[];
+export function SettingsRow({ label, description, keywords, held = false, htmlFor, wide = false, reset, onReset, icon: Icon, preview, condition, children }: { label: string; description?: ReactNode; keywords?: string; held?: boolean; htmlFor?: string; wide?: boolean; reset?: readonly (keyof Settings)[];
+  /** a row whose value lives inside a setting (one shortcut of shortcutOverrides): passed only while it is changed */
+  onReset?: () => void;
   /** a picture of what the row is about, before its name: shown, not told */
   icon?: LucideIcon;
   /** a tiny drawing of what the choice does, beside the control */
@@ -101,7 +103,7 @@ export function SettingsRow({ label, description, keywords, held = false, htmlFo
   const t = useT();
   if (!held && words.length > 0 && !matchesSettingsQuery(words, label, description, keywords)) return null;
   // `reset`: the keys this row sets; once any is off its default, a button beside the label puts them back
-  const changed = reset !== undefined && reset.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]));
+  const changed = onReset !== undefined || reset !== undefined && reset.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]));
   const label_ = htmlFor !== undefined ? <label className="settings-label" htmlFor={htmlFor}>{label}</label> : <span className="settings-label">{label}</span>;
   return (
     <div className={wide ? "settings-row is-wide" : "settings-row"} data-setting="">
@@ -110,7 +112,12 @@ export function SettingsRow({ label, description, keywords, held = false, htmlFo
           <span className="settings-label-line">
             {Icon !== undefined && <Icon className="settings-row-icon" aria-hidden="true" />}
             {label_}
-            {changed && <button type="button" className="settings-reset" title={t("Restore defaults")} aria-label={`${t("Restore defaults")}: ${label}`} onClick={() => update(Object.fromEntries(reset.map((key) => [key, DEFAULT_SETTINGS[key]])) as Partial<Settings>)}>
+            {changed && <button type="button" className="settings-reset" title={t("Restore defaults")} aria-label={`${t("Restore defaults")}: ${label}`} onClick={(event) => {
+              // the button leaves with the change: focus stays in the row, on its control
+              event.currentTarget.closest(".settings-row")?.querySelector<HTMLElement>(":scope > :not(.settings-row-text) :is(button, select, input, [role=switch]):not(:disabled), :scope > :is(button, select, input):not(:disabled)")?.focus();
+              if (onReset) onReset();
+              else if (reset) update(Object.fromEntries(reset.map((key) => [key, DEFAULT_SETTINGS[key]])) as Partial<Settings>);
+            }}>
               <RotateCcw aria-hidden="true" />
             </button>}
           </span>

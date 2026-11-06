@@ -187,7 +187,7 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().terminalImages).toBe(false);
+    expect(loadSettings().terminalImages).toBe(null);
     saveSettings(sanitizeSettings({ terminalImages: true }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalImages");
     oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
@@ -195,7 +195,16 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFontSize).toBe(18);
     saveSettings({ ...loadSettings(), terminalImages: false });
     expect(loadSettings().terminalImages).toBe(false);
-    records.set("ovis:terminal-images", "\"true\"");
+    records.set("ovis:terminal-pictures", "\"true\"");
+    expect(loadSettings().terminalImages).toBe(null);
+  });
+
+  it("reads an earlier version's pictures key as a choice only when it says on", () => {
+    records.set("ovis:terminal-images", "false");
+    expect(loadSettings().terminalImages).toBe(null);
+    records.set("ovis:terminal-images", "true");
+    expect(loadSettings().terminalImages).toBe(true);
+    records.set("ovis:terminal-pictures", "false");
     expect(loadSettings().terminalImages).toBe(false);
   });
 
@@ -751,10 +760,11 @@ describe("clipboard from a pane", () => {
   });
 });
 
-it("draws no terminal pictures until this device turns them on", () => {
-  expect(sanitizeSettings({}).terminalImages).toBe(false);
-  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(false);
+it("leaves terminal pictures to the server until this device chooses, and keeps either choice", () => {
+  expect(sanitizeSettings({}).terminalImages).toBe(null);
+  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(null);
   expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: false })))).terminalImages).toBe(false);
   expect(SETTING_SCOPE.terminalImages).toBe("device");
 });
 
