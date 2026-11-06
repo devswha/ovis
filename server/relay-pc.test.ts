@@ -101,7 +101,8 @@ it("keeps across a restart the relay the PC named on admission", async () => {
 
 it.each([
   ["a private address on the direct listener's own port", "ws://192.168.0.10:7319", true],
-  ["a Tailscale address on a port the system picked", "ws://100.64.0.7:45123", true],
+  ["a Tailscale address on the direct listener's port", "ws://100.64.0.7:7319", true],
+  ["a port the system might pick, which a service may hold too", "ws://192.168.0.10:50000", false],
   ["link-local, where a cloud's metadata service answers", "ws://169.254.169.254:7319", false],
   ["a private address on a service's port", "ws://192.168.1.1:80", false],
   ["a private address on another low port", "ws://10.0.0.1:8080", false],

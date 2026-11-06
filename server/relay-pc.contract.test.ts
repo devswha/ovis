@@ -20,8 +20,12 @@ function stateDir(): string {
   return dir;
 }
 
-/** The private address B names for its direct carrier in these tests; A's dials to it reach B's loopback listener. */
+/**
+ * The private address B names for its direct carrier in these tests, on the direct listener's own port (the only one
+ * a PC server dials); A's dials to it reach B's loopback listener on whatever port that got.
+ */
 const LAN = "10.99.0.1";
+const listener = { port: 0 };
 
 /**
  * PC B with the relay on, PC A that adds it through the relay, and the local relay between them. `direct`: B also
@@ -52,7 +56,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
   };
   const bState = stateDir();
   const service = new RelayService({ stateDir: bState, relay: `wss://127.0.0.1:${relay.port}`, connect: local, pairCodeRelay: `wss://127.0.0.1:${relay.port}`,
-    ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: options.direct.named ?? ((port: number) => [`ws://${LAN}:${port}`]), peerAllowed: () => true, preferredPort: 0 } } : {}) });
+    ...(options.direct ? { direct: { addresses: () => ["127.0.0.1"], advertise: (port: number) => { listener.port = port; return options.direct!.named?.(port) ?? [`ws://${LAN}:7319`]; }, peerAllowed: () => true, preferredPort: 0 } } : {}) });
   const b = createServer({ port: 0, hostname: "127.0.0.1", stateDir: bState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); b.stop(); });
   const bBase = `http://127.0.0.1:${b.port}`;
@@ -77,7 +81,7 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
     if (target.hostname !== LAN) return new WebSocket("ws://127.0.0.1:1/");
     // port 1 on loopback refuses at once, as an address of another network does
     const dial = ++lan.dials;
-    const port = options.direct?.reachable(dial) ? target.port : "1";
+    const port = options.direct?.reachable(dial) ? (target.port === "7319" ? String(listener.port) : target.port) : "1";
     const socket = new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`);
     const held = options.direct?.held?.(dial);
     if (!held) return socket;
@@ -432,7 +436,7 @@ it("checks the direct route again when this PC's addresses change, and moves the
 it("dials none of the carriers a PC names off its listener's port family or on link-local, and uses the one it may", async () => {
   // Given B naming, inside its AUTH_OK, a link-local address and a service port beside its real carrier
   const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => true,
-    named: (port) => ["ws://169.254.169.254:7319", `ws://${LAN}:80`, `ws://${LAN}:${port}`] } });
+    named: (port) => ["ws://169.254.169.254:7319", `ws://${LAN}:80`, `ws://${LAN}:${port === 7319 ? 7320 : port}`, `ws://${LAN}:7319`] } });
   const offer = decodeOffer(link)!;
   const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
   const moved = deferred<void>();
@@ -440,25 +444,54 @@ it("dials none of the carriers a PC names off its listener's port family or on l
   const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, onMoved: () => moved.resolve() });
   cleanup.push(() => tunnel.close());
   await bounded(moved.promise);
-  // Then it only ever dialed B's listener, and keeps only that one
-  expect(lan.dialed.every((host) => host.startsWith(`${LAN}:`) && !host.endsWith(":80"))).toBe(true);
-  expect(key.direct.every((carrier) => carrier.startsWith(`ws://${LAN}:`) && !carrier.endsWith(":80"))).toBe(true);
+  // Then it only ever dialed B's listener on the direct port, and keeps only that one
+  expect([...new Set(lan.dialed)]).toEqual([`${LAN}:7319`]);
+  expect(key.direct).toEqual([`ws://${LAN}:7319`]);
 }, 60_000);
 
-it("keeps a PC's probe deadline across its tunnels, so a reconnect does not probe again at once", async () => {
+/** Waits, bounded, until `done` holds. */
+async function until(done: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!done()) { if (Date.now() > deadline) throw new Error("condition not reached"); await Bun.sleep(10); }
+}
+
+it("keeps a PC's probe deadline across its tunnels, so reconnects dial its routes no more often", async () => {
   // Given B's address that does not answer, and A's per-PC probe state
   const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => false } });
   const offer = decodeOffer(link)!;
   const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
   const probes = newRouteProbes();
   const first = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
-  // a check starts as its tunnel is handed over: its probe has dialed by now
+  // a check starts as its tunnel is handed over: its probe has dialed by now, and finds nothing
   expect(lan.dials).toBe(1);
+  await until(() => probes.failed);
   first.close();
-  // When the connection comes back right away (a relay that keeps dropping it, say)
+  // When the connection comes back right away, again and again (a relay that keeps dropping it, say)
   const { code: _code, ...signIn } = offer;
-  const second = await openRelayPcTunnel(signIn, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+  for (let again = 0; again < 3; again++) {
+    const tunnel = await openRelayPcTunnel(signIn, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes });
+    tunnel.close();
+  }
+  // Then neither their sign-ins nor their checks dialed B's address again before the deadline
+  expect(lan.dials).toBe(1);
+}, 60_000);
+
+it("tries a PC's routes again on reconnect when this PC changed networks while away", async () => {
+  // Given a probe that found B's address silent on this PC's network
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => false } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const probes = newRouteProbes();
+  const network = { now: "192.168.1.5" };
+  const first = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes, network: () => network.now });
+  await until(() => probes.failed);
+  first.close();
+  const before = lan.dials;
+  // When this PC is on another network by the time it connects again
+  network.now = "10.99.0.20";
+  const { code: _code, ...signIn } = offer;
+  const second = await openRelayPcTunnel(signIn, key, { socket: local as never, directSocket: onLan as never, onLost: () => {}, probes, network: () => network.now });
   cleanup.push(() => second.close());
-  // Then only its sign-in tried the saved address: no second probe before the deadline
-  expect(lan.dials).toBe(2);
+  // Then it tried B's address again at once
+  expect(lan.dials).toBeGreaterThan(before);
 }, 60_000);
