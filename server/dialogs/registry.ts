@@ -1,7 +1,7 @@
 import { isPiQuestionnaireScreen } from "./pi-questionnaire.ts";
 import { readers } from "./index.ts";
 import { claudeModelListWaits, CLAUDE_EFFORT_GUARD_RE } from "./claude.ts";
-import { codexModelListWaits } from "./codex.ts";
+import { codexInputHeld, codexModelListWaits } from "./codex.ts";
 import type { DialogReader, OmoAsk } from "./shared.ts";
 export type { DialogReader } from "./shared.ts";
 
@@ -26,5 +26,9 @@ export const registry = {
   },
   waits(agent: string, screen: string): boolean {
     return (agent === "pi" && isPiQuestionnaireScreen(screen)) || claudeModelListWaits(screen) || claudeModelListWaits(screen, CLAUDE_EFFORT_GUARD_RE) || (agent === "codex" && codexModelListWaits(screen));
+  },
+  /** whether a message would be typed into what the agent has up, where herdr reports it at rest: refused before anything is typed */
+  holdsInput(agent: string, screen: string): boolean {
+    return registry.waits(agent, screen) || (agent === "codex" && codexInputHeld(screen));
   },
 };

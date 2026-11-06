@@ -995,7 +995,8 @@ const markedDisplay = (text: string): string => text.normalize("NFKC").replace(/
 
 /**
  * A Codex screen cut at what was typed and what tools did: each prompt (a line Codex starts with
- * "›", a prompt sent or the input box, or an indented "↳", a message queued to be sent), each tool
+ * "›", a prompt sent or the input box, "»" the input box at Ultra reasoning effort (Codex 0.164), or
+ * an indented "↳", a message queued to be sent), each tool
  * call Codex shows (a "•" line it starts with what it did or does: "Ran", "You ran", "Called",
  * "Explored", "Searched", "Waited", "Running" and so on) and each tool's output (an indented "└"), with
  * the indented and blank lines each wraps onto, and the stretches between them. Neither a prompt nor a
@@ -1005,7 +1006,7 @@ function codexScreenParts(screen: string): { prompt: boolean; tool?: true; text:
   const parts: { prompt: boolean; tool?: true; text: string }[] = [];
   for (const line of screen.split("\n")) {
     const last = parts.at(-1);
-    const prompt = /^(?:\u203a|\s*\u21b3(?:\s|$))/.test(line);
+    const prompt = /^(?:[\u203a\u00bb]|\s*\u21b3(?:\s|$))/.test(line);
     // "You ran": a shell command the user ran from the composer, as Codex 0.163 titles it. An answer that
     // starts with one of these words is taken for a call too: telling them apart could show another's chat
     const tool = !prompt && (/^\s+\u2514(?:\s|$)/.test(line)
@@ -1681,7 +1682,7 @@ function displayedFirstExchange(screen: string, keepCompletionFooter = false): C
   }
   if (answerAt < 0) return null;
   const user = lines.slice(promptAt, answerAt).map((line, index) => index === 0 ? line.slice(1) : line).join("\n");
-  const nextPrompt = lines.findIndex((line, index) => index > answerAt && /^›(?:[ \t]|$)/.test(line));
+  const nextPrompt = lines.findIndex((line, index) => index > answerAt && /^[›»](?:[ \t]|$)/.test(line));
   const responseLines = lines.slice(answerAt, nextPrompt < 0 ? undefined : nextPrompt);
   // Codex's completed-turn footer is terminal chrome, after a blank line and before the composer.
   const footer = responseLines.findIndex((line, index) => index > 0 && responseLines[index - 1]!.trim() === ""

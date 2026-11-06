@@ -1112,6 +1112,23 @@ describe("Codex submitted first exchange", () => {
     expect(matchCodexFirstExchange(screen, [row(), row("old", started - 60_000, "Other fixture", "Different answer")], started)).toBe("new");
   });
 
+  it("matches at Ultra too, whose input box is drawn with \u00bb: the box and the rows under it are no part of the answer", () => {
+    const ultra = `OpenAI Codex (v1.0)\n\n\u203a ${prompt}\n\n\u2022 ${answer}\n\n\u00bb Ask Codex to do anything\n\n  GPT-6-Astra ultra \u00b7 /fixture\n  \u2190 for agents \u00b7 ? for shortcuts\n`;
+    expect(matchCodexFirstExchange(ultra, [row()], started)).toBe("new");
+    expect(matchCodexFirstExchange(ultra.replace(answer, "Another answer."), [row()], started)).toBeNull();
+    // a box still empty under a prompt: no answer yet
+    expect(matchCodexFirstExchange(`OpenAI Codex (v1.0)\n\n\u203a ${prompt}\n\n\u00bb Ask Codex to do anything\n`, [row()], started)).toBeNull();
+  });
+
+  it("takes no draft in the \u00bb box for an answer: what was typed may quote another conversation's", () => {
+    const said = "An answer long and varied enough to count, 0123456789 with every single word its own.";
+    const candidate = { path: "other", text: jsonl(message("user", prompt), message("assistant", said, "final_answer")) };
+    for (const mark of ["\u203a", "\u00bb"]) {
+      expect(matchCodexTranscript(`OpenAI Codex (v1.0)\n\n${mark} ${said}\n\n  GPT-6-Astra ultra \u00b7 /fixture\n`, [candidate])).toBeNull();
+    }
+    expect(matchCodexTranscript(`OpenAI Codex (v1.0)\n\n\u2022 ${said}\n\n\u00bb Ask Codex to do anything\n`, [candidate])).toBe("other");
+  });
+
   it("matches a short greeting only when the complete exchange is unique", () => {
     const greeting = screen.replace(prompt, "hello");
     const own = row("new", started, "hello");

@@ -64,6 +64,8 @@ beforeEach(() => {
           ? { pane: { pane_id: "w:p1", workspace_id: "w", tab_id: "w:t1", terminal_id: "w:p1", cwd: root, focused: false, revision: 0, agent, ...session } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: ompShown ? [{ pid: ompPid, argv: ompArgv, cwd: ompCwd }] : [] } }
           : request.method === "agent.prompt" || request.method === "pane.send_keys" || request.method === "pane.send_text" ? {}
+          // a Codex send reads the screen for what holds its input (codexInputHeld): this one holds nothing
+          : request.method === "pane.read" && agent === "codex" ? { read: { text: "" } }
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
         socket.end(`${JSON.stringify({ id: request.id, result })}\n`);

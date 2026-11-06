@@ -318,7 +318,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    *
    * An agent gets it through herdr's agent.prompt (the paste, then Enter 300ms later),
    * which refuses while the agent waits for an answer: the message is not typed into its
-   * menu. A pane without an agent in front gets `payload`, shaped for its own paste mode,
+   * menu, nor into a Codex screen herdr does not report (codexInputHeld). A pane without an agent in front gets `payload`, shaped for its own paste mode,
    * through send_text, then Enter SUBMIT_DELAY_MS later; both return once the pane has
    * the bytes, so the pane sees the whole gap. So does a Codex "blocked" only by questions
    * waiting collapsed in its queue: its main prompt still takes the message.
@@ -510,6 +510,13 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           pane = await untilOmpReported(paneId, pane, inTime, options.ompReportPollMs ?? OMP_REPORT_POLL_MS, options.ompStartupMs ?? OMP_STARTUP_MS);
           // the last look waited on herdr: the device may have lost its access meanwhile
           inTime();
+        }
+        // herdr reports Codex at rest under its own lists and fields, so agent.prompt would paste into them, and
+        // its Enter would take a row (codexInputHeld): refused as a menu herdr does report is, the message kept
+        if (agent === "codex") {
+          const held = registry.holdsInput(agent, (await paneRead({ paneId, source: "detection", format: "text" })).text);
+          inTime();
+          if (held) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
         }
         if (pane) command = prepareCommandSend(pane, text, beforeScreen);
         // where that screen sits in the history (outcome.ts scrolledAnchor): the row read before the screen, kept
