@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
+import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
@@ -345,6 +346,18 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     expect(await read()).toEqual({ source: "scrollback", turns: [] });
     await command(current, pid, ":api-stable");
     expect((await read()).source).toBe("copilot-transcript");
+    // herdr 0.9.3 leaves out the argv of a process it finds in uninterruptible sleep (D) or exiting:
+    // one such answer for a Copilot still in front is not that Copilot gone
+    const realProcessInfo = herdrClient.paneProcessInfo;
+    let unreadAnswers = 0;
+    const unread = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async (paneId, socketPath) => {
+      const info = await realProcessInfo(paneId, socketPath);
+      if (paneId !== current || unreadAnswers > 0 || info === undefined) return info;
+      unreadAnswers++;
+      return { ...info, foreground_processes: info.foreground_processes?.map((entry) => ({ ...entry, argv: null, cmdline: null })) };
+    });
+    try { expect((await read()).source).toBe("copilot-transcript"); } finally { unread.mockRestore(); }
+    expect(unreadAnswers).toBe(1);
     // Even valid legacy report/marker evidence cannot rescue a refused API request.
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${first}\n` });
     for (const deadline = Date.now() + 4000;;) {

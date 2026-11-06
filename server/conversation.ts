@@ -1717,7 +1717,11 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   }
   // A failed RPC does not prove an ownership change. Retry that read once; an answered
   // empty/conflicting process set still fails closed, as does a failed retry.
-  const info = await paneProcessInfo(pane.pane_id).catch(() => paneProcessInfo(pane.pane_id)).catch(() => null);
+  // Nor does a process herdr lists without its argv: herdr (0.9.3) leaves that out while the process is
+  // in uninterruptible sleep or exiting, so the set is asked for once more; an unread set again fails below.
+  const ask = () => paneProcessInfo(pane.pane_id).catch(() => paneProcessInfo(pane.pane_id)).catch(() => null);
+  const first = await ask();
+  const info = first?.foreground_processes?.some((entry) => !entry.argv?.length) ? await ask() : first;
   if (info === null) throw new ConversationUnavailable("no_session_path", undefined, "copilot_process_lookup_failed");
   const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
   const foreground = processes[0];
