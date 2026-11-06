@@ -284,24 +284,40 @@ bun scripts/plugin.ts link --google   # the same, signed in with Google
 bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
 
-Both turn the relay on first when it is off.
+Both turn the relay on first when it is off, and wait until it is online.
 
 - **`link`** signs in with the provider's device flow, the way a PC's own page does: it prints the
   provider's device page and a code to enter there, on any device. Then it lists this PC in your
   account ([Adding a PC](account.md#adding-a-pc)) and waits. On a phone already in your account,
   tap **Add** on this PC; the terminal shows the request with its six digits
-  (**… wants to add this PC to your account. Approve it only if its screen shows 123 456**) and asks
+  (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
-  this PC only. It ends once the PC is in the account, and the sign-in ends with it: nothing of it
-  is kept on the PC. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+  this PC only. Every nine minutes it lists the PC anew so the account's devices keep showing it as
+  new; a renewal the account service does not take is tried again until it is, so the PC never
+  stays off the list. It ends once the PC is in the account, and the sign-in ends with it: nothing
+  of it is kept on the PC. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
-  ID for the other device to compare. Both renew when they run out; Ctrl+C takes the code off the
-  relay. Redeeming it follows the usual admission rules.
+  ID for the other device to compare. Both renew when they run out. When the relay mints no typed
+  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows the QR code
+  alone, as Settings does. Ctrl+C, or any error, takes both back
+  (`POST /api/devices/pair/cancel`, which ends the pending six-digit code and the typed code bound
+  to it). Redeeming them follows the usual admission rules.
 
-`link` talks only to an Ovis listening on this machine's loopback address, with the token the
-plugin reads (`OVIS_TOKEN`), and refuses a server elsewhere: approving a device is something only
-the PC does. Over SSH, run it in the PC's shell, not through a forwarded port from another machine.
+**Which copy runs.** An in-app update (**Settings → Updates**) installs a new release beside the
+plugin checkout and does not replace the checkout. `link` follows the release that runs, as
+`phone-setup` does, from the first checkout that has it on. A checkout from before `link` prints
+the usage line without it: reinstall the plugin (`herdr plugin install devswha/ovis`), which
+replaces the checkout, then run it again. A server too old for it (no account routes) is named as
+such: `link` says to update it rather than failing on the first request.
+
+**Who counts as this PC.** `link` talks only to an Ovis on a loopback address, with the token the
+plugin reads (`OVIS_TOKEN`), and refuses a server named by any other address. It cannot tell
+where a loopback port leads: an SSH port forward (`ssh -L`) to another PC's `127.0.0.1:7317` looks
+the same, and links that PC. That is the server's own rule too: without `OVIS_TOKEN`, every
+connection from loopback counts as the PC itself, which includes any other user account on the PC
+and anyone who can forward a port to it. On a PC that others log in to, set `OVIS_TOKEN`
+([Access and safety](guide.md#access-and-safety)); `link` then needs it too.
 
 ### Ending access
 

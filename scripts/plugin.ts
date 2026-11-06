@@ -882,6 +882,14 @@ async function approvePairings(): Promise<number> {
  * signed in to the account by a device code, or with a code to type and a QR code.
  */
 async function linkCommand(): Promise<number> {
+  // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
+  const active = activePluginScript(ROOT, port, APP_STATE_DIR);
+  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
+    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it
+    process.on("SIGINT", () => undefined);
+    const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    return await child.exited;
+  }
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
