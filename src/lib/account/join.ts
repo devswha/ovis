@@ -349,15 +349,14 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
-  /** PCs from before enrollments: their removals are relayed, but they cannot say they read their mailbox */
+  /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
   let legacy = 0;
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
       if (status.account !== options.account) return;
-      if (status.fresh === undefined) { legacy++; seen.push(status); return; }
       // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet
-      if (!status.fresh) return;
+      if (status.fresh !== true) { legacy++; seen.push(status); return; }
       answered.push(peer);
       seen.push(status);
     } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
@@ -383,7 +382,7 @@ export async function enrollPc(options: { fetch: PcFetch; store: AccountStore; a
   ]);
   // a PC that lost removal evidence may keep out a key it cannot name: then no add goes, and the new PC holds every one
   // only older PCs answered: no add goes, as before enrollments, and the account's devices ask this PC once each
-  // an older PC cannot list what it keeps out (`blocked`), so while one answers, no add goes either
+  // a PC that cannot vouch for what it keeps out (older, or its mailbox read failed): while one answers, no add goes
   const blind = seen.some((status) => status.blockedAll === true) || legacy > 0;
   const adds = blind ? [] : [...Object.values(known ?? {}), ...collected]
     .filter((record): record is AddRecord => record.kind === "add" && record.account === options.account && !held.has(record.key) && !planned.done.includes(record.id))

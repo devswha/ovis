@@ -159,25 +159,31 @@ export class AccountMailbox {
       return at !== undefined && now - at < ADMISSION_TTL_MS && at <= now + 60_000;
     };
     if (fresh()) return true;
-    await this.freshen();
-    return fresh();
-  }
-
-  /**
-   * A pull a request asked for: waits for one under way, else pulls, at most once every 10 seconds.
-   * True only when a pull read the whole mailbox without an error within those 10 seconds, so nothing
-   * the service holds for this PC is left unread (docs/account.md, "PC API" `?fresh=1`).
-   */
-  async freshen(): Promise<boolean> {
     if (this.pulling) await this.pulling;
     else if (Date.now() - this.lastAskedPull >= ASKED_PULL_MS) {
       this.lastAskedPull = Date.now();
       await this.pull();
     }
+    return fresh();
+  }
+
+  /**
+   * A pull a drive member's `?fresh=1` asked for: one that starts after the request. True only when it
+   * read the whole mailbox without an error, so nothing the service holds for this PC is left unread
+   * (docs/account.md, "PC API"); true with no account service at all, as there is no mailbox to read.
+   */
+  async freshen(): Promise<boolean> {
+    // with no account service there is no mailbox, so nothing can wait unread in one
+    if (this.options.service instanceof Error) return this.pendingError === null;
+    const asked = Date.now();
+    // a pull under way may have read the mailbox before this request: the answer waits for one that starts after it
+    if (this.pulling) await this.pulling;
+    await this.pull();
+    if (this.drainedAt === null || this.drainedAt < asked) return false;
     const account = this.options.devices.account();
     const identity = this.options.identity();
     const current = account === null || !identity ? null : scope(account, identity.server_id, "");
-    return this.error === null && this.drainedAt !== null && Date.now() - this.drainedAt < ASKED_PULL_MS && current !== null && this.drainedScope === current;
+    return this.error === null && current !== null && this.drainedScope === current;
   }
 
   /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */

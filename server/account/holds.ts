@@ -48,8 +48,13 @@ export class AccountHolds {
   }
 
   /** The PC waits for the member `by` that linked it first to enroll it: account adds wait meanwhile. */
-  startEnrolling(by: string): void {
+  /**
+   * A link while the PC has no account. `stale`: the PC has no account (its first member left before
+   * enrolling it), so a barrier an earlier link confirmed is taken over.
+   */
+  startEnrolling(by: string, options: { stale?: boolean } = {}): void {
     this.assertReadable();
+    if (options.stale) this.confirmed = false;
     if (this.confirmed) return;
     if (this.options.enrollingPath) writePrivateState(this.options.enrollingPath, { by });
     this.enrollingBy = by;

@@ -440,6 +440,43 @@ test("a relayed remove the full queue cannot take still keeps its key out, and o
   expect((await post(link, "/api/account/enroll", { account: ACCOUNT, records: [], last: "false" })).body.error?.code).toBe("record_invalid");
 });
 
+test("a fresh status reads the mailbox after the request, so a remove posted a moment before it is counted", async () => {
+  const service = new FakeAccountService();
+  const f = fixture({ accountService: { url: "https://account.test", fetch: service.fetch } });
+  const identity = rotateRelayIdentity(f.stateDir);
+  const { link } = await member(f);
+  const token = service.issueToken(ACCOUNT);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
+  const read = async () => await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean; blocked?: string[] };
+  expect((await read()).fresh).toBe(true);
+  const [stranger, mac] = [await accountKey(), await accountKey()];
+  await service.fetch(new Request("https://account.test/v1/records", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ server_ids: [identity.server_id], record: await remove(stranger, mac.spki) }) }));
+  // within the ten seconds a join's pull is limited to
+  expect((await read()).blocked).toContain(mac.spki);
+});
+
+test("a PC with no account service says its status is fresh: no mailbox can hold a removal for it", async () => {
+  const f = fixture({ accountService: { url: "off" } });
+  const { link } = await member(f);
+  expect((await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean }).fresh).toBe(true);
+});
+
+test("a new first member takes over the barrier of one revoked before it enrolled the PC", async () => {
+  const f = fixture();
+  const first = await relayDevice(f);
+  const firstKey = await accountKey();
+  expect((await post(await signedIn(f, first), "/api/account/link", { record: await linkRecord(first, firstKey) })).status).toBe(200);
+  f.app.context.services.devices.revoke(first.id);
+  expect(f.app.context.services.devices.account()).toBeNull();
+  const next = await relayDevice(f);
+  const nextKey = await accountKey();
+  expect((await post(await signedIn(f, next), "/api/account/link", { record: await linkRecord(next, nextKey) })).status).toBe(200);
+  const linked = await signedIn(f, { keys: nextKey.keys, publicKey: nextKey.spki, id: next.id });
+  expect((await post(linked, "/api/account/enroll", { account: ACCOUNT, records: [] })).status).toBe(200);
+  expect(f.app.context.services.accountHolds.enrolling()).toBe(false);
+});
+
 test("the first link that succeeds keeps the barrier: a later link cannot take it over", () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-holds-"));
   try {

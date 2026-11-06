@@ -63,7 +63,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       // (with no account here no add applies anyway, and the next first member takes the barrier over)
       if (context.services.accountHolds.error !== null) return fail("account_unavailable", context.services.accountHolds.error, 503);
       const first = devices.account() === null;
-      if (first) context.services.accountHolds.startEnrolling(peer.device.id);
+      // a barrier confirmed by a member who has since left (the PC has no account again) is this link's to take over
+      if (first) context.services.accountHolds.startEnrolling(peer.device.id, { stale: true });
       const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId });
       if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
       // the wait is this device's to end: a link refused meanwhile may have named another; the first link that succeeds keeps it

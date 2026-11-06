@@ -209,9 +209,10 @@ waits for its first member's enrollment. `blocked_all` is true when the PC holds
 (removal evidence was lost to a full queue, or its waiting records cannot be read): then `blocked`
 may not name every key it keeps out, and a client enrolling another PC sends that PC no add and
 `held_full`. A client trusts none of them before it checks it (below).
-With `?fresh=1` the PC first pulls its mailbox (at most once every 10 seconds, as a join that
-missed does), so a remove waiting there is counted, and adds `fresh`: true only when a pull in the
-last 10 seconds read the whole mailbox without an error.
+With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the request), so a remove
+waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
+without an error, for the PC's current account and relay identity. A PC with no account service
+(`off`) has no mailbox and answers `fresh: true`.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -253,7 +254,8 @@ last `enroll` part answers every remove (none `account_unavailable`), no `add` a
 `records` or the mailbox. One from the mailbox waits in `account-pending.json` and is tried again
 after the enrollment. An `enroll` from any other member applies its records but ends no wait. A
 refused link leaves the barrier (with no account here no add applies anyway); the next first link
-takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,
+takes it over. The first link that succeeds keeps it, unless the PC has no account again (its
+first member was revoked before enrolling it): then the next first link takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,
 and its devices join this PC by comparing digits instead.
 
 An enrollment applies, whatever the order sent:
@@ -280,8 +282,9 @@ What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/acco
 its link brings a PC that had no account into it, it first reads every other PC of the account it
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
 none of them answers it sends nothing and tries again on its next connection. A PC whose answer
-is not `fresh` does not count. When only PCs from before enrollments answer (no `fresh` at all),
-it sends their removals and its own, but no add, and ends the new PC's wait: the account's devices
+is not `fresh` (its mailbox read failed, or it is from before enrollments) counts for its removals
+only: while any such PC answers, the client sends the removals but no add, and ends the new PC's
+wait: the account's devices
 then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
 `enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
