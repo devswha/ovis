@@ -727,7 +727,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         edgeTimer = null;
       };
       /** a press that went to the program as it is, in one that selects on its own (xterm reports it): its release may copy too */
-      let programPress: { pane: string | null; cell: Cell; codex: boolean } | null = null;
+      let programPress: { pane: string | null; cell: Cell; codex: boolean; moved: boolean } | null = null;
       const onMouseDown = (event: MouseEvent): void => {
         programPress = null;
         // a click handed on to the program (forwardClick) is not a new drag
@@ -752,7 +752,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const selfSelecting = agent === "opencode" || (agent === "codex" && codexDragRef.current);
         if (reporting && selfSelecting && !event.shiftKey && !event.altKey && !onLink && !term.options.disableStdin) {
           term.clearSelection();
-          programPress = { pane: paneRef.current, cell: cellAt(event).cell, codex: agent === "codex" };
+          programPress = { pane: paneRef.current, cell: cellAt(event).cell, codex: agent === "codex", moved: false };
           return;
         }
         const click: ClickKeys | null = reporting && !selecting && !onLink && !term.hasSelection()
@@ -783,6 +783,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const onMouseMove = (event: MouseEvent): void => {
         const d = drag;
         if (!d) {
+          // a press the program has became a drag once it left its cell, even if it comes back
+          if (programPress && !programPress.moved && (event.buttons & 1) !== 0) {
+            const { cell, edge } = cellAt(event);
+            programPress.moved = edge !== 0 || cell.row !== programPress.cell.row || cell.col !== programPress.cell.col;
+          }
           // With herdr's copy_on_select off the selection is kept to be copied: a buttonless move over
           // the grid would reach the program as a hover report, and xterm clears its selection on any
           // input. herdr reports no moves to a pane holding a selection either. Copying on, the first
@@ -827,6 +832,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const onBlur = (): void => {
         stopEdge();
         drag = null;
+        programPress = null;
       };
       const onMouseUp = (event: MouseEvent): void => {
         const d = drag;
@@ -838,8 +844,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (mayReserveCopy()) reserveCopy(press.pane);
           // Codex's drag made Codex's own selection: on herdr its copy never reaches this device, and Ovis
           // cannot quote what it cannot read, so the way that does both is said where the drag ended
-          const released = cellAt(event).cell;
-          if (press.codex && (released.row !== press.cell.row || released.col !== press.cell.col) && socketRef.current?.hasTerminalHistory() !== true) {
+          if (press.codex && press.moved && socketRef.current?.hasTerminalHistory() !== true) {
+            const t = tRef.current; // the language of now, not of the attach
             noteClipboard(isMac ? t("Codex selected this: Option+drag copies or quotes it here") : t("Codex selected this: Shift+drag copies or quotes it here"));
           }
           return;

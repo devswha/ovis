@@ -120,6 +120,24 @@ try {
             // herdr drops Codex's copy: the way to copy and quote here is said; herdr-core passes the copy on
             if (kind === "herdr") await note.waitFor();
             else assert.equal(await note.count(), 0, `${name}: no note where Codex's copy arrives`);
+            // the way the note names: the selection modifier still makes Ovis's own selection, and Codex reads no
+            // button of it; a plain drag after it is Codex's again and clears it
+            const selecting = await page.evaluate(() => /Mac/.test(navigator.platform)) ? "Alt" : "Shift";
+            const presses = async () => ((await sent(page)).match(/\x1b\[<0;\d+;\d+M/g) ?? []).length;
+            const pressed = await presses();
+            await page.mouse.move(box.x + 40, box.y + box.height / 2);
+            await page.keyboard.down(selecting);
+            await page.mouse.down();
+            await page.mouse.move(box.x + 200, box.y + box.height / 3, { steps: 4 });
+            await page.mouse.up();
+            await page.keyboard.up(selecting);
+            await page.locator(".pane-frame.is-current .xterm-selection div").first().waitFor();
+            assert.equal(await presses(), pressed, `${name}: ${selecting}+drag sends Codex no press`);
+            await page.mouse.down();
+            await page.mouse.move(box.x + 40, box.y + box.height / 2, { steps: 4 });
+            await page.mouse.up();
+            await page.waitForFunction((count) => (window.dragFixture.inputs.map((frame) => frame.text ?? "").join("").match(/\x1b\[<0;\d+;\d+M/g) ?? []).length > count, pressed);
+            await page.locator(".pane-frame.is-current .xterm-selection div").first().waitFor({ state: "detached" });
           } else {
             // main's behaviour: the drag is Ovis's selection, and Codex reads no button
             await page.locator(".pane-frame.is-current .xterm-selection div").first().waitFor();
