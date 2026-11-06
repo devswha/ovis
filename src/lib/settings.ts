@@ -1121,7 +1121,11 @@ interface SettingsContextValue {
   resolvedEntry: ThemeEntry;
   /** the language after resolving `system` against the browser's */
   resolvedLanguage: Language;
-  /** a change, or one made from the settings this tab holds when it applies (never storage's copy, which a blocked storage lacks) */
+  /**
+   * a change, or one made from the settings as this save would store them: storage's copy (another tab of this browser
+   * may have saved since this one heard), with this tab's own changes not yet stored over it (a blocked storage holds
+   * none of them, #2977)
+   */
   update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
 }
 
@@ -1173,9 +1177,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
     setSettings((current) => {
-      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? patch(current) : patch) });
-      // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
+      const latest = (): Settings => sanitizeSettings({ ...loadSettings(), ...Object.fromEntries(Object.entries(current).filter(([key, value]) => differs(key, value, stored.current))) });
+      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? patch(latest()) : patch) });
+      // another tab may have saved since this one loaded (#2485): write only what this tab changed, over what is stored now
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));
       if (saveSettings(sanitizeSettings({ ...loadSettings(), ...changed }))) stored.current = next;
       return next;

@@ -155,6 +155,35 @@ describe("settings across tabs", () => {
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p3"]);
   });
 
+  const move = (current: Settings): Partial<Settings> => ({ lockedAgents: current.lockedAgents.map((key) => key === "pc:w1:p1" ? "pc:w2:p1" : key) });
+
+  it("makes a change from what another tab saved since this one heard, keeping the rest of it (#2977)", async () => {
+    // Given a tab opened before another tab of this browser locked two panes.
+    await open();
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+
+    // When this tab moves one pane's lock.
+    await act(async () => { update(move); });
+
+    // Then both locks are kept, the moved one under its new ID, in this tab and in storage.
+    expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
+    expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
+  });
+
+  it("keeps this tab's change that storage refused over storage's older copy", async () => {
+    // Given a lock this tab stored, then removed while storage refused the write.
+    await open();
+    await act(async () => { update({ lockedAgents: ["pc:w1:p1"] }); });
+    full = true;
+    await act(async () => { update({ lockedAgents: [] }); });
+
+    // When the pane moves.
+    await act(async () => { update(move); });
+
+    // Then the removed lock does not come back from storage.
+    expect(settings.lockedAgents).toEqual([]);
+  });
+
   it("breaks the line on Return on a touch screen until this device chooses, and Enter still sends on a desk", async () => {
     // Given a record an older version saved whole after an unrelated change: its enterSends: true was never chosen.
     records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true, terminalFontSize: 20 }));

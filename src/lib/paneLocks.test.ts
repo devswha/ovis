@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { lockedPinKeys, locksAfterPinToggle, movedPaneLocks, toggleAgentLock } from "./paneLocks.ts";
+import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "./paneLocks.ts";
 
 describe("locked agent rows", () => {
   it("holds a lock only while its row is pinned", () => {
@@ -19,15 +19,6 @@ describe("locked agent rows", () => {
     expect(locksAfterPinToggle(["pc:p1", "pc:p2"], ["pc:p2", "pc:p1"], "pc:p1")).toEqual(["pc:p2"]);
     // an unpin takes its lock, and the locks of rows no longer pinned, with it
     expect(locksAfterPinToggle(["pc:p1", "pc:p2", "gone:p9"], ["pc:p2"], "pc:p1")).toEqual(["pc:p2"]);
-  });
-
-  it("moves a pane's lock from what this tab holds, or from storage when only another tab saved it (#2977)", () => {
-    // storage refused writes: only this tab holds the lock
-    expect(movedPaneLocks(["pc:w1:p1", "pc:w1:p2"], [], "pc", "w1:p1", "w2:p1")).toEqual(["pc:w2:p1", "pc:w1:p2"]);
-    // another tab of this browser locked it, and this one has not heard yet
-    expect(movedPaneLocks(["pc:w1:p2"], ["pc:w1:p1"], "pc", "w1:p1", "w2:p1")).toEqual(["pc:w1:p2", "pc:w2:p1"]);
-    // a pane locked nowhere stays unlocked
-    expect(movedPaneLocks(["pc:w1:p2"], ["pc:w1:p2"], "pc", "w1:p1", "w2:p1")).toEqual(["pc:w1:p2"]);
   });
 
   it("never locks a row that is not pinned", () => {
