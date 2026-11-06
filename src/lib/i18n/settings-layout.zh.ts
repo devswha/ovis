@@ -32,4 +32,5 @@ export const SETTINGS_LAYOUT_ZH: Record<string, string> = {
   "A chip in an OMP pane's message box lists the side conversations its session saved with /btw.": "在 OMP 窗格的输入框中显示一个标签，列出该会话用 /btw 保存的旁支对话。",
   "In use": "使用中",
   "herdr's TUI server is not running: start herdr after the switch.": "herdr 的 TUI 服务器未运行：切换后请启动 herdr。",
+  "herdr's TUI server is not running.": "herdr 的 TUI 服务器未运行。",
 };

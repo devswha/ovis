@@ -32,4 +32,5 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "A chip in an OMP pane's message box lists the side conversations its session saved with /btw.": "OMP 패널의 입력창에 세션이 /btw로 저장한 곁가지 대화 목록을 여는 칩을 표시합니다.",
   "In use": "사용 중",
   "herdr's TUI server is not running: start herdr after the switch.": "herdr의 TUI 서버가 실행 중이 아닙니다. 전환한 뒤 herdr를 시작하세요.",
+  "herdr's TUI server is not running.": "herdr의 TUI 서버가 실행 중이 아닙니다.",
 };

@@ -32,4 +32,5 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "A chip in an OMP pane's message box lists the side conversations its session saved with /btw.": "OMP ペインの入力欄に、セッションが /btw で保存したサイド会話の一覧を開くチップを表示します。",
   "In use": "使用中",
   "herdr's TUI server is not running: start herdr after the switch.": "herdr の TUI サーバーは動いていません。切り替えた後で herdr を起動してください。",
+  "herdr's TUI server is not running.": "herdr の TUI サーバーは動いていません。",
 };

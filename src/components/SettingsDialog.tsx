@@ -735,7 +735,7 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
       <PushTestControls onEnable={onEnableNotifications} />
       {/* the rows these chips replaced are still found by their words */}
       <SettingsRow label={t("Alert me when")} icon={Bell} wide
-        resetAlso={{ changed: filters.permission !== undefined || filters.error === true, restore: () => updateAlertFilters({ permission: undefined, error: undefined }) }}
+        resetAlso={{ changed: (filters.permission !== undefined && filters.permission !== settings.alertInput) || filters.error === true, restore: () => updateAlertFilters({ permission: undefined, error: undefined }) }}
         keywords={[t("Long turn finished"), t("Any turn finished"), t("Needs input"), t("An agent asks you something"), t("Needs permission"), t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input."), t("Finished"), t("Long turns: only work that took a minute or more"), t("Stopped on an error"), t("A turn that ended on an error, as OmO and GJC report it")].join(" ")}
         reset={["alertInput", "alertDone"]}>
         <ChipToggles label={t("Alert me when")} chips={[
@@ -807,7 +807,7 @@ function AlertPcsGroup({ machines }: { machines: readonly Machine[] }) {
   if (machines.length < 2) return null;
   const listed = [...machines].sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"));
   return (
-    <SettingsGroup title={t("Alerts from")} section="alert-pcs">
+    <SettingsGroup title={t("Alerts from")} section="alert-pcs" heading>
       {listed.map((machine) => {
         const key = pcAlertKey(machine);
         return (
@@ -1583,7 +1583,8 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   const others = (["herdr", "herdr-core"] as const).filter((runtime) => runtime !== served && runtime !== target && (runtime === "herdr-core" ? coreInstalled : tuiInstalled));
   return (
     <SettingsGroup title={t("Terminals")} section="runtime">
-      <SettingsRow label={t("In use")} icon={SquareTerminal} wide={target !== null}>
+      <SettingsRow label={t("In use")} icon={SquareTerminal} wide={target !== null}
+        condition={!onCore && facts?.tui.running === false ? <span className="settings-hint">{t("herdr's TUI server is not running.")}</span> : undefined}>
         {target !== null
           ? <Segmented label={t("In use")} value={served} onChange={(runtime) => { if (runtime === target) setConfirming(true); }}
             options={[served, target].sort().map((runtime) => ({ value: runtime, label: titled(runtime) }))} />
