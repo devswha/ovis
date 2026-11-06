@@ -35,7 +35,9 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { link as linkPc } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
+import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
@@ -876,6 +878,27 @@ async function approvePairings(): Promise<number> {
 }
 
 /**
+ * `link [--code] [--google]`: this PC joins the relay from its own terminal (scripts/plugin-link.ts),
+ * signed in to the account by a device code, or with a code to type and a QR code.
+ */
+async function linkCommand(): Promise<number> {
+  if (!(await health())) {
+    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
+    return 1;
+  }
+  const headers: Record<string, string> = {};
+  if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const stop = new AbortController();
+  process.once("SIGINT", () => stop.abort());
+  return linkPc(process.argv.slice(3), {
+    origin, headers, signal: stop.signal,
+    accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
+    out: (text) => process.stdout.write(text),
+    lines: console[Symbol.asyncIterator](),
+  });
+}
+
+/**
  * The address a phone opens, as a QR code. When Tailscale runs on this PC but does not yet serve
  * the app, this is the one place that changes it: `tailscale serve` of the app's port on the first
  * free HTTPS port, or only on the one OVIS_TAILSCALE_HTTPS_PORT names, said out loud with the
@@ -1013,10 +1036,11 @@ if (import.meta.main) {
   else if (command === "stop") process.exit(await stop());
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
+  else if (command === "link") process.exit(await linkCommand());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
   else {
-    process.stderr.write(`usage: bun scripts/plugin.ts <start|stop|status|pair|phone|phone-setup>\n`);
+    process.stderr.write(`usage: bun scripts/plugin.ts <start|stop|status|pair|link|phone|phone-setup>\n`);
     process.exit(2);
   }
 }

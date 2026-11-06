@@ -272,6 +272,37 @@ makes such a device, and the app has no way to make a paired device watch-only.
 the device gate first, so from then on a new browser on the LAN or behind a proxy needs a pairing
 code as well ([Access and safety](guide.md#access-and-safety)).
 
+### A PC with no screen
+
+A PC you reach only over SSH (a home server, a desktop in another room) links itself from its own
+terminal, with the same two ways its Settings page offers and the same rules. In an installed
+plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); from a checkout:
+
+```bash
+bun scripts/plugin.ts link            # sign in to your account, then approve the device that adds this PC
+bun scripts/plugin.ts link --google   # the same, signed in with Google
+bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
+```
+
+Both turn the relay on first when it is off.
+
+- **`link`** signs in with the provider's device flow, the way a PC's own page does: it prints the
+  provider's device page and a code to enter there, on any device. Then it lists this PC in your
+  account ([Adding a PC](account.md#adding-a-pc)) and waits. On a phone already in your account,
+  tap **Add** on this PC; the terminal shows the request with its six digits
+  (**… wants to add this PC to your account. Approve it only if its screen shows 123 456**) and asks
+  y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
+  this PC only. It ends once the PC is in the account, and the sign-in ends with it: nothing of it
+  is kept on the PC. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+- **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
+  (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
+  ID for the other device to compare. Both renew when they run out; Ctrl+C takes the code off the
+  relay. Redeeming it follows the usual admission rules.
+
+`link` talks only to an Ovis listening on this machine's loopback address, with the token the
+plugin reads (`OVIS_TOKEN`), and refuses a server elsewhere: approving a device is something only
+the PC does. Over SSH, run it in the PC's shell, not through a forwarded port from another machine.
+
 ### Ending access
 
 - **Revoke**, under **Phone & devices** on the PC, closes that phone's relay connections at once:
