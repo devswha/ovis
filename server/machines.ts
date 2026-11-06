@@ -1474,13 +1474,12 @@ export class MachineManager {
   }
   /**
    * A relay PC's connection moved to a better route (server/relay-pc.ts): the streams of the old one end, so the
-   * status socket opens again on the new one, and open terminals close as on any reconnect (their clients come back by
-   * themselves, and nothing typed is sent again). The PC stays connected throughout: nothing was lost.
+   * status socket opens again on the new one. Open terminals end with their stream as on any reconnect (their clients
+   * come back by themselves, and nothing typed is sent again); requests waiting for the move go on the new route, so
+   * nothing tracked here is ended. The PC stays connected throughout: nothing was lost.
    */
   private moved(runtime: Runtime, generation: number): void {
     if (generation !== runtime.generation || this.stopped || !runtime.tunnel) return;
-    for (const close of runtime.terminals) close();
-    runtime.terminals.clear();
     const old = runtime.observer;
     if (old) { old.onclose = null; old.onerror = null; old.onmessage = null; old.close(); }
     this.openObserver(runtime, generation);

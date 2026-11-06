@@ -211,7 +211,9 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const base = (): RelayChannelOptions => ({
     store: key, label,
     // whoever asks through the forward sets the deadline (the machine proxy: 75 s, 165 s for its slow routes)
-    requestTimeoutMs: () => 0, offerDirect: true,
+    // a server can dial a Tailscale address whenever this PC is on Tailscale, and fails fast when not: always asked
+    // for, so the carriers kept with the key stay right when Tailscale comes and goes
+    requestTimeoutMs: () => 0, offerDirect: true, offerTailnet: true,
   });
   /**
    * A channel on `direct` within `ms`, or through the relay; its end counts as the connection's only while it is the
@@ -267,6 +269,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const waiting = new Set<() => void>();
   /** HTTP streams under way and sockets not yet accepted by the PC: a move waits for none */
   let busy = 0;
+  /** of those, the ones waiting for a move to settle (they open on whichever session it leaves) */
+  let waitingForMove = 0;
   let sentAt = -Infinity;
   const install = (channel: RelayChannel): void => {
     current = channel;
@@ -302,7 +306,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     const release = (): void => { if (!released) { released = true; busy--; } };
     try {
       // never onto the session a move is about to close
-      while (moving) await moving;
+      while (moving) { waitingForMove++; try { await moving; } finally { waitingForMove--; } }
       const stream = await opened(() => current!.mux.openHttp({
         target, method: request.method as HttpRequest["method"], body: body ? "stream" : "none",
         headers: [...request.headers].filter(([name]) => allowed.includes(name)),
@@ -329,7 +333,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const settle = (local: Bun.ServerWebSocket<Forwarded>): void => { if (local.data.pending) { local.data.pending = false; busy--; } };
   const connect = async (local: Bun.ServerWebSocket<Forwarded>): Promise<void> => {
     let remote: WsStream;
-    while (moving) await moving;
+    while (moving) { waitingForMove++; try { await moving; } finally { waitingForMove--; } }
     try { remote = await opened(() => current!.mux.openWs({ target: local.data.target, headers: [], protocols: [] }), local.data.abort.signal); }
     catch { settle(local); local.close(1012, "PC connection lost"); return; }
     if (local.data.closed) { remote.close(1000); return; }
@@ -417,11 +421,14 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     ending.signal.addEventListener("abort", done, { once: true });
   });
   /**
-   * Signs in on `direct` while new streams wait, then makes it the current session and closes `from`. False when it
-   * could not (a refusal there is one the current session meets too, and says so). The old session ending meanwhile
-   * (the PC let the new one in in its place) is no loss when the new one is up, and the connection's loss when not.
+   * Signs in on `direct` while new streams wait, then makes it the current session and closes `from`: "moved". "busy"
+   * when something started on `from` meanwhile (input on an open socket, a request let through before): the new
+   * session is dropped and the move waits. "failed" when it could not sign in there (a refusal there is one the
+   * current session meets too, and says so). The old session ending meanwhile (the PC let the new one in in its
+   * place) is no loss when the new one is up, and the connection's loss when not.
    */
-  const move = async (direct: string, from: RelayChannel): Promise<boolean> => {
+  const move = async (direct: string, from: RelayChannel): Promise<"moved" | "busy" | "failed"> => {
+    const startedAt = performance.now();
     const settled = Promise.withResolvers<void>();
     moving = settled.promise;
     replaced = undefined;
@@ -434,13 +441,15 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       if (closed || current !== from || !next?.mux.active) {
         next?.close();
         if (gone && !closed && current === from) lost(gone);
-        return false;
+        return "failed";
       }
+      // only streams waiting for this move may be under way, and no input since it began; else the old session stays
+      if (!gone && (busy > waitingForMove || sentAt >= startedAt)) { next.close(); return "busy"; }
       install(next);
       backoff = 1;
       options.onMoved?.();
       from.close();
-      return true;
+      return "moved";
     } finally {
       settled.resolve();
     }
@@ -463,15 +472,14 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       for (const direct of candidates) {
         if (!still()) return;
         if (!await probeDirect(signIn, direct, directSocket, DIRECT_BUDGET_MS, ending.signal)) continue;
-        let moved = false;
-        for (let round = 0; round < IDLE_CHECKS && still(); round++) {
+        let outcome: "moved" | "busy" | "failed" = "busy";
+        for (let round = 0; round < IDLE_CHECKS && still() && outcome === "busy"; round++) {
           // input a moment ago: only until it has been quiet long enough; a request under way: a while
           if (!quiet()) { await pause(busy > 0 ? IDLE_CHECK_MS : Math.max(1, QUIET_MS - (performance.now() - sentAt))); continue; }
-          moved = await move(direct, from!);
-          if (!moved) unusable = true;
-          break;
+          outcome = await move(direct, from!);
         }
-        if (moved || !still()) return;
+        if (outcome === "failed") unusable = true;
+        if (outcome === "moved" || !still()) return;
       }
       if (unusable) backoff = Math.min(backoff * 2, 12);
     })().catch(() => { /* a probe that fails is a route that is not there: the current one stays */ }).finally(() => {

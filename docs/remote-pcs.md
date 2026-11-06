@@ -88,14 +88,16 @@ the same backoff as an SSH PC's and signs in with the saved key; nothing typed i
 The connection takes the best route it can, as the phone apps do ([Direct on the same
 network](relay.md#direct-on-the-same-network)): that PC's direct carriers first (addresses on its own
 network before Tailscale ones), then the relay. The carriers come from that PC inside the encrypted
-channel on each sign-in and are kept with the key, so they follow it to another network. A sign-in
+channel on each sign-in (this server always offers `direct-tailnet`, so a Tailscale address is named
+too) and are kept with the key, so they follow it to another network. A sign-in
 tries them within 1.5 s, then the relay. While a later route carries it, this server checks the
 earlier ones (a Noise handshake to the pinned key, no session) after each sign-in, then at most every
 5 minutes, and at once when its own addresses change or it wakes from sleep; it reads its addresses
 every 30 s and sends nothing for that. Once one proves to be that PC and no request or terminal input
-is under way for 3 s, it signs in there first and only then closes the old session: the PC stays
-connected, its status socket reopens on the new route, and open terminals reconnect as after any
-drop. `GET /api/machines` names the route of a connected relay PC as `route`: `direct` or `relay`.
+is under way for 3 s, it signs in there first and only then closes the old session: requests that
+start meanwhile wait for it and go on the new route, and input on an open terminal in that window
+keeps the old session for a later try. The PC stays connected, its status socket reopens on the new
+route, and open terminals reconnect as after any drop. `GET /api/machines` names the route of a connected relay PC as `route`: `direct` or `relay`.
 
 **Revoke** under Phone & devices on the other PC ends this PC's access: the PC turns to an error
 that says so and is not tried again. **Remove PC** here forgets the PC and its key; revoke it on

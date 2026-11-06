@@ -25,7 +25,7 @@ const LAN = "10.99.0.1";
  * PC B with the relay on, PC A that adds it through the relay, and the local relay between them. `direct`: B also
  * listens on its network, and A reaches that address on the dials `reachable` lets through (else nothing answers).
  */
-async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean } } = {}) {
+async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean; held?: (dial: number) => Promise<void> | undefined } } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -72,8 +72,17 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
     const target = new URL(url);
     expect(target.hostname).toBe(LAN);
     // port 1 on loopback refuses at once, as an address of another network does
-    const port = options.direct?.reachable(++lan.dials) ? target.port : "1";
-    return new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`);
+    const dial = ++lan.dials;
+    const port = options.direct?.reachable(dial) ? target.port : "1";
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`);
+    const held = options.direct?.held?.(dial);
+    if (!held) return socket;
+    // what the PC answers on this dial reaches A only once `held` settles: a sign-in that takes its time
+    const answer = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage")!;
+    let handler: ((event: MessageEvent) => void) | null = null;
+    answer.set!.call(socket, (event: MessageEvent) => { void held.then(() => handler?.(event)); });
+    Object.defineProperty(socket, "onmessage", { get: () => handler, set: (next) => { handler = next; } });
+    return socket;
   };
   const startA = () => {
     const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local, relayPcDirectSocket: onLan });
@@ -327,4 +336,27 @@ it("keeps a relay PC on the relay while its same-network address does not answer
   expect(lan.dials).toBeGreaterThan(dialsBefore);
   expect(back.route).toBe("relay");
   expect(JSON.parse(await terminalAnswers(a.base, machine.id)).type).toBeString();
+}, 60_000);
+
+it("lets a request that starts while a move signs in finish, and still moves", async () => {
+  // Given B on A's network, with the move's sign-in there held (dial 1 is the probe, dial 2 the move's session)
+  const release = deferred<void>();
+  const holding = deferred<void>();
+  const { link, startA } = await twoPcs({ direct: { reachable: () => true, held: (dial) => {
+    if (dial !== 2) return undefined;
+    holding.resolve();
+    return release.promise;
+  } } });
+  const a = startA();
+  const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
+  await bounded(holding.promise);
+  // When a request starts in that window and the sign-in then completes
+  const states: string[] = [];
+  const moved = machineWhen(a.base, (pc) => { if (pc.id === machine.id) states.push(pc.state); return pc.id === machine.id && pc.route === "direct"; });
+  const request = fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } });
+  release.resolve();
+  // Then the request is answered, the PC never shows as lost, and the move happens
+  expect((await request).status).toBe(200);
+  expect((await moved).state).toBe("connected");
+  expect(states.filter((state) => state !== "connected")).toEqual([]);
 }, 60_000);
