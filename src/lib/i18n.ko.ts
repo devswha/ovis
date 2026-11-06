@@ -16,6 +16,7 @@ import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
+import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -443,6 +444,7 @@ const BASE: Record<string, string> = {
   "New terminal": "새 터미널",
   "New terminal failed: {reason}": "새 터미널 열기 실패: {reason}",
   "herdr prefix: press a key": "herdr 접두키: 키를 누르세요",
+  "Shell": "셸",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -463,6 +465,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_KO,
   palette: PALETTE_KO,
   relay: RELAY_KO,
+  "runtime-move": RUNTIME_MOVE_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

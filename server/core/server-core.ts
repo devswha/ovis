@@ -125,6 +125,8 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   return {
     sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage,
+    /** a message someone sent through Ovis still waits for the pane (runtime-move.ts) */
+    holdsPending: (paneId: string): boolean => pending.holds(paneId),
     // The relay uses these same handlers with a SocketLike; websocket above remains Bun's boundary.
     socketHandlers,
     /** once the server listens */
