@@ -87,6 +87,12 @@ describe("planMove", () => {
     expect(plan.ready).toBe(false);
   });
 
+  it("starts a pane whose folder is gone in the home folder, not in a folder that cannot be entered", async () => {
+    // herdr names a deleted folder "<path> (deleted)"; a shell started there fails, and with it the whole move
+    const plan = await planMove(snapshot([pane("gone", { cwd: "/no/such/folder (deleted)" }), pane("here", { cwd: process.cwd() })]), facts);
+    expect(plan.panes.map((entry) => [entry.pane_id, entry.cwd])).toEqual([["gone", null], ["here", process.cwd()]]);
+  });
+
   it("reopens one conversation in one pane only", async () => {
     const plan = await planMove(snapshot([
       pane("first", { agent: "claude", agent_status: "idle", agent_session: session("claude", "listed") }),

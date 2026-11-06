@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import type { PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
 import type { HerdrRuntimeFacts } from "../shared/machines.ts";
 import type { MoveNode, MovePane, MovePlan, MoveUnavailable, MoveVerdict, MoveWorkspace } from "../shared/runtime-move.ts";
@@ -67,6 +68,15 @@ export function tabTree(layout: PaneLayoutSnapshot | undefined, paneIds: readonl
   return rest.reduce<MoveNode>((tree, pane, index) => ({ split: "right", ratio: (index + 1) / (index + 2), first: tree, second: { pane } }), { pane: first! });
 }
 
+/**
+ * The pane's folder, or null when it cannot be entered any more (herdr names a deleted one
+ * "<path> (deleted)"): a shell started there fails, and with it the whole move; null starts it home.
+ */
+function enterable(cwd: string | null | undefined): string | null {
+  if (!cwd) return null;
+  try { return statSync(cwd).isDirectory() ? cwd : null; } catch { return null; }
+}
+
 /** The command a shell runs in front, or null when the shell itself is in front; unknown counts as running. */
 function commandInFront(info: PaneProcessInfo | undefined): string | null {
   if (!info || info.shell_pid == null || info.foreground_process_group_id == null) return "?";
@@ -117,7 +127,7 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
   const running = new Set(snapshot.panes.filter((pane) => pane.agent && pane.agent_session).map((pane) => `${pane.agent_session!.agent}\0${pane.agent_session!.value}`));
   const panes: MovePane[] = [];
   // one at a time: a conversation is claimed by the first pane, in herdr's order
-  for (const pane of snapshot.panes) panes.push({ pane_id: pane.pane_id, cwd: pane.cwd ?? null, name: pane.label ?? null, verdict: await verdictOf(pane, facts, claimed, running) });
+  for (const pane of snapshot.panes) panes.push({ pane_id: pane.pane_id, cwd: enterable(pane.cwd), name: pane.label ?? null, verdict: await verdictOf(pane, facts, claimed, running) });
   const workspaces: MoveWorkspace[] = snapshot.workspaces.map((workspace) => ({
     workspace_id: workspace.workspace_id,
     name: workspace.label,

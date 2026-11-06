@@ -127,6 +127,15 @@ describe("runMove, an agent the person ended", () => {
 });
 
 describe("runMove, before anything is ended", () => {
+  it("types nothing into an agent that took work since the plan, and ends no other", async () => {
+    const { world, source, destination, options } = fakes();
+    // the plan saw it idle; a message from another client started a turn before the exit
+    world.herdr.set("a", { agent: "claude", status: "working", session: "s1", shellInFront: false });
+    const journal = await runMove(stateDir(), PORT, "m1", plan, source, destination, options);
+    expect([journal.state, journal.reason]).toEqual(["rolled_back", "agent_busy"]);
+    expect(world.calls.filter((call) => call.startsWith("herdr exit"))).toEqual([]);
+  });
+
   it("ends nothing when the pane now shows another conversation than the one shown", async () => {
     const { world, source, destination, options } = fakes();
     world.herdr.set("a", { agent: "claude", status: "idle", session: "s9", shellInFront: false });

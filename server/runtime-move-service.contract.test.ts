@@ -8,6 +8,11 @@ import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
 import { planMove } from "./runtime-move.ts";
 import { runMove } from "./runtime-move-run.ts";
 import { coreDestination, herdrSource } from "./runtime-move-service.ts";
+import type { HerdrRuntimeFacts } from "../shared/machines.ts";
+import type { MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
+import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
+import { createServer } from "./index.ts";
+import { herdrRpc } from "./herdr/client.ts";
 
 /**
  * A move of shells only, from the test herdr session to a real hc in a core of its own (its
@@ -96,5 +101,61 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
     expect(layout.workspaces[0]?.tabs[0]?.root.split).toBe("down");
     // herdr is left as it was: its panes are all still there
     expect((await sessionSnapshot()).panes.filter((pane) => ours.has(pane.pane_id))).toHaveLength(3);
+  }, TEST_MS);
+
+  // the whole flow over the HTTP route: a pane at work makes it wait, the person ends that agent, it
+  // goes by itself; the launcher's answer decides whether it stays or is ended again
+  const facts: HerdrRuntimeFacts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null };
+  async function viaRoute(answer: { ok: true } | { ok: false; status: number; code: string; message: string }) {
+    const asked: unknown[] = [];
+    const runtimeService: RuntimeService = { facts: () => facts, request: (target) => { asked.push(target); return answer; } };
+    const server = createServer({ port: 0, hostname: "127.0.0.1", token: "test-move-route", stateDir: mkdtempSync(join(root, "route-")), runtimeService });
+    const headers = { authorization: "Bearer test-move-route", "content-type": "application/json", "x-herdr-update": "1" };
+    const read = async () => (await (await fetch(`http://127.0.0.1:${server.port}/api/runtime/move`, { headers })).json()) as Extract<MovePlanResponse, { available: true }>;
+    const statusUntil = async (done: (status: MoveStatus) => boolean): Promise<MoveStatus> => {
+      for (const deadline = Date.now() + 30_000; ;) {
+        const { status } = await read();
+        if (done(status)) return status;
+        if (Date.now() > deadline) throw new Error(`the move's status stayed ${JSON.stringify(status)}`);
+        await Bun.sleep(100);
+      }
+    };
+    const created = await workspaceCreate({ cwd: root, label: "route" });
+    const pane = created.root_pane.pane_id;
+    await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "codex", state: "working" });
+    try {
+      const { plan } = await read();
+      expect((await fetch(`http://127.0.0.1:${server.port}/api/runtime/move`, { method: "POST", headers, body: JSON.stringify({ revision: plan.revision }) })).status).toBe(202);
+      expect((await read()).status.state).toBe("waiting");
+      await herdrRpc("pane.release_agent", { pane_id: pane, source: "manual", agent: "codex" });
+      const status = await statusUntil((now) => now.state !== "waiting" && now.state !== "moving");
+      return { status, asked, pane };
+    } finally {
+      server.stop();
+      await workspaceClose(created.workspace.workspace_id).catch(() => undefined);
+    }
+  }
+  const live = async () => (await hc!.call("terminal.list", { all: true })).terminals.filter((terminal) => terminal.state === "live" && terminal.labels?.["ovis.move"]);
+
+  it("waits for a pane at work, goes once it is done, builds everything on herdr-core and switches", async () => {
+    const before = new Set((await live()).map((terminal) => terminal.address));
+    const { status, asked } = await viaRoute({ ok: true });
+    expect(status).toEqual({ state: "done" });
+    expect(asked).toEqual(["herdr-core"]);
+    const built = (await live()).filter((terminal) => !before.has(terminal.address));
+    expect(built.length).toBe((await sessionSnapshot()).panes.length + 1);
+    for (const terminal of built) await hc!.call("terminal.kill", { terminal: terminal.address });
+  }, TEST_MS);
+
+  it("ends everything it built on herdr-core when the launcher refuses the switch, and leaves herdr as it was", async () => {
+    const before = new Set((await live()).map((terminal) => terminal.address));
+    const panesBefore = (await sessionSnapshot()).panes.length;
+    const { status, asked, pane } = await viaRoute({ ok: false, status: 409, code: "runtime_locked", message: "locked" });
+    expect(status).toMatchObject({ state: "rolled_back", reason: "switch_refused: locked" });
+    expect(asked).toEqual(["herdr-core"]);
+    expect((await live()).filter((terminal) => !before.has(terminal.address))).toEqual([]);
+    // herdr's own panes are all there (the route's workspace was the test's, closed after)
+    expect((await sessionSnapshot()).panes.length).toBe(panesBefore);
+    expect(pane).not.toBe("");
   }, TEST_MS);
 });
