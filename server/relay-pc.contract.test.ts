@@ -112,8 +112,9 @@ function postRelay(base: string, body: Record<string, string>, path = ""): Promi
 }
 
 /** The first roster on A's machine events stream (the browser's own feed) in which `wanted` holds for a PC. */
-async function machineWhen(base: string, wanted: (machine: Machine) => boolean): Promise<Machine> {
+async function machineWhen(base: string, wanted: (machine: Machine) => boolean, stop?: AbortSignal): Promise<Machine> {
   const abort = new AbortController();
+  stop?.addEventListener("abort", () => abort.abort(), { once: true });
   const response = await fetch(`${base}/api/machines/events`, { headers: { origin: base }, signal: abort.signal });
   const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
@@ -314,13 +315,15 @@ it("moves a relay PC's connection to its same-network address without dropping i
   const back = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
   expect(back.route).toBe("direct");
   // and that channel outlives the deadline its sign-in had (each carrier's share of 1.5 s)
+  const watch = new AbortController();
   const dropped: string[] = [];
-  const watching = machineWhen(a.base, (pc) => { if (pc.id === machine.id && pc.state !== "connected") dropped.push(pc.state); return false; }).catch(() => undefined);
+  const watching = machineWhen(a.base, (pc) => { if (pc.id === machine.id && pc.state !== "connected") dropped.push(pc.state); return false; }, watch.signal).catch(() => undefined);
   // fixed wait: proving nothing happens past the sign-in deadline
   await Bun.sleep(2_500);
+  watch.abort();
+  await watching;
   expect(dropped).toEqual([]);
   expect((await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } })).status).toBe(200);
-  void watching;
 }, 60_000);
 
 it("keeps a relay PC on the relay while its same-network address does not answer", async () => {
@@ -395,6 +398,31 @@ it("keeps the old session when input is sent while a move signs in, and moves on
   // Then that attempt's session is dropped, a later one moves, and the connection was never lost
   await bounded(moved.promise, 45_000);
   expect(lan.dials).toBeGreaterThanOrEqual(3);
+  expect(tunnel.route).toBe("direct");
+  expect(lost).toEqual([]);
+}, 60_000);
+
+it("checks the direct route again when this PC's addresses change, and moves there", async () => {
+  // Given a tunnel on the relay because B's address did not answer after the sign-in
+  const lanUp = { now: false };
+  const { link, local, onLan } = await twoPcs({ direct: { reachable: () => lanUp.now } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const network = { now: "192.168.1.5" };
+  const lost: Error[] = [];
+  const moved = deferred<void>();
+  const probed = deferred<void>();
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, onLost: (error) => lost.push(error), onMoved: () => moved.resolve(),
+    directSocket: ((url: string) => { if (!lanUp.now) probed.resolve(); return onLan(url); }) as never,
+    network: () => network.now, networkCheckMs: 50 });
+  cleanup.push(() => tunnel.close());
+  await bounded(probed.promise);
+  expect(tunnel.route).toBe("relay");
+  // When this PC joins B's network (its addresses change) well before the next timed check
+  lanUp.now = true;
+  network.now = "10.99.0.20";
+  // Then it checks again at once and moves to B's address, never losing the connection
+  await bounded(moved.promise);
   expect(tunnel.route).toBe("direct");
   expect(lost).toEqual([]);
 }, 60_000);

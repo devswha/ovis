@@ -193,7 +193,12 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   directSocket?: (url: string) => RelaySocket;
   onLost: (error: Error) => void;
   onMoved?: () => void;
+  /** this PC's own addresses as one string that changes with them (networkNow by default), and how often it is read */
+  network?: () => string;
+  networkCheckMs?: number;
 }): Promise<RelayPcTunnel> {
+  const readNetwork = options.network ?? networkNow;
+  const networkCheckMs = options.networkCheckMs ?? NETWORK_CHECK_MS;
   const directSocket = options.directSocket ?? ((url: string) => new WebSocket(url) as unknown as RelaySocket);
   // a pairing's one-time code is spent once admitted: every channel after the first signs in with the key
   const { code: _code, ...signIn } = offer;
@@ -489,20 +494,20 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       later(PROBE_EVERY_MS * backoff);
     });
   };
-  let network = networkNow();
+  let network = readNetwork();
   // the wall clock: the monotonic one may stand still while the PC sleeps, which would hide the wake
   let lastLook = Date.now();
   const watcher = setInterval(() => {
     const now = Date.now();
-    const seen = networkNow();
+    const seen = readNetwork();
     // a timer far later than asked is a PC that slept: it may wake on another network, even one with the same addresses
-    if (seen === network && now - lastLook < NETWORK_CHECK_MS * 2) { lastLook = now; return; }
+    if (seen === network && now - lastLook < networkCheckMs * 2) { lastLook = now; return; }
     network = seen;
     lastLook = now;
     probedAt = -Infinity;
     backoff = 1;
     if (checking) recheck = true; else check();
-  }, NETWORK_CHECK_MS);
+  }, networkCheckMs);
   watcher.unref?.();
 
   const close = (): void => {
@@ -521,9 +526,9 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     close();
     options.onLost(fatal(error) ? new RelayPcRefused(refusal(error, false), { cause: error }) : new Error("Relay connection to this PC was lost", { cause: error }));
   };
-  // a channel that ended between its admission and here is a connection already lost
-  if (!current.mux.active) lost(new Error("Relay carrier lost during admission"));
-  else check();
+  // a channel that ended between its admission and here: the caller's failed attempt, not a loss it is told of
+  if (!current.mux.active) { close(); throw new Error("Relay carrier lost during admission"); }
+  check();
   return {
     endpoint: { url: `http://127.0.0.1:${server.port}`, token },
     get route() { return current?.direct === undefined ? "relay" : "direct"; },
