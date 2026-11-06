@@ -232,6 +232,23 @@ describe("ovis link, on the PC itself", () => {
     expect(service.pcs("acct_1")).toHaveLength(1);
   });
 
+  it("uses GitHub's device page when the link page refuses with 429", async () => {
+    const { code, text } = await linkToAccount({
+      prepare: (service) => {
+        service.offerLinkPage(["github", "google"]);
+        const answer = service.fetch;
+        Object.defineProperty(service, "fetch", { value: async (input: Request | string | URL, init?: RequestInit) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          return new URL(request.url).pathname === "/v1/signin/ovis/device"
+            ? Response.json({ error: { code: "rate_limited", message: "" } }, { status: 429 }) : answer(request);
+        } });
+      },
+      approve: (service, shown) => service.approveDevice(shown, "acct_1"),
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("https://github.com/login/device");
+  });
+
   it("--github and --google keep the provider's own device page, even where the link page exists", async () => {
     const { code, text } = await linkToAccount({
       args: ["--google"],

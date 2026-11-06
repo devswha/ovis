@@ -57,6 +57,7 @@ const BASE: Record<string, string> = {
   "Sign in again": "다시 로그인",
   "Added {date}": "{date}에 추가됨",
   "To change how you sign in, sign in again with {provider} first.": "로그인 방법을 바꾸려면 먼저 {provider}(으)로 다시 로그인하세요.",
+  "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "로그인 방법을 바꾸려면 먼저 {provider} 자체 로그인 페이지에서 다시 로그인하세요.",
   "Add another way to sign in from the Ovis desktop app.": "다른 로그인 방법은 Ovis 데스크톱 앱에서 추가하세요.",
   "Add {provider}": "{provider} 추가",
   "The code expired. Sign in again to get a new one.": "코드가 만료되었습니다. 다시 로그인해 새 코드를 받으세요.",

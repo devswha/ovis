@@ -61,6 +61,7 @@ const BASE: Record<string, string> = {
   "Sign in again": "重新登录",
   "Added {date}": "{date} 添加",
   "To change how you sign in, sign in again with {provider} first.": "要更改登录方式，请先用 {provider} 重新登录。",
+  "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "要更改登录方式，请先在 {provider} 自己的登录页面上重新登录。",
   "Add another way to sign in from the Ovis desktop app.": "请在 Ovis 桌面应用中添加其他登录方式。",
   "Add {provider}": "添加 {provider}",
   "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",

@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError } from "../lib/api.ts";
-import { startDeviceSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
+import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
@@ -184,9 +184,12 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     setView({ kind: "device-code", provider, userCode: null, verificationUri: "", verificationUriComplete: null });
     return (async () => {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
-      const started = await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
+      const started = provider === "ovis"
+        // the link page busy or down: the provider's own device page instead, GitHub's where the service has it
+        ? await startLinkPageSignIn({ service: pcServiceOrigin, store: indexedAccountStore, requester }, offer?.device[0] ?? "github")
+        : await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
       controller.signal.throwIfAborted();
-      setView({ kind: "device-code", provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
+      setView({ kind: "device-code", provider: started.provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
       return started.finish(controller.signal);
     })().finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
   };
@@ -343,7 +346,10 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
               </ul>
               {reauth !== null && (
                 <div className="account-reauth" role="alert">
-                  <p className="settings-description">{t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+                  <p className="settings-description">{bridge === null
+                      // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
+                      ? t("To change how you sign in, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
+                      : t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
                   {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
                 </div>
               )}
