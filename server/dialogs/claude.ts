@@ -166,8 +166,9 @@ function withoutPreview(lines: string[], from: number, to: number): string[] {
   const first = menuRows(lines, from, to)[0]?.lineIndex;
   const box = (first === undefined ? null : previewBox(lines, first, first)) ?? previewBox(lines, from, to);
   const column = box?.column ?? -1;
-  return lines.map((line) => {
-    const at = column >= 2 ? indexAtColumn(line, column) : -1;
+  return lines.map((line, index) => {
+    // nothing above the box's top row is the box's: a question may draw an edge at its column
+    const at = column >= 2 && index >= box!.top ? indexAtColumn(line, column) : -1;
     const edge = at >= 0 ? line[at] : undefined;
     const boxed = edge !== undefined && PREVIEW_EDGE.includes(edge) && line.slice(Math.max(0, at - 2), at) === "  ";
     // only the preview's own notes line goes: a question may begin with "Notes:" too

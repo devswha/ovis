@@ -588,6 +588,9 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
     const label = parseInteractivePrompt("claude", screen.replace("❯ 1. Grid                         ┌", "❯ 1. API  ┌────┐                  ┌"));
     expect(label?.options.map((option) => option.label)).toEqual(["API  ┌────┐", "Wide", "Tall"]);
     expect(label?.option_preview?.text).toBe("+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards");
+    // nor in the question above the box, at the box's column
+    const asked = parseInteractivePrompt("claude", screen.replace("\nWhich layout?\n", `\nWhich layout?${" ".repeat(21)}│ keep this │\n`));
+    expect(asked?.question).toContain("keep this");
   });
 
   test("shows no preview from a box too narrow to read, and still the card", () => {
