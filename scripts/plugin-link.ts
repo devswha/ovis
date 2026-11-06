@@ -69,11 +69,11 @@ class LocalError extends Error {}
 function localApi(options: LinkOptions) {
   const fetchImpl = options.fetch ?? fetch;
   const control = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: options.origin };
-  return async <T>(method: "GET" | "POST", path: string, extra: { body?: unknown; headers?: Record<string, string> } = {}): Promise<T> => {
+  return async <T>(method: "GET" | "POST", path: string, extra: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<T> => {
     const response = await fetchImpl(`${options.origin}${path}`, {
       method, headers: { ...(method === "POST" ? control : {}), ...options.headers, ...extra.headers },
       ...(method === "POST" ? { body: JSON.stringify(extra.body ?? {}) } : {}),
-      signal: AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]),
+      signal: extra.signal ?? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]),
     });
     if (!response.ok) {
       let message = `${response.status}`;
@@ -112,6 +112,22 @@ async function relayOnline(options: LinkOptions, api: Api): Promise<void> {
     await wait(500, options.signal);
     status = await api<{ phase: string; blocked: string | null }>("GET", "/api/relay");
   }
+}
+
+/**
+ * A label a requesting device chose, as plain text: its terminal controls (C0, DEL, C1) dropped, so it
+ * cannot clear the screen or hide the digits it is shown with.
+ */
+export const plainLabel = (label: string): string => label.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+
+/** The next answer, or the abort: Ctrl+C at a prompt stops at once rather than after the next line. */
+function answer(lines: AsyncIterator<string>, signal: AbortSignal): Promise<IteratorResult<string>> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    lines.next().then((value) => { signal.removeEventListener("abort", stop); resolve(value); }, (error: unknown) => { signal.removeEventListener("abort", stop); reject(error); });
+  });
 }
 
 const groups = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
@@ -156,9 +172,14 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   } catch (error) {
     if (!signal.aborted) throw error;
   }
-  // the code showing is taken off the relay, as Hide the code does
-  if (minted) await api("POST", "/api/relay/code/cancel").catch(() => undefined);
-  out(minted ? "Stopped: the code no longer works.\n" : "Stopped.\n");
+  // the code showing is taken off the relay, as Hide the code does: with a signal of its own, since Ctrl+C aborted the command's
+  if (!minted) { out("Stopped.\n"); return 0; }
+  try {
+    await api("POST", "/api/relay/code/cancel", { signal: AbortSignal.timeout(5_000) });
+    out("Stopped: the code no longer works.\n");
+  } catch (error) {
+    out(`Stopped, but the code could not be taken back (${error instanceof Error ? error.message : String(error)}): it works until it runs out.\n`);
+  }
   return 0;
 }
 
@@ -218,16 +239,21 @@ async function linkToAccount(options: LinkOptions, api: Api, provider: DevicePro
       for (const pairing of pairings) {
         if (asked.has(pairing.id)) continue;
         asked.add(pairing.id);
-        const what = pairing.intent === "account" ? "add this PC to your account" : "pair with this PC";
-        out(`${pairing.label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
-        const answer = await options.lines.next();
-        const decision = !answer.done && /^y(es)?$/i.test(answer.value.trim()) ? "approve" : "decline";
+        const label = plainLabel(pairing.label);
+        const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
+        out(`${label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
+        let reply: IteratorResult<string>;
+        try { reply = await answer(options.lines, signal); } catch (error) {
+          if (signal.aborted) { out("\nStopped. Run this again to keep waiting.\n"); return 1; }
+          throw error;
+        }
+        const decision = !reply.done && /^y(es)?$/i.test(reply.value.trim()) ? "approve" : "decline";
         try {
           await api("POST", "/api/relay/pairing", { body: { id: pairing.id, decision } });
           out(decision === "approve" ? "Approved.\n" : "Declined.\n");
         } catch (error) {
           if (!(error instanceof LocalError)) throw error;
-          out(`${pairing.label} is no longer waiting.\n`);
+          out(`${label} is no longer waiting.\n`);
         }
       }
       if ((await status()).account !== null) {
@@ -245,7 +271,7 @@ async function linkToAccount(options: LinkOptions, api: Api, provider: DevicePro
     }
   } finally {
     // the sign-in was only for this: it ends with it, and nothing of it stays on the PC
-    await service.signOut().catch(() => undefined);
+    await service.signOut().catch(() => out("The sign-in could not be ended at the account service; it ends by itself when it runs out.\n"));
   }
 }
 

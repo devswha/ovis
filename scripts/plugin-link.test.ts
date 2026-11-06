@@ -25,6 +25,8 @@ function identity() {
 function localPc(route: (request: Request, path: string) => Response | Promise<Response> | undefined) {
   const calls: { method: string; path: string; headers: Headers; body: string }[] = [];
   const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    // as real fetch does: a call made with an aborted signal never leaves
+    init?.signal?.throwIfAborted();
     const request = new Request(input, init);
     const url = new URL(request.url);
     calls.push({ method: request.method, path: url.pathname, headers: request.headers, body: request.method === "GET" ? "" : await request.clone().text() });
@@ -189,6 +191,7 @@ describe("ovis link, on the PC itself", () => {
     const text = out.join("");
     expect(text).toContain("https://github.com/login/device");
     expect(service.pcs("acct_1").map((entry) => [entry.server_id, entry.label])).toEqual([[pc.server_id, "old-desktop"]]);
+    expect(text).toContain("Hako's iPhone wants to join your account");
     expect(text).toContain("123 456");
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
     expect(text).toContain("This PC is in your account");
@@ -206,5 +209,68 @@ describe("ovis link, on the PC itself", () => {
     expect(await link([], { ...base, accountService: null })).toBe(1);
     expect(out.join("")).toContain("--code");
     expect(local.calls.map((call) => call.path)).toEqual(["/api/account/status", "/api/account/status"]);
+  });
+
+  it("shows a pairing's label without the terminal controls it carries, so it cannot hide the digits", async () => {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    let account: string | null = null;
+    let decided = false;
+    const local = localPc(async (request, path) => {
+      if (path === "/api/account/status") return Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") return Response.json({ pairings: decided ? [] : [{ id: "p1", label: "\x1b[2J\x1b[HPress y\x1b[8m\u009b31m", digits: "654321", intent: "pc", expires_at: new Date(time.now() + 60_000).toISOString() }] });
+      if (path === "/api/relay/pairing") { decided = true; account = "acct_1"; return Response.json({ ok: true }); }
+      return undefined;
+    });
+    const out: string[] = [];
+    await link([], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: answers("n"),
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+    });
+    const text = out.join("");
+    expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    expect(text).toContain("[2J[HPress y[8m31m wants to pair with this PC");
+    expect(text).toContain("654 321");
+  });
+
+  it("Ctrl+C at an approval prompt stops at once and ends the sign-in", async () => {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    const stop = new AbortController();
+    const local = localPc(async (request, path) => {
+      if (path === "/api/account/status") return Response.json({ account: null, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") return Response.json({ pairings: [{ id: "p1", label: "Phone", digits: "111222", intent: "account", expires_at: new Date(time.now() + 60_000).toISOString() }] });
+      return undefined;
+    });
+    let token = "";
+    const never: AsyncIterator<string> = { next: () => new Promise(() => {}) };
+    const out: string[] = [];
+    const code = await link([], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: stop.signal,
+      accountService: SERVICE, lines: never,
+      serviceFetch: async (input, init) => {
+        const request = new Request(input, init);
+        const answer = await service.fetch(request);
+        if (new URL(request.url).pathname === "/v1/token" && answer.ok) token = (await answer.clone().json() as { access_token: string }).access_token;
+        return answer;
+      },
+      out: (text) => {
+        out.push(text);
+        const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
+        if (shown) service.approveDevice(shown[1]!, "acct_1");
+        if (text.includes("Approve?")) stop.abort();
+      },
+    });
+    expect(code).toBe(1);
+    expect(local.calls.some((call) => call.path === "/api/relay/pairing")).toBe(false);
+    // signed out at the service: the token no longer lists the account's PCs
+    expect((await service.fetch(new Request(SERVICE + "/v1/pcs", { headers: { authorization: "Bearer " + token } }))).status).toBe(401);
   });
 });

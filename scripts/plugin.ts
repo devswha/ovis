@@ -35,7 +35,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { link as linkPc } from "./plugin-link.ts";
+import { link as linkPc, plainLabel } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -868,11 +868,11 @@ async function approvePairings(): Promise<number> {
   const lines = console[Symbol.asyncIterator]();
   for (const pairing of pairings) {
     const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
-    process.stdout.write(`${pairing.label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
+    process.stdout.write(`${plainLabel(pairing.label)} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
     const answer = await lines.next();
     const decision = !answer.done && /^y(es)?$/i.test(answer.value.trim()) ? "approve" : "decline";
     const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id: pairing.id, decision }) });
-    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${pairing.label} is no longer waiting.\n`);
+    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${plainLabel(pairing.label)} is no longer waiting.\n`);
   }
   return 0;
 }
