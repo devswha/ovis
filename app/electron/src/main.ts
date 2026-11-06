@@ -5,7 +5,7 @@
  * the tray; Quit stops the server. The core and its terminals keep running, as for every hc client.
  */
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, powerMonitor, powerSaveBlocker, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
-import { appendFileSync, existsSync, readFileSync, rmSync, type WriteStream } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcess } from "node:child_process";
@@ -340,7 +340,10 @@ function allowPermissions(): void {
  */
 function updateLog(line: string): void {
   console.log(line);
-  try { appendFileSync(join(logs, "ovis.log"), `${line}\n`); } catch (error) { console.error(`Writing to ${logs} failed: ${message(error)}`); }
+  try {
+    mkdirSync(logs, { recursive: true });
+    appendFileSync(join(logs, "ovis.log"), `${line}\n`);
+  } catch (error) { console.error(`Writing to ${logs} failed: ${message(error)}`); }
 }
 
 async function startUpdates(): Promise<void> {
@@ -436,7 +439,15 @@ if (!app.requestSingleInstanceLock()) {
   // last user of its files, has stopped by now (the core runs from its own copy). Another copy of the
   // same AppImage runs from the same folder: then it stays
   const unpacked = process.platform === "linux" ? extractedAppDir(process.env, process.execPath) : null;
-  if (unpacked) app.on("quit", () => { if (!othersRunFrom(unpacked, process.pid)) rmSync(unpacked, { recursive: true, force: true }); });
+  if (unpacked) {
+    app.on("quit", () => {
+      try {
+        if (!othersRunFrom(unpacked, process.pid)) rmSync(unpacked, { recursive: true, force: true });
+      } catch (error) {
+        console.error(`Removing ${unpacked} failed: ${message(error)}`);
+      }
+    });
+  }
   app.on("activate", showWindow);
   // the app stays in the tray with its window closed
   app.on("window-all-closed", () => {});
