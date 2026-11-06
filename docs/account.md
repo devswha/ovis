@@ -284,9 +284,9 @@ its link brings a PC that had no account into it, it first reads every other PC 
 is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
 none of them answers it sends nothing and tries again on its next connection. A PC whose answer
 is not `fresh` (its mailbox read failed, or it is from before enrollments) counts for its removals
-only: while any such PC answers, the client sends the removals but no add, with `held_full`, and
-ends the new PC's wait (that PC then takes no account add at all, as a key no list names may be
-out): the account's devices
+only: while any such PC answers, the client sends the removals but no add, and ends the new PC's
+wait (a passing failure leaves no lasting hold; only a PC that says `blocked_all` makes the client
+send `held_full`): the account's devices
 then ask that PC once each, as before. A new PC from before enrollments, which refuses removes in
 `enroll`, gets them through `records` and no add. Then, over a
 session signed in with the account key, one `enroll`, as signed:
