@@ -340,6 +340,29 @@ describe("SessionPlans", () => {
     expect(plans.contextOf("p1")).toEqual({ used: 15_000, window: 1_000_000 });
   });
 
+  it("goes back to the chat's Claude figure on forks that leave each other's answers, or hang from a dropped echo", async () => {
+    const row = async (lines: object[]) => {
+      const f = file();
+      for (const line of lines) f.add(line);
+      const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {} });
+      await plans.refresh([pane("p1", "claude")]);
+      plans.poll();
+      return { row: plans.contextOf("p1"), chat: transcriptPage("claude-transcript", f.path).metadata.context ?? null };
+    };
+    const user = (uuid: string, parentUuid: string | null) => ({ type: "user", uuid, parentUuid, message: { role: "user", content: uuid } });
+    const answer = (uuid: string, parentUuid: string, input: number) => ({ type: "assistant", uuid, parentUuid, message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: input } } });
+    // Given a rewind to before a 250k answer, then another to after it: the chat leaves out both answers before the second.
+    const nested = [user("u0", null), answer("a0", "u0", 250_000), user("u1", "a0"), answer("a1", "u1", 30_000), user("u2", "u0"), answer("a2", "u2", 10_000), user("u3", "a1")];
+    expect(await row(nested)).toEqual({ row: null, chat: null });
+    expect(await row([...nested, answer("a3", "u3", 12_000)])).toEqual({ row: { used: 12_000, window: null }, chat: { used: 12_000, window: null } });
+    // Given a /context echo after a 250k answer's prompt, dropped by a prompt sent on from the answer, then a prompt from the echo's output.
+    const dropped = [user("u0", null), answer("a0", "u0", 10_000), user("u1", "a0"), answer("a1", "u1", 250_000),
+      { type: "system", subtype: "local_command", uuid: "e", parentUuid: "u1", content: "<command-name>/context</command-name>" },
+      { type: "system", subtype: "turn_duration", uuid: "o", parentUuid: "e" }, user("u2", "a1"), answer("a2", "u2", 12_000), user("u3", "o")];
+    expect(await row(dropped)).toEqual({ row: { used: 250_000, window: 1_000_000 }, chat: { used: 250_000, window: 1_000_000 } });
+    expect(await row([...dropped, answer("a3", "u3", 15_000)])).toEqual({ row: { used: 15_000, window: 1_000_000 }, chat: { used: 15_000, window: 1_000_000 } });
+  });
+
   it("does not carry the 1M window of an answer a Claude rewind left", async () => {
     // Given a request past 200k (so in the 1M window), then a prompt sent again from before it, and its answer.
     const f = file();
