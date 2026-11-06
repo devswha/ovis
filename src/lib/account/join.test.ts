@@ -353,6 +353,23 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(y.f.app.context.services.accountHolds.full()).toBe(true);
   });
 
+  it("keeps the introductions a PC could not take, and sends them on the next connection", async () => {
+    const { x, y, accountStore, onX, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    const onY = await linkY();
+    const pcY = { server_id: y.identity.server_id, server_public_key: y.identity.public_key, relay: "wss://relay.example", name: "nuc" };
+    const link = await connect(x, onX);
+    const failing = async (path: string, init?: RequestInit) => path === "/api/account/introduce" ? Promise.reject(new TypeError("connection lost")) : pcFetch(link)(path, init);
+    const first = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: failing }], pc: pcY });
+    expect([first.finished, first.admitted]).toEqual([false, [mac.public_spki]]);
+    const again = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: pcFetch(await connect(x, onX)) }], pc: pcY });
+    expect(again.finished).toBe(true);
+    expect(await accountStore.get("enrolls")).toBeUndefined();
+    const macStore = new MemoryDeviceStore();
+    const onXForMac = await macStore.update(x.identity.server_id, () => ({ server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: accountDeviceId(x.identity.server_id, mac.public_spki), private_key: mac.private_key, public_spki: mac.public_spki, label: "Mac app" }));
+    expect((await takeIntroduction({ fetch: pcFetch(await connect(x, onXForMac)), key: mac, label: "Mac app", store: macStore, relay: "wss://relay.example" })).map((pc) => pc.server_id)).toEqual([y.identity.server_id]);
+  });
+
   it("brings the devices another PC lists into the new PC, and introduces the new PC to them there", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");

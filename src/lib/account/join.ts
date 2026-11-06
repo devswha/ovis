@@ -356,6 +356,8 @@ export async function enrollPc(options: {
   const others = options.others ?? [];
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
+  // enrolled already: only introductions some PCs did not take are left
+  if (planned.introduce !== undefined) return { finished: await introduceLeft(options.store, options.serverId, others), checked: 0, of: others.length, admitted: [] };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
   /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
@@ -434,12 +436,40 @@ export async function enrollPc(options: {
     if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
     finished = sent && pending(current.devices, current.removals).every((record) => done.includes(record.id));
     const rest = { ...current.enrolls };
-    if (finished) delete rest[options.serverId];
+    // enrolled: the plan stays only for the introductions, until every PC that answered took them
+    const pc = options.pc;
+    if (finished && pc !== undefined && admitted.length > 0 && answered.length > 0) rest[options.serverId] = { account: entry.account, done: [], introduce: { keys: admitted, pc, to: answered.map((peer) => peer.serverId) } };
+    else if (finished) delete rest[options.serverId];
     else rest[options.serverId] = { ...entry, done: [...entry.done, ...done] };
     return { devices: current.devices, removals: current.removals, enrolls: Object.keys(rest).length === 0 ? undefined : rest };
   });
-  if (options.pc !== undefined) await introduce(answered, admitted, options.pc);
+  if (finished) finished = await introduceLeft(options.store, options.serverId, answered);
   return { finished, checked: answered.length, of: others.length, admitted };
+}
+
+/**
+ * Sends the introductions a plan still holds through each of `peers` it names, and drops each PC that
+ * took them all (a device a PC does not know is skipped there). True once none is left.
+ */
+async function introduceLeft(store: AccountStore, serverId: string, peers: readonly AccountPeer[]): Promise<boolean> {
+  const left = (await store.get("enrolls"))?.[serverId]?.introduce;
+  if (left === undefined) return true;
+  const took: string[] = [];
+  for (const peer of peers.filter((candidate) => left.to.includes(candidate.serverId))) {
+    if (await introduce(peer, left.keys, left.pc)) took.push(peer.serverId);
+  }
+  let none = false;
+  await store.update("enrolls", (current) => {
+    const entry = current?.[serverId];
+    if (current === undefined || entry?.introduce === undefined) { none = true; return current; }
+    const to = entry.introduce.to.filter((id) => !took.includes(id));
+    const rest = { ...current };
+    none = to.length === 0;
+    if (none) delete rest[serverId];
+    else rest[serverId] = { ...entry, introduce: { ...entry.introduce, to } };
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  });
+  return none;
 }
 
 /** A new PC from before enrollments: the removes as they were sent then, through records, and no add. */
@@ -472,16 +502,20 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
   return { finished, checked: 0, of: options.others?.length ?? 0, admitted: [] };
 }
 
-/** Each PC that answered tells the devices just let in about the new PC (docs/account.md, "Introductions"); one that does not know a device skips it. */
-async function introduce(peers: readonly AccountPeer[], keys: readonly string[], pc: IntroducedPc): Promise<void> {
-  for (const peer of peers) {
-    for (const key of keys) {
-      try { await post(peer.fetch, "/api/account/introduce", { key, pcs: [pc] }); } catch (error) {
-        if (!(error instanceof AccountPcError)) throw error;
-        if (error.code !== "introduction_unknown_key") console.warn("Ovis: a PC did not introduce the new PC", error.code);
-      }
+/**
+ * PC `peer` tells the devices just let in about the new PC (docs/account.md, "Introductions"); a
+ * device it does not know is skipped. True when it answered for every one, so nothing is left to send.
+ */
+async function introduce(peer: AccountPeer, keys: readonly string[], pc: IntroducedPc): Promise<boolean> {
+  let all = true;
+  for (const key of keys) {
+    try { await post(peer.fetch, "/api/account/introduce", { key, pcs: [pc] }); } catch (error) {
+      if (error instanceof AccountPcError && error.code === "introduction_unknown_key") continue;
+      console.warn("Ovis: a PC did not introduce the new PC yet", error instanceof AccountPcError ? error.code : error instanceof Error ? error.name : error);
+      all = false;
     }
   }
+  return all;
 }
 
 /**
