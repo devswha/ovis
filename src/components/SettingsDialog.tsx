@@ -1093,10 +1093,15 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
  */
 const MOVED_GROUPS: Readonly<Record<string, string>> = { phone: "devices", remote: "devices", portal: "devices" };
 
-/** How a paired device's row names what it is: its label as the app first named it (lib/phone.ts deviceLabel), or the name it was given. */
-function deviceKind(label: string, t: ReturnType<typeof useT>): string {
-  if (/\b(iPhone|Android|Pixel|Galaxy|phone)\b/i.test(label)) return t("Phone");
-  if (/\b(iPad|tablet)\b/i.test(label)) return t("Tablet");
+/**
+ * What a paired device is, read from the label the app first gave it (lib/phone.ts deviceLabel, "iPhone · Safari");
+ * a device renamed since says nothing of what it is, so its row carries no pill rather than a guess.
+ */
+function deviceKind(label: string, t: ReturnType<typeof useT>): string | null {
+  const named = /^(iPhone|iPad|Android|Mac|Windows|Chromebook|Linux|Device)( · (Edge|Firefox|Chrome|Safari))?$/.exec(label);
+  if (named === null) return null;
+  if (named[1] === "iPhone" || named[1] === "Android") return t("Phone");
+  if (named[1] === "iPad") return t("Tablet");
   return t("Browser");
 }
 

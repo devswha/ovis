@@ -266,16 +266,22 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
     setCode(null);
     setBusy(false);
   }, [reset]);
+  // the code and the offer carry the one pending pairing, so they run out together (server/relay/service.ts): the
+  // code's expiry renews both. Without a code (an older server mints none) the offer's expiry does, so the QR
+  // code still renews; it is read only then, since the offer shown at a renewal is the old one for a moment.
+  const deadline = code !== null ? code.expires_at : qrExpires;
   useEffect(() => {
-    if (code === null) return;
-    // whichever runs out first, the code or the QR code's offer, renews both
-    const ms = Math.min(Date.parse(code.expires_at), qrExpires === null ? Infinity : Date.parse(qrExpires)) - Date.now();
+    if (deadline === null) return;
+    const ms = Date.parse(deadline) - Date.now();
     // one that arrived already expired (the PC's clock and this one apart) says so and waits for Refresh,
     // rather than asking again and again; one that ran out while shown is renewed
-    if (ms <= 0) { setCode(null); setError(t("This code expired.")); return; }
+    if (ms <= 0) {
+      if (code !== null) { setCode(null); setError(t("This code expired.")); }
+      return;
+    }
     const timer = window.setTimeout(() => void mint(), ms);
     return () => window.clearTimeout(timer);
-  }, [code, qrExpires]);
+  }, [code, deadline]);
   return (
     <div className="relay-pairing-compact" role="status">
       <CompactPair qr={qr} qrLabel={t("QR code that pairs a phone through the relay")} code={code?.code ?? null} codeLabel={t("Code to type")} busy={busy} onRefresh={() => void mint()} />

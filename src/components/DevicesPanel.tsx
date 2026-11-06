@@ -31,8 +31,8 @@ export interface DevicesPanelProps {
   onPaired?: () => void;
   /** after every device was revoked, this browser's own pairing included: the app asks the server where it stands */
   onRevokedAll?: () => void;
-  /** what each row is (a phone, a browser), shown beside its name */
-  kindOf?: (label: string) => string;
+  /** what each row is (a phone, a browser), shown beside its name; null where that is not known */
+  kindOf?: (label: string) => string | null;
   /** an action for this device's own row (Use the relay); without such a row, a row of its own */
   currentAction?: ReactNode;
 }
@@ -269,7 +269,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
               ) : (
                 <>
                   <div className="devices-name">
-                    <span className="settings-label">{d.label}{kindOf !== undefined && <span className="devices-kind">{kindOf(d.label)}</span>}{d.current && <span className="devices-current">{t("this device")}</span>}{d.via_relay && <span className="devices-via-relay">{t("via relay")}</span>}</span>
+                    <span className="settings-label">{d.label}{kindOf?.(d.label) != null && <span className="devices-kind">{kindOf(d.label)}</span>}{d.current && <span className="devices-current">{t("this device")}</span>}{d.via_relay && <span className="devices-via-relay">{t("via relay")}</span>}</span>
                     <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>
                   </div>
                   {d.current && currentAction}
