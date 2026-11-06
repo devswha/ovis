@@ -490,9 +490,10 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     });
   };
   let network = networkNow();
-  let lastLook = performance.now();
+  // the wall clock: the monotonic one may stand still while the PC sleeps, which would hide the wake
+  let lastLook = Date.now();
   const watcher = setInterval(() => {
-    const now = performance.now();
+    const now = Date.now();
     const seen = networkNow();
     // a timer far later than asked is a PC that slept: it may wake on another network, even one with the same addresses
     if (seen === network && now - lastLook < NETWORK_CHECK_MS * 2) { lastLook = now; return; }

@@ -1431,6 +1431,9 @@ export class MachineManager {
   }
   /** The PC's status-only socket, through its endpoint: its end is the connection's loss. */
   private openObserver(runtime: Runtime, generation: number): void {
+    // one status socket per PC: one left open would handle every frame twice and outlive disconnect()
+    const previous = runtime.observer;
+    if (previous) { previous.onclose = null; previous.onerror = null; previous.onmessage = null; previous.close(); }
     const endpoint = runtime.endpoint!;
     const ws = authenticatedWebSocket(endpoint.url.replace("http:", "ws:") + "/ws", endpoint.token);
     runtime.observer = ws;
@@ -1479,9 +1482,8 @@ export class MachineManager {
    * nothing tracked here is ended. The PC stays connected throughout: nothing was lost.
    */
   private moved(runtime: Runtime, generation: number): void {
-    if (generation !== runtime.generation || this.stopped || !runtime.tunnel) return;
-    const old = runtime.observer;
-    if (old) { old.onclose = null; old.onerror = null; old.onmessage = null; old.close(); }
+    // before the first roster read finished, observe() has yet to open the status socket and tell the route: it will
+    if (generation !== runtime.generation || this.stopped || !runtime.tunnel || runtime.machine.state !== "connected") return;
     this.openObserver(runtime, generation);
     runtime.machine.route = runtime.tunnel.route;
     // what changed while the status socket was away

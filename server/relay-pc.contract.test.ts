@@ -366,3 +366,35 @@ it("lets a request that starts while a move signs in finish, and still moves", a
   expect(tunnel.route).toBe("direct");
   expect(lost).toEqual([]);
 }, 60_000);
+
+it("keeps the old session when input is sent while a move signs in, and moves on a later try", async () => {
+  // Given a tunnel whose first move has its sign-in held (dial 2), and a socket that sends while it is held
+  const release = deferred<void>();
+  const holding = deferred<void>();
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: () => true, held: (dial) => {
+    if (dial !== 2) return undefined;
+    holding.resolve();
+    return release.promise;
+  } } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const lost: Error[] = [];
+  const moved = deferred<void>();
+  const tunnel = await openRelayPcTunnel(offer, key, { socket: local as never, directSocket: onLan as never, onLost: (error) => lost.push(error), onMoved: () => moved.resolve() });
+  cleanup.push(() => tunnel.close());
+  await bounded(holding.promise);
+  const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  const socket = new RuntimeSocket(`${tunnel.endpoint.url.replace("http:", "ws:")}/ws`, { headers: { authorization: `Bearer ${tunnel.endpoint.token}` } });
+  cleanup.push(() => socket.close());
+  const open = deferred<void>();
+  socket.onopen = () => open.resolve();
+  await bounded(open.promise);
+  // When input goes out on it before the held sign-in completes
+  socket.send(JSON.stringify({ type: "role", mode: "observe" }));
+  release.resolve();
+  // Then that attempt's session is dropped, a later one moves, and the connection was never lost
+  await bounded(moved.promise, 45_000);
+  expect(lan.dials).toBeGreaterThanOrEqual(3);
+  expect(tunnel.route).toBe("direct");
+  expect(lost).toEqual([]);
+}, 60_000);
