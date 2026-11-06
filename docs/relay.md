@@ -766,8 +766,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
 - **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
   Wi-Fi direct connection on" (who can sign in there) with its switch. `/api/health` names the
   listener to a client that got in (`lan_exposure` with `direct: true`), and the app's banner
-  says it in paired-only words; the open-server warning (`lanExposed`) counts this listener as a
-  network bind too.
+  says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
+  only; starting the relay closes the pairing gate, so it never applies while this listener runs.
 - **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
   `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first

@@ -562,6 +562,7 @@ export class RelayTransport implements Transport {
     this.abort.abort();
     this.channel?.close();
     this.channel = undefined;
+    this.routeChanged();
     this.options.signal?.removeEventListener("abort", this.aborted);
     globalThis.removeEventListener?.("online", this.wake);
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.wake);

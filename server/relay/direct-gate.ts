@@ -14,8 +14,9 @@ export const MAX_CONNECTIONS = 128;
 export const DEADLINE_MS = 5_000;
 /** A request head larger than this is refused. */
 export const HEAD_BYTES = 8 * 1024;
-/** What may wait to be written to a slow side before the connection is ended. */
-const PENDING_BYTES = 1 << 20;
+/** Past this much waiting for a slow side, the other side is read no more until it drains below LOW_BYTES (TCP backpressure). */
+const HIGH_BYTES = 1 << 20;
+const LOW_BYTES = 256 * 1024;
 
 /** The header the gate names the peer in, and the one that proves the gate added it. */
 export const PEER_HEADER = "x-ovis-direct-peer";
@@ -37,6 +38,8 @@ interface Side {
   socket: Socket<Conn> | Socket<undefined> | undefined;
   pending: Uint8Array[];
   pendingBytes: number;
+  /** the socket whose bytes are written to this side: paused while this side is behind */
+  source?: () => Socket<Conn> | Socket<undefined> | undefined;
 }
 
 interface Conn {
@@ -55,20 +58,21 @@ interface Conn {
 
 const total = (counts: Map<string, number>): number => [...counts.values()].reduce((sum, count) => sum + count, 0);
 
-/** Writes all of `bytes` to the side, holding what the socket did not take until it drains; false past PENDING_BYTES. */
+/** Writes all of `bytes` to the side, holding what the socket did not take until it drains; a side behind pauses its source. */
 function send(side: Side, bytes: Uint8Array): boolean {
   if (side.pending.length > 0 || !side.socket) {
     side.pending.push(bytes);
     side.pendingBytes += bytes.byteLength;
-    return side.pendingBytes <= PENDING_BYTES;
+  } else {
+    const written = side.socket.write(bytes);
+    if (written < bytes.byteLength) {
+      const rest = bytes.subarray(Math.max(0, written));
+      side.pending.push(rest);
+      side.pendingBytes += rest.byteLength;
+    }
   }
-  const written = side.socket.write(bytes);
-  if (written < bytes.byteLength) {
-    const rest = bytes.subarray(Math.max(0, written));
-    side.pending.push(rest);
-    side.pendingBytes += rest.byteLength;
-  }
-  return side.pendingBytes <= PENDING_BYTES;
+  if (side.pendingBytes > HIGH_BYTES) side.source?.()?.pause();
+  return true;
 }
 
 function flush(side: Side): void {
@@ -81,9 +85,10 @@ function flush(side: Side): void {
     } else {
       side.pending[0] = next.subarray(Math.max(0, written));
       side.pendingBytes -= Math.max(0, written);
-      return;
+      break;
     }
   }
+  if (side.pendingBytes <= LOW_BYTES) side.source?.()?.resume();
 }
 
 const refusal = (status: string): Uint8Array => new TextEncoder().encode(`HTTP/1.1 ${status}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`);
@@ -126,8 +131,9 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
   };
   const forward = async (socket: Socket<Conn>, head: string): Promise<void> => {
     const conn = socket.data;
-    const up: Side = { socket: undefined, pending: [new TextEncoder().encode(head)], pendingBytes: head.length };
+    const up: Side = { socket: undefined, pending: [new TextEncoder().encode(head)], pendingBytes: head.length, source: () => socket };
     conn.up = up;
+    conn.down.source = () => up.socket;
     try {
       up.socket = await Bun.connect({
         hostname: "127.0.0.1", port: options.upstreamPort,

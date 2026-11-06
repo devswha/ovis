@@ -10,7 +10,7 @@
  * that have not signed in are bounded per source address and in total, apart from the relay's, so
  * nobody on the network can crowd out relay service; signed-in sessions keep the relay's limits.
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { TCPSocketListener } from "bun";
 import { GATE_HEADER, openGate, PEER_HEADER } from "./direct-gate.ts";
 import { createSocket } from "node:dgram";
@@ -240,7 +240,9 @@ export class DirectCarrier {
       idleTimeout: 10,
       fetch: (request, server) => {
         const loopback = server.requestIP(request)?.address;
-        const vouched = request.headers.get(GATE_HEADER) === this.secret && (loopback === "127.0.0.1" || loopback === "::ffff:127.0.0.1");
+        const given = Buffer.from(request.headers.get(GATE_HEADER) ?? "");
+        const expected = Buffer.from(this.secret);
+        const vouched = given.length === expected.length && timingSafeEqual(given, expected) && (loopback === "127.0.0.1" || loopback === "::ffff:127.0.0.1");
         const source = vouched ? request.headers.get(PEER_HEADER) ?? undefined : undefined;
         if (!vouched || !(this.options.peerAllowed ?? privateLanPeer)(source) || source === undefined) return new Response(null, { status: 403 });
         if (new URL(request.url).pathname !== "/v1/ws") return new Response(null, { status: 404 });

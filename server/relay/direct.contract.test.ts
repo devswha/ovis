@@ -7,6 +7,7 @@ import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { admissionDrops, DirectCarrier, rankLanAddresses } from "./direct.ts";
+import { openGate } from "./direct-gate.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
@@ -501,6 +502,48 @@ describe("the gate in front of the direct carrier", () => {
     // Then that answer is the last thing on the connection
     expect(answer.startsWith("HTTP/1.1 101")).toBe(false);
     await closed;
+  });
+
+  it("carries more than a megabyte to a client that reads slowly, by slowing the sender", async () => {
+    // Given an upstream that switches to WebSocket and then writes 32 MiB as fast as it can
+    // well past what the kernel buffers on loopback, so the gate itself has to hold back
+    const total = 32 << 20;
+    const blocked = deferred<void>();
+    const upstream = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      data: (socket) => {
+        socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+        let sent = 0;
+        const more = (): void => {
+          while (sent < total) {
+            const chunk = new Uint8Array(Math.min(64 * 1024, total - sent)).fill(7);
+            const written = socket.write(chunk);
+            sent += Math.max(0, written);
+            if (written < chunk.byteLength) { blocked.resolve(); return; }
+          }
+        };
+        (socket as unknown as { more: () => void }).more = more;
+        more();
+      },
+      drain: (socket) => (socket as unknown as { more?: () => void }).more?.(),
+    } });
+    const gate = openGate({ hostname: "127.0.0.1", port: 0, upstreamPort: upstream.port, secret: "s", allowed: () => true, counts: new Map() });
+    cleanup.push(() => gate.stop(true), () => upstream.stop(true));
+    // When a client asks to upgrade and then reads nothing for a while
+    let received = 0;
+    const closed = deferred<void>();
+    const done = deferred<void>();
+    const client = await Bun.connect({ hostname: "127.0.0.1", port: gate.port, socket: {
+      data: (_socket, chunk) => { received += chunk.byteLength; if (received >= total) done.resolve(); },
+      close: () => closed.resolve(), error: () => closed.resolve() } });
+    cleanup.push(() => client.end());
+    client.pause();
+    client.write("GET /v1/ws?v=1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
+    const first = await bounded(Promise.race([blocked.promise.then(() => "slowed"), closed.promise.then(() => "closed")]));
+    // Then the upstream is slowed rather than the connection cut, and everything arrives once the client reads
+    expect(first).toBe("slowed");
+    client.resume();
+    await bounded(Promise.race([done.promise, closed.promise.then(() => { throw new Error(`closed after ${received} bytes`); })]));
+    expect(received).toBeGreaterThanOrEqual(total);
   });
 
   it("names the peer it saw, whatever header the peer forged", async () => {
