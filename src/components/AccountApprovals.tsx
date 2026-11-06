@@ -34,10 +34,13 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     void (async () => {
       const service = new AccountService({ store: indexedAccountStore });
       if (await service.session() === undefined) return;
+      // nothing found or no answer: the card says the place is unknown rather than leave the line out
+      let found: AccountAsker = { os: null, country: null, city: null };
       try {
         const rang = (await service.recentAdmissions()).filter((admission) => admission.server_id === serverId && admission.key === joiningKey).at(-1);
-        if (live && rang !== undefined) setAsker({ id: joiningId, asker: { os: rang.os, country: rang.country, city: rang.city } });
+        if (rang !== undefined) found = { os: rang.os, country: rang.country, city: rang.city };
       } catch (error) { console.warn("Ovis: who is asking could not be read", error instanceof Error ? error.name : error); }
+      if (live) setAsker({ id: joiningId, asker: found });
     })();
     return () => { live = false; };
   }, [joiningId, joiningKey, serverId]);

@@ -39,7 +39,6 @@ export function phonePlan(page: PageLocation, access: RemoteAccess | null): Phon
   return { kind: "unknown" };
 }
 
-/** A name for this device to pair under, from its user agent: "iPhone · Safari", "Windows · Chrome". */
 /** The system a browser runs on, as the account service names it (shared/account-asker.ts), or null. */
 export function deviceOs(userAgent: string, maxTouchPoints = 0): AccountOs | null {
   const ua = userAgent;
@@ -47,6 +46,7 @@ export function deviceOs(userAgent: string, maxTouchPoints = 0): AccountOs | nul
     : /Windows/.test(ua) ? "windows" : /CrOS/.test(ua) ? "chromeos" : /Linux/.test(ua) ? "linux" : null;
 }
 
+/** A name for this device to pair under, from its user agent: "iPhone · Safari", "Windows · Chrome". */
 export function deviceLabel(userAgent: string, maxTouchPoints = 0): string {
   const ua = userAgent;
   const device = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "Device";

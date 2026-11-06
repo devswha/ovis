@@ -103,10 +103,14 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const provider = options.provider ?? "github";
   const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-  const response = await fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
+  const start = (extra: object): Promise<Response> => fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...(provider === "ovis" ? requesterFields(options.requester) : {}) }),
+    body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...extra }),
   });
+  const told = provider === "ovis" ? requesterFields(options.requester) : {};
+  let response = await start(told);
+  // an account service from before "Who is asking" takes the challenge alone: start again without the name, once
+  if (response.status === 400 && Object.keys(told).length > 0 && (await failure(response.clone())).code === "invalid_request") response = await start({});
   if (!response.ok) throw await failure(response);
   const started: unknown = await response.json();
   const body = typeof started === "object" && started !== null ? started as Record<string, unknown> : {};

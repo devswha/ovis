@@ -95,6 +95,8 @@ export class FakeAccountService {
   private readonly admissionList: FakeAdmission[] = [];
   /** Where the service sees every request come from (Cloudflare's `request.cf`); unknown unless a test says. */
   requestPlace: AccountPlace = { country: null, city: null };
+  /** False acts as an account service from before "Who is asking", whose link page start refuses `label` and `os`. */
+  linkPageTakesRequester = true;
   private seq = 0;
   /** Every request the fake answered, oldest first: `METHOD /path`. */
   readonly requests: string[] = [];
@@ -313,7 +315,7 @@ export class FakeAccountService {
         const label = body.label;
         if (body.code_challenge_method !== "S256" || typeof body.code_challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge)
           || (label !== undefined && (typeof label !== "string" || label.length < 1 || label.length > 48 || /[\p{Cc}\p{Cs}]/u.test(label)))
-          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", "label", "os"].includes(name))) {
+          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", ...(this.linkPageTakesRequester ? ["label", "os"] : [])].includes(name))) {
           return problem(400, "invalid_request", "Start a sign-in on the link page with an S256 code_challenge, and a label of 1-48 characters if any");
         }
         const deviceCode = randomHex(32);

@@ -295,6 +295,14 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
     expect((await startDeviceSignIn({ ...options, provider: "github", requester: { label: "Desk", os: "linux" } })).userCode).not.toBe("");
   });
 
+  it("starts without the name on an account service that does not take one yet", async () => {
+    const { fake, options } = setup();
+    fake.linkPageTakesRequester = false;
+    const started = await startDeviceSignIn({ ...options, requester: { label: "Desk", os: "linux" } });
+    expect(started.verificationUri).toBe(`${SERVICE}/link`);
+    expect(fake.linkRequester(started.userCode)).toEqual({ label: null, os: null });
+  });
+
   it("shows the Ovis code with the service's own link page, and keeps the session the page approved", async () => {
     const { fake, store, options } = setup();
     const started = await startDeviceSignIn(options);
