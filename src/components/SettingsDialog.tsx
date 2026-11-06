@@ -1244,6 +1244,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const relayReadOnly = auth?.role === "watch" || auth?.via === "portal";
   const closesGate = security.state === "known" && security.summary.pairing_gate === "open" && !security.summary.token_configured;
   const [connecting, setConnecting] = useState(false);
+  const searching = useContext(SettingsQuery).length > 0;
   /** More settings' place for the device list's notes and Revoke every device (DevicesPanel `more`) */
   const [devicesMore, setDevicesMore] = useState<HTMLDivElement | null>(null);
   const closeConnect = useCallback(() => setConnecting(false), []);
@@ -1282,10 +1283,16 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
           <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} />
         </div>
-        {/* how anything else gets connected: one button, its sheet picks the way */}
-        <div className="settings-item devices-add">
-          <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Add a connection")}</button>
-        </div>
+        {/* how anything else gets connected: one button, its sheet picks the way; a search finds it as a row by every way it holds */}
+        {searching ? (
+          <SettingsRow label={t("Add a connection")} keywords={t("phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs")}>
+            <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Add a connection")}</button>
+          </SettingsRow>
+        ) : (
+          <div className="settings-item devices-add">
+            <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Add a connection")}</button>
+          </div>
+        )}
         <DamagedPcFiles pcSettings={pcSettings} />
       </SettingsGroup>
 

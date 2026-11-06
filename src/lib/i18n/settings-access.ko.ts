@@ -6,6 +6,7 @@
 export const SETTINGS_ACCESS_KO: Record<string, string> = {
   "Access": "접근",
   "Connected to this PC": "이 PC에 연결된 것",
+"phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs": "폰 브라우저 PC 페어링 코드 QR 릴레이 Tailscale Wi-Fi SSH Portal PC 추가 원격 PC",
   "Devices and access": "기기와 접속",
   "The server did not answer, so these facts are unavailable. Nothing from an earlier check is shown. This page asks again by itself; if this message stays, check that the server is running and that this device can reach it.": "서버가 응답하지\u00a0않아 이 정보를 볼\u00a0수\u00a0없습니다. 이전 확인 결과는 숨깁니다. 이 페이지가 알아서 다시 확인합니다. 이 메시지가 계속 보이면 서버가 켜져\u00a0있는지, 이 기기에서 서버에 접속되는지 확인하세요.",
   "This server does not report these facts. Updating it adds them.": "이 서버는 이 정보를 알려\u00a0주지\u00a0않습니다. 서버를 업데이트하면 표시됩니다.",

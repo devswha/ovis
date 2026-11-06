@@ -6,6 +6,7 @@
 export const SETTINGS_ACCESS_ZH: Record<string, string> = {
   "Access": "访问",
   "Connected to this PC": "已连接到此电脑的设备",
+"phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs": "手机 浏览器 PC 配对 配对码 QR 中继 Tailscale Wi-Fi SSH Portal 添加 PC 远程 PC",
   "Devices and access": "设备与访问",
   "The server did not answer, so these facts are unavailable. Nothing from an earlier check is shown. This page asks again by itself; if this message stays, check that the server is running and that this device can reach it.": "服务器没有响应，因此无法显示这些信息。不会显示之前检查的结果。此页面会自动重新检查；如果此消息一直存在，请确认服务器正在运行，并且此设备可以连接到它。",
   "This server does not report these facts. Updating it adds them.": "此服务器不提供这些信息。更新服务器后即可显示。",
