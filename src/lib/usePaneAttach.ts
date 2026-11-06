@@ -65,10 +65,12 @@ export interface PaneAttachDeps {
   followCursorRef: RefObject<() => void>;
   leaveRef: RefObject<() => void>;
   shownRef: RefObject<boolean>;
+  /** takes what was typed for this pane before it existed, ahead of its attach (useTerminalMount) */
+  typeAheadRef: RefObject<(pane: string) => void>;
 }
 
 export function usePaneAttach(deps: PaneAttachDeps): void {
-  const { activeRef, autoSelected, cached, watched, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
+  const { activeRef, autoSelected, cached, watched, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef, typeAheadRef } = deps;
 
   // Reset on a pane or terminal replacement: a herdr restart can keep the pane ID.
   // Old composition timers must never see the new terminal.
@@ -144,6 +146,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       }
       // A pane exempt from watching still asks to keep an existing attachment's size while away.
       const away = !inUse();
+      typeAheadRef.current(paneId);
       socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || held);
       // no blur or hidden comes for a tab already out of use: it lets go of this pane after a moment too
       if (away) leaveRef.current();
