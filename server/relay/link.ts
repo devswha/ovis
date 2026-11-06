@@ -35,6 +35,8 @@ export interface RelayLinkOptions {
   readonly onState: (phase: "connecting" | "online" | "error", error: string | null) => void;
   /** The relays a phone is told to reach this PC through (RelaySession relayHints). */
   readonly relayHints?: () => readonly string[];
+  /** This PC's direct carriers (RelaySession directCarriers). */
+  readonly directCarriers?: () => readonly string[];
 }
 
 interface DataConnection {
@@ -334,6 +336,7 @@ export class RelayLink {
         routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
         onAuthenticated: (deviceId) => this.authenticated(id, entry, deviceId),
         ...(this.options.relayHints ? { relayHints: this.options.relayHints } : {}),
+        ...(this.options.directCarriers ? { directCarriers: this.options.directCarriers } : {}),
         websocket: {
           ...handlers,
           open: (peer) => { entry.sockets.add(peer); return handlers.open(peer); },
