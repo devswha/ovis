@@ -6,7 +6,7 @@ import { startBunRelay } from "../../../relay/bun.ts";
 import { createServer } from "../../../server/index.ts";
 import { RelayService } from "../../../server/relay/service.ts";
 import { bounded, deferred, TestClock } from "../../../server/relay/test-helpers.ts";
-import { openRelayChannel } from "./channel.ts";
+import { openRelayChannel, RelayUnreachableError } from "./channel.ts";
 import { DirectCarrierUnusableError, probeDirect } from "../../../shared/relay-channel.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import type { RelayChannel, RelayChannelOptions } from "./channel.ts";
@@ -283,6 +283,24 @@ describe("racing the relay at the start", () => {
     expect(refused).toEqual([]);
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
+  });
+
+  it("still tries a third LAN carrier behind two silent ones within the budget", async () => {
+    // Given a phone whose PC names two LAN addresses that assign and stay silent, then its reachable one, and no relay
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const { pc, store, saved } = await paired();
+    const reachable = store.saved!.direct!.at(-1)!;
+    store.saved = { ...store.saved!, direct: ["ws://10.0.0.8:9", "ws://10.0.0.9:9", reachable] };
+    const openChannel = (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> =>
+      options?.direct === undefined ? Promise.reject(new RelayUnreachableError(null, true)) : pc.openChannel(channelOffer, options);
+    const socketFor = (url: string): WebSocket => url.startsWith(reachable) ? pc.directSocket(url) : new WebSocket(`ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+    // When it opens the PC
+    const transport = await transportFor(pc, store, saved, { openChannel, directSocket: socketFor });
+    // Then the third carrier got its turn and carries the channel
+    expect(transport.route).toBe("direct");
+    expect(pc.channels.at(-1)!.direct).toBe(reachable);
   });
 
   it("gives a switch a probe just earned the direct carriers' whole budget, without racing the relay again", async () => {

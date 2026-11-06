@@ -412,6 +412,14 @@ describe("signed-in sessions over every way in", () => {
     expect(closed).toEqual(["c1"]);
   });
 
+  it("name a device's connection by the session it uses, not a racing carrier it may drop", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const mux = { active: true, rttMs: 40, measure: async () => 40 };
+    sessions.admit("phone", () => {}, { route: "relay", relay: "wss://relay-ap.ovis.sh", since: 1_000, mux });
+    sessions.candidate("phone", () => {}, { route: "lan", since: 2_000, mux });
+    expect(sessions.connections().get("phone")?.route).toBe("relay");
+  });
+
   it("hold never-used carriers past every place to one device's racing ones", () => {
     // Given every place taken by two devices at their share
     const sessions = new SignedInSessions(8, 4, 3);

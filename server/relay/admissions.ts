@@ -86,12 +86,15 @@ export class SignedInSessions {
 
   /** Each device with a session up, by its nearest way in (the newest of equals). */
   connections(): Map<string, DeviceConnection> {
-    const best = new Map<string, { order: number; line: SessionLine }>();
-    for (const { deviceId, order, line } of this.entries) {
+    const best = new Map<string, { order: number; chosen: boolean; line: SessionLine }>();
+    for (const { deviceId, order, line, chosen } of this.entries) {
       // a mux that ended counts until its socket closes, and is no way in meanwhile
       if (!line?.mux.active) continue;
       const held = best.get(deviceId);
-      if (!held || NEAR[line.route] < NEAR[held.line.route] || (NEAR[line.route] === NEAR[held.line.route] && order > held.order)) best.set(deviceId, { order, line });
+      // a session in use before a racing carrier the app may still drop, then the nearest, then the newest
+      const better = !held || (chosen !== held.chosen ? chosen
+        : NEAR[line.route] !== NEAR[held.line.route] ? NEAR[line.route] < NEAR[held.line.route] : order > held.order);
+      if (better) best.set(deviceId, { order, chosen, line });
     }
     return new Map([...best].map(([deviceId, { line }]) => [deviceId, {
       route: line.route, ...(line.relay === undefined ? {} : { relay: line.relay }),

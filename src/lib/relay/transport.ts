@@ -350,10 +350,12 @@ export class RelayTransport implements Transport {
           const left = ends - performance.now();
           if (left <= 0) break;
           const direct = queue.shift()!;
+          // a silent carrier takes only its round's share, so the ones queued behind it still get a turn
+          const rounds = Math.ceil((queue.length + running + 1) / DIRECT_SOCKETS);
           running++;
           const attempt = new AbortController();
           attempts.set(direct, attempt);
-          const timer = setTimeout(() => attempt.abort(), left);
+          const timer = setTimeout(() => attempt.abort(), left / rounds);
           // closing the transport ends an admitted channel too; the budget only an attempt under way
           const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
