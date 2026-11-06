@@ -121,6 +121,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     const generation = ++loads.current;
     const show = (next: View) => { if (loads.current === generation) setView(next); };
     const service = new AccountService({ store: indexedAccountStore });
+    // a sign-in the service did not confirm ending before is ended again whenever this screen opens
+    service.endLeftovers().catch((error: unknown) => console.warn("Ovis: earlier sign-ins could not be ended", error instanceof Error ? error.name : error));
     const session = await service.session();
     if (session === undefined) { show({ kind: "signed-out", error: null }); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;

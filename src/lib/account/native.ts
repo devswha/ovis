@@ -7,7 +7,7 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
-import { requestToken } from "./service.ts";
+import { keepSignIn, requestToken, signInEpoch } from "./service.ts";
 import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
@@ -26,10 +26,9 @@ async function sha256Hex(text: string): Promise<string> {
 export async function nativeSignIn(provider: AccountProvider, options: { store: AccountStore; service: string }): Promise<AccountSession> {
   if (provider === "apple" && !inAndroidApp()) {
     const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    const epoch = await signInEpoch(options.store);
     const { idToken } = await callNative<{ idToken: string }>(AUTH_PLUGIN, "signInWithApple", { nonce: await sha256Hex(nonce) });
-    const session = await requestToken(options.service, { grant_type: "apple_id_token", id_token: idToken, nonce });
-    await options.store.set("session", session);
-    return session;
+    return keepSignIn(await requestToken(options.service, { grant_type: "apple_id_token", id_token: idToken, nonce }), epoch, { store: options.store });
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT });
   const { url: callback } = await callNative<{ url: string }>(AUTH_PLUGIN, "authenticate", { url });

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { FakeAccountService, LIMIT_WINDOW_MS, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { desktopSignIn } from "./desktop.ts";
 import { startDeviceSignIn } from "./deviceSignIn.ts";
-import { AccountService, offeredProviders, SignedOutError } from "./service.ts";
+import { AccountService, endSignIn, offeredProviders, requestToken, SignedOutError } from "./service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import type { AccountProvider, AccountStore } from "./store.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
@@ -205,5 +205,286 @@ describe("sign-in methods", () => {
     })).rejects.toBeInstanceOf(SignedOutError);
     expect(await store.get("session")).toBeUndefined();
     expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${linked?.access_token}` } }))).status).toBe(401);
+  });
+
+  it("keeps trying to end a link's sign-in after a sign-out when the service refuses the first try", async () => {
+    let now = Date.now();
+    const fake = new FakeAccountService(() => now);
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const lock = memoryLock();
+    const service = new AccountService({ store, fetch: fake.fetch, lock, now: () => now });
+    let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
+    await expect(service.addMethod("google", async (token, bearer) => {
+      linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
+      await new AccountService({ store, fetch: fake.fetch, lock, now: () => now }).signOut();
+      // the account's request limit runs out before the answer arrives: ending it answers 429
+      while ((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${linked.access_token}` } }))).status !== 429);
+      return linked;
+    })).rejects.toBeInstanceOf(SignedOutError);
+    expect(await store.get("session")).toBeUndefined();
+    now += LIMIT_WINDOW_MS;
+    await service.endLeftovers();
+    await expect(requestToken(SERVICE, { grant_type: "refresh_token", refresh_token: linked?.refresh_token ?? "" }, { fetch: fake.fetch })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("signing out while a sign-in is on its way", () => {
+  it("ends a sign-in again that comes back after a sign-out, so a method change waiting on it finds no session", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    // Sign in again starts, and another tab signs out before it comes back
+    const start = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
+    const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
+    if (returned === null) throw new Error("no sign-in came back");
+    const lock = memoryLock();
+    await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
+    await expect(finishSignIn(returned, { store, fetch: fake.fetch })).rejects.toBeInstanceOf(SignedOutError);
+    expect(await store.get("session")).toBeUndefined();
+    // its code is never redeemed, so no session of it exists at the service
+    expect(fake.requests.filter((request) => request === "POST /v1/token")).toHaveLength(1);
+    await expect(new AccountService({ store, fetch: fake.fetch, lock }).removeIdentity("google")).rejects.toBeInstanceOf(SignedOutError);
+  });
+
+  it("ends a device sign-in that is approved after a sign-out instead of storing it", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const lock = memoryLock();
+    const started = await startDeviceSignIn({ service: SERVICE, store, fetch: fake.fetch, provider: "github", wait: async () => undefined, lock });
+    await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
+    fake.approveDevice(started.userCode, "acct_1");
+    await expect(started.finish(new AbortController().signal)).rejects.toBeInstanceOf(SignedOutError);
+    expect(await store.get("session")).toBeUndefined();
+    expect(fake.requests.filter((request) => request === "POST /v1/signout")).toHaveLength(2);
+  });
+
+  it("ends a desktop sign-in whose sign-out came while the app was still opening its loopback", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    let opened: () => void = () => undefined;
+    const bridge = {
+      service: SERVICE,
+      start: () => new Promise<string>((resolve) => { opened = () => resolve("http://127.0.0.1:4567/callback"); }),
+      open: async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").search.slice(1),
+    };
+    const real = globalThis.fetch;
+    globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
+    try {
+      const signingIn = desktopSignIn("github", bridge, store);
+      await new AccountService({ store, fetch: fake.fetch, lock: memoryLock() }).signOut();
+      opened();
+      await expect(signingIn).rejects.toBeInstanceOf(SignedOutError);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(await store.get("session")).toBeUndefined();
+  });
+});
+
+describe("ending a sign-in at the service", () => {
+  const refreshes = (fake: FakeAccountService, refreshToken: string) => requestToken(SERVICE, { grant_type: "refresh_token", refresh_token: refreshToken }, { fetch: fake.fetch });
+
+  it("does not take a 401 to the sign-out as the end of the sign-in, and ends it with its refresh token", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const session = await redirectSignIn(fake, "github", store);
+    let refused = false;
+    // the access token ran out on the way: the first sign-out is answered 401 without ending anything
+    const fetch = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (!refused && new URL(request.url).pathname === "/v1/signout") { refused = true; return Response.json({ error: { code: "unauthorized" } }, { status: 401 }); }
+      return fake.fetch(request);
+    };
+    await new AccountService({ store, fetch, lock: memoryLock() }).signOut();
+    await expect(refreshes(fake, session.refresh_token)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("keeps a sign-out the service refused through leaving the account, and ends it later", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const session = await redirectSignIn(fake, "github", store);
+    const down = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return new URL(request.url).pathname === "/v1/signout" ? new Response("", { status: 503 }) : fake.fetch(request);
+    };
+    await expect(new AccountService({ store, fetch: down, lock: memoryLock() }).signOut()).rejects.toMatchObject({ status: 503 });
+    await store.clear();
+    await new AccountService({ store, fetch: fake.fetch, lock: memoryLock() }).endLeftovers();
+    await expect(refreshes(fake, session.refresh_token)).rejects.toMatchObject({ status: 400 });
+    expect(await store.get("ending")).toBeUndefined();
+  });
+
+  it("has the sign-in in the list to end before its sign-out is answered, so closing the page then loses nothing", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const session = await redirectSignIn(fake, "github", store);
+    let arrived: () => void = () => undefined;
+    const waiting = new Promise<void>((resolve) => { arrived = resolve; });
+    // the page closes while the sign-out is on its way: it is never answered
+    const hangs = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (new URL(request.url).pathname === "/v1/signout") { arrived(); return new Promise<Response>(() => undefined); }
+      return fake.fetch(request);
+    };
+    void new AccountService({ store, fetch: hangs, lock: memoryLock() }).signOut();
+    await waiting;
+    expect(await store.get("session")).toBeUndefined();
+    await new AccountService({ store, fetch: fake.fetch, lock: memoryLock() }).endLeftovers();
+    await expect(refreshes(fake, session.refresh_token)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("never drops a sign-in it could not end, however many there are", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const down = async () => new Response("", { status: 503 });
+    for (let count = 0; count < 20; count++) await endSignIn(await redirectSignIn(fake, "github", memoryAccountStore()), "a test sign-in", { store, fetch: down });
+    expect(await store.get("ending")).toHaveLength(20);
+  });
+
+  it("ends the sign-in a new sign-in replaces, as Sign in again does", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const previous = await redirectSignIn(fake, "github", store);
+    await redirectSignIn(fake, "github", store);
+    await expect(refreshes(fake, previous.refresh_token)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("does not keep a link across a sign-out, even when the same account signed in again after it", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const lock = memoryLock();
+    let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
+    await expect(new AccountService({ store, fetch: fake.fetch, lock }).addMethod("google", async (token, bearer) => {
+      linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
+      await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
+      await redirectSignIn(fake, "github", store);
+      return linked;
+    })).rejects.toBeInstanceOf(SignedOutError);
+    await expect(refreshes(fake, linked?.refresh_token ?? "")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("ends a refresh whose answer comes after another sign-in took its place", async () => {
+    let now = Date.now();
+    const fake = new FakeAccountService(() => now);
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    now += 2 * 60 * 60_000;
+    let release: () => void = () => undefined;
+    let arrived: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { arrived = resolve; });
+    let rotated = "";
+    const delayed = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const answer = await fake.fetch(request);
+      if (rotated === "" && new URL(request.url).pathname === "/v1/token") {
+        rotated = (await answer.clone().json() as { refresh_token: string }).refresh_token;
+        arrived();
+        await gate;
+      }
+      return answer;
+    };
+    const reading = new AccountService({ store, fetch: delayed, lock: memoryLock(), now: () => now }).identities();
+    await waiting;
+    await redirectSignIn(fake, "github", store);
+    release();
+    await expect(reading).rejects.toBeInstanceOf(SignedOutError);
+    await expect(refreshes(fake, rotated)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("ends the sign-in a device sign-in replaces", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const previous = await redirectSignIn(fake, "github", store);
+    const started = await startDeviceSignIn({ service: SERVICE, store, fetch: fake.fetch, provider: "github", wait: async () => undefined, lock: memoryLock() });
+    fake.approveDevice(started.userCode, "acct_1");
+    await started.finish(new AbortController().signal);
+    await expect(refreshes(fake, previous.refresh_token)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("never repeats a request refused for the replaced sign-in with another account's sign-in", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_a");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    let release: () => void = () => undefined;
+    let arrived: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { arrived = resolve; });
+    let held = false;
+    const delayed = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (!held && new URL(request.url).pathname === "/v1/identities") { held = true; arrived(); await gate; }
+      return fake.fetch(request);
+    };
+    const reading = new AccountService({ store, fetch: delayed, lock: memoryLock() }).identities();
+    await waiting;
+    // account B signs in here while the request is on its way; the sign-in it replaced ends
+    fake.signInAs("github", "acct_b");
+    await redirectSignIn(fake, "github", store);
+    release();
+    await expect(reading).rejects.toBeInstanceOf(SignedOutError);
+    expect((await store.get("session"))?.account).toBe("acct_b");
+  });
+
+  it("never repeats a method removal with a sign-in made after a sign-out, even of the same account", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    await redirectSignIn(fake, "github", store);
+    const lock = memoryLock();
+    await new AccountService({ store, fetch: fake.fetch, lock }).addMethod("google", (token, bearer) => redirectSignIn(fake, "google", store, { linkToken: token, bearer }));
+    let release: () => void = () => undefined;
+    let arrived: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { arrived = resolve; });
+    let held = false;
+    const delayed = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      if (!held && request.method === "DELETE") { held = true; arrived(); await gate; }
+      return fake.fetch(request);
+    };
+    const removing = new AccountService({ store, fetch: delayed, lock }).removeIdentity("github");
+    await waiting;
+    await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
+    await redirectSignIn(fake, "github", store);
+    release();
+    await expect(removing).rejects.toBeInstanceOf(SignedOutError);
+    expect((await new AccountService({ store, fetch: fake.fetch, lock }).identities()).map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
+  });
+
+  it("does not redeem a link that comes back after a sign-out whose revoke the service refused", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const session = await redirectSignIn(fake, "github", store);
+    const token = await linkToken(fake, session.access_token, "google");
+    const start = await beginSignIn("google", { store, service: SERVICE, redirectUri: WEB_REDIRECT, linkToken: token });
+    const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
+    if (returned === null) throw new Error("no sign-in came back");
+    const down = async (input: Request | string | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      return new URL(request.url).pathname === "/v1/signout" ? new Response("", { status: 503 }) : fake.fetch(request);
+    };
+    await expect(new AccountService({ store, fetch: down, lock: memoryLock() }).signOut()).rejects.toMatchObject({ status: 503 });
+    await expect(finishSignIn(returned, { store, fetch: fake.fetch, bearer: session.access_token })).rejects.toBeInstanceOf(SignedOutError);
+    const listed = await fake.fetch(new Request(`${SERVICE}/v1/identities`, { headers: { authorization: `Bearer ${session.access_token}` } }));
+    expect((await listed.json() as { identities: { provider: string }[] }).identities.map((identity) => identity.provider)).toEqual(["github"]);
   });
 });

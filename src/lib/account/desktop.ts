@@ -3,6 +3,7 @@
  * service and carries the provider's return from the system browser over its loopback server; the
  * page finishes the sign-in itself with the PKCE verifier it kept, as a browser tab does.
  */
+import { signInEpoch } from "./service.ts";
 import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import { ACCOUNT_PROVIDERS } from "./store.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
@@ -32,7 +33,9 @@ export function desktopProviders(bridge: DesktopAccountBridge): AccountProvider[
 
 /** `link`: adds the provider to the signed-in account (AccountService.addMethod), redeemed with its access token. */
 export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore, link?: { linkToken: string; bearer: string }): Promise<AccountSession> {
+  // a sign-out from here on wins over this sign-in, also while the app opens its loopback
+  const epoch = await signInEpoch(store);
   const redirectUri = await bridge.start();
-  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, ...(link ? { linkToken: link.linkToken } : {}) });
+  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, epoch, ...(link ? { linkToken: link.linkToken } : {}) });
   return finishOwnSignIn(url, await bridge.open(url), { store, ...(link ? { bearer: link.bearer } : {}) });
 }

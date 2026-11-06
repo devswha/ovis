@@ -7,7 +7,7 @@
  * sign-in is not used.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { failure, sessionOf, type DeviceProvider } from "./service.ts";
+import { endSignIn, failure, SignedOutError, sessionOf, signInEpoch, type DeviceProvider } from "./service.ts";
 import { SignInError } from "./signin.ts";
 import { accountLock } from "./store.ts";
 import type { AccountLock, AccountSession, AccountStore } from "./store.ts";
@@ -83,6 +83,8 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const wait = options.wait ?? waitFor;
   const lock = options.lock ?? accountLock;
   const provider = options.provider ?? "github";
+  // a sign-out after this point wins over the sign-in (service.ts, keepSignIn)
+  const epoch = await signInEpoch(options.store);
   const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const response = await fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
@@ -126,21 +128,30 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         }
         if (answer.ok) {
           const session = sessionOf(await answer.json(), options.service, now());
-          // under the lock sign-out and refresh take, and never once this sign-in was cancelled
+          // under the lock sign-out and refresh take, and never once this sign-in was cancelled or a sign-out came after its start
+          let replaced: AccountSession | undefined;
           const kept = await lock(async () => {
             if (signal.aborted) return false;
-            await options.store.set("session", session);
-            if (!signal.aborted) return true;
+            let stored = false;
+            await options.store.updateMany(["session", "epoch"], (current) => {
+              stored = current.epoch === epoch;
+              if (stored) replaced = current.session;
+              return stored ? { session, epoch } : current;
+            });
+            if (!stored || !signal.aborted) return stored;
             // cancelled while it was being written: take back exactly this session, never a newer one
             await options.store.update("session", (current) => current?.refresh_token === session.refresh_token ? undefined : current);
             return false;
           });
-          if (kept) return session;
+          if (kept) {
+            // the sign-in it replaced would otherwise live on at the service until it runs out
+            if (replaced !== undefined && replaced.refresh_token !== session.refresh_token) await endSignIn(replaced, "the replaced sign-in", { store: options.store, fetch: fetchImpl, now });
+            return session;
+          }
           // a sign-in nobody keeps ends at the service too, so its tokens do not outlive the page
-          await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
-            .catch((error: unknown) => console.warn("Ovis: a cancelled sign-in was not ended at the account service", error instanceof Error ? error.name : error));
+          await endSignIn(session, "a sign-in nobody keeps", { store: options.store, fetch: fetchImpl, now });
           signal.throwIfAborted();
-          return session;
+          throw new SignedOutError();
         }
         if (answer.status === 429) { pause = retryAfterMs(answer, interval); continue; }
         const refused = await failure(answer);

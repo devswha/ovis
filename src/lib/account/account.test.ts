@@ -246,7 +246,7 @@ describe("signing in on a PC's own page, with GitHub's device flow", () => {
   it("takes back the session of a sign-in cancelled while it was being written", async () => {
     const { fake, store, options } = setup();
     const cancel = new AbortController();
-    const slow = { ...store, set: async (...args: Parameters<typeof store.set>) => { await store.set(...args); cancel.abort(); } };
+    const slow = { ...store, updateMany: async (...args: Parameters<typeof store.updateMany>) => { await store.updateMany(...args); cancel.abort(); } };
     const started = await startDeviceSignIn({ ...options, store: slow });
     fake.approveDevice(started.userCode, "acct_page");
     await expect(started.finish(cancel.signal)).rejects.toMatchObject({ name: "AbortError" });

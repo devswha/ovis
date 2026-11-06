@@ -5,7 +5,7 @@
  * host that serves the app.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { AccountServiceError, requestToken } from "./service.ts";
+import { AccountServiceError, keepSignIn, requestToken, SignedOutError, signInEpoch } from "./service.ts";
 import type { AccountProvider, AccountSession, AccountStore, PendingSignIn } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
@@ -29,12 +29,14 @@ function random(bytes: number): string {
  * Where to send the browser to sign in; the verifier and state wait in the store for the return.
  * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead.
  */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string }): Promise<string> {
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; epoch?: string }): Promise<string> {
+  // first, before anything waits: a sign-out after this point wins (`epoch`: a caller that waited before calling took it earlier)
+  const epoch = options.epoch ?? await signInEpoch(options.store);
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const now = (options.now ?? Date.now)();
-  const pending = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now };
+  const pending = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, epoch };
   // one per state: another tab's sign-in stays, and only ones past their time are dropped
   await options.store.update("pending", (current) => ({
     ...Object.fromEntries(Object.entries(current ?? {}).filter(([, waiting]) => now - waiting.started_at <= SIGN_IN_MS)),
@@ -91,6 +93,8 @@ export async function finishSignIn(returned: SignInReturn, options: FinishOption
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
   if ("error" in returned && returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");
   if ("error" in returned) throw new SignInError("denied", "The sign-in was cancelled or refused");
+  // signed out since it started: the code is not redeemed, so a link adds nothing, even when the revoke failed
+  if (await options.store.get("epoch") !== pending.epoch) throw new SignedOutError();
   let session: AccountSession;
   try {
     session = await requestToken(pending.service, {
@@ -100,8 +104,10 @@ export async function finishSignIn(returned: SignInReturn, options: FinishOption
     if (error instanceof AccountServiceError && error.code === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
     throw error;
   }
-  if (options.bearer === undefined) await options.store.set("session", session);
-  return session;
+  if (options.bearer !== undefined) return session;
+  // a sign-out since this sign-in started wins: its session is ended, not stored
+  // one an earlier build started has no epoch: it cannot show no sign-out came since, so it is not kept
+  return keepSignIn(session, pending.epoch ?? "", { store: options.store, ...(options.fetch ? { fetch: options.fetch } : {}), now });
 }
 
 /**

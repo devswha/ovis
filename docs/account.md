@@ -479,7 +479,15 @@ OAuth's authorization code flow with PKCE, `S256` only:
    `https://www.google.com/device`), waits `Retry-After` on a
    429, and keeps no session from a sign-in cancelled meanwhile (it is stored under the same
    lock as a refresh or a sign-out).
-6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
+6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family. A client's sign-out
+   wins over any sign-in it still has on its way: each sign-in remembers the client's sign-out
+   epoch when it starts, and one that finishes after a sign-out is ended here, never stored; a
+   sign-in that replaces another, or a refresh no tab keeps, ends the one left over. A 401 to the
+   sign-out is retried with the refresh token (only its refusal shows the sign-in is over), and a
+   request refused with 401 is repeated only if no sign-out came since; a sign-in that returns
+   after a sign-out is not redeemed. A sign-in to end goes on the client's list before the
+   service is asked and leaves it only once the service confirms, so it is kept through a closed
+   page, a refusal or leaving the account, and ended again at the next sign-out or account screen.
 
 `GET /v1/providers` (no sign-in) answers `{ "providers": ["github", "google"], "device": ["github",
 "google"] }`: the sign-ins this service is set up for, and those of them a PC's own page can start

@@ -36,11 +36,17 @@ export interface PendingSignIn {
   readonly verifier: string;
   readonly redirect_uri: string;
   readonly started_at: number;
+  /** the store's sign-out epoch when it started; none from an earlier build */
+  readonly epoch?: string;
 }
 
 interface Records {
   key: AccountKey;
   session: AccountSession;
+  /** replaced by every sign-out: a sign-in is stored only under the epoch it started in (service.ts, keepSignIn) */
+  epoch: string;
+  /** sign-ins the service did not confirm ending, to end again (service.ts, endSignIn) */
+  ending: readonly AccountSession[];
   /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
   /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
@@ -91,8 +97,18 @@ export interface AccountStore {
   update<N extends Exclude<Name, "key">>(name: N, change: (current: Records[N] | undefined) => Records[N] | undefined): Promise<void>;
   /** Reads and writes several `names` in one transaction; a name `change` leaves out, or sets undefined, is deleted. */
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
-  /** Forgets the key and the sign-in: a new key is made on next use, which no PC knows. */
+  /**
+   * Forgets the key and the sign-in: a new key is made on next use, which no PC knows. The sign-ins
+   * still to end at the service (`ending`) stay, the sign-in it forgets among them, so leaving the
+   * account never drops a revocation.
+   */
   clear(): Promise<void>;
+}
+
+/** What clear() keeps: the sign-ins still to end, and the one it forgets. */
+function keptEnding(ending: Records["ending"] | undefined, session: AccountSession | undefined): Records["ending"] | undefined {
+  const kept = [...(ending ?? []), ...(session === undefined ? [] : [session])];
+  return kept.length > 0 ? kept : undefined;
 }
 
 async function newKey(): Promise<AccountKey> {
@@ -122,7 +138,11 @@ export function memoryAccountStore(): AccountStore {
         if (next[name] === undefined) records.delete(name); else records.set(name, next[name]);
       }
     },
-    async clear() { records.clear(); },
+    async clear() {
+      const ending = keptEnding(records.get("ending") as Records["ending"] | undefined, records.get("session") as AccountSession | undefined);
+      records.clear();
+      if (ending !== undefined) records.set("ending", ending);
+    },
   };
 }
 
@@ -223,7 +243,15 @@ export const indexedAccountStore: AccountStore = {
   },
   clear() {
     return transact("readwrite", (store) => {
-      store.clear();
+      const ending: IDBRequest<Records["ending"] | undefined> = store.get("ending");
+      ending.onsuccess = () => {
+        const session: IDBRequest<AccountSession | undefined> = store.get("session");
+        session.onsuccess = () => {
+          const kept = keptEnding(ending.result, session.result);
+          store.clear();
+          if (kept !== undefined) store.put(kept, "ending");
+        };
+      };
       return () => undefined;
     });
   },

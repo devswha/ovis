@@ -230,6 +230,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /** The account's directory merged with the PCs this device is paired with; the pairings work whatever the service says. */
   const loadAccount = async (): Promise<void> => {
     if (accountService === null) { await showFront(); return; }
+    // a sign-in the service did not confirm ending before is ended again whenever the list loads
+    account.endLeftovers().catch((error: unknown) => console.warn("Ovis: earlier sign-ins could not be ended", error instanceof Error ? error.name : error));
     const session = await account.session();
     if (session === undefined) { await showFront(); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, pcs: null, error: null } as const;
