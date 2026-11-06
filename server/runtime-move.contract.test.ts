@@ -8,8 +8,8 @@ import { herdrRpc, paneSplit, workspaceClose, workspaceCreate } from "./herdr/cl
 import type { RuntimeService } from "./herdr-core/runtime-choice.ts";
 import { createServer } from "./index.ts";
 
-// One herdr workspace in the test session: an idle Codex whose conversation is in a fictional Codex
-// store, beside a plain shell. No Codex runs; herdr is told.
+// One herdr workspace in the test session: a Codex the person ended, its conversation in a fictional
+// Codex store, beside an idle Codex whose input line Ovis cannot read. No Codex runs; herdr is told.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-runtime-move-")));
 const SECRET = "test-runtime-move-secret";
 const ENDED = "00000000-0000-4000-8000-000000000002";
@@ -32,8 +32,12 @@ it("shows what a move to herdr-core would take along, and offers none where the 
   workspace = created.workspace.workspace_id;
   const ended = created.root_pane.pane_id;
   const shell = (await paneSplit(ended, "right", false)).pane_id;
-  await herdrRpc("pane.report_agent", { pane_id: ended, source: "manual", agent: "codex", state: "idle" });
-  await herdrRpc("pane.report_agent_session", { pane_id: ended, source: "herdr:codex", agent: "codex", seq: 1, agent_session_id: ENDED });
+  let seq = 0;
+  for (const [pane, id] of [[ended, ENDED], [shell, "00000000-0000-4000-8000-000000000009"]] as const) {
+    await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "codex", state: "idle" });
+    await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:codex", agent: "codex", seq: ++seq, agent_session_id: id });
+  }
+  await herdrRpc("pane.release_agent", { pane_id: ended, source: "manual", agent: "codex" });
 
   let current = facts();
   const runtimeService: RuntimeService = { facts: () => current, request: () => ({ ok: false, status: 409, code: "runtime_locked", message: "test" }) };
@@ -47,8 +51,8 @@ it("shows what a move to herdr-core would take along, and offers none where the 
     if (answer.body?.available !== true) throw new Error(`no move offered: ${JSON.stringify(answer)}`);
     const verdicts = Object.fromEntries(answer.body.plan.panes.filter((pane) => pane.pane_id === ended || pane.pane_id === shell).map((pane) => [pane.pane_id, pane.verdict]));
     expect(verdicts).toEqual({
-      [ended]: { kind: "resume", agent: "codex", session_id: ENDED, argv: ["codex", "resume", ENDED], input_unchecked: true },
-      [shell]: { kind: "shell" },
+      [ended]: { kind: "resume", agent: "codex", session_id: ENDED, argv: ["codex", "resume", ENDED], ended: true },
+      [shell]: { kind: "needs_you", agent: "codex" },
     });
     const tab = answer.body.plan.workspaces.find((entry) => entry.workspace_id === workspace)?.tabs[0];
     expect(tab?.root).toEqual({ split: "right", ratio: 0.5, first: { pane: ended }, second: { pane: shell } });

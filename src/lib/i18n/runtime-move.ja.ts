@@ -18,7 +18,6 @@ export const RUNTIME_MOVE_JA: Record<string, string> = {
   "Waiting for an answer": "回答待ち",
   "A command is running": "コマンド実行中",
   "{command} running": "{command} 実行中",
-  "Text left half-typed in the input of {agents} is lost.": "{agents} の入力欄に書きかけの文字は失われます。",
   "Scrollback and programs running in shells do not come along. herdr itself stays as it is.": "過去の出力（スクロールバック）とシェルで動いていたプログラムは移りません。herdr 自体はそのまま残ります。",
   "Move everything": "すべて移す",
   "Move everything once all work is done": "作業がすべて終わったら一度に移す",

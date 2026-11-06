@@ -60,15 +60,6 @@ export function blockingPanes(plan: MovePlan): MovePane[] {
   return plan.panes.filter((pane) => pane.verdict.kind === "busy" || pane.verdict.kind === "needs_you");
 }
 
-/** The agents whose input line Ovis cannot read, by product name, each once: text left there is lost. */
-export function uncheckedAgents(plan: MovePlan): string[] {
-  const names = new Set<string>();
-  for (const { verdict } of plan.panes) {
-    if ((verdict.kind === "resume" || verdict.kind === "fresh") && verdict.input_unchecked) names.add(agentName(verdict.agent));
-  }
-  return [...names];
-}
-
 /** A tab's pane ids in reading order: a split's left or top side first, then the other. */
 export function tabPaneIds(node: MoveNode): string[] {
   return "pane" in node ? [node.pane] : [...tabPaneIds(node.first), ...tabPaneIds(node.second)];

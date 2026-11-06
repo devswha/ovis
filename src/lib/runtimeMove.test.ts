@@ -2,12 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import type { MoveNode, MovePane, MovePlan, MoveVerdict } from "../../shared/runtime-move.ts";
 import { translate } from "./i18n.ts";
-import { blockingPanes, moveStepText, paneTitle, tabPaneIds, uncheckedAgents, verdictTag } from "./runtimeMove.ts";
+import { blockingPanes, moveStepText, paneTitle, tabPaneIds, verdictTag } from "./runtimeMove.ts";
 
 const en = (key: string, vars?: Record<string, string | number>): string => translate("en", key, vars);
 
-const RESUME: MoveVerdict = { kind: "resume", agent: "claude", session_id: "s1", argv: ["claude", "--resume", "s1"], input_unchecked: false };
-const FRESH: MoveVerdict = { kind: "fresh", agent: "copilot", input_unchecked: true };
+const RESUME: MoveVerdict = { kind: "resume", agent: "claude", session_id: "s1", argv: ["claude", "--resume", "s1"], ended: false };
+const FRESH: MoveVerdict = { kind: "fresh", agent: "copilot" };
 const SHELL: MoveVerdict = { kind: "shell" };
 const WORKING: MoveVerdict = { kind: "busy", reason: "agent_working", agent: "codex", command: null };
 const WAITING: MoveVerdict = { kind: "busy", reason: "agent_waiting", agent: "codex", command: null };
@@ -35,7 +35,7 @@ describe("paneTitle", () => {
     expect(paneTitle(en, pane("p1", RESUME, "Maru"))).toBe("Maru");
     expect(paneTitle(en, pane("p1", RESUME))).toBe("Claude Code");
     expect(paneTitle(en, pane("p1", NEEDS_YOU))).toBe("Devin CLI");
-    expect(paneTitle(en, pane("p1", { kind: "fresh", agent: "unknown-agent", input_unchecked: false }))).toBe("unknown-agent");
+    expect(paneTitle(en, pane("p1", { kind: "fresh", agent: "unknown-agent" }))).toBe("unknown-agent");
     expect(paneTitle(en, pane("p1", COMMAND))).toBe("Shell");
     expect(paneTitle(en, pane("p1", SHELL))).toBe("Shell");
   });
@@ -49,12 +49,6 @@ describe("blockingPanes", () => {
   });
 });
 
-describe("uncheckedAgents", () => {
-  test("names each agent whose input line could not be read once, and none when all were", () => {
-    expect(uncheckedAgents(plan([pane("p1", FRESH), pane("p2", FRESH), pane("p3", { ...RESUME, input_unchecked: true }), pane("p4", RESUME)]))).toEqual(["GitHub Copilot", "Claude Code"]);
-    expect(uncheckedAgents(plan([pane("p1", RESUME), pane("p2", COMMAND)]))).toEqual([]);
-  });
-});
 
 describe("tabPaneIds", () => {
   test("walks a split's first side before its second, at every depth", () => {

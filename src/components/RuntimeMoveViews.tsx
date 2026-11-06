@@ -7,7 +7,7 @@ import { Check } from "lucide-react";
 
 import type { MovePane, MovePlan, MoveStatus } from "../../shared/runtime-move.ts";
 import type { Translate } from "../lib/i18n.ts";
-import { agentName, blockingPanes, moveReasonText, moveStepText, moveWhyText, paneTitle, tabPaneIds, uncheckedAgents, verdictTag } from "../lib/runtimeMove.ts";
+import { agentName, blockingPanes, moveReasonText, moveStepText, moveWhyText, paneTitle, tabPaneIds, verdictTag } from "../lib/runtimeMove.ts";
 
 const STEPS = ["ending_agents", "building", "starting_agents", "switching"] as const;
 
@@ -26,7 +26,6 @@ function PaneLine({ t, pane }: { t: Translate; pane: MovePane }) {
 
 export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; leadId: string }) {
   const byId = new Map(plan.panes.map((pane) => [pane.pane_id, pane]));
-  const unchecked = uncheckedAgents(plan);
   return (
     <>
       <ul className="runtime-move-tree">
@@ -46,7 +45,6 @@ export function PlanView({ t, plan, leadId }: { t: Translate; plan: MovePlan; le
           </li>
         ))}
       </ul>
-      {unchecked.length > 0 && <p className="runtime-move-note">{t("Text left half-typed in the input of {agents} is lost.", { agents: unchecked.join(", ") })}</p>}
       <p className="runtime-move-note" id={leadId}>{t("Scrollback and programs running in shells do not come along. herdr itself stays as it is.")}</p>
     </>
   );

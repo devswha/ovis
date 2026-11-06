@@ -19,9 +19,9 @@ const plan: MovePlan = {
     { tab_id: "w1:t2", name: "logs", root: { pane: "c" } },
   ] }],
   panes: [
-    { pane_id: "a", cwd: "/a", name: "lead", verdict: { kind: "resume", agent: "claude", session_id: "s1", argv: ["claude", "--resume", "s1"], input_unchecked: false } },
+    { pane_id: "a", cwd: "/a", name: "lead", verdict: { kind: "resume", agent: "claude", session_id: "s1", argv: ["claude", "--resume", "s1"], ended: false } },
     { pane_id: "b", cwd: "/b", name: null, verdict: { kind: "shell" } },
-    { pane_id: "c", cwd: "/c", name: null, verdict: { kind: "fresh", agent: "codex", input_unchecked: true } },
+    { pane_id: "c", cwd: "/c", name: null, verdict: { kind: "fresh", agent: "codex" } },
   ],
 };
 
@@ -110,6 +110,19 @@ describe("runMove", () => {
     expect([journal.state, journal.reason]).toEqual(["rolled_back", "switch_refused: locked"]);
     expect(world.core.size).toBe(0);
     expect(world.herdr.get("a")?.agent).toBe("claude");
+  });
+});
+
+describe("runMove, an agent the person ended", () => {
+  it("types nothing into it, reopens it on herdr-core, and leaves it ended on a rollback", async () => {
+    const { world, source, destination, options } = fakes({ refuseSwitch: true });
+    world.herdr.set("a", { agent: null, status: "unknown", session: "s1", shellInFront: true });
+    const ended: MovePlan = { ...plan, panes: plan.panes.map((pane) => pane.pane_id === "a" && pane.verdict.kind === "resume" ? { ...pane, verdict: { ...pane.verdict, ended: true } } : pane) };
+    const journal = await runMove(stateDir(), PORT, "m1", ended, source, destination, options);
+    expect(world.calls.filter((call) => call.includes(" a ") || call.endsWith(" a"))).toEqual([]);
+    expect(world.calls).toContain("core start P1 claude --resume s1");
+    expect(journal.state).toBe("rolled_back");
+    expect(world.calls.some((call) => call.startsWith("herdr start a"))).toBe(false);
   });
 });
 

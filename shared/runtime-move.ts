@@ -12,15 +12,16 @@ export type MoveNode = { pane: string } | { split: "right" | "down"; ratio: numb
 /**
  * What becomes of one pane:
  * - `resume`: an idle agent whose conversation this PC's stores list; it is ended in herdr and reopens on it.
+ *   `ended`: the person ended it already (the pane is a shell again and still names the conversation).
  * - `fresh`: an idle agent whose conversation cannot be told; it is ended in herdr and starts new in the same folder.
  * - `shell`: a shell with nothing running in front; a new shell starts in the same folder.
  * - `busy`: an agent at work or waiting for an answer, or a shell running a command: nothing moves until it is done.
- * - `needs_you`: an agent Ovis cannot end by itself; the person ends it, then the move can go.
- * `input_unchecked`: Ovis cannot read whether the agent's input line is empty: text left there is lost.
+ * - `needs_you`: an agent Ovis cannot end by itself (its input line cannot be read, so the exit could send
+ *   text typed there); the person ends it, then the move can go and reopens its conversation.
  */
 export type MoveVerdict =
-  | { kind: "resume"; agent: SessionHistoryAgent; session_id: string; argv: string[]; input_unchecked: boolean }
-  | { kind: "fresh"; agent: string; input_unchecked: boolean }
+  | { kind: "resume"; agent: SessionHistoryAgent; session_id: string; argv: string[]; ended: boolean }
+  | { kind: "fresh"; agent: string }
   | { kind: "shell" }
   | { kind: "busy"; reason: "agent_working" | "agent_waiting" | "command_running"; agent: string | null; command: string | null }
   | { kind: "needs_you"; agent: string };

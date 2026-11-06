@@ -75,29 +75,37 @@ function commandInFront(info: PaneProcessInfo | undefined): string | null {
   return front?.name ?? "?";
 }
 
-async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>): Promise<MoveVerdict> {
+async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>, running: ReadonlySet<string>): Promise<MoveVerdict> {
   const agent = pane.agent;
   if (!agent) {
     const command = commandInFront(await facts.processInfo(pane.pane_id));
-    return command === null ? { kind: "shell" } : { kind: "busy", reason: "command_running", agent: null, command };
+    if (command !== null) return { kind: "busy", reason: "command_running", agent: null, command };
+    // an agent the person ended here still names its conversation: it reopens, and nothing is typed
+    const ended = pane.agent_session;
+    if (ended && ended.kind === "id" && isSessionHistoryAgent(ended.agent) && pane.cwd) {
+      const key = `${ended.agent}\0${ended.value}`;
+      if (!running.has(key) && !claimed.has(key)) {
+        const argv = await facts.findResume(ended.agent, ended.value, pane.cwd);
+        if (argv) { claimed.add(key); return { kind: "resume", agent: ended.agent, session_id: ended.value, argv, ended: true }; }
+      }
+    }
+    return { kind: "shell" };
   }
   if (pane.agent_status === "blocked") return { kind: "busy", reason: "agent_waiting", agent, command: null };
   // unknown is not idle: only an agent herdr says is done with its turn is ended
   if (pane.agent_status !== "idle" && pane.agent_status !== "done") return { kind: "busy", reason: "agent_working", agent, command: null };
   if (facts.holdsPending(pane.pane_id)) return { kind: "busy", reason: "agent_working", agent, command: null };
   if (!Object.hasOwn(EXIT_COMMANDS, agent)) return { kind: "needs_you", agent };
-  const empty = await facts.inputEmpty(pane.pane_id, agent);
-  // something typed and not sent is the person's: never ended over it
-  if (empty === false) return { kind: "needs_you", agent };
-  const input_unchecked = empty === null;
+  // the exit is sent as a message: only into an input line read empty, or text typed there would go with it
+  if (await facts.inputEmpty(pane.pane_id, agent) !== true) return { kind: "needs_you", agent };
   const session = pane.agent_session;
   if (session && session.kind === "id" && session.agent === agent && isSessionHistoryAgent(agent) && pane.cwd) {
     const key = `${agent}\0${session.value}`;
     const argv = claimed.has(key) ? null : await facts.findResume(agent, session.value, pane.cwd);
     // one conversation reopens in one pane: a second pane naming it starts new
-    if (argv) { claimed.add(key); return { kind: "resume", agent, session_id: session.value, argv, input_unchecked }; }
+    if (argv) { claimed.add(key); return { kind: "resume", agent, session_id: session.value, argv, ended: false }; }
   }
-  return { kind: "fresh", agent, input_unchecked };
+  return { kind: "fresh", agent };
 }
 
 /**
@@ -106,9 +114,10 @@ async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>)
  */
 export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Promise<MovePlan> {
   const claimed = new Set<string>();
+  const running = new Set(snapshot.panes.filter((pane) => pane.agent && pane.agent_session).map((pane) => `${pane.agent_session!.agent}\0${pane.agent_session!.value}`));
   const panes: MovePane[] = [];
   // one at a time: a conversation is claimed by the first pane, in herdr's order
-  for (const pane of snapshot.panes) panes.push({ pane_id: pane.pane_id, cwd: pane.cwd ?? null, name: pane.label ?? null, verdict: await verdictOf(pane, facts, claimed) });
+  for (const pane of snapshot.panes) panes.push({ pane_id: pane.pane_id, cwd: pane.cwd ?? null, name: pane.label ?? null, verdict: await verdictOf(pane, facts, claimed, running) });
   const workspaces: MoveWorkspace[] = snapshot.workspaces.map((workspace) => ({
     workspace_id: workspace.workspace_id,
     name: workspace.label,

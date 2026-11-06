@@ -63,10 +63,14 @@ describe("planMove", () => {
       pane("queued", { agent: "claude", agent_status: "idle" }),
       pane("typed", { agent: "claude", agent_status: "idle" }),
       pane("copilot", { agent: "copilot", agent_status: "idle" }),
+      pane("ended", { agent_session: session("pi", "listed") }),
+      pane("ended-elsewhere", { agent_session: session("codex", "live") }),
+      pane("live", { agent: "codex", agent_status: "working", agent_session: session("codex", "live") }),
     ]), facts);
     expect(Object.fromEntries(plan.panes.map((entry) => [entry.pane_id, entry.verdict]))).toEqual({
-      claude: { kind: "resume", agent: "claude", session_id: "listed", argv: ["claude", "--resume", "listed"], input_unchecked: false },
-      codex: { kind: "fresh", agent: "codex", input_unchecked: true },
+      claude: { kind: "resume", agent: "claude", session_id: "listed", argv: ["claude", "--resume", "listed"], ended: false },
+      // its input line cannot be read: the exit could send what is typed there
+      codex: { kind: "needs_you", agent: "codex" },
       shell: { kind: "shell" },
       editing: { kind: "busy", reason: "command_running", agent: null, command: "vim" },
       unread: { kind: "busy", reason: "command_running", agent: null, command: "?" },
@@ -75,6 +79,10 @@ describe("planMove", () => {
       queued: { kind: "busy", reason: "agent_working", agent: "claude", command: null },
       typed: { kind: "needs_you", agent: "claude" },
       copilot: { kind: "needs_you", agent: "copilot" },
+      // ended by the person: reopened, nothing typed
+      ended: { kind: "resume", agent: "pi", session_id: "listed", argv: ["pi", "--resume", "listed"], ended: true },
+      "ended-elsewhere": { kind: "shell" },
+      live: { kind: "busy", reason: "agent_working", agent: "codex", command: null },
     });
     expect(plan.ready).toBe(false);
   });

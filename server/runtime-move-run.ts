@@ -144,12 +144,16 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
   const save = () => writePrivateState(journalPath(stateDir, port), journal);
   const pause = options.pause ?? Bun.sleep;
   const exitMs = options.exitMs ?? 10_000;
-  const agents = plan.panes.filter((pane): pane is MovePane & { verdict: { kind: "resume" | "fresh" } } => pane.verdict.kind === "resume" || pane.verdict.kind === "fresh");
+  const starts = plan.panes.filter((pane): pane is MovePane & { verdict: { kind: "resume" | "fresh" } } => pane.verdict.kind === "resume" || pane.verdict.kind === "fresh");
+  // the agents Ovis ends itself: one the person ended already is only reopened
+  const agents = starts.filter((pane) => !(pane.verdict.kind === "resume" && pane.verdict.ended));
   const step = (name: Extract<MoveStatus, { state: "moving" }>["step"], done: number, total: number) => options.onStep?.({ state: "moving", step: name, done, total });
   const placed = new Map<string, string>();
   save();
   try {
     if (!plan.ready) throw new MoveAbort("not_ready");
+    // before any agent is ended: a core the Herdr app arranges is refused with nothing to put back
+    if (await destination.appArranged()) throw new MoveAbort("herdr_app");
     for (const [index, pane] of agents.entries()) {
       step("ending_agents", index, agents.length);
       const verdict = pane.verdict;
@@ -179,7 +183,6 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
     }
     journal.state = "building";
     save();
-    if (await destination.appArranged()) throw new MoveAbort("herdr_app");
     const cwdOf = new Map(plan.panes.map((pane) => [pane.pane_id, pane.cwd ?? undefined]));
     const tabs = plan.workspaces.reduce((count, workspace) => count + workspace.tabs.length, 0);
     let built = 0;
@@ -215,9 +218,9 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
     }
     journal.state = "starting";
     save();
-    for (const [index, entry] of journal.ended.entries()) {
-      step("starting_agents", index, journal.ended.length);
-      await destination.start(placed.get(entry.pane_id)!, entry.argv);
+    for (const [index, pane] of starts.entries()) {
+      step("starting_agents", index, starts.length);
+      await destination.start(placed.get(pane.pane_id)!, pane.verdict.kind === "resume" ? pane.verdict.argv : [pane.verdict.agent]);
     }
     journal.state = "switching";
     save();
