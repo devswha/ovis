@@ -40,8 +40,13 @@ describe("checking a saved PC", () => {
     expect(await checkPc(device(), { relay: socket }, probe)).toEqual({ kind: "connected", route: "relay", relay: "wss://relay.ovis.sh", rttMs: 140 });
   });
 
+  it("falls back to the global relay from a regional one with nobody for the PC, as opening it does", async () => {
+    const { probe } = probes({ "wss://relay-ap.ovis.sh": { kind: "silent" }, "wss://relay.ovis.sh": { kind: "answered", ms: 140 } });
+    expect(await checkPc(device(), { relay: socket }, probe)).toEqual({ kind: "connected", route: "relay", relay: "wss://relay.ovis.sh", rttMs: 140 });
+  });
+
   it("calls the PC offline when the relay has nobody for it, and the relay unreachable when none answers", async () => {
-    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "pc" });
+    expect(await checkPc(device(), { relay: socket }, probes({ "wss://relay-ap.ovis.sh": { kind: "silent" }, "wss://relay.ovis.sh": { kind: "silent" } }).probe)).toEqual({ kind: "offline", reason: "pc" });
     expect(await checkPc(device({ relay: "wss://relay.example" }), { relay: socket }, probes({}).probe)).toEqual({ kind: "offline", reason: "relay" });
   });
 });

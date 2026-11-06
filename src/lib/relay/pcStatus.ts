@@ -43,9 +43,16 @@ export async function checkPc(device: RelayDevice, sockets: PcCheckSockets, prob
   }
   let relay = device.relay;
   let found: PcProbe = await probe(offer, { relay }, sockets.relay, RELAY_PROBE_MS);
-  // a PC on one of Ovis's regional relays is always on the global one too, as a connection falls back
+  // a PC on one of Ovis's regional relays is always on the global one too, and a connection falls back to it
+  // whether the regional relay failed or had nobody for the PC (openRelayChannelWithFallback)
   const fallback = relayFallback(relay);
-  if (found.kind === "unreachable" && fallback !== null) found = await probe(offer, { relay: (relay = fallback) }, sockets.relay, RELAY_PROBE_MS);
+  if (found.kind !== "answered" && fallback !== null) {
+    const first = found;
+    found = await probe(offer, { relay: fallback }, sockets.relay, RELAY_PROBE_MS);
+    if (found.kind === "answered") relay = fallback;
+    // a PC the regional relay had nobody for, behind a global relay this device cannot reach, is still a silent PC
+    else if (first.kind === "silent") found = first;
+  }
   return found.kind === "answered" ? { kind: "connected", route: "relay", relay, rttMs: found.ms }
     : { kind: "offline", reason: found.kind === "silent" ? "pc" : "relay" };
 }

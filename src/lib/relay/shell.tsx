@@ -144,7 +144,8 @@ function signInFailure(error: unknown): string {
 /** The front page's checks of saved PCs (checkPcs): how many PCs, how many at once, how often, and where the last one is noted. */
 const CHECK_PCS = 8;
 const CHECK_AT_ONCE = 2;
-const CHECK_GAP_MS = 15_000;
+/** a minute: one sweep's CHECK_PCS connections (up to two each, with the global relay's fallback) stay well under the relay's 30 a minute */
+const CHECK_GAP_MS = 60_000;
 const CHECK_KEY = "ovis-pc-check-at";
 
 function localStorageGet(key: string): string | null {
@@ -232,12 +233,23 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * and not again within CHECK_GAP_MS of the last, a reload included.
    */
   let lastCheck = -Infinity;
+  let sweep = 0;
+  let deferred: ReturnType<typeof setTimeout> | undefined;
   const checkPcs = async (): Promise<void> => {
     const stored = Number(localStorageGet(CHECK_KEY) ?? "");
-    if (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity) < CHECK_GAP_MS) return;
+    const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity));
+    // too soon after the last sweep (a reload, or Check now again): this one runs once the gap is over
+    if (wait > 0) {
+      deferred ??= setTimeout(() => { deferred = undefined; if (shown?.kind === "list") void checkPcs(); }, wait);
+      return;
+    }
     lastCheck = Date.now();
     localStorageSet(CHECK_KEY, String(lastCheck));
-    const saved = (await store.list()).filter((device) => device.device_id !== null).slice(0, CHECK_PCS);
+    // past CHECK_PCS, each sweep starts where the last one stopped, so every saved PC gets its turn
+    const paired = (await store.list()).filter((device) => device.device_id !== null);
+    const start = paired.length > CHECK_PCS ? sweep % paired.length : 0;
+    sweep += CHECK_PCS;
+    const saved = [...paired.slice(start), ...paired.slice(0, start)].slice(0, CHECK_PCS);
     for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
     const redraw = (): void => { if (shown?.kind === "list") show(shown); };
     redraw();

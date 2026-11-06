@@ -270,7 +270,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
         <p className="settings-hint">{t("No devices paired yet.")}</p>
       ) : (
         <>
-        {devices.some((d) => d.via_relay) && (
+        {devices.some((d) => d.via_relay) && !watching && !guest && (
           <div className="devices-check">
             <button type="button" className="btn" onClick={() => void checkNow()} disabled={checking}>{checking ? t("Checking…") : t("Check now")}</button>
           </div>
@@ -291,7 +291,8 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                     {d.connection
                       ? <ConnectionLine state={{ kind: "connected", route: d.connection.route, ...(d.connection.relay === undefined ? {} : { relay: d.connection.relay }), rttMs: d.connection.rtt_ms }} />
                       // a device with a relay key connects through an encrypted session, which the PC sees come and go; a browser's cookie does not
-                      : d.via_relay
+                      // a device that watches, or a Portal visitor, is not told how the others are connected: for them no row says offline
+                      : d.via_relay && !watching && !guest
                         ? <ConnectionLine state={{ kind: "offline", text: t("Offline · last seen {when}", { when: lastSeen(d.last_seen_at) }) }} reason={t("The app is closed, or its network is off.")} />
                         : <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>}
                   </div>
