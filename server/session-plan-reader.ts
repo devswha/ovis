@@ -26,8 +26,9 @@ import { type ClaudeBranch, claudeForks, followClaudeBranch } from "./transcript
  * The same read follows how much of its context a Claude Code or Codex session's last request
  * filled, for the sidebar's ring: the lines that can say it are folded as the chat's metadata folds them.
  * A Claude rewind leaves the answers it went back over in the file: the branch is followed as the
- * chat follows it (followClaudeBranch), and once it forks, the figure is folded over the requests
- * still on it.
+ * chat follows it (followClaudeBranch), and once it forks, the figure and the model are folded over
+ * the records still on it. A line too long to read can be the prompt that forked it: no figure is
+ * told from then until the next request.
  */
 export const PLAN_BUDGET = 32 * 1024 * 1024;
 const LINE_BUDGET = 8 * 1024 * 1024;
@@ -56,8 +57,11 @@ interface Read {
   calls: Map<string, { name: string; input: Row }>;
   /** the model and the context the lines read so far report */
   metadata: ConversationMetadata;
-  /** Claude: the session's branch, and each request it made since the last /clear, where it starts */
-  claude?: { branch: ClaudeBranch; requests: { start: number; used: number; model: string | null }[] };
+  /**
+   * Claude: the session's branch; each record since the last /clear that made a request (`used`) or
+   * changed the model, where it starts; and whether a line was given up since the last request
+   */
+  claude?: { branch: ClaudeBranch; records: { start: number; model: string | null; used: number | null }[]; blind: boolean };
 }
 const reads = new Map<string, Read>();
 
@@ -76,7 +80,7 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   let state = reads.get(key);
   if (!state || state.id !== stat.id || state.offset > stat.size) {
     state = { id: stat.id, offset: 0, skipping: false, catching: true, behind: true, steps: new Map(), calls: new Map(), metadata: { model: null, reasoning_effort: null } };
-    if (source === "claude-transcript") state.claude = { branch: { last: null, ends: new Map(), answers: [], forks: [] }, requests: [] };
+    if (source === "claude-transcript") state.claude = { branch: { last: null, ends: new Map(), answers: [], forks: [] }, records: [], blind: false };
   }
   remember(reads, key, state, MAX_FILES);
   const read = state;
@@ -84,9 +88,9 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   const each = (line: string, end: number) => { readers[source](read, line); contextLine(read, source, line, end); };
   read.behind = read.offset < stat.size;
   while (read.offset < stat.size && budget.left > 0) {
-    // a line given up is not followed: what hangs from it forks nothing
-    if (read.skipping && read.claude) read.claude.branch.last = null;
     const done = readLines(path, read.offset, stat.size, LINE_BUDGET, each, read.skipping);
+    // a line given up is not followed: what hangs from it forks nothing, and it may have forked the branch itself
+    if (done.skipping && read.claude) { read.claude.branch.last = null; read.claude.blind = true; }
     // the file could not be read this time (gone, out of descriptors): not caught up, tried again at the next poll
     if (done.failed) { read.behind = true; break; }
     const consumed = done.offset - read.offset;
@@ -101,16 +105,29 @@ export function planState(source: PlanSource, path: string, budget: { left: numb
   return { steps: read.catching || read.steps.size === 0 ? null : [...read.steps.values()].map((step) => ({ ...step, blocked_by: [...step.blocked_by] })), behind: read.behind, metadata: read.catching ? null : onBranch(read) };
 }
 
-/** The metadata with the context of the requests on the session's branch, when a Claude rewind forked it. */
+/** The metadata with the model and context of the records on the session's branch, when a Claude rewind forked it. */
 function onBranch(read: Read): ConversationMetadata {
-  const forks = read.claude ? claudeForks(read.claude.branch) : [];
-  if (forks.length === 0) return read.metadata;
+  const claude = read.claude;
+  const forks = claude ? claudeForks(claude.branch) : [];
+  if (!claude || (forks.length === 0 && !claude.blind)) return read.metadata;
+  // the forks in order, those that overlap or adjoin made one, so the records (which ascend) pass them in one walk
+  const hidden: [number, number][] = [];
+  for (const [from, to] of [...forks].sort((a, b) => a[0] - b[0])) {
+    const last = hidden.at(-1);
+    if (last !== undefined && from <= last[1]) last[1] = Math.max(last[1], to);
+    else hidden.push([from, to]);
+  }
+  let model: string | null = null;
   let context: ConversationMetadata["context"];
-  for (const request of read.claude!.requests) {
-    if (!forks.some(([from, to]) => request.start >= from && request.start < to)) context = contextOf(request.used, request.model, null, context);
+  let at = 0;
+  for (const record of claude.records) {
+    while (at < hidden.length && hidden[at]![1] <= record.start) at++;
+    if (at < hidden.length && hidden[at]![0] <= record.start) continue;
+    model = record.model;
+    if (record.used !== null) context = contextOf(record.used, record.model, null, context);
   }
   const { context: _, ...metadata } = read.metadata;
-  return context === undefined ? metadata : { ...metadata, context };
+  return context === undefined || claude.blind ? { ...metadata, model } : { ...metadata, model, context };
 }
 
 /** The lines that can say what a request filled, or reset or change the model: only these are parsed for the context. */
@@ -122,18 +139,20 @@ const CONTEXT_MARKS: Record<PlanSource, readonly string[]> = {
 };
 
 function contextLine(read: Read, source: PlanSource, line: string, end: number): void {
+  const claude = read.claude;
   // only a record with a uuid is on a chain (followClaudeBranch)
-  const bytes = read.claude && line.includes('"uuid"') ? Buffer.from(line) : null;
-  const start = bytes === null ? -1 : end - bytes.length - 1;
-  if (read.claude && bytes !== null) followClaudeBranch(read.claude.branch, bytes, start, end, 0);
+  const bytes = claude && line.includes('"uuid"') ? Buffer.from(line) : null;
+  if (claude && bytes !== null) followClaudeBranch(claude.branch, bytes, end - bytes.length - 1, end, 0);
   if (source === "omo-session" || !CONTEXT_MARKS[source].some((mark) => line.includes(mark))) return;
-  const before = read.metadata.context;
+  const start = end - (bytes?.length ?? Buffer.byteLength(line)) - 1;
+  const before = read.metadata;
   read.metadata = parseConversationMetadata(line, source, read.metadata);
-  if (!read.claude) return;
-  // the fold says what the line was: a new figure is a request, a figure gone a /clear
-  const after = read.metadata.context;
-  if (after !== undefined && after !== before) read.claude.requests.push({ start, used: after.used, model: read.metadata.model });
-  else if (after === undefined && before !== undefined) read.claude.requests = [];
+  if (!claude) return;
+  // the fold says what the line was: a new figure is a request, a figure or a model gone a /clear
+  const { context, model } = read.metadata;
+  if ((context === undefined && before.context !== undefined) || (model === null && before.model !== null)) claude.records = [];
+  else if (context !== undefined && context !== before.context) { claude.records.push({ start, model, used: context.used }); claude.blind = false; }
+  else if (model !== before.model) claude.records.push({ start, model, used: null });
 }
 
 /** Forgets every read (tests). */

@@ -245,6 +245,42 @@ describe("SessionPlans", () => {
     expect(transcriptPage("claude-transcript", f.path).metadata.context).toEqual({ used: 12_000, window: null });
   });
 
+  it("asks for the window of the model on the branch a Claude rewind went back to", async () => {
+    // Given an Opus answer, then a Sonnet one, then a prompt sent again from the Opus answer.
+    const f = file();
+    f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
+    f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 10_000 } } });
+    f.add({ type: "user", uuid: "u2", parentUuid: "a1", message: { role: "user", content: "two" } });
+    f.add({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", model: "claude-sonnet-5-5", content: [], usage: { input_tokens: 30_000 } } });
+    f.add({ type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "two again" } });
+    const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: (_path, model) => model === "claude-opus-5-5" ? 200_000 : null });
+    await plans.refresh([pane("p1", "claude")]);
+    plans.poll();
+    // Then the window is the Opus one, as the chat names Opus.
+    expect(transcriptPage("claude-transcript", f.path).metadata.model).toBe("claude-opus-5-5");
+    expect(plans.contextOf("p1")).toEqual({ used: 10_000, window: 200_000 });
+  });
+
+  it("tells no Claude figure after a line too long to read, until the next request", async () => {
+    // Given an answered prompt, then a prompt sent again from before it, too long for the reader (a picture).
+    const f = file();
+    f.add({ type: "user", uuid: "u1", parentUuid: null, message: { role: "user", content: "one" } });
+    f.add({ type: "assistant", uuid: "a1", parentUuid: "u1", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 30_000 } } });
+    const plans = new SessionPlans({ claudePath: () => f.path, codexPath: async () => null, onChange: () => {}, claudeWindow: () => 200_000 });
+    await plans.refresh([pane("p1", "claude")]);
+    plans.poll();
+    expect(plans.contextOf("p1")).toEqual({ used: 30_000, window: 200_000 });
+    f.add({ type: "user", uuid: "u2", parentUuid: null, message: { role: "user", content: [{ type: "text", text: "again" }, { type: "image", source: { type: "base64", media_type: "image/png", data: `iVBORw0KGgo${"A".repeat(9 * 1024 * 1024)}` } }] } });
+    plans.poll();
+    // Then the figure goes, as the chat drops the answer the prompt forked away from.
+    expect(transcriptPage("claude-transcript", f.path).metadata.context).toBeUndefined();
+    expect(plans.contextOf("p1")).toBeNull();
+    // When the next request is answered, it is told.
+    f.add({ type: "assistant", uuid: "a2", parentUuid: "u2", message: { role: "assistant", model: "claude-opus-5-5", content: [], usage: { input_tokens: 12_000 } } });
+    plans.poll();
+    expect(plans.contextOf("p1")).toEqual({ used: 12_000, window: 200_000 });
+  });
+
   it("reads a Codex pane's context with the window Codex states", async () => {
     const f = file("rollout.jsonl");
     f.add({ timestamp: at(1), type: "event_msg", payload: { type: "token_count", info: { model_context_window: 258_400, last_token_usage: { total_tokens: 64_600 } } } });
