@@ -74,9 +74,11 @@ export interface TabStripProps {
   /** the header's title button while it has the tab list open; `onSheetClose` closes it */
   sheet?: HTMLElement | null;
   onSheetClose?: () => void;
+  /** the header's row (App, from 769px): browser tabs, each with its icon (a shell's glyph when no agent) and a close */
+  browserTabs?: boolean;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose }: TabStripProps) {
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
@@ -535,12 +537,16 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                 >
                   {busyStatus(status) && statusMark(status)}
                   {/* named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
-                  {agent && <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>}
+                  {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
+                    : browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
                 </button>
               )}
               {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup="menu" aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
                 <Ellipsis aria-hidden="true" />
+              </button>}
+              {browserTabs && editing?.tabId !== tab.tab_id && !tabLocked(tab) && <button type="button" className="tab-strip-close" tabIndex={-1} aria-label={t("Close {tab}", { tab: name })} title={t("Close {tab}", { tab: name })} onClick={() => requestClose(tab)}>
+                <X aria-hidden="true" />
               </button>}
             </div>
           );

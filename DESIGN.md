@@ -852,13 +852,40 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `.terminal-host`. While a phone's soft keyboard is up (`data-keyboard`), `--app-height` follows
   `visualViewport` so the keyboard does not cover input; otherwise the shell is `100dvh`, because an
   iPhone home screen app reports a visual viewport shorter than the screen without a keyboard.
-- The header is one line at every width. Anatomy, left to right: mobile drawer toggle / desktop
-  sidebar toggle and the command palette (`.header-side`); the flexible context, agent mark and
-  title then the PC › workspace › folder crumb; segmented Chat/Terminal switch; from `769px` a
-  hairline and the Files button (`.header-files-button`); the connection
-  chip while the bridge is not live (herdr version in its tooltip), the offline pill, sign out and
-  the More menu (`⋯`). Theme lives in Settings and the palette; the herdr version is also read
-  in Settings.
+- The header is one line at every width. Below `769px`, left to right: the drawer toggle; the
+  flexible context, agent mark and title (it opens the workspace's tabs on a phone) then the
+  PC › workspace › folder crumb; the Chat/Terminal switch; the connection chip while the bridge is
+  not live, the offline pill and the More menu (`⋯`). From `769px` with one pane in view the row is
+  a browser's tab strip (Chrome's, sized after the Herdr app's tab bar, THIRD_PARTY_NOTICES.md):
+  the sidebar's head (`.header-side`: the Ovis wordmark, `/brand/logo-light.png` or
+  `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
+  app orders them), then the workspace's tabs (`.header-tabs`), `+` right after the last tab,
+  flexible space, and at the far end the Chat/Terminal switch, Files (`.header-files-button`, its
+  glyph alone) and More as compact pills. The row is tinted with the accent (16% of `--accent`
+  into `--bg-panel` in a light theme, 5% in a dark one, so it stays near the pane's colour); each
+  tab is its agent's mark (a shell's glyph when it has none) and its name, a working agent's ring
+  turning round the mark, tabs at rest parted by short `--divider` rules and sharing the width
+  evenly (220px each at most, 44px at least); the open tab takes the pane's surface (`--bg` under
+  the chat lens, `--term-bg` otherwise) with rounded top corners and no line under it, so it runs
+  on into the pane; its close (×) shows on the open tab and a hovered one. A split view keeps a
+  strip per half and the title in the header. The Herdr app's Changes button is not carried over:
+  Files holds the changes as one of its tabs.
+- The Chat/Terminal switch (`.view-switch`) shows both lenses as Apple's segmented control: a
+  track with the open lens on a raised thumb that slides to it in 180ms (`--ease-out`; no motion
+  under reduced motion), each lens `aria-pressed`. The chat's label is in the rounded face beside
+  its bubble, the terminal's in `--font-mono` beside its prompt glyph, so the two read as
+  different places. A phone draws the two glyphs alone in a bordered control, each a
+  `--touch-target-header` wide. Mod+Shift+J switches too.
+- From `769px` the pane column ends in a 28px status bar (`.status-bar`, after the Herdr app's
+  workspace status line) on `--bg-panel` under a `--divider` rule: the PC › workspace (› folder)
+  and the branch at its start, the session's worked time; at its end View only on a watching
+  device, a tinted "N waiting for you" button that opens the next session waiting, and the
+  connection (Connected, or the word while it is not live). The header draws no session counts
+  and no connection route; More's first item still jumps to the next waiting session, with a
+  waiting dot on its button on a phone, whose More header keeps the place, path and route.
+  `--divider` (each theme's `--border-strong`) draws the lines between the shell's regions: the
+  sidebar's seam, the status bar's rule, the tabs' rules; `--border` stays for lines inside a
+  region.
 - From `769px` the header is two zones. Over the sidebar, `.header-side` is the sidebar's own top
   row (toggle at its start, palette at its end) on `--bg-panel`, as wide as `--sidebar-w`, and the
   sidebar's seam runs to the top of the window. Over the pane, the header takes the pane's
