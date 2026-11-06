@@ -30,22 +30,22 @@ describe("usage meters", () => {
 
   it("looks up a pi-family pane's plan by the provider its conversation runs at", () => {
     const accounts = [provider("claude", [window(40)], "c@x"), provider("codex", [window(20)], "a@x"), provider("codex", [window(80)], "b@x")];
-    for (const agent of ["gjc", "omp", "pi"]) {
-      expect(planForPane(agent, "anthropic")).toBe("claude");
+    for (const agent of ["gjc", "omp", "omo", "pi"]) {
+      expect(planForPane(agent, "anthropic-subscription")).toBe("claude");
       expect(planForPane(agent, "openai-codex")).toBe("codex");
-      expect(composerUsage(accounts, agent, [], [], "anthropic")?.account).toBe("c@x");
+      expect(composerUsage(accounts, agent, [], [], "anthropic-subscription")?.account).toBe("c@x");
       // the user's order and hidden accounts still choose among that plan's accounts
       expect(composerUsage(accounts, agent, ["codex:b@x"], [], "openai-codex")?.account).toBe("b@x");
       expect(composerUsage(accounts, agent, ["codex:b@x"], ["codex:b@x"], "openai-codex")?.account).toBe("a@x");
-      // an API key or any other provider is no plan, and nothing is guessed without one
-      for (const other of ["openai", "zai", "anthropic-subscription", null, undefined]) {
+      // a plain `anthropic` may be an API key, as `openai` is: no plan, and none is guessed without one
+      for (const other of ["anthropic", "openai", "zai", "__proto__", null, undefined]) {
         expect(planForPane(agent, other)).toBeNull();
         expect(composerUsage(accounts, agent, [], [], other)).toBeUndefined();
       }
     }
     // an agent that maps to a plan keeps its own
-    expect(planForPane("codex", "anthropic")).toBe("codex");
-    expect(planForPane(null, "anthropic")).toBe("claude");
+    expect(planForPane("codex", "anthropic-subscription")).toBe("codex");
+    expect(planForPane(null, "anthropic-subscription")).toBe("claude");
   });
 
   it("prioritizes the plan-wide five-hour session, with weekly fallback only", () => {

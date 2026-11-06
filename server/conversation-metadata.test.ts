@@ -78,7 +78,9 @@ describe("recorded conversation model settings", () => {
       expect(provider({ type: "model_change", model: "openai-codex/gpt-5.6-sol" })).toBe("openai-codex");
       // each answer names its own provider; one that names none leaves it as it was
       expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, answer("openai-codex"))).toBe("openai-codex");
-      expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, answer())).toBe("anthropic");
+      // an answer at a model that names no provider says nothing of the plan it ran on
+      expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, answer())).toBeUndefined();
+      expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, { type: "message", message: { role: "assistant" } })).toBe("anthropic");
       // a model change that names no provider, and a context reset, leave none
       expect(provider(answer("anthropic"), { type: "model_change", modelId: "local-model" })).toBeUndefined();
       expect(provider(answer("anthropic"), clear)).toBeUndefined();

@@ -182,6 +182,8 @@ export function parseConversationMetadata(text: string, source: ConversationResp
         metadata.model = label(message.model);
         if (source === "cmd-transcript") piProvider = "commandcode";
         else if (label(message.provider)) piProvider = metadata.provider = label(message.provider)!;
+        // a model this answer names without its provider: the plan it ran on is not known
+        else delete metadata.provider;
       }
       if (entry.type === "message" && message.role === "assistant") {
         const usage = record(message.usage);

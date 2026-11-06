@@ -905,15 +905,16 @@ try {
         assert.equal(await page.locator(".composer-context").evaluate((node) => node.tagName === "SPAN" && !node.hasAttribute("aria-expanded")), true);
       });
       // a pi pane draws on the plan of the provider its conversation runs at, and on none without one
-      for (const [provider, text, account] of [["openai-codex", "5h 22%", /sam@work\.example/], ["anthropic", "5h 38%", /Claude · sam@example\.com/]] as const) {
-        await withCard(browser, 1440, { agent: "pi", model: "gpt-5.6", provider, showUsage: true }, async (page) => {
+      for (const [agent, provider, text, account] of [["pi", "openai-codex", "5h 22%", /sam@work\.example/], ["omo", "anthropic-subscription", "5h 38%", /Claude · sam@example\.com/]] as const) {
+        await withCard(browser, 1440, { agent, model: "gpt-5.6", provider, showUsage: true }, async (page) => {
           const usage = page.locator(".composer-status .composer-usage");
           await usage.waitFor();
           assert.equal(await usage.locator('span[aria-hidden="true"]').textContent(), text);
           assert.match(await usage.getAttribute("title") ?? "", account);
         });
       }
-      for (const provider of [undefined, "zai"]) await withCard(browser, 1440, { agent: "pi", model: "gpt-5.6", ...(provider ? { provider } : {}), showUsage: true }, async (page) => {
+      // a plain `anthropic` is recorded the same for a Claude sign-in and an API key
+      for (const provider of [undefined, "zai", "anthropic"]) await withCard(browser, 1440, { agent: "pi", model: "gpt-5.6", ...(provider ? { provider } : {}), showUsage: true }, async (page) => {
         await page.locator(".composer-status").waitFor();
         assert.equal(await page.locator(".composer-status .composer-usage").count(), 0, "no plan without a provider that names one");
       });
