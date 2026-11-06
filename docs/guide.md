@@ -504,11 +504,11 @@ While the relay is on, this PC also takes connections straight from the iPhone a
 2. **Tailscale**: the PC's Tailscale address, when the phone has Tailscale on.
 3. **The relay**, which always works.
 
-It does not wait for one to fail before trying the next: it tries the direct addresses first, opens the relay too when none of them answers within 300 ms, and keeps whichever connects first. So a phone at home connects straight, and a phone away from home is not held up by an address that leads nowhere. While the relay carries it, the app checks the direct addresses again now and then (after it connects, at most every five minutes, when the phone is back online and when the app comes back to the front) and moves back to one once nothing is under way. The PC tells the app these addresses inside the encrypted connection, so they follow the PC to another network. A browser, including the home-screen app from `app.ovis.sh`, always uses the relay.
+It does not wait for one to fail before trying the next: it tries the direct addresses at once, opens the relay too when none of them is up within 300 ms, and keeps whichever connects first. So a phone at home connects straight, and a phone away from home is not held up by an address that leads nowhere. While the relay carries it, the app checks the direct addresses again now and then (after it connects, at most every five minutes, when the phone is back online and when the app comes back to the front) and moves back to one once nothing is under way. The PC tells the app these addresses inside the encrypted connection, so they follow the PC to another network. A browser, including the home-screen app from `app.ovis.sh`, always uses the relay.
 
 Nothing new is trusted. Only a device already paired through the relay can sign in on those addresses, with the same key and the same end-to-end encryption, and nothing pairs there. **Settings → Devices and PCs → My devices** shows **Same Wi-Fi direct connection on** (and says when it is on Tailscale too), with one switch that turns both off. On an iPhone the app asks for Local Network access once; declining it keeps the app on the relay. On Windows the PC shows Windows' firewall prompt the first time; declining it leaves the relay as the only way in. [Direct on the same network](relay.md#direct-on-the-same-network) has the details.
 
-**How each device is connected.** **Settings → Devices and PCs → My devices** says how each device paired through the relay reaches this PC right now: **Same Wi-Fi, direct**, **Tailscale, direct**, **Seoul relay** or **Through the relay**, with its round trip in milliseconds, or **Offline** with when it was last seen and a short reason. **Check now** measures them all again. On the phone, **Your PCs** shows the same line for each saved PC (the way it answers on and how fast, or why it is offline), with **Check now** above the list, and the header of the app always says how this device reaches Ovis.
+**How each device is connected.** **Settings → Devices and PCs → My devices** says how a device paired through the relay reaches this PC right now while it is connected: **Same Wi-Fi, direct**, **Tailscale, direct**, **Seoul relay** or **Through the relay**, with its round trip in milliseconds once one was measured. A device that is not connected shows when it was last seen (with a short reason once it has been gone a while). **Check now** measures them all again. On the phone, **Your PCs** shows the same line for each saved PC (the way it answers on and how fast, or why it is offline), with **Check now** above the list, and the header of the app always says how this device reaches Ovis.
 
 #### Running your own relay
 
@@ -535,13 +535,13 @@ Signing in links your devices once instead of pairing each phone with each PC. I
 2. A phone already paired by QR code needs nothing more: the next time it opens each PC, it moves that pairing into the account by itself. Until then the PC's row says **Ready · not in the account yet**, since removing the phone through the account would not reach it.
 3. A PC marked **Needs approval** has not let this device in yet. Tap it: this device and the PC show the same six digits, as with a link without a code. The first device of an account is approved on the PC itself. After that, any device already in the account can approve: it asks whether to add the new device and shows three numbers, and you pick the one the new device shows. One approval adds the device to every PC of the account: the approving device signs a record that adds it to each PC, and a PC that was off picks that record up when it comes back.
 
-**Signing in a PC.** The desktop app signs in through your browser. A PC's own page (a browser at the PC's address) and a PC with no screen (`link`, see [A PC with no screen](relay.md#a-pc-with-no-screen)) show one code instead, with a QR code that fills it in: open `account.ovis.sh/link` on any device, check the code, choose **Continue with GitHub** or **Continue with Google**, sign in and confirm. The page says which PC asked, its system and roughly where from ("Asked by Desk (Linux), near Seoul, South Korea"): continue only if you started it on your own PC just now. Signing in adds nothing by itself; the PC joins the account only once a device already in it approves.
+**Signing in a PC.** The desktop app signs in through your browser. A PC's own page (a browser at the PC's address) and a PC with no screen (`link`, see [A PC with no screen](relay.md#a-pc-with-no-screen)) show one code instead, with a QR code that fills it in: open `account.ovis.sh/link` on any device, check the code, choose **Continue with GitHub** or **Continue with Google**, sign in and confirm. The page says which PC asked, its system and roughly where from ("Asked by Desk (Linux), near Seoul, South Korea"): continue only if you started it on your own PC just now. Signing in only lists the PC in your account: on a device already in the account, tap the PC's card, type the six digits the PC shows, and approve on the PC (`link` asks y/N in its terminal).
 
 **Approving a device.** The approval card on your other devices says what is asking: the system it runs and roughly where its request came from (country and city, as Cloudflare saw it, never the address), or **Location unknown**. Approve only if you started it yourself just now; if you didn't, deny it.
 
 **Ways to sign in.** **Settings → Devices and PCs → Account** lists your account's sign-in methods. In the desktop app, **Add Google** (or **Add GitHub**) adds one on purpose, and **Remove** takes one away, except the one this device signed in with. An account is never joined to another because their email addresses match.
 
-Who gets into a PC is still decided by that PC alone, in **Settings → Phone & devices**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email, name or username. [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
+Who gets into a PC is still decided by that PC alone, in **Settings → Devices and PCs**, where **Revoke** always works. The account service at `account.ovis.sh` lists your PCs and carries signed messages between your devices; it can't read your sessions or add a device by itself ([how it works](account.md)). It keeps no email, name or username. [The privacy policy](https://ovis.sh/privacy/) says what it stores and for how long.
 
 ### Through Tailscale
 
@@ -637,7 +637,7 @@ A workspace row's **⋯** menu offers **New worktree** and **Open worktree…**,
 
 Open Settings → Remote PCs and choose **Add PC** (the command palette has it too), then enter an SSH alias or `user@host` for a Linux or macOS computer. The setup dialog walks you through the host fingerprint, the password or key passphrase, and an explicit install approval. The PC's workspaces then join the sidebar, and chat, files, terminal input and alerts all follow the PC you pick.
 
-A PC that runs Ovis itself needs no SSH: add it through the relay from **Settings → Devices and PCs → Connect a device**, by typing the code that PC shows ([Through the relay](remote-pcs.md#through-the-relay)). When both PCs are on your own Tailscale login, **PCs on your Tailscale** in the same dialog lists the ones whose Ovis already lets this PC in, and **Add PC** adds one in one tap: this PC asks that PC for its code over Tailscale and checks that the relay found the same PC. Such a PC is then reached the same way a phone reaches it: on the same network, then over Tailscale, then through the relay.
+A PC that runs Ovis itself needs no SSH: add it through the relay from **Settings → Devices and PCs → Connect a device**, by typing the code that PC shows ([Through the relay](remote-pcs.md#through-the-relay)). When both PCs are on your own Tailscale login, **PCs on your Tailscale** in the same dialog lists the ones whose Ovis already lets this PC in, and **Add PC** adds one in one tap: this PC asks that PC for its code over Tailscale and checks that the relay found the same PC. Such a PC is then reached on its own network or its Tailscale address when this PC can get there, and through the relay otherwise.
 
 - **SSH runs on the server**, as the web server's account, with its OpenSSH configuration and agent. The browser never opens SSH itself.
 - **The remote side gets a private runtime bundle** and a loopback-only bridge, reached through an SSH forward.
@@ -922,14 +922,15 @@ sets it: the automatic choice stays on herdr there, and Settings offers no switc
 
 **Moving everything to herdr-core.** On a Linux or macOS PC where Ovis serves herdr's TUI through
 its own launcher and no Herdr app is installed, **Settings → About → Terminals** offers **Move
-everything to herdr-core**. It shows its plan first, then moves the whole session or nothing:
+everything to herdr-core**. It shows its plan first, then moves the whole session together:
 every workspace, tab, split and pane name is rebuilt on herdr-core, agents reopen on their own
 conversation (or start new in the same folder when it cannot be told), and shells start again in
-the same folder. Ovis ends an idle Claude Code itself; other agents wait for you to end them, so
+the same folder (your home folder when that folder is gone). Ovis ends an idle Claude Code itself; other agents wait for you to end them, so
 nothing typed in their input line is sent. Nothing moves while an agent works or a shell runs a
 command: the move waits for them and goes by itself once they are done. Scrollback and programs
-running in a shell do not move. If a step fails, Ovis puts back in herdr what it can and lists what
-it could not; herdr itself is never closed or changed. On such a PC without herdr-core, the row
+running in a shell do not move. If a step fails before the switch, Ovis ends what it built on
+herdr-core, restarts in herdr the agents it ended, and lists any it could not; herdr itself is
+never closed. On such a PC without herdr-core, the row
 reads **Install herdr-core and move everything**: it installs herdr-core 0.1.17 into
 `~/.local/bin` (checked against a pinned checksum, no sudo, herdr untouched), then shows the same
 plan. [Moving herdr's session to herdr-core](runtime-move.md) has the details.

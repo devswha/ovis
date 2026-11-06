@@ -779,9 +779,9 @@ own adapter (`tailscale0`, Windows' `Tailscale`), or on a macOS `utun` only when
 `tailscale status` names (with one named, only that one); never one on a real adapter (an ISP's
 shared address space) or another VPN's tunnel. It keeps one of the four
 places. A phone that can reach one of them opens
-it there instead of through `relay.ovis.sh`. The order is the same for a phone and for a PC added
-through the relay: the same network, then Tailscale, then the relay, with the relay opened beside the
-direct tries when they are slow (below). The iOS and Android apps open it through their OvisDirect
+it there instead of through `relay.ovis.sh`. A phone's app tries its direct carriers at once and opens
+the relay beside them when none is up within 300 ms; a PC added through the relay tries the same
+network, then Tailscale, within 1.5 s, then the relay (below). The iOS and Android apps open it through their OvisDirect
 plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser stays on the relay.
 
 - **Same channel, same trust.** The listener speaks to a phone what the relay does (`/v1/ws`, an
