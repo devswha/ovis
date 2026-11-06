@@ -156,4 +156,27 @@ describe("NewSessionDialog", () => {
       fetch.mockRestore();
     }
   });
+
+  it("carries a level the reader picked to the next agent, even one equal to the last agent's setting, and never the setting itself", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }, { kind: "codex", label: "Codex" }] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
+    localStorage.setItem("ovis:settings", JSON.stringify({ claudeLaunchEffort: "high" }));
+    const view = createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", prefill: { cwd: null, name: null, agent: "claude" }, onClose: () => undefined, onCreated: () => undefined }) });
+    try {
+      await act(async () => { renderer = create(view); });
+      const effort = () => renderer!.root.findByProps({ id: "new-session-effort" });
+      const pick = async (kind: string) => { await act(async () => { renderer!.root.findByProps({ labelledBy: "new-session-agent" }).props.onChange(kind); }); };
+      // Claude Code's setting is not Codex's
+      await pick("codex");
+      expect(effort().props.value).toBe("");
+      await pick("claude");
+      expect(effort().props.value).toBe("high");
+      // picked by the reader, though it is the level Claude Code's setting names: it goes with them
+      await act(async () => { effort().props.onChange({ target: { value: "max" } }); });
+      await act(async () => { effort().props.onChange({ target: { value: "high" } }); });
+      await pick("codex");
+      expect(effort().props.value).toBe("high");
+    } finally {
+      fetch.mockRestore();
+    }
+  });
 });

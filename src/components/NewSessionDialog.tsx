@@ -108,6 +108,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [name, setName] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  // the effort shown came from Settings > Agents, not from the reader: it never goes on to another agent
+  const effortPreset = useRef(false);
   const [ultracode, setUltracode] = useState(false);
   const [prompt, setPrompt] = useState("");
   // Settings -> Named agent groups: the group the new pane goes in ("": none), the folder's last one until one is picked
@@ -184,6 +186,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const preset = launchDefaults(stored, settings);
     setModel(preset.model);
     setEffort(preset.effort);
+    effortPreset.current = preset.effort !== "";
     let cancelled = false;
     const latest = agentReads.current();
     void fetchAgentKinds()
@@ -198,7 +201,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
           const can = launchCapabilities(kind);
           const fallback = launchDefaults(kind, settings);
           setModel(fallback.model);
-          setEffort((current) => fallback.effort !== "" ? fallback.effort : current === preset.effort ? "" : can.efforts.includes(current) ? current : "");
+          const wasPreset = effortPreset.current;
+          effortPreset.current = fallback.effort !== "";
+          setEffort((current) => fallback.effort !== "" ? fallback.effort : wasPreset ? "" : can.efforts.includes(current) ? current : "");
           if (!can.ultracode) setUltracode(false);
         }
       })
@@ -279,11 +284,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     if (kind !== agentKind) {
       // the next agent's model and effort from Settings > Agents; with no effort set there, a level the reader
       // picked stays where the agent names it, and the one set for the last agent does not
-      const before = launchDefaults(agentKind, settings);
       const after = launchDefaults(kind, settings);
       setModel(after.model);
       if (after.effort !== "") nextEffort = after.effort;
-      else if (effort === before.effort) nextEffort = "";
+      else if (effortPreset.current) nextEffort = "";
+      effortPreset.current = after.effort !== "";
     } else if (!next.model) setModel("");
     setEffort(nextEffort);
     if (!next.ultracode) setUltracode(false);
@@ -503,7 +508,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             </div>}
             {can.efforts.length > 0 && <div className="field">
               <label className="field-label" htmlFor="new-session-effort">{t("Effort")}</label>
-              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => setEffort(event.target.value)}>
+              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => { effortPreset.current = false; setEffort(event.target.value); }}>
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>

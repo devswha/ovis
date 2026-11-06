@@ -74,9 +74,9 @@ function LaunchDefaultRows({ agent, model, effort, efforts, onModel, onEffort }:
   const effortId = `settings-${agent}-launch-effort`;
   return <>
     <SettingsRow label={t("Model")} htmlFor={modelId} wide
-      description={invalid ? <span className="settings-condition" role="alert">{t("One model name, without spaces.")}</span> : t("Filled in when New workspace, New tab or New worktree starts it, and still changeable there. Empty: the agent's own model.")}>
+      description={invalid ? <span id={`${modelId}-error`} className="settings-condition" role="alert">{t("One model name, without spaces.")}</span> : t("New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.")}>
       <input id={modelId} className="input settings-font-input" value={draft} placeholder={t("Agent default")}
-        list={suggestions.length > 0 ? `${modelId}-list` : undefined} aria-invalid={invalid || undefined}
+        list={suggestions.length > 0 ? `${modelId}-list` : undefined} aria-invalid={invalid || undefined} aria-describedby={invalid ? `${modelId}-error` : undefined}
         spellCheck={false} autoCapitalize="off" autoCorrect="off" autoComplete="off"
         onChange={(event) => {
           const next = event.target.value;
