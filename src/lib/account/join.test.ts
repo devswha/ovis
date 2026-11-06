@@ -618,6 +618,17 @@ describe("approving a device that asks to join the account", () => {
     return { fake, service, mac, X };
   }
 
+  it("reads who is asking from the account service: the system the device sent and the place it rang from", async () => {
+    const { fake, service, X } = await setUp();
+    fake.requestPlace = { country: "KR", city: "Seoul" };
+    const phone = await accountKey();
+    await service.postAdmission(X, "iPhone", phone.public_spki, "ios");
+    expect((await service.recentAdmissions()).map(({ label, os, country, city }) => ({ label, os, country, city }))).toEqual([
+      { label: "Mac app", os: null, country: null, city: null },
+      { label: "iPhone", os: "ios", country: "KR", city: "Seoul" },
+    ]);
+  });
+
   it("refuses when the PC shows a key the account service never saw join at that PC", async () => {
     const { fake, service, X } = await setUp();
     const swapped = await accountKey();

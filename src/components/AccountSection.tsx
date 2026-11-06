@@ -19,6 +19,7 @@ import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
+import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
@@ -182,7 +183,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     deviceSignIn.current = controller;
     setView({ kind: "device-code", provider, userCode: null, verificationUri: "", verificationUriComplete: null });
     return (async () => {
-      const started = await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider });
+      const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
+      const started = await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
       controller.signal.throwIfAborted();
       setView({ kind: "device-code", provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
       return started.finish(controller.signal);

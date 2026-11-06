@@ -287,6 +287,14 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
     return { fake, store, options: { service: SERVICE, store, fetch: fake.fetch, wait, now: () => now, lock: memoryLock(), provider: "ovis" as const } };
   }
 
+  it("tells the link page which PC is asking, and a provider's own device page nothing it would refuse", async () => {
+    const { fake, options } = setup();
+    const started = await startDeviceSignIn({ ...options, requester: { label: "Desk", os: "linux" } });
+    expect(fake.linkRequester(started.userCode)).toEqual({ label: "Desk", os: "linux" });
+    // GitHub's device start takes only the challenge: a name sent there would be refused
+    expect((await startDeviceSignIn({ ...options, provider: "github", requester: { label: "Desk", os: "linux" } })).userCode).not.toBe("");
+  });
+
   it("shows the Ovis code with the service's own link page, and keeps the session the page approved", async () => {
     const { fake, store, options } = setup();
     const started = await startDeviceSignIn(options);

@@ -6,6 +6,7 @@
  */
 import { useEffect, useState } from "react";
 
+import type { AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
 import { admitToAccount, approveJoin, UnverifiedJoinError } from "../lib/account/join.ts";
 import { useT } from "../lib/i18n.ts";
@@ -22,6 +23,24 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
   const request = pairings[0];
   const serverId = serverIdOfPath(window.location.pathname);
   const [where, setWhere] = useState<{ pcName: string; pcCount: number }>({ pcName: "", pcCount: 1 });
+  const [asker, setAsker] = useState<{ id: string; asker: AccountAsker } | null>(null);
+
+  // who is asking, as the account service saw the device ring at this PC (never as the PC says)
+  const joiningId = request?.intent === "account" ? request.id : null;
+  const joiningKey = request?.key;
+  useEffect(() => {
+    if (joiningId === null || joiningKey === undefined || serverId === null || accountServiceOf(document) === null) return;
+    let live = true;
+    void (async () => {
+      const service = new AccountService({ store: indexedAccountStore });
+      if (await service.session() === undefined) return;
+      try {
+        const rang = (await service.recentAdmissions()).filter((admission) => admission.server_id === serverId && admission.key === joiningKey).at(-1);
+        if (live && rang !== undefined) setAsker({ id: joiningId, asker: { os: rang.os, country: rang.country, city: rang.city } });
+      } catch (error) { console.warn("Ovis: who is asking could not be read", error instanceof Error ? error.name : error); }
+    })();
+    return () => { live = false; };
+  }, [joiningId, joiningKey, serverId]);
 
   useEffect(() => {
     if (serverId === null) return;
@@ -65,5 +84,5 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     }
   };
 
-  return <AccountApprovalPrompt key={request.id} request={request} pcName={where.pcName} pcCount={where.pcCount} onDecide={decide} />;
+  return <AccountApprovalPrompt key={request.id} request={request} pcName={where.pcName} pcCount={where.pcCount} asker={asker?.id === request.id ? asker.asker : null} onDecide={decide} />;
 }
