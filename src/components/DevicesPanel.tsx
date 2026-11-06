@@ -8,6 +8,7 @@ import { methodName } from "../lib/portalAuth.ts";
 import { DEVICES_CHANGED_EVENT, PAIRING_CODE_EVENT } from "../lib/useRelay.ts";
 import type { HealthAuth, PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { ConnectionLine } from "./ConnectionLine.tsx";
 import { SettingsRow } from "./SettingsControls.tsx";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
@@ -21,6 +22,8 @@ import { getTransport } from "../lib/transport.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 
 const POLL_MS = 3000;
+/** how often the open list is read again, for the round trips the PC measured since */
+const REFRESH_MS = 30_000;
 
 export interface DevicesPanelProps {
   /** a device appeared while a code was out: the code did its work, and the dialog showing it can go */
@@ -82,12 +85,12 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
   const reads = useRef({ started: 0, landed: 0 });
 
   /** `quiet`: a read the page did not ask for, which leaves the warning on screen and, should it fail, the list as it was */
-  const load = useCallback(async ({ quiet = false } = {}) => {
+  const load = useCallback(async ({ quiet = false, check = false } = {}) => {
     const started = generation.current;
     const read = ++reads.current.started;
     const stale = () => started !== generation.current || read < reads.current.landed;
     try {
-      const list = await fetchDevices();
+      const list = await fetchDevices(check);
       if (stale()) return;
       reads.current.landed = read;
       setDevices(list);
@@ -108,6 +111,15 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     }
   }, [t, onDevicePaired]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const timer = setInterval(() => void load({ quiet: true }), REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load]);
+  const [checking, setChecking] = useState(false);
+  const checkNow = async (): Promise<void> => {
+    setChecking(true);
+    try { await load({ check: true }); } finally { setChecking(false); }
+  };
 
   // this client's pairing joined the account behind the app (relay/shell.tsx): the list read before that lists it as no member yet
   useEffect(() => {
@@ -257,6 +269,12 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
       {devices === null ? <p className="settings-hint" role="status">{t("Loading…")}</p> : devices.length === 0 ? (
         <p className="settings-hint">{t("No devices paired yet.")}</p>
       ) : (
+        <>
+        {devices.some((d) => d.via_relay) && (
+          <div className="devices-check">
+            <button type="button" className="btn" onClick={() => void checkNow()} disabled={checking}>{checking ? t("Checking…") : t("Check now")}</button>
+          </div>
+        )}
         <ul className="devices-list">
           {devices.map((d) => (
             <li key={d.id} className="devices-row">
@@ -269,8 +287,13 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
               ) : (
                 <>
                   <div className="devices-name">
-                    <span className="settings-label">{d.label}{kindOf?.(d.label) != null && <span className="devices-kind">{kindOf(d.label)}</span>}{d.current && <span className="devices-current">{t("this device")}</span>}{d.via_relay && <span className="devices-via-relay">{t("via relay")}</span>}</span>
-                    <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>
+                    <span className="settings-label">{d.label}{kindOf?.(d.label) != null && <span className="devices-kind">{kindOf(d.label)}</span>}{d.current && <span className="devices-current">{t("this device")}</span>}</span>
+                    {d.connection
+                      ? <ConnectionLine state={{ kind: "connected", route: d.connection.route, ...(d.connection.relay === undefined ? {} : { relay: d.connection.relay }), rttMs: d.connection.rtt_ms }} />
+                      // a device with a relay key connects through an encrypted session, which the PC sees come and go; a browser's cookie does not
+                      : d.via_relay
+                        ? <ConnectionLine state={{ kind: "offline", text: t("Offline · last seen {when}", { when: lastSeen(d.last_seen_at) }) }} reason={t("The app is closed, or its network is off.")} />
+                        : <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>}
                   </div>
                   {d.current && currentAction}
                   {!guest && (
@@ -292,6 +315,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
             </li>
           ))}
         </ul>
+        </>
       )}
       {justPaired !== null && <p className="settings-hint" role="status">{t("Paired: {name}.", { name: justPaired })}</p>}
       {revokedAll && <p className="settings-hint" role="status">{t("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before.")}</p>}

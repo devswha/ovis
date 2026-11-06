@@ -42,6 +42,8 @@ import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offe
 import type { AccountView, PcUpdate, RelayShellState } from "./shellState.ts";
 import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
+import { checkPc } from "./pcStatus.ts";
+import type { PcStatus } from "./pcStatus.ts";
 import { openRelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import type { RelayTransport } from "./transport.ts";
@@ -73,6 +75,8 @@ export interface RelayShellMount {
   accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
   /** takes the page to the provider's sign-in; the return comes back to the front page */
   openSignIn?: (url: string) => void;
+  /** probes a saved PC for the front page's list (pcStatus.ts); tests hand in their own */
+  checkPc?: typeof checkPc;
 }
 
 declare const __APP_VERSION__: string;
@@ -136,6 +140,9 @@ function signInFailure(error: unknown): string {
   if (error instanceof SignInError && error.code === "denied") return t("The sign-in was cancelled.");
   return t("The sign-in did not finish. Try again.");
 }
+
+/** Check now waits this long after the previous check, so repeated taps cannot spend the relay's connections for this address. */
+const CHECK_GAP_MS = 15_000;
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
@@ -204,6 +211,28 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const toFront = (): void => navigate("/");
 
   let shown: RelayShellState | null = null;
+  /** how each saved PC answered the front page's latest check, by server id */
+  const pcStatus = new Map<string, PcStatus>();
+  const probe = mount.checkPc ?? checkPc;
+  /** the front page checks its PCs once when first shown, then on Check now */
+  let checked = false;
+  /** when the latest check started: each probe is a relay connection, which the relay limits per address (30 a minute) */
+  let checkedAt = -Infinity;
+  const checkPcs = async (): Promise<void> => {
+    if (Date.now() - checkedAt < CHECK_GAP_MS) return;
+    checkedAt = Date.now();
+    const saved = (await store.list()).filter((device) => device.device_id !== null);
+    for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
+    const redraw = (): void => { if (shown?.kind === "list") show(shown); };
+    redraw();
+    const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
+    await Promise.all(saved.map(async (device) => {
+      // a check that throws knows nothing more of the PC than that no relay answered
+      const found = await probe(device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+      pcStatus.set(device.server_id, found);
+      redraw();
+    }));
+  };
   // the build's list shows at once; the service's own answer replaces it, so a Google button
   // appears only once the service says it is set up for Google
   if (accountService !== null && mount.accountProviders === undefined) {
@@ -218,13 +247,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shown = state;
     shell ??= createRoot(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
-      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
+      createElement(RelayShell, { state, scoped, iosTab, pcStatus: new Map(pcStatus), onCheckPcs: () => void checkPcs(), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
   };
 
   /** The front page: the saved PCs, or the account's once signed in. */
   const showFront = async (): Promise<void> => {
     const devices = await store.list();
     show(devices.length === 0 ? { kind: "empty", account: accountView } : { kind: "list", devices, account: accountView });
+    if (devices.length > 0 && !checked) {
+      checked = true;
+      void checkPcs();
+    }
   };
 
   /** The account's directory merged with the PCs this device is paired with; the pairings work whatever the service says. */

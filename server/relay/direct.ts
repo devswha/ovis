@@ -20,6 +20,7 @@ import { importPublicKey, importSecretKey, MAX_CARRIER_TEXT_BYTES, openDaemonSec
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 import { isDirectCarrier, MAX_DIRECT_CARRIERS } from "../../shared/relay-mux.ts";
+import { bindScope } from "../access.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { privateLanPeer } from "../lan-https.ts";
 import { SignedInSessions } from "./admissions.ts";
@@ -350,7 +351,8 @@ export class DirectCarrier {
     if (this.carriers.get(id) !== carrier) return;
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
-    carrier.release = this.signedIn.admit(deviceId, () => carrier.session?.close("resource_exhausted"));
+    const line = carrier.session ? { route: bindScope(carrier.source) === "tailnet" ? "tailscale" as const : "lan" as const, since: Date.now(), mux: carrier.session.mux } : undefined;
+    carrier.release = this.signedIn.admit(deviceId, () => carrier.session?.close("resource_exhausted"), line);
   }
 
   /** Stops listening and ends every carrier, signed in or not. */

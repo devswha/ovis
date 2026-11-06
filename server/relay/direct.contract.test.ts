@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openRelayChannel } from "../../shared/relay-channel.ts";
+import type { PairedDevice } from "../../shared/access.ts";
+import { openRelayChannel, probePc } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
@@ -343,6 +344,31 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.size).toBe(8);
   });
 
+  it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const mux = (rttMs: number | undefined) => ({ rttMs, measure: async () => rttMs });
+    sessions.admit("phone", () => {}, { route: "relay", relay: "wss://relay-ap.ovis.sh", since: 1_000, mux: mux(48) });
+    const direct = sessions.admit("phone", () => {}, { route: "lan", since: 2_000, mux: mux(undefined) });
+    sessions.admit("laptop", () => {}, { route: "tailscale", since: 3_000, mux: mux(21) });
+    sessions.admit("script", () => {});
+    expect(Object.fromEntries(sessions.connections())).toEqual({
+      phone: { route: "lan", rtt_ms: null, since: new Date(2_000).toISOString() },
+      laptop: { route: "tailscale", rtt_ms: 21, since: new Date(3_000).toISOString() },
+    });
+    direct();
+    expect(sessions.connections().get("phone")).toEqual({ route: "relay", relay: "wss://relay-ap.ovis.sh", rtt_ms: 48, since: new Date(1_000).toISOString() });
+  });
+
+  it("check every connection now, giving up on one that does not answer in time", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let fast: number | undefined;
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { get rttMs() { return fast; }, measure: async () => (fast = 9) } });
+    sessions.admit("laptop", () => {}, { route: "relay", relay: "wss://relay.ovis.sh", since: 0, mux: { rttMs: 300, measure: () => new Promise<number | undefined>(() => {}) } });
+    await sessions.check(20);
+    expect(sessions.connections().get("phone")?.rtt_ms).toBe(9);
+    expect(sessions.connections().get("laptop")?.rtt_ms).toBe(300);
+  });
+
   it("close a session past every place, and give places back", () => {
     const sessions = new SignedInSessions(2, 4);
     const closed: string[] = [];
@@ -402,8 +428,49 @@ describe("direct connections with the relay", () => {
     const identity = loadRelayIdentity(holder.stateDir);
     const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.test" };
     const port = (): string => service.status().direct!.carriers[0]!.split(":").at(-1)!;
-    return { fixture, service, offer, port };
+    return { fixture, service, offer, port, relay };
   }
+
+  it("answer a probe through the relay with no session, and tell a silent PC from an unreachable relay", async () => {
+    // Given a PC on a local relay
+    const { service, offer, relay } = await liveFixture();
+    const through = (url: string) => {
+      const target = new URL(url);
+      return new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+    };
+    // When a phone probes it through the relay, it answers within one handshake, and holds no session for it
+    const answered = await bounded(probePc(offer, { relay: offer.relay }, through, 5_000));
+    expect(answered.kind).toBe("answered");
+    expect(service.status().sessions).toBe(0);
+    // A PC the relay has nobody for is silent past the probe's time; a relay that refuses the socket is unreachable
+    expect(await bounded(probePc({ ...offer, server_id: "ab".repeat(16) }, { relay: offer.relay }, through, 300))).toEqual({ kind: "silent" });
+    expect(await bounded(probePc(offer, { relay: offer.relay }, () => new WebSocket("ws://127.0.0.1:1/v1/ws"), 5_000))).toEqual({ kind: "unreachable" });
+  });
+
+  it("tell /api/devices how each device reaches the PC now, and measure its round trip on ?check=1", async () => {
+    // Given a PC on a relay with direct connections, and two phones paired with it
+    const { fixture, offer, port, relay } = await liveFixture();
+    const near = await relayDevice(fixture);
+    const away = await relayDevice(fixture);
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const listed = async (query = "") => new Map(((await (await fetch(`${base}/api/devices${query}`)).json()) as { devices: PairedDevice[] }).devices.map((d) => [d.id, d.connection]));
+    expect((await listed()).get(near.id)).toBeUndefined();
+    // When one signs in on the direct carrier and the other through the relay
+    const direct = await bounded(openRelayChannel(offer, { store: savedStore(near, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`) }));
+    const relayed = await bounded(openRelayChannel(offer, { store: savedStore(away, offer), socket: (url) => {
+      const target = new URL(url);
+      return new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+    } }));
+    cleanup.push(() => direct.close(), () => relayed.close());
+    // Then each is named by its way in, with no round trip measured yet
+    const now = await listed();
+    expect(now.get(near.id)).toMatchObject({ route: "lan", rtt_ms: null });
+    expect(now.get(away.id)).toMatchObject({ route: "relay", relay: "wss://relay.test", rtt_ms: null });
+    // And a check pings both sessions and answers with their round trips
+    const checked = await listed("?check=1");
+    expect(checked.get(near.id)?.rtt_ms).toBeGreaterThanOrEqual(0);
+    expect(checked.get(away.id)?.rtt_ms).toBeGreaterThanOrEqual(0);
+  });
 
   it("listen while the relay is on, end their sessions when turned off, and come back when turned on", async () => {
     // Given a PC with the relay on and a phone signed in directly
