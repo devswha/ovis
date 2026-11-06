@@ -29,7 +29,7 @@ import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
-import { tabsInRow } from "../lib/tabOverflow.ts";
+import { TAB_MIN_WIDTH, tabsInRow } from "../lib/tabOverflow.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { CRAMPED_QUERY, SOLO_PANE_QUERY, tabRowHidden } from "../lib/paneCanvas.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
@@ -119,7 +119,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const [confirm, setConfirm] = useState<{ tab: HerdrTab; title: string; body: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // the header's row: the room its tabs and + have, and the More list of the tabs left out of it, while open
-  const [room, setRoom] = useState<{ width: number; add: number } | null>(null);
+  const [room, setRoom] = useState<{ width: number; add: number; open: number } | null>(null);
   const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
   // the tab whose name field just went: its button takes the focus back in the same commit, so the next key lands on it
   const refocus = useRef<string | null>(null);
@@ -299,7 +299,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const measure = (): void => {
       const add = row.querySelector<HTMLElement>(".tab-strip-add");
       const addWidth = add ? add.getBoundingClientRect().width + (Number.parseFloat(getComputedStyle(add).marginLeft) || 0) : 0;
-      setRoom((was) => was?.width === row.clientWidth && was.add === addWidth ? was : { width: row.clientWidth, add: addWidth });
+      // the open tab is wider at its narrowest on a touch screen (styles.css)
+      const openTab = row.querySelector<HTMLElement>(".tab-strip-item.is-active");
+      const openWidth = (openTab && Number.parseFloat(getComputedStyle(openTab).minWidth)) || TAB_MIN_WIDTH;
+      setRoom((was) => was?.width === row.clientWidth && was.add === addWidth && was.open === openWidth ? was : { width: row.clientWidth, add: addWidth, open: openWidth });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -343,9 +346,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   if (!shown) return null;
   const rowShown = !tabsHidden || editing !== null;
   const openIndex = Math.max(0, tabs.findIndex((tab) => tab.tab_id === selectedPane.tab_id));
-  const inRow = room === null ? null : new Set(tabsInRow(tabs.length, openIndex, room.width, room.add));
+  // a name being typed keeps its tab in the row, as a window narrowed under it would take the field away
+  const editingIndex = editing ? tabs.findIndex((tab) => tab.tab_id === editing.tabId) : -1;
+  const inRow = room === null ? null : new Set(tabsInRow(tabs.length, openIndex, room.width, room.add, room.open, editingIndex));
   const leftOut = inRow === null ? [] : tabs.filter((_, index) => !inRow.has(index));
-  const lastInRow = inRow === null ? tabs.length - 1 : Math.max(...inRow);
+  const drawnNext = (index: number): boolean => inRow === null ? index + 1 < tabs.length : inRow.has(index + 1);
   // a window grown wide enough for every tab takes the More list with its button
   if (moreAnchor && leftOut.length === 0) setMoreAnchor(null);
 
@@ -544,7 +549,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           const pickerOpen = picker?.tab.tab_id === tab.tab_id;
           const name = nameOf(tab);
           return (
-            <div className={`tab-strip-item${active ? " is-active" : ""}${own.length > 1 ? " has-panes" : ""}${editing?.tabId === tab.tab_id ? " is-editing" : ""}${reorder.drag?.tabId === tab.tab_id ? " is-dragging" : ""}${reorder.drag?.boundary === index ? " is-drop-before" : ""}${reorder.drag?.boundary === index + 1 && index === lastInRow ? " is-drop-after" : ""}`} key={tab.tab_id} data-tab-index={index}>
+            <div className={`tab-strip-item${active ? " is-active" : ""}${own.length > 1 ? " has-panes" : ""}${editing?.tabId === tab.tab_id ? " is-editing" : ""}${reorder.drag?.tabId === tab.tab_id ? " is-dragging" : ""}${reorder.drag?.boundary === index ? " is-drop-before" : ""}${reorder.drag?.boundary === index + 1 && !drawnNext(index) ? " is-drop-after" : ""}`} key={tab.tab_id} data-tab-index={index}>
               {editing?.tabId === tab.tab_id ? (
                 <input
                   className="input tab-strip-rename"

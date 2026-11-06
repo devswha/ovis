@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { HerdrTab, TabMoved } from "../../shared/protocol.ts";
-import { adjacentTabBoundary, movedTabOrder, tabDropBoundary } from "./tabOrder.ts";
+import { adjacentTabBoundary, drawnTabBoundary, movedTabOrder, tabDropBoundary } from "./tabOrder.ts";
 
 type Drag = { tabId: string; boundary: number | null };
 type Press = { tabId: string; pointerId: number; element: HTMLElement; x: number; y: number; startX: number; startY: number; started: boolean };
@@ -116,9 +116,8 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
     const items = [...row.querySelectorAll<HTMLElement>(".tab-strip-item")];
     const shown = tabDropBoundary(items.map((item) => item.getBoundingClientRect()), held.x);
     // a row that leaves tabs out (TabStrip's More) names each drawn tab's place among them all
-    const place = (item: HTMLElement | undefined): number => Number(item?.dataset["tabIndex"]);
-    const boundary = shown < items.length ? place(items[shown]) : place(items[items.length - 1]) + 1;
-    return Number.isInteger(boundary) ? boundary : shown;
+    const places = items.map((item, index) => Number(item.dataset["tabIndex"] ?? index));
+    return drawnTabBoundary(places, shown);
   };
   const paintDrag = (held: Press): void => {
     const boundary = boundaryAt(held);
