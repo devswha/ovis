@@ -15,6 +15,8 @@ const stats: URL[] = [];
 const reads: string[] = [];
 // set, a stat and a byte read wait until the page has seen the frames it needs
 let held: { promise: Promise<void>; release: () => void } | null = null;
+// told of each byte read as it arrives, before it is held
+let onRead: (() => void) | null = null;
 const foreground = "/repo/subproject";
 const foregroundPath = `${foreground}/out/diagram.svg`;
 const image = (width: number) => `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="80"><rect width="${width}" height="80" fill="teal"/></svg>`;
@@ -38,6 +40,7 @@ try {
       assert.equal(url.searchParams.get("pane_id"), "w1:p1");
       const path = url.searchParams.get("path")!;
       reads.push(path);
+      onRead?.();
       await held?.promise;
       return new Response(image(path === foregroundPath ? 240 : 16), { headers: { "content-type": "image/svg+xml", "cache-control": "no-store" } });
     }
@@ -150,9 +153,20 @@ try {
   // document loads only: the viewer's own history entry (a phone's Back closes it) is no load
   let navigations = 0;
   phone.on("request", (request) => { if (request.isNavigationRequest()) navigations++; });
+  // the sheet opens only within the tap, so Download waits until the picture's bytes are in hand
+  const reading = Promise.withResolvers<void>();
+  held = { promise: reading.promise, release: reading.resolve };
+  const readArrived = Promise.withResolvers<void>();
+  onRead = readArrived.resolve;
   await phone.getByRole("button", { name: "Diagram", exact: true }).click();
   const phoneViewer = phone.getByRole("dialog", { name: "Image viewer", exact: true });
   const download = phoneViewer.getByRole("button", { name: "Download", exact: true });
+  await readArrived.promise;
+  onRead = null;
+  assert.equal(await download.isDisabled(), true, "Download waits for the picture's bytes");
+  reading.resolve();
+  held = null;
+  await phone.waitForFunction(() => document.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Download"]')?.disabled === false);
   const sharedCount = (count: number) => phone.waitForFunction((count) => (window as unknown as { shareQa: ShareQa }).shareQa.shared.length === count, count);
   await download.click();
   await sharedCount(1);

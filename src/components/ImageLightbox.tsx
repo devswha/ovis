@@ -47,27 +47,34 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const count = images.length;
   const image = images[current];
   const src = useResourceUrl(image?.src ?? null);
-  const download = useResourceUrl(image?.src.startsWith("/api/") && getTransport().kind === "relay"
+  // where a download link would replace the app (the iOS app, a home-screen app), Download hands
+  // the shown picture to the share sheet instead: its own bytes keep their image type, which a
+  // relay download (application/octet-stream) would lose, and Save Image needs
+  const [viaShare] = useState(downloadLeavesApp);
+  const download = useResourceUrl(viaShare ? null : image?.src.startsWith("/api/") && getTransport().kind === "relay"
     ? `${image.src}${image.src.includes("?") ? "&" : "?"}download=1` : image?.src ?? null);
   const many = count > 1;
   const copyable = canCopyImage();
-  // where a download link would replace the app (the iOS app, a home-screen app), Download hands
-  // the picture to the share sheet, which opens only within the tap: the file is read before it
-  const [viaShare] = useState(downloadLeavesApp);
-  const [prepared, setPrepared] = useState<{ url: string; file: File } | null>(null);
+  // the sheet opens only within the tap, so the file is read before it: Download waits for it
+  const [prepared, setPrepared] = useState<{ url: string; file: File | null } | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
+  const shown = useRef(src);
+  shown.current = src;
   useEffect(() => {
-    if (!viaShare || download === null || image === undefined) return;
+    if (!viaShare || src === null || image === undefined) return;
     const abort = new AbortController();
-    // a failed read is reported by the tap, which reads the picture again
-    imageFile(download, image.file, abort.signal).then((file) => setPrepared({ url: download, file }), () => undefined);
+    imageFile(src, image.file, abort.signal).then(
+      (file) => setPrepared({ url: src, file }),
+      () => { if (!abort.signal.aborted) setPrepared({ url: src, file: null }); },
+    );
     return () => abort.abort();
-  }, [viaShare, download, image?.file]);
+  }, [viaShare, src, image?.file]);
+  const ready = prepared !== null && prepared.url === src ? prepared : null;
   const save = (): void => {
-    if (download === null || image === undefined) return;
-    const file = prepared?.url === download ? prepared.file : null;
-    const outcome: Promise<ShareOutcome> = file !== null ? shareFile(file) : imageFile(download, image.file).then(shareFile, () => "failed");
-    void outcome.then((result) => setSaveFailed(result === "failed"));
+    if (ready === null) return;
+    const outcome: Promise<ShareOutcome> = ready.file === null ? Promise.resolve("failed") : shareFile(ready.file);
+    // a result for a picture the viewer has stepped away from says nothing under the next one
+    void outcome.then((result) => { if (shown.current === ready.url) setSaveFailed(result === "failed"); });
   };
 
   const measure = (): void => {
@@ -193,7 +200,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
             {copied === "done" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
           </button>}
           {viaShare
-            ? <button type="button" className="icon-button" onClick={save} disabled={unavailable} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></button>
+            ? <button type="button" className="icon-button" onClick={save} disabled={unavailable || ready === null} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></button>
             : <a className="icon-button" href={download ?? undefined} download={image.file} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>}
           <button ref={close} type="button" className="icon-button" onClick={onClose} aria-label={t("Close")} title={t("Close")}><X aria-hidden="true" /></button>
         </div>
