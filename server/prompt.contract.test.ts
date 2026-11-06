@@ -227,10 +227,12 @@ describe("answer buttons on a question's alert (#2916)", () => {
       expect(subscribe.status).toBe(204);
       writeFileSync(join(root, "approval.js"), APPROVAL);
       const asked = await menu("push-buttons", [], ["Yes", "No"], false, "approval.js");
-      // the server may still be subscribing to the new pane: report it again until its alert arrives
+      // the server may still be subscribing to the new pane: report it again until its alert arrives.
+      // At rest and blocked again, not working: an agent back at work ends the asking (prompt.ts
+      // promptWaitEnded), so an alert still on its way would carry the id of an asking gone by
       const alert = () => device.received.find((push) => push.payload.pane_id === asked.pane);
       for (let attempt = 0; attempt < 20 && !alert(); attempt++) {
-        await herdrRpc("pane.report_agent", { pane_id: asked.pane, source: "manual", agent: "claude", state: "working" });
+        await herdrRpc("pane.report_agent", { pane_id: asked.pane, source: "manual", agent: "claude", state: "idle" });
         await herdrRpc("pane.report_agent", { pane_id: asked.pane, source: "manual", agent: "claude", state: "blocked" });
         await device.waitFor((push) => push.payload.pane_id === asked.pane, "the question's alert", 1_000).catch(() => undefined);
       }
