@@ -91,3 +91,27 @@ export function moveStepText(t: Translate, step: Extract<MoveStatus, { state: "m
 function unreachable(value: never): never {
   throw new Error(`unexpected value ${JSON.stringify(value)}`);
 }
+
+/** The reason a move stopped, as the person reads it; the server's own words only for an unexpected failure. */
+export function moveReasonText(t: Translate, reason: string): string {
+  if (reason === "agent_busy") return t("An agent started working again.");
+  if (reason === "input_left") return t("Text was left in an agent's input box.");
+  if (reason === "agent_did_not_exit" || reason === "no_exit_command") return t("An agent did not end in time.");
+  if (reason === "plan_changed" || reason === "not_ready") return t("The panes changed since you looked: look again.");
+  if (reason === "herdr_app") return t("The Herdr app arranges herdr-core on this PC.");
+  if (reason.startsWith("switch_refused")) return t("The switch to herdr-core was refused.");
+  if (reason === "switch_not_started") return t("The switch to herdr-core did not come up; the agents run there. Switch again in Settings.");
+  if (reason === "server_stopped") return t("A server stopped partway; nothing was put back. Check the agents listed below.");
+  return t("Something failed: {detail}", { detail: reason.replace(/^failed: /, "") });
+}
+
+/** Why an agent was not reopened in herdr, as the person reads it. */
+export function moveWhyText(t: Translate, why: string): string {
+  if (why === "agent_still_there") return t("It is running again.");
+  if (why === "pane_gone") return t("Its pane is gone.");
+  if (why === "conversation_open_elsewhere") return t("Its conversation is open in another pane.");
+  if (why === "herdr_core_not_cleared") return t("What was started on herdr-core could not be ended.");
+  if (why === "server_stopped") return t("Ended when the server stopped.");
+  if (why === "running_on_herdr_core") return t("Running on herdr-core.");
+  return t("It could not start: {detail}", { detail: why.replace(/^start_failed: /, "") });
+}

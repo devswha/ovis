@@ -25,7 +25,7 @@ export interface MoveSource {
   holdsPending: (paneId: string) => boolean;
   /** true: the input line reads empty; false: something is typed; null: unreadable for this agent */
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
-  /** types the command and Enter in one write, so nothing lands between them */
+  /** sends the command as a message to the agent (herdr's agent.prompt: pasted, then Enter) */
   sendExit: (paneId: string, command: string) => Promise<void>;
   /** whether a pane of herdr now runs this conversation */
   runsConversation: (agent: string, session: string) => Promise<boolean>;
@@ -113,6 +113,8 @@ export function journalStatus(journal: MoveJournal | null): MoveStatus | null {
 export function settleJournal(stateDir: string, port: number, serving: "herdr" | "herdr-core"): MoveJournal | null {
   const journal = readJournal(stateDir, port);
   if (!journal) return null;
+  // a finished move seen from herdr again (the person switched back): kept aside, and a new move may go
+  if (journal.state === "done" && serving === "herdr") { setAsideJournal(stateDir, port); return null; }
   // `switching`: the switch was asked for and may have been taken: the runtime this server serves says which
   if (journal.state === "committed" || journal.state === "switching") {
     journal.state = serving === "herdr-core" ? "done" : "interrupted";
@@ -155,10 +157,10 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       // the conversation shown is the one ended: one switched to since would be reopened as the wrong one
       if (verdict.kind === "resume" && now.session !== verdict.session_id) throw new MoveAbort("plan_changed");
       if (await source.inputEmpty(pane.pane_id, verdict.agent) === false) throw new MoveAbort("input_left");
-      journal.ended.push({ pane_id: pane.pane_id, agent: verdict.agent, argv: verdict.kind === "resume" ? verdict.argv : [verdict.agent], session: verdict.kind === "resume" ? verdict.session_id : null });
-      save();
       const command = EXIT_COMMANDS[verdict.agent];
       if (command === undefined) throw new MoveAbort("no_exit_command");
+      journal.ended.push({ pane_id: pane.pane_id, agent: verdict.agent, argv: verdict.kind === "resume" ? verdict.argv : [verdict.agent], session: verdict.kind === "resume" ? verdict.session_id : null });
+      save();
       await source.sendExit(pane.pane_id, command);
       let gone = false;
       for (const deadline = Date.now() + exitMs; Date.now() < deadline;) {

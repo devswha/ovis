@@ -5,7 +5,7 @@ import type { HerdrRuntimeFacts } from "../shared/machines.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { freeAgentName } from "./agent-name.ts";
-import { agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendText, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
+import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
 import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
 import { findHc } from "./herdr-core/discovery.ts";
@@ -56,8 +56,9 @@ export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpt
     },
     holdsPending,
     inputEmpty,
-    // one write: no key of anyone else's can land between the command and its Enter
-    sendExit: async (paneId, command) => { await paneSendText(paneId, `${command}\r`); },
+    // as Ovis sends any message to an agent: herdr pastes it, then its Enter, and refuses while the agent
+    // waits for an answer; a message Ovis queued for the pane since stops it right before the write
+    sendExit: async (paneId, command) => { await agentPrompt(paneId, command, undefined, () => !holdsPending(paneId)); },
     runsConversation: async (agent, session) => (await sessionSnapshot()).panes.some((pane) => pane.agent === agent && pane.agent_session?.value === session),
     start: async (paneId, argv) => {
       const started = await agentLaunch(paneId, { kind: argv[0]!, args: argv.slice(1) });

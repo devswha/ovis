@@ -7,7 +7,7 @@ import { Check } from "lucide-react";
 
 import type { MovePane, MovePlan, MoveStatus } from "../../shared/runtime-move.ts";
 import type { Translate } from "../lib/i18n.ts";
-import { agentName, blockingPanes, moveStepText, paneTitle, tabPaneIds, uncheckedAgents, verdictTag } from "../lib/runtimeMove.ts";
+import { agentName, blockingPanes, moveReasonText, moveStepText, moveWhyText, paneTitle, tabPaneIds, uncheckedAgents, verdictTag } from "../lib/runtimeMove.ts";
 
 const STEPS = ["ending_agents", "building", "starting_agents", "switching"] as const;
 
@@ -84,8 +84,8 @@ export function ResultView({ t, plan, status, leadId }: { t: Translate; plan: Mo
   const byId = new Map(plan.panes.map((pane) => [pane.pane_id, pane]));
   return (
     <>
-      <p className="runtime-move-lead" id={leadId} role="status">{t("Could not move, so everything was put back as it was.")}</p>
-      <p className="runtime-move-reason">{status.reason}</p>
+      {status.state === "rolled_back" && <p className="runtime-move-lead" id={leadId} role="status">{t("Could not move, so everything was put back as it was.")}</p>}
+      <p className="runtime-move-reason" {...(status.state === "interrupted" ? { id: leadId, role: "status" } : {})}>{moveReasonText(t, status.reason)}</p>
       {status.left.length > 0 && (
         <>
           <p className="runtime-move-note">{t("Not reopened in herdr:")}</p>
@@ -96,7 +96,7 @@ export function ResultView({ t, plan, status, leadId }: { t: Translate; plan: Mo
                 <li key={item.pane_id} className="runtime-move-pane">
                   <span className="runtime-move-pane-text">
                     <span className="runtime-move-pane-name">{pane ? paneTitle(t, pane) : agentName(item.agent)}</span>
-                    <span className="runtime-move-why">{item.why}</span>
+                    <span className="runtime-move-why">{moveWhyText(t, item.why)}</span>
                   </span>
                 </li>
               );

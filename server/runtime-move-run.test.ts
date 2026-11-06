@@ -134,6 +134,15 @@ describe("runMove, before anything is ended", () => {
 });
 
 describe("settleJournal", () => {
+  it("sets a finished move aside once the PC serves herdr again, so another can go", async () => {
+    const dir = stateDir();
+    const { source, destination, options } = fakes();
+    await runMove(dir, PORT, "m1", plan, source, destination, options);
+    expect(settleJournal(dir, PORT, "herdr-core")?.state).toBe("done");
+    expect(settleJournal(dir, PORT, "herdr")).toBeNull();
+    expect(readJournal(dir, PORT)).toBeNull();
+  });
+
   it("counts a move whose switch was asked for as done on the herdr-core it switched to", async () => {
     const dir = stateDir();
     const { source, destination, options } = fakes();
