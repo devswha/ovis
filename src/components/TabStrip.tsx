@@ -45,10 +45,13 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 
-/** when a strip that held the focus went (TabStrip's handoff effect); the next strip to mount within
- *  FOCUS_HANDOFF_MS takes it, while nothing else has */
-let focusHandoffAt = -Infinity;
+/** a strip that held the focus went (TabStrip's handoff effect): its workspace, whether the window was
+ *  wide when it mounted, and when. Only that workspace's strip on the other side of the width the
+ *  header takes the tabs at (a resize, not a split or a workspace change) takes it, within
+ *  FOCUS_HANDOFF_MS and while nothing else has. */
+let focusHandoff: { workspaceId: string; wide: boolean; at: number } | null = null;
 const FOCUS_HANDOFF_MS = 500;
+const HEADER_TABS_QUERY = "(min-width: 769px)";
 
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
@@ -212,18 +215,24 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (menuOpen.current && picker === null) menuClosedAt.current = performance.now();
     menuOpen.current = picker !== null;
   }, [picker]);
+  const workspaceId = workspace.workspace_id;
   useLayoutEffect(() => {
     const row = strip.current;
-    if (performance.now() - focusHandoffAt < FOCUS_HANDOFF_MS && (!document.activeElement || document.activeElement === document.body)) {
-      focusHandoffAt = -Infinity;
+    const wide = window.matchMedia(HEADER_TABS_QUERY).matches;
+    const handoff = focusHandoff;
+    if (handoff && handoff.workspaceId === workspaceId && handoff.wide !== wide && performance.now() - handoff.at < FOCUS_HANDOFF_MS
+      && (!document.activeElement || document.activeElement === document.body)) {
+      focusHandoff = null;
       row?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
     }
     return () => {
       const dropped = !document.activeElement || document.activeElement === document.body;
       // its menu may have closed a render before it went (a resize closes it), leaving the focus nowhere
-      if (row?.contains(document.activeElement) || menuOpen.current || (dropped && performance.now() - menuClosedAt.current < FOCUS_HANDOFF_MS)) focusHandoffAt = performance.now();
+      if (row?.contains(document.activeElement) || menuOpen.current || (dropped && performance.now() - menuClosedAt.current < FOCUS_HANDOFF_MS)) {
+        focusHandoff = { workspaceId, wide, at: performance.now() };
+      }
     };
-  }, []);
+  }, [workspaceId]);
   // a name herdr never showed back (renamed again elsewhere) does not stay on the tab
   useEffect(() => {
     if (!sent) return;

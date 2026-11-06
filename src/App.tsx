@@ -874,7 +874,7 @@ export function App() {
               <MessageCircle aria-hidden="true" />
               <span className="lens-label">{t("Chat")}</span>
             </button>
-            <button type="button" className="lens-option is-terminal" aria-pressed={view === "terminal"} aria-label={t("Terminal")}
+            <button type="button" className="lens-option is-terminal" aria-pressed={view === "terminal"} aria-label={terminalAttach ? t("Terminal") : `${t("Terminal")} · ${t("soon")}`}
               title={terminalAttach ? t("Live terminal (⌘⇧J)") : t("Live terminal: coming to Windows PCs once herdr can attach there")}
               onClick={() => { setView("terminal"); setDrawerOpen(false); }}>
               <SquareTerminal aria-hidden="true" />
