@@ -930,11 +930,11 @@ try {
   const sideNotes = page.getByRole("button", { name: "side notes", exact: true });
   await rowOf(sidePane).click();
   await onPane(sidePane);
-  await sideNotes.press("Enter");
+  await activateInTranscript(page, sideNotes);
   await panel.getByText("Side pane notes", { exact: true }).waitFor();
   await rowOf(pane).click();
   await onPane(pane);
-  await notesLink.press("Enter");
+  await activateInTranscript(page, notesLink);
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   // the viewer showing the first pane's file is marked: a viewer the switch reused would keep that
   // file's loaded content, and show it for the side pane's file until it read its own
