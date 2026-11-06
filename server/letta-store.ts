@@ -22,7 +22,7 @@ import { basename, isAbsolute, join, normalize } from "node:path";
 import type { ConversationMetadata, HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
-import { processStartedAt, processStartLowerBound } from "./process-start.ts";
+import { processStartIdentity, processStartLowerBound } from "./process-start.ts";
 
 /** Letta's ids: `conv-<uuid>`, `local-conv-<n>`, `agent-<uuid>`, `agent-local-<uuid>`, and `default`. */
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
@@ -152,11 +152,11 @@ export function isLettaProcess(argv: readonly string[]): boolean {
 
 /**
  * `startedAt`: no later than the process started (processStartLowerBound), which may read differently each time;
- * `birth`: its start as processStartedAt reads it, the same on every read, so with the pid it names the process
+ * `identity`: processStartIdentity, the same on every read, so with the pid it names the process
  */
-export interface LettaProcess { pid: number; cwd: string; startedAt: number; birth: number; env: Env }
+export interface LettaProcess { pid: number; cwd: string; startedAt: number; identity: number; env: Env }
 
-/** Letta processes, by pid and birth, seen in a folder other than the one they started in. */
+/** Letta processes, by pid and start identity, seen in a folder other than the one they started in. */
 const moved = new Set<string>();
 
 /**
@@ -167,7 +167,7 @@ const moved = new Set<string>();
  * once seen elsewhere, it is never bound again.
  */
 export function lettaInStartFolder(owner: LettaProcess): boolean {
-  const key = `${owner.pid}:${owner.birth}`;
+  const key = `${owner.pid}:${owner.identity}`;
   if (moved.has(key)) return false;
   const start = owner.env["PWD"];
   const here = canonical(owner.cwd);
@@ -187,9 +187,9 @@ export async function paneLettaProcess(paneId: string, known?: ProcessInfo | nul
   const { pid, cwd } = found[0]!;
   if (typeof cwd !== "string" || !isAbsolute(cwd)) return null;
   const startedAt = processStartLowerBound(pid);
-  const birth = processStartedAt(pid);
+  const identity = processStartIdentity(pid);
   const env = processEnvironment(pid);
-  return startedAt === null || birth === null || env === null ? null : { pid, cwd, startedAt, birth, env };
+  return startedAt === null || identity === null || env === null ? null : { pid, cwd, startedAt, identity, env };
 }
 
 export type LettaTranscript = { path: string; session: string; agent: string; conversation: string };

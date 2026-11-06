@@ -108,7 +108,7 @@ describe("Letta conversation binding", () => {
       writeFileSync(join(cwd, ".letta", "settings.local.json"), settings);
       utimesSync(join(cwd, ".letta", "settings.local.json"), at / 1000, at / 1000);
     }
-    return { pid: 4242, cwd, startedAt: started, birth: started, env: { HOME: root, ...env } };
+    return { pid: 4242, cwd, startedAt: started, identity: started, env: { HOME: root, ...env } };
   };
   const now = Date.now();
 
@@ -179,7 +179,7 @@ describe("Letta conversation binding", () => {
     const other = join(root, "project2");
     mkdirSync(start); mkdirSync(other);
     symlinkSync(start, join(root, "link1"));
-    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, birth: now, env });
+    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, identity: now, env });
     expect(lettaInStartFolder(at(101, start, { PWD: start }))).toBe(true);
     expect(lettaInStartFolder(at(102, start, { PWD: join(root, "link1") }))).toBe(true);
     // no start folder to compare: its shell set no PWD
