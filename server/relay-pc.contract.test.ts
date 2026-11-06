@@ -282,14 +282,18 @@ it("moves a relay PC's connection to its same-network address without dropping i
   const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
   // When A has paired through the relay (pairing never goes direct) and B named its address inside the channel
   const seen: string[] = [];
+  const routedEarly: string[] = [];
   const moved = await machineWhen(a.base, (pc) => {
     if (pc.id !== machine.id) return false;
     if (pc.state !== "connected" || seen.length > 0) seen.push(pc.state);
+    if (pc.route !== undefined && pc.state !== "connected") routedEarly.push(`${pc.state}/${pc.route}`);
     return pc.route === "direct";
   });
   // Then the connection moved to that address with no disconnect in between, and still carries routes and terminals
   expect(moved.state).toBe("connected");
   expect(seen.filter((state) => state !== "connected")).toEqual([]);
+  // a route is told only for a connected PC
+  expect(routedEarly).toEqual([]);
   expect((await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } })).status).toBe(200);
   expect(JSON.parse(await terminalAnswers(a.base, machine.id)).type).toBeString();
 
@@ -298,6 +302,14 @@ it("moves a relay PC's connection to its same-network address without dropping i
   a = startA();
   const back = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected");
   expect(back.route).toBe("direct");
+  // and that channel outlives the deadline its sign-in had (each carrier's share of 1.5 s)
+  const dropped: string[] = [];
+  const watching = machineWhen(a.base, (pc) => { if (pc.id === machine.id && pc.state !== "connected") dropped.push(pc.state); return false; }).catch(() => undefined);
+  // fixed wait: proving nothing happens past the sign-in deadline
+  await Bun.sleep(2_500);
+  expect(dropped).toEqual([]);
+  expect((await fetch(`${a.base}/api/machines/${machine.id}/session`, { headers: { origin: a.base } })).status).toBe(200);
+  void watching;
 }, 60_000);
 
 it("keeps a relay PC on the relay while its same-network address does not answer", async () => {

@@ -201,19 +201,42 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   let lost = (error: Error): void => { void error; };
   /** the channel that carries new streams; only its end is the connection's loss */
   let current: RelayChannel | undefined;
+  /** ends every attempt and probe under way when the tunnel closes */
+  const ending = new AbortController();
+  /** a move is opening its new session: new streams wait for it, and the old session's end is the move's to settle */
+  let moving: Promise<void> | undefined;
+  /** how the old session ended while a move opened its replacement (the PC may let only so many sessions of a key in) */
+  let replaced: Error | undefined;
   const label = (await key.list())[0]!.label;
   const base = (): RelayChannelOptions => ({
     store: key, label,
     // whoever asks through the forward sets the deadline (the machine proxy: 75 s, 165 s for its slow routes)
     requestTimeoutMs: () => 0, offerDirect: true,
   });
-  /** A channel on `direct`, or through the relay; its end counts as the connection's only while it is the current one. */
-  const openOn = async (direct: string | undefined, signal?: AbortSignal): Promise<RelayChannel> => {
+  /**
+   * A channel on `direct` within `ms`, or through the relay; its end counts as the connection's only while it is the
+   * current one, or the one a move is replacing (that move then settles it). The deadline is the admission's only:
+   * an aborted signal ends an admitted channel too, so it is never handed to the channel itself.
+   */
+  const openOn = async (direct: string | undefined, ms = 0): Promise<RelayChannel> => {
     let channel: RelayChannel | undefined;
-    const settings: RelayChannelOptions = { ...base(), onClose: (error) => { if (channel !== undefined && channel === current) lost(error); } };
-    channel = direct === undefined
-      ? (await openRelayChannelWithFallback(offer, { ...settings, ...(options.socket ? { socket: options.socket } : {}) }, openRelayChannel)).channel
-      : await openRelayChannel(signIn, { ...settings, direct, socket: directSocket, ...(signal ? { signal } : {}) });
+    const settings: RelayChannelOptions = { ...base(), onClose: (error) => {
+      if (channel === undefined || channel !== current) return;
+      if (moving) { replaced = error; return; }
+      lost(error);
+    } };
+    if (direct === undefined) return channel = (await openRelayChannelWithFallback(offer, { ...settings, ...(options.socket ? { socket: options.socket } : {}) }, openRelayChannel)).channel;
+    const attempt = new AbortController();
+    const stop = (): void => attempt.abort();
+    const timer = setTimeout(stop, ms);
+    ending.signal.addEventListener("abort", stop, { once: true });
+    try {
+      channel = await openRelayChannel(signIn, { ...settings, direct, socket: directSocket, signal: attempt.signal });
+    } finally {
+      clearTimeout(timer);
+      ending.signal.removeEventListener("abort", stop);
+    }
+    // admitted: from here only its own end or this tunnel's close ends it, never the attempt's deadline
     return channel;
   };
   /** the carriers the PC named last, and the one that last carried the channel */
@@ -228,8 +251,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       const left = ends - performance.now();
       if (left <= 0) return undefined;
       // a carrier that stays silent takes only its share, so the ones after it still get a turn
-      const attempt = AbortSignal.timeout(Math.max(1, left / (carriers.length - index)));
-      try { return await openOn(direct, attempt); } catch (error) {
+      try { return await openOn(direct, Math.max(1, left / (carriers.length - index))); } catch (error) {
         // the PC itself refused after Noise proved it: final here as through the relay
         if (fatal(error) && !(error instanceof DirectCarrierUnusableError)) throw error;
       }
@@ -279,6 +301,8 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     let released = false;
     const release = (): void => { if (!released) { released = true; busy--; } };
     try {
+      // never onto the session a move is about to close
+      while (moving) await moving;
       const stream = await opened(() => current!.mux.openHttp({
         target, method: request.method as HttpRequest["method"], body: body ? "stream" : "none",
         headers: [...request.headers].filter(([name]) => allowed.includes(name)),
@@ -305,6 +329,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const settle = (local: Bun.ServerWebSocket<Forwarded>): void => { if (local.data.pending) { local.data.pending = false; busy--; } };
   const connect = async (local: Bun.ServerWebSocket<Forwarded>): Promise<void> => {
     let remote: WsStream;
+    while (moving) await moving;
     try { remote = await opened(() => current!.mux.openWs({ target: local.data.target, headers: [], protocols: [] }), local.data.abort.signal); }
     catch { settle(local); local.close(1012, "PC connection lost"); return; }
     if (local.data.closed) { remote.close(1000); return; }
@@ -374,7 +399,6 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   /** a move that came back unusable (a carrier that answers a probe but cannot carry a session) waits longer next time */
   let backoff = 1;
   let nextCheck: ReturnType<typeof setTimeout> | undefined;
-  const ending = new AbortController();
   /** The routes before the one carrying the channel now: every direct carrier while on the relay. */
   const earlier = (): string[] => {
     const order = routes();
@@ -392,6 +416,35 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     function done(): void { clearTimeout(timer); ending.signal.removeEventListener("abort", done); resolve(); }
     ending.signal.addEventListener("abort", done, { once: true });
   });
+  /**
+   * Signs in on `direct` while new streams wait, then makes it the current session and closes `from`. False when it
+   * could not (a refusal there is one the current session meets too, and says so). The old session ending meanwhile
+   * (the PC let the new one in in its place) is no loss when the new one is up, and the connection's loss when not.
+   */
+  const move = async (direct: string, from: RelayChannel): Promise<boolean> => {
+    const settled = Promise.withResolvers<void>();
+    moving = settled.promise;
+    replaced = undefined;
+    let next: RelayChannel | undefined;
+    try { next = await openOn(direct, DIRECT_BUDGET_MS * 4); } catch { next = undefined; }
+    const gone = replaced;
+    moving = undefined;
+    replaced = undefined;
+    try {
+      if (closed || current !== from || !next?.mux.active) {
+        next?.close();
+        if (gone && !closed && current === from) lost(gone);
+        return false;
+      }
+      install(next);
+      backoff = 1;
+      options.onMoved?.();
+      from.close();
+      return true;
+    } finally {
+      settled.resolve();
+    }
+  };
   const check = (): void => {
     if (closed || checking) return;
     const candidates = earlier();
@@ -405,30 +458,22 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     const from = current;
     const still = (): boolean => !closed && current === from;
     void (async () => {
-      let proven: string | undefined;
+      /** a carrier that proved to be the PC but could not carry a session: the next check waits longer */
+      let unusable = false;
       for (const direct of candidates) {
         if (!still()) return;
-        if (await probeDirect(signIn, direct, directSocket, DIRECT_BUDGET_MS, ending.signal)) { proven = direct; break; }
-      }
-      if (proven === undefined) return;
-      for (let round = 0; round < IDLE_CHECKS && still(); round++) {
-        // input a moment ago: only until it has been quiet long enough; a request under way: a while
-        if (!quiet()) { await pause(busy > 0 ? IDLE_CHECK_MS : Math.max(1, QUIET_MS - (performance.now() - sentAt))); continue; }
-        let next: RelayChannel;
-        try { next = await openOn(proven, AbortSignal.any([ending.signal, AbortSignal.timeout(DIRECT_BUDGET_MS * 4)])); }
-        catch {
-          // a refusal there is one the current channel meets too, and says so; anything else is a carrier to try later
-          backoff = Math.min(backoff * 2, 12);
-          return;
+        if (!await probeDirect(signIn, direct, directSocket, DIRECT_BUDGET_MS, ending.signal)) continue;
+        let moved = false;
+        for (let round = 0; round < IDLE_CHECKS && still(); round++) {
+          // input a moment ago: only until it has been quiet long enough; a request under way: a while
+          if (!quiet()) { await pause(busy > 0 ? IDLE_CHECK_MS : Math.max(1, QUIET_MS - (performance.now() - sentAt))); continue; }
+          moved = await move(direct, from!);
+          if (!moved) unusable = true;
+          break;
         }
-        if (!still() || !next.mux.active) { next.close(); return; }
-        const old = from!;
-        install(next);
-        backoff = 1;
-        options.onMoved?.();
-        old.close();
-        return;
+        if (moved || !still()) return;
       }
+      if (unusable) backoff = Math.min(backoff * 2, 12);
     })().catch(() => { /* a probe that fails is a route that is not there: the current one stays */ }).finally(() => {
       checking = false;
       if (closed) return;

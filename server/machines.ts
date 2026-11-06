@@ -1422,6 +1422,8 @@ export class MachineManager {
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
     runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.remote_ovis = null; runtime.attempts = 0; runtime.updateCancelled = false;
+    // told only for a connected PC (shared/machines.ts)
+    if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
     this.openObserver(runtime, generation);
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
     runtime.poll = setInterval(() => void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e)), 5000);
@@ -1566,7 +1568,7 @@ export class MachineManager {
         delete runtime.machine.herdr;
         const tunnel = await openRelayPcTunnel(key.offer, key, this.tunnelOptions(runtime, generation));
         if (generation !== runtime.generation || this.stopped) { tunnel.close(); return; }
-        runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint; runtime.machine.route = tunnel.route;
+        runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
         await this.observe(runtime); this.emit();
       } catch (e) { this.lost(runtime, generation, e); }
       return;
@@ -1836,7 +1838,7 @@ export class MachineManager {
       removeRelayPcKey(keyPath);
       throw new Error(this.stopped ? "Server stopping" : "That PC is already added.");
     }
-    runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint; runtime.machine.route = tunnel.route;
+    runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
     // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
     try { this.persist(true); } catch (error) {
