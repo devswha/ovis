@@ -46,7 +46,7 @@ function fakes(options: { turnsBusy?: string; failStart?: string; refuseSwitch?:
     sendExit: async (id, command) => {
       world.calls.push(`herdr exit ${id} ${command}`);
       const pane = world.herdr.get(id)!;
-      world.herdr.set(id, id === options.turnsBusy ? { ...pane, status: "working" } : { ...pane, agent: null, shellInFront: true });
+      world.herdr.set(id, id === options.turnsBusy ? { ...pane, status: "working" } : { ...pane, agent: null, status: "unknown", shellInFront: true });
     },
     runsConversation: async (agent, session) => [...world.herdr.values()].some((pane) => pane.agent === agent && pane.session === session),
     start: async (id, argv) => { world.calls.push(`herdr start ${id} ${argv.join(" ")}`); world.herdr.set(id, { agent: argv[0]!, status: "idle", session: null, shellInFront: false }); },
@@ -125,11 +125,23 @@ describe("runMove, before anything is ended", () => {
   it("waits for the shell to be in front before it counts an agent as ended", async () => {
     const { world, source, destination, options } = fakes();
     // herdr stops naming the agent while its process still holds the terminal
-    source.sendExit = async (id) => { world.calls.push(`herdr exit ${id}`); world.herdr.set(id, { ...world.herdr.get(id)!, agent: null, shellInFront: false }); };
-    const journal = await runMove(stateDir(), PORT, "m1", plan, source, destination, { ...options, exitMs: 50 });
+    source.sendExit = async (id) => { world.calls.push(`herdr exit ${id}`); world.herdr.set(id, { ...world.herdr.get(id)!, agent: null, status: "unknown", shellInFront: false }); };
+    const journal = await runMove(stateDir(), PORT, "m1", plan, source, destination, { ...options, exitMs: 50, settleMs: 0 });
     expect([journal.state, journal.reason]).toEqual(["rolled_back", "agent_did_not_exit"]);
     expect(journal.left).toEqual([{ pane_id: "a", agent: "claude", why: "agent_still_there" }]);
     expect(world.calls.some((call) => call.startsWith("core start") || call.startsWith("herdr start"))).toBe(false);
+  });
+
+  it("restarts in herdr an agent whose shell comes back while the rollback looks", async () => {
+    const { world, source, destination, options } = fakes();
+    // herdr drops the agent at once; its shell is back only after the exit wait gave up
+    let shellBackAt = Infinity;
+    source.sendExit = async (id) => { world.calls.push(`herdr exit ${id}`); shellBackAt = Date.now() + 80; world.herdr.set(id, { ...world.herdr.get(id)!, agent: null, status: "unknown", shellInFront: false }); };
+    const plain = source.pane;
+    source.pane = async (id) => { const pane = await plain(id); if (pane && pane.agent === null && Date.now() >= shellBackAt) pane.shellInFront = true; return pane; };
+    const journal = await runMove(stateDir(), PORT, "m1", plan, source, destination, { ...options, exitMs: 30, settleMs: 5_000 });
+    expect(journal.reason).toBe("agent_did_not_exit");
+    expect(world.calls).toContain("herdr start a claude --resume s1");
   });
 });
 

@@ -48,7 +48,7 @@ describe.skipIf(!bin)("move of herdr's session to a real herdr-core", () => {
 
   afterAll(async () => {
     hc?.close();
-    Bun.spawnSync([bin!, "server", "stop"], { env: { ...process.env, ...env } });
+    await Bun.spawn([bin!, "server", "stop"], { env: { ...process.env, ...env }, stdout: "ignore", stderr: "ignore" }).exited;
     if (workspace) await workspaceClose(workspace);
     if (originalHcEnv === undefined) delete process.env["OVIS_HC_ENV"]; else process.env["OVIS_HC_ENV"] = originalHcEnv;
     if (originalHcBin === undefined) delete process.env["OVIS_HC_BIN"]; else process.env["OVIS_HC_BIN"] = originalHcBin;

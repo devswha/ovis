@@ -53,6 +53,8 @@ export interface MoveRunOptions {
   switchRuntime: () => string | null;
   /** how long an agent has to end after its exit command */
   exitMs?: number;
+  /** how long a rollback waits for an ending agent's shell to come back */
+  settleMs?: number;
   /** waits between looks at an ending agent */
   pause?: (ms: number) => Promise<void>;
   onStep?: (status: MoveStatus) => void;
@@ -169,7 +171,8 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
         // process still runs would otherwise let one conversation run twice
         if (after && after.agent === null && after.shellInFront === true) { gone = true; break; }
         // it took the command as work, or turned to a question: nothing more is typed into it
-        if (after && after.status !== "idle" && after.status !== "done") throw new MoveAbort("agent_busy");
+        // only while herdr still names it: a pane with no agent reports `unknown`, which is no work
+        if (after && after.agent !== null && after.status !== "idle" && after.status !== "done") throw new MoveAbort("agent_busy");
         await pause(200);
       }
       if (!gone) throw new MoveAbort("agent_did_not_exit");
@@ -204,7 +207,12 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
         await grow(tab.root, made.paneId, made.tabId, []);
       }
     }
-    for (const pane of plan.panes) if (pane.name) await destination.renamePane(placed.get(pane.pane_id)!, pane.name);
+    for (const pane of plan.panes) {
+      const placedId = placed.get(pane.pane_id);
+      // every pane is in one tab's tree: one that is not, the plan no longer describes
+      if (placedId === undefined) throw new MoveAbort("plan_changed");
+      if (pane.name) await destination.renamePane(placedId, pane.name);
+    }
     journal.state = "starting";
     save();
     for (const [index, entry] of journal.ended.entries()) {
@@ -220,7 +228,7 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
     journal.reason = error instanceof MoveAbort ? error.message : `failed: ${error instanceof Error ? error.message : String(error)}`;
     journal.state = "rolling_back";
     save();
-    await rollBack(journal, source, destination, id);
+    await rollBack(journal, source, destination, id, pause, options.settleMs ?? 5_000);
     journal.state = "rolled_back";
     save();
     return journal;
@@ -231,7 +239,7 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
   return journal;
 }
 
-async function rollBack(journal: MoveJournal, source: MoveSource, destination: MoveDestination, id: string): Promise<void> {
+async function rollBack(journal: MoveJournal, source: MoveSource, destination: MoveDestination, id: string, pause: (ms: number) => Promise<unknown>, settleMs: number): Promise<void> {
   let destinationClear = true;
   try { await destination.endMove(id); } catch { destinationClear = false; }
   for (const entry of journal.ended) {
@@ -239,7 +247,12 @@ async function rollBack(journal: MoveJournal, source: MoveSource, destination: M
     // another pane: starting it again could run one conversation twice, so it is left to the person
     if (!destinationClear) { journal.left.push({ pane_id: entry.pane_id, agent: entry.agent, why: "herdr_core_not_cleared" }); continue; }
     try {
-      const now = await source.pane(entry.pane_id);
+      // an agent typed its exit a moment ago may still be leaving: its shell gets a moment to come back
+      let now = await source.pane(entry.pane_id);
+      for (const deadline = Date.now() + settleMs; now && now.agent === null && now.shellInFront !== true && Date.now() < deadline;) {
+        await pause(200);
+        now = await source.pane(entry.pane_id);
+      }
       if (!now) { journal.left.push({ pane_id: entry.pane_id, agent: entry.agent, why: "pane_gone" }); continue; }
       if (now.agent !== null || now.shellInFront !== true) { journal.left.push({ pane_id: entry.pane_id, agent: entry.agent, why: "agent_still_there" }); continue; }
       if (entry.session !== null && await source.runsConversation(entry.agent, entry.session)) { journal.left.push({ pane_id: entry.pane_id, agent: entry.agent, why: "conversation_open_elsewhere" }); continue; }

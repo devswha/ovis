@@ -108,13 +108,15 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
       }
     },
     endMove: async (move) => {
-      for (let round = 0; round < 10; round++) {
+      // a killed terminal may take a moment to be listed as finished: look again until none is live
+      for (const deadline = Date.now() + 10_000; ;) {
         const { terminals } = await hc.call("terminal.list", { labels: { [MOVE_LABEL]: move }, all: true });
         const live = terminals.filter((terminal) => terminal.state === "live");
         if (live.length === 0) return;
-        await Promise.all(live.map((terminal) => hc.call("terminal.kill", { terminal: terminal.address })));
+        if (Date.now() > deadline) throw new Error("terminals of the move are still running on herdr-core");
+        await Promise.all(live.map((terminal) => hc.call("terminal.kill", { terminal: terminal.address }).catch(() => undefined)));
+        await Bun.sleep(200);
       }
-      throw new Error("terminals of the move are still running on herdr-core");
     },
     close: () => { adapter.stop(); hc.close(); },
   };
