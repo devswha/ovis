@@ -1,11 +1,12 @@
 /**
  * A plain drag in a Codex pane (#2384): Codex selects on its alternate screen and scrolls its own
- * history past an edge, then copies with OSC 52. A herdr-core server's attach is the program's own
- * output, so the drag is Codex's there; herdr's attach drops OSC 52, so there the drag stays Ovis's
- * selection. Demo fixtures only: no herdr, hc or user state.
+ * history past an edge, then copies with OSC 52, which herdr's attach drops. So the drag stays Ovis's
+ * selection unless the device turns on Settings > Terminal > Codex panes (codexDrag); then it is
+ * Codex's, and on herdr a note says Shift+drag copies and quotes here. Demo fixtures only: no herdr,
+ * hc or user state.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
@@ -62,6 +63,8 @@ function installDragFixture(): void {
   window.WebSocket = Recorded as unknown as typeof WebSocket;
 }
 
+const evidence = process.env.UI_EVIDENCE_DIR;
+if (evidence) mkdirSync(evidence, { recursive: true });
 const sent = (page: Page) => page.evaluate(() => window.dragFixture.inputs.map((frame) => frame.text ?? "").join(""));
 const app = mkdtempSync(join(tmpdir(), "codex-drag-demo-"));
 
@@ -84,10 +87,12 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      for (const kind of ["core", "herdr"] as const) {
+      const cases = [{ kind: "herdr", codexDrag: false }, { kind: "core", codexDrag: false }, { kind: "herdr", codexDrag: true }, { kind: "core", codexDrag: true }] as const;
+      for (const { kind, codexDrag } of cases) {
+        const name = `${kind}, Codex panes ${codexDrag ? "on" : "off"}`;
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
         try {
-          await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false })));
+          await context.addInitScript((codexDrag) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false, codexDrag })), codexDrag);
           const page = await context.newPage();
           page.setDefaultTimeout(10000);
           const errors: string[] = [];
@@ -106,19 +111,25 @@ try {
           await page.mouse.move(box.x + 200, box.y - 10, { steps: 4 });
           await page.mouse.up();
           const press = /\x1b\[<0;\d+;\d+M/, release = /\x1b\[<0;\d+;\d+m/;
-          if (kind === "core") {
+          const note = page.locator(".pane-frame.is-current .terminal-banner", { hasText: "Codex selected this" });
+          if (codexDrag) {
             // press, moves and release reach Codex in the order they happened, and Ovis selects nothing
             await page.waitForFunction(() => /\x1b\[<0;\d+;\d+M(?:[\s\S]*?\x1b\[<32;\d+;\d+M)+[\s\S]*?\x1b\[<0;\d+;\d+m/.test(window.dragFixture.inputs.map((frame) => frame.text ?? "").join("")))
-              .catch(async (cause: unknown) => { throw new Error(`core: the drag never reached Codex (sent ${JSON.stringify(await sent(page))})`, { cause }); });
-            assert.equal(await page.locator(".pane-frame.is-current .xterm-selection div").count(), 0, "core: Ovis selects nothing over Codex's own selection");
+              .catch(async (cause: unknown) => { throw new Error(`${name}: the drag never reached Codex (sent ${JSON.stringify(await sent(page))})`, { cause }); });
+            assert.equal(await page.locator(".pane-frame.is-current .xterm-selection div").count(), 0, `${name}: Ovis selects nothing over Codex's own selection`);
+            // herdr drops Codex's copy: the way to copy and quote here is said; herdr-core passes the copy on
+            if (kind === "herdr") await note.waitFor();
+            else assert.equal(await note.count(), 0, `${name}: no note where Codex's copy arrives`);
           } else {
-            // herdr would drop Codex's copy: the drag is Ovis's selection, and Codex reads no button
+            // main's behaviour: the drag is Ovis's selection, and Codex reads no button
             await page.locator(".pane-frame.is-current .xterm-selection div").first().waitFor();
             const typed = await sent(page);
-            assert.ok(!press.test(typed) && !release.test(typed), `herdr: Codex reads no press or release (sent ${JSON.stringify(typed)})`);
+            assert.ok(!press.test(typed) && !release.test(typed), `${name}: Codex reads no press or release (sent ${JSON.stringify(typed)})`);
+            assert.equal(await note.count(), 0, `${name}: no note`);
           }
-          assert.deepEqual(errors, [], `${kind}: no page errors`);
-          console.log(`PASS ${kind}: ${kind === "core" ? "a plain drag in a Codex pane is Codex's" : "a plain drag in a Codex pane stays Ovis's selection"}`);
+          assert.deepEqual(errors, [], `${name}: no page errors`);
+          if (evidence) await page.screenshot({ path: join(evidence, `codex-drag-${kind}-${codexDrag ? "on" : "off"}.png`) });
+          console.log(`PASS ${name}: a plain drag in a Codex pane is ${codexDrag ? "Codex's" : "Ovis's selection"}`);
         } finally {
           await context.close();
         }
