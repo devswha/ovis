@@ -12,11 +12,11 @@ function handler(limits = LIMITS) {
 }
 
 /** an uncompressed RGBA TIFF laid out as chafa writes it for `chafa -f iterm`: pixels first, then the directory */
-function chafaTiff(width: number, height: number, rgba: Uint8Array, compression = 1): Uint8Array {
+function chafaTiff(width: number, height: number, rgba: Uint8Array, { compression = 1, orientation = 1, samples = 4 } = {}): Uint8Array {
   const tags: Array<[number, number, number, number]> = [
-    [256, 4, 1, width], [257, 4, 1, height], [258, 3, 4, 8 + rgba.length + 2 + 12 * 12 + 4], [259, 3, 1, compression],
-    [262, 3, 1, 2], [273, 4, 1, 8], [274, 3, 1, 1], [277, 3, 1, 4], [278, 4, 1, height],
-    [279, 4, 1, rgba.length], [284, 3, 1, 1], [338, 3, 1, 2],
+    [256, 4, 1, width], [257, 4, 1, height], [258, 3, samples, samples === 1 ? 8 : 8 + rgba.length + 2 + 12 * 12 + 4], [259, 3, 1, compression],
+    [262, 3, 1, samples === 1 ? 1 : 2], [273, 4, 1, 8], [274, 3, 1, orientation], [277, 3, 1, samples], [278, 4, 1, height],
+    [279, 4, 1, rgba.length], [284, 3, 1, 1], [338, 3, 1, samples === 4 ? 2 : 0],
   ];
   const out = new Uint8Array(8 + rgba.length + 2 + tags.length * 12 + 4 + 8);
   const view = new DataView(out.buffer);
@@ -47,6 +47,7 @@ function readPng(png: Uint8Array): { width: number; height: number; rgba: Uint8A
   const height = view.getUint32(20);
   const idatLength = view.getUint32(33);
   const raw = inflateSync(png.subarray(41, 41 + idatLength));
+  expect(raw.length).toBe((width * 4 + 1) * height);
   const rgba = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) {
     expect(raw[y * (width * 4 + 1)]).toBe(0);
@@ -56,7 +57,8 @@ function readPng(png: Uint8Array): { width: number; height: number; rgba: Uint8A
 }
 
 const fedPicture = (payload: string) => {
-  const match = /^File=(.*):([A-Za-z0-9+/=]*)$/.exec(payload)!;
+  // one base64 text: padding only at its end
+  const match = /^File=(.*):([A-Za-z0-9+/]*={0,2})$/.exec(payload)!;
   const bytes = Buffer.from(match[2]!, "base64");
   return { args: match[1]!, bytes: new Uint8Array(bytes) };
 };
@@ -84,23 +86,39 @@ test("leaves a PNG with its size to the addon, and anything that is no picture",
   expect(fed).toEqual([]);
 });
 
-test("turns chafa's TIFF, sent without a size, into a PNG of the same pixels", () => {
+test("turns chafa's TIFF, sent without a size, into a PNG of the same pixels", async () => {
   const { fed, handle } = handler();
   const tiff = chafaTiff(3, 2, PIXELS);
-  expect(handle(`File=inline=1;width=24;height=6;preserveAspectRatio=0:${Buffer.from(tiff).toString("base64")}`)).toBe(true);
+  expect(await handle(`File=inline=1;width=24;height=6;preserveAspectRatio=0:${Buffer.from(tiff).toString("base64")}`)).toBe(true);
   expect(fed.length).toBe(1);
   const { args, bytes } = fedPicture(fed[0]!);
   expect(args).toBe(`inline=1;width=24;height=6;preserveAspectRatio=0;size=${bytes.length}`);
   expect(readPng(bytes)).toEqual({ width: 3, height: 2, rgba: PIXELS });
 });
 
-test("gives a TIFF it cannot decode a placeholder in its proportions instead of nothing", () => {
+test("turns a TIFF of more than one base64 slice into one PNG of the same pixels", async () => {
   const { fed, handle } = handler();
-  const tiff = chafaTiff(3, 2, PIXELS, 5);
+  const pixels = Uint8Array.from({ length: 100 * 100 * 4 }, (_, i) => (i * 7919) % 251);
+  expect(await handle(`File=inline=1:${Buffer.from(chafaTiff(100, 100, pixels)).toString("base64")}`)).toBe(true);
+  expect(readPng(fedPicture(fed[0]!).bytes)).toEqual({ width: 100, height: 100, rgba: pixels });
+});
+
+test("drops a TIFF whose base64 cannot be read, and the output after it goes on", async () => {
+  const { fed, handle } = handler();
+  expect(await handle("File=inline=1:SUkqAAAAA")).toBe(true);
+  expect(await handle("File=inline=1:SUkqAAAA")).toBe(true);
+  expect(fed.length).toBe(1);
+  expect(fedPicture(fed[0]!).args).toBe("inline=1;size=" + fedPicture(fed[0]!).bytes.length);
+});
+
+test("gives a TIFF it cannot decode a placeholder taking the TIFF's own size instead of nothing", async () => {
+  const { fed, handle } = handler();
+  const tiff = chafaTiff(3, 2, PIXELS, { compression: 5 });
   expect(decodeTiff(tiff, LIMITS.pixelLimit)).toEqual({ width: 3, height: 2, rgba: null });
-  expect(handle(`File=inline=1;size=${tiff.length}:${Buffer.from(tiff).toString("base64")}`)).toBe(true);
+  expect(decodeTiff(chafaTiff(3, 2, PIXELS, { orientation: 2 }), LIMITS.pixelLimit)).toEqual({ width: 3, height: 2, rgba: null });
+  expect(await handle(`File=inline=1;size=${tiff.length}:${Buffer.from(tiff).toString("base64")}`)).toBe(true);
   const { args, bytes } = fedPicture(fed[0]!);
-  expect(args).toBe(`inline=1;size=${bytes.length}`);
+  expect(args).toBe(`inline=1;size=${bytes.length};width=3px;height=2px`);
   const placeholder = readPng(bytes);
   expect([placeholder.width, placeholder.height]).toEqual([3, 2]);
   expect([...placeholder.rgba.subarray(0, 4)]).toEqual([0x60, 0x60, 0x60, 255]);
@@ -120,6 +138,20 @@ test("drops a picture past the addon's size cap, multipart ones before all of it
   reset();
   expect(handle("FileEnd")).toBe(true);
   expect(fed).toEqual([]);
+});
+
+test("gives a placeholder where the PNG a TIFF turns into is past the addon's file cap", async () => {
+  const { fed, handle } = handler({ sizeLimit: 6000, pixelLimit: LIMITS.pixelLimit });
+  // noise does not compress: its RGBA PNG is about four times the grey TIFF
+  let seed = 1;
+  const grey = Uint8Array.from({ length: 64 * 64 }, () => (seed = (seed * 1103515245 + 12345) >>> 0) >>> 24);
+  const tiff = chafaTiff(64, 64, grey, { samples: 1 });
+  expect(tiff.length).toBeLessThan(6000);
+  expect(await handle(`File=inline=1:${Buffer.from(tiff).toString("base64")}`)).toBe(true);
+  const { args, bytes } = fedPicture(fed[0]!);
+  expect(bytes.length).toBeLessThanOrEqual(6000);
+  expect(args).toBe(`inline=1;width=64px;height=64px;size=${bytes.length}`);
+  expect([...readPng(bytes).rgba.subarray(0, 4)]).toEqual([0x60, 0x60, 0x60, 255]);
 });
 
 test("does not decode a TIFF larger than the pixel cap", () => {
