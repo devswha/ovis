@@ -536,6 +536,15 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         if (pane && command && skills.length > 0 && !agentOnly) {
           const expected = pendingIdentity(pane);
           let current = pane;
+          // as the queued path does (pending.ts): no key goes into a masked prompt that came up on the live screen
+          const noMaskedPrompt = async (screen?: string): Promise<void> => {
+            const cols = attachments.get(paneId)?.cols;
+            if ((screen !== undefined && secretPrompt(stripVTControlCharacters(screen), cols) !== null)
+              || secretPrompt((await paneRead({ paneId, source: "detection", format: "text" })).text, cols) !== null) {
+              throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
+            }
+            inTime();
+          };
           // the lookup awaited the service: the pane, its session and its state are read again before every key
           const revalidate = async (): Promise<void> => {
             current = await paneGet(paneId);
@@ -546,6 +555,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             }
             // as agent.prompt refuses it; an unknown state is typed into, as its fallback below does
             if (current.agent_status === "blocked") throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+            await noMaskedPrompt();
           };
           // followed from before the first key: the send's own message can be announced before Enter returns
           const watch = startOpenCodeWatch(pane, command, options.openCodeStateDir);
@@ -562,7 +572,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             sendKeys: (keys, guard) => io.sendKeys(keys, () => guard() && (typed = true)),
           };
           try {
-            const typing = typeWithSkills(text, skills, allowed, writes, revalidate);
+            // the skill-accept key: the screen it was decided on (a scrolled viewport, maybe), then the live screen
+            const typing = typeWithSkills(text, skills, allowed, writes, revalidate, noMaskedPrompt);
             bindCommandProcess(paneId, command, seen, pane);
             const { attached, missed, prompt } = await typing;
             // fixed wait: a TUI busy with the typing takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
