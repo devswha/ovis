@@ -154,6 +154,15 @@ export function launchDefaults(kind: string, settings: LaunchDefaultSettings): {
   };
 }
 
+/**
+ * What Settings > Agents' model field shows once the kept model changed (on another device, or by the field itself):
+ * text the reader is still fixing, a name `--model` would refuse, stays theirs; otherwise the kept name, in the
+ * field's own spelling when that is the same name.
+ */
+export function modelDraftAfterSync(kind: string, draft: string, model: string): string {
+  return draft.trim() === model || launchChoiceFault(kind, { model: draft }) === "model" ? draft : model;
+}
+
 /** The arguments a new agent of `kind` starts with; undefined when there are none to add. */
 export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunchMode; codexLaunchMode: CodexLaunchMode }, choices: LaunchChoices = {}): string[] | undefined {
   const args: string[] = [];

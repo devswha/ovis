@@ -15,7 +15,7 @@ import type { UsageLoginRequest } from "../../shared/usage-login.ts";
 /** A sign-in the page follows in its own dialog, hosted at the page's root so no row or list it came from can take it away. */
 type FollowedSignIn = Extract<UsageLoginRequest, { provider: "claude" | "codex" }>;
 import { agentsPage, signInState, type AgentsPageRow } from "../lib/agentsPage.ts";
-import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, modelSuggestions, type ClaudeLaunchMode, type CodexLaunchMode } from "../lib/agentLaunchMode.ts";
+import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, modelDraftAfterSync, modelSuggestions, type ClaudeLaunchMode, type CodexLaunchMode } from "../lib/agentLaunchMode.ts";
 import { ApiError, cliProxyRequest, fetchAgentCatalog } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -66,8 +66,8 @@ function codexModeName(mode: CodexLaunchMode, t: Translate): string {
 function LaunchDefaultRows({ agent, model, effort, efforts, onModel, onEffort }: { agent: "claude" | "codex"; model: string; effort: string; efforts: readonly string[]; onModel: (model: string) => void; onEffort: (effort: string) => void }) {
   const t = useT();
   const [draft, setDraft] = useState(model);
-  // another device's change shows here; a draft that is the kept name with spaces around it stays as typed
-  useEffect(() => { setDraft((current) => current.trim() === model ? current : model); }, [model]);
+  // another device's change shows here, but never over text the reader is still fixing
+  useEffect(() => { setDraft((current) => modelDraftAfterSync(agent, current, model)); }, [agent, model]);
   const invalid = launchChoiceFault(agent, { model: draft }) === "model";
   const suggestions = modelSuggestions(agent);
   const modelId = `settings-${agent}-launch-model`;

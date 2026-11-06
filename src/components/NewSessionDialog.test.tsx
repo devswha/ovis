@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { SettingsProvider } from "../lib/settings.ts";
+import { SettingsProvider, useSettings, type Settings } from "../lib/settings.ts";
 import { NewSessionDialog, type NewSessionDialogProps } from "./NewSessionDialog.tsx";
 
 // App keeps the dialog mounted and flips `open`: every hook runs whether it is open or not, or React
@@ -175,6 +175,27 @@ describe("NewSessionDialog", () => {
       await act(async () => { effort().props.onChange({ target: { value: "high" } }); });
       await pick("codex");
       expect(effort().props.value).toBe("high");
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("fills a model and effort Settings > Agents sets after it opened, and leaves what the reader changed", async () => {
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }] }), { headers: { "content-type": "application/json" } }), { preconnect: globalThis.fetch.preconnect }));
+    let update: (patch: Partial<Settings>) => void = () => undefined;
+    const Grab = () => { update = useSettings().update; return null; };
+    const view = createElement(SettingsProvider, { children: [createElement(Grab, { key: "grab" }), createElement(NewSessionDialog, { key: "dialog", open: true, defaultCwd: "/home/u", prefill: { cwd: null, name: null, agent: "claude" }, onClose: () => undefined, onCreated: () => undefined })] });
+    try {
+      await act(async () => { renderer = create(view); });
+      const value = (id: string) => renderer!.root.findByProps({ id }).props.value;
+      expect([value("new-session-model"), value("new-session-effort")]).toEqual(["", ""]);
+      // the shared settings come in (or Settings, opened over the dialog, sets them)
+      await act(async () => { update({ claudeLaunchModel: "opus", claudeLaunchEffort: "high" }); });
+      expect([value("new-session-model"), value("new-session-effort")]).toEqual(["opus", "high"]);
+      // the reader's own model stays; the effort they left follows the setting
+      await act(async () => { renderer!.root.findByProps({ id: "new-session-model" }).props.onChange({ target: { value: "sonnet" } }); });
+      await act(async () => { update({ claudeLaunchModel: "haiku", claudeLaunchEffort: "max" }); });
+      expect([value("new-session-model"), value("new-session-effort")]).toEqual(["sonnet", "max"]);
     } finally {
       fetch.mockRestore();
     }

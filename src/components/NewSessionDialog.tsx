@@ -108,8 +108,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [name, setName] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
-  // the effort shown came from Settings > Agents, not from the reader: it never goes on to another agent
-  const effortPreset = useRef(false);
+  // whether the model and the effort shown are the reader's own: one that is not follows Settings > Agents, and
+  // never goes on to another agent
+  const modelEdited = useRef(false);
+  const effortEdited = useRef(false);
   const [ultracode, setUltracode] = useState(false);
   const [prompt, setPrompt] = useState("");
   // Settings -> Named agent groups: the group the new pane goes in ("": none), the folder's last one until one is picked
@@ -186,7 +188,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const preset = launchDefaults(stored, settings);
     setModel(preset.model);
     setEffort(preset.effort);
-    effortPreset.current = preset.effort !== "";
+    modelEdited.current = false;
+    effortEdited.current = false;
     let cancelled = false;
     const latest = agentReads.current();
     void fetchAgentKinds()
@@ -200,10 +203,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
           // what was chosen meanwhile for the agent that gave way goes as pickAgent's choices go
           const can = launchCapabilities(kind);
           const fallback = launchDefaults(kind, settings);
+          modelEdited.current = false;
           setModel(fallback.model);
-          const wasPreset = effortPreset.current;
-          effortPreset.current = fallback.effort !== "";
-          setEffort((current) => fallback.effort !== "" ? fallback.effort : wasPreset ? "" : can.efforts.includes(current) ? current : "");
+          const picked = effortEdited.current && fallback.effort === "";
+          effortEdited.current = picked;
+          setEffort((current) => fallback.effort !== "" ? fallback.effort : picked && can.efforts.includes(current) ? current : "");
           if (!can.ultracode) setUltracode(false);
         }
       })
@@ -258,6 +262,15 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const readingAgain = useRef<() => void>(() => undefined);
   useEffect(() => () => readingAgain.current(), []);
   useEffect(() => { readingAgain.current(); }, [open]);
+
+  // Settings > Agents changed while the dialog is open (the shared settings arriving, or Settings opened over it):
+  // a field the reader left follows it
+  const defaults = launchDefaults(agentKind, settings);
+  useEffect(() => {
+    if (!open) return;
+    if (!modelEdited.current) setModel(defaults.model);
+    if (!effortEdited.current) setEffort(defaults.effort);
+  }, [open, agentKind, defaults.model, defaults.effort]);
   if (!open) return null;
 
   const selectedAgent = agents.find((agent) => agent.kind === agentKind);
@@ -285,11 +298,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       // the next agent's model and effort from Settings > Agents; with no effort set there, a level the reader
       // picked stays where the agent names it, and the one set for the last agent does not
       const after = launchDefaults(kind, settings);
+      modelEdited.current = false;
       setModel(after.model);
-      if (after.effort !== "") nextEffort = after.effort;
-      else if (effortPreset.current) nextEffort = "";
-      effortPreset.current = after.effort !== "";
+      if (after.effort !== "" || !effortEdited.current) { nextEffort = after.effort; effortEdited.current = false; }
     } else if (!next.model) setModel("");
+    if (nextEffort === "") effortEdited.current = false;
     setEffort(nextEffort);
     if (!next.ultracode) setUltracode(false);
   };
@@ -499,7 +512,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
                 placeholder={t("Agent default")}
                 aria-invalid={fault === "model" || undefined}
                 aria-describedby="new-session-model-hint"
-                onChange={(event) => setModel(event.target.value)}
+                onChange={(event) => { modelEdited.current = true; setModel(event.target.value); }}
               />
               {suggestions.length > 0 && <datalist id="new-session-models">{suggestions.map((alias) => <option key={alias} value={alias} />)}</datalist>}
               <span id="new-session-model-hint" className={`field-hint${fault === "model" ? " new-session-error" : ""}`} role={fault === "model" ? "alert" : undefined}>
@@ -508,7 +521,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             </div>}
             {can.efforts.length > 0 && <div className="field">
               <label className="field-label" htmlFor="new-session-effort">{t("Effort")}</label>
-              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => { effortPreset.current = false; setEffort(event.target.value); }}>
+              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => { effortEdited.current = true; setEffort(event.target.value); }}>
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>

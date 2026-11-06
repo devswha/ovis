@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 
-import { CLAUDE_EFFORTS, CODEX_EFFORTS, firstPromptDelivery, launchAgent, launchArgs, launchCapabilities, launchChoiceFault, launchDefaults, modelSuggestions } from "./agentLaunchMode.ts";
+import { CLAUDE_EFFORTS, CODEX_EFFORTS, firstPromptDelivery, launchAgent, launchArgs, launchCapabilities, launchChoiceFault, launchDefaults, modelDraftAfterSync, modelSuggestions } from "./agentLaunchMode.ts";
 
 const plain = { claudeLaunchMode: "default", codexLaunchMode: "default" } as const;
 
@@ -120,4 +120,13 @@ it("starts a new agent on the model and effort Settings > Agents sets for it, an
   for (const kind of ["omp", "copilot", "gemini", ""]) expect(launchDefaults(kind, set)).toEqual({ model: "", effort: "" });
   // what the launch would refuse is no default: a level the agent does not name, a model that is no one name
   expect(launchDefaults("claude", { ...none, claudeLaunchModel: "opus --dangerously-skip-permissions", claudeLaunchEffort: "ultra" })).toEqual({ model: "", effort: "" });
+});
+
+it("keeps a model being typed that --model would refuse when another device changes the setting, and shows a kept one's change", () => {
+  // the field held the kept name: another device's change shows
+  expect(modelDraftAfterSync("claude", "opus", "sonnet")).toBe("sonnet");
+  // the kept name with spaces around it, as typed, stays as typed
+  expect(modelDraftAfterSync("claude", " sonnet ", "sonnet")).toBe(" sonnet ");
+  // text the reader is still fixing is theirs: it is not replaced under them
+  expect(modelDraftAfterSync("claude", "opus --verbose", "sonnet")).toBe("opus --verbose");
 });
