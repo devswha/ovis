@@ -172,6 +172,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
   const directory = opendirSync(`/proc/${pid}/fd`);
   let found: ForegroundState = legacy;
   let logFound = false;
+  let loggedTarget: string | undefined;
   let count = 0;
   try {
     for (let descriptor = directory.readSync(); descriptor; descriptor = directory.readSync()) {
@@ -194,9 +195,12 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
         return deny("copilot_log_missing");
       }
       if (!logDirectories.some((path) => dirname(target) === path) || LOG_NAME.exec(basename(target))?.[1] !== String(pid)) continue;
+      // Copilot opens its log a second time to copy it when it rotates: that is still the one log.
+      if (logFound && target === loggedTarget) continue;
       observe();
       if (logFound) return deny("copilot_log_ambiguous");
       logFound = true;
+      loggedTarget = target;
       try {
         if (realpathSync(target) !== target) return deny("copilot_log_replaced");
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
