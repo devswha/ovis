@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -648,6 +649,50 @@ async function runtimeInUse(browser: import("playwright-core").Browser, url: str
     }
   }
   console.log("PASS About names the runtime in use, and offers the switch only with two installed, asking first");
+}
+
+/**
+ * About after an update: its compact Updates line keeps the notes of what the update brought (the
+ * header's "What's new" opens them), the section's name and the running version.
+ */
+async function installedNotes(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+    // the demo's transport answers /api in the page: these two answers go in over it. The running
+    // revision is the build's own, so the app reads no reload and the notes are this release's.
+    await context.addInitScript((revision) => {
+      const answers: Record<string, unknown> = {
+        "/api/updates": { managed: true, auto_update: false, phase: "idle", current_revision: revision, latest_revision: null, current_version: null, latest_version: null, available: false, checked_at: "2099-01-01T00:00:00Z", blocked_reason: null, error: null },
+        "/api/updates/installed": { revision, version: "99.0.0", previous_version: "98.0.0", installed_at: "2099-01-01T00:00:00Z", omitted: 0, releases: [{ version: "99.0.0", date: "2099-01-01", notes: "- A fixture release note." }] },
+      };
+      let inner = window.fetch;
+      const outer: typeof window.fetch = (input, init) => {
+        // the demo app is served under a path of its own: its requests end in the API's path
+        const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
+        const answer = Object.keys(answers).find((key) => path.endsWith(key));
+        return answer !== undefined ? Promise.resolve(new Response(JSON.stringify(answers[answer]), { headers: { "content-type": "application/json" } })) : inner(input, init);
+      };
+      // the transport's own assignment goes under these answers; a later wrapper (the file preview's)
+      // reads them as its fetch and replaces the property as a plain value
+      Object.defineProperty(window, "fetch", { configurable: true, get: () => outer, set: (next: typeof window.fetch) => {
+        inner = next;
+        Object.defineProperty(window, "fetch", { configurable: true, writable: true, value: outer });
+      } });
+    }, execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim());
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${url}?settings=about`);
+    const panel = dialogOf(page).getByRole("tabpanel", { name: "About", exact: true });
+    await panel.getByRole("region", { name: "What the last update brought", exact: true }).getByText("A fixture release note.").waitFor();
+    assert.equal(await panel.getByRole("heading", { name: "Updates", exact: true }).count(), 1, "the Updates section keeps its name");
+    await panel.getByText(/^Running v/).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS About's compact Updates line keeps what the last update brought, its name and the running version");
 }
 
 /**
@@ -1560,6 +1605,7 @@ try {
       await accountGoogle(browser, url);
       await runtimeInUse(browser, url);
       await alertChipsReset(browser, url);
+      await installedNotes(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();
