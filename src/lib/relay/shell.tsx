@@ -141,8 +141,18 @@ function signInFailure(error: unknown): string {
   return t("The sign-in did not finish. Try again.");
 }
 
-/** Check now waits this long after the previous check, so repeated taps cannot spend the relay's connections for this address. */
+/** The front page's checks of saved PCs (checkPcs): how many PCs, how many at once, how often, and where the last one is noted. */
+const CHECK_PCS = 8;
+const CHECK_AT_ONCE = 2;
 const CHECK_GAP_MS = 15_000;
+const CHECK_KEY = "ovis-pc-check-at";
+
+function localStorageGet(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function localStorageSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* no storage: lastCheck keeps the gap for this page */ }
+}
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
@@ -216,21 +226,30 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const probe = mount.checkPc ?? checkPc;
   /** the front page checks its PCs once when first shown, then on Check now */
   let checked = false;
-  /** when the latest check started: each probe is a relay connection, which the relay limits per address (30 a minute) */
-  let checkedAt = -Infinity;
+  /**
+   * Each probe is a relay connection, which the relay limits per address (30 a minute, shared with
+   * everything else this network opens): a sweep probes at most CHECK_PCS PCs, CHECK_AT_ONCE at a time,
+   * and not again within CHECK_GAP_MS of the last, a reload included.
+   */
+  let lastCheck = -Infinity;
   const checkPcs = async (): Promise<void> => {
-    if (Date.now() - checkedAt < CHECK_GAP_MS) return;
-    checkedAt = Date.now();
-    const saved = (await store.list()).filter((device) => device.device_id !== null);
+    const stored = Number(localStorageGet(CHECK_KEY) ?? "");
+    if (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity) < CHECK_GAP_MS) return;
+    lastCheck = Date.now();
+    localStorageSet(CHECK_KEY, String(lastCheck));
+    const saved = (await store.list()).filter((device) => device.device_id !== null).slice(0, CHECK_PCS);
     for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
     const redraw = (): void => { if (shown?.kind === "list") show(shown); };
     redraw();
     const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
-    await Promise.all(saved.map(async (device) => {
-      // a check that throws knows nothing more of the PC than that no relay answered
-      const found = await probe(device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
-      pcStatus.set(device.server_id, found);
-      redraw();
+    const queue = [...saved];
+    await Promise.all(Array.from({ length: CHECK_AT_ONCE }, async () => {
+      for (let device = queue.shift(); device; device = queue.shift()) {
+        // a check that throws knows nothing more of the PC than that no relay answered
+        const found = await probe(device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+        pcStatus.set(device.server_id, found);
+        redraw();
+      }
     }));
   };
   // the build's list shows at once; the service's own answer replaces it, so a Google button

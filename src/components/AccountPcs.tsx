@@ -149,7 +149,7 @@ export function AccountPcs({ view, onJoin, onSignOut, onLeave, status, onCheck }
       {view.pcs === null
         ? <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Loading your PCs…")}</span></div>
         : <>
-          {status && status.size > 0 && onCheck && <CheckPcsButton status={status} onCheck={onCheck} />}
+          {onCheck && view.pcs.some((pc) => pc.paired) && <CheckPcsButton status={status ?? new Map()} onCheck={onCheck} />}
           <AccountPcList pcs={view.pcs} {...(onJoin ? { onJoin } : {})} {...(status ? { status } : {})} />
         </>}
       {view.error !== null && <p className="relay-shell-detail" role="alert">{view.error}</p>}

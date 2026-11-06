@@ -1327,6 +1327,21 @@ describe("limits and liveness", () => {
     expect(await pending).toBeUndefined();
     expect(await e.engine.measure()).toBeUndefined();
   });
+  it("measures with one probe: a keepalive due meanwhile and a second measure share it, never replace it", async () => {
+    const e = endpoint("server");
+    e.clock.advance(19_000);
+    const first = e.engine.measure();
+    await e.engine.flush();
+    e.clock.advance(1_000);
+    const second = e.engine.measure();
+    await e.engine.flush();
+    const pings = e.sent.filter((f) => f.type === FrameType.PING);
+    expect(pings).toHaveLength(1);
+    const ping = required(pings[0]);
+    if (ping.type !== FrameType.PING) throw new Error("Missing PING");
+    e.engine.receive(frame({ ...ping, type: FrameType.PONG }));
+    expect([await first, await second]).toEqual([1_000, 1_000]);
+  });
   it("invalidates hidden probes and stale PONGs on wake", async () => {
     const e = endpoint();
     e.engine.ping();

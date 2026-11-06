@@ -6,7 +6,10 @@ import { openRelayChannel, probePc } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
-import { SignedInSessions } from "./admissions.ts";
+import { CHECK_GAP_MS, SignedInSessions } from "./admissions.ts";
+import type { Access } from "../access.ts";
+import { handleDeviceRequest } from "../devices.ts";
+import type { DeviceStore } from "../devices.ts";
 import { admissionDrops, DirectCarrier, rankLanAddresses } from "./direct.ts";
 import { openGate } from "./direct-gate.ts";
 import type { NetworkInterfaceInfo } from "node:os";
@@ -367,6 +370,32 @@ describe("signed-in sessions over every way in", () => {
     await sessions.check(20);
     expect(sessions.connections().get("phone")?.rtt_ms).toBe(9);
     expect(sessions.connections().get("laptop")?.rtt_ms).toBe(300);
+  });
+
+  it("share one check among callers at once, and measure nothing again right after", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let measured = 0;
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { rttMs: 9, measure: async () => { measured++; return 9; } } });
+    await Promise.all([sessions.check(20, 10_000), sessions.check(20, 10_000)]);
+    await sessions.check(20, 10_000 + CHECK_GAP_MS - 1);
+    expect(measured).toBe(1);
+    await sessions.check(20, 10_000 + CHECK_GAP_MS);
+    expect(measured).toBe(2);
+  });
+
+  it("tell how other devices are connected, and check them, only to a caller that may manage them", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let measured = 0;
+    sessions.admit("00112233445566aa", () => {}, { route: "tailscale", since: 0, mux: { rttMs: 33, measure: async () => { measured++; return 33; } } });
+    const row: PairedDevice = { id: "00112233445566aa", label: "Phone", role: "drive", created_at: "2026-11-01T00:00:00.000Z", last_seen_at: null, current: false, via_relay: true };
+    const store = { error: null, list: () => [row] } as unknown as DeviceStore;
+    const connections = { list: () => sessions.connections(), check: (ms: number) => sessions.check(ms) };
+    const read = async (access: Access) => ((await (await handleDeviceRequest(new Request("http://127.0.0.1/api/devices?check=1"), "/api/devices", store, access, null, undefined, false, connections)).json()) as { devices: PairedDevice[] }).devices[0]?.connection;
+    expect(await read({ level: "full", via: "relay", role: "watch" })).toBeUndefined();
+    expect(await read({ level: "full", via: "portal", role: "drive" })).toBeUndefined();
+    expect(measured).toBe(0);
+    expect(await read({ level: "full", via: "local", role: "drive" })).toEqual({ route: "tailscale", rtt_ms: 33, since: new Date(0).toISOString() });
+    expect(measured).toBe(1);
   });
 
   it("close a session past every place, and give places back", () => {

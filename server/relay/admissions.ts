@@ -11,6 +11,9 @@ export interface SessionLine {
   readonly mux: { readonly rttMs: number | undefined; measure(): Promise<number | undefined> };
 }
 
+/** A check this soon after the last one answers with what that one measured. */
+export const CHECK_GAP_MS = 5_000;
+
 /** nearest first: of a device's sessions, the one it is best connected by is the one shown */
 const NEAR: Record<DeviceRoute, number> = { lan: 0, tailscale: 1, relay: 2 };
 
@@ -62,8 +65,22 @@ export class SignedInSessions {
     }]));
   }
 
-  /** Measures every session's round trip now; one that has not answered within `timeoutMs` keeps its last one. */
-  async check(timeoutMs: number): Promise<void> {
+  private checking: Promise<void> | undefined;
+  private checkedAt = -Infinity;
+
+  /**
+   * Measures every session's round trip now; one that has not answered within `timeoutMs` keeps its last one.
+   * Callers at once share one check, and one within CHECK_GAP_MS of the last measures nothing again.
+   */
+  check(timeoutMs: number, now = Date.now()): Promise<void> {
+    if (this.checking) return this.checking;
+    if (now - this.checkedAt < CHECK_GAP_MS) return Promise.resolve();
+    this.checkedAt = now;
+    this.checking = this.measureAll(timeoutMs).finally(() => { this.checking = undefined; });
+    return this.checking;
+  }
+
+  private async measureAll(timeoutMs: number): Promise<void> {
     let stop = (): void => {};
     const late = new Promise<void>((resolve) => { const timer = setTimeout(resolve, timeoutMs); stop = () => { clearTimeout(timer); resolve(); }; });
     await Promise.race([Promise.all([...this.entries].map((entry) => entry.line?.mux.measure())), late]);

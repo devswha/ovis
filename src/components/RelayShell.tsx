@@ -181,7 +181,7 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
         {state.kind === "list" && (account === null || account.kind === "signed-out") && (
           <>
             <h1 className="relay-shell-title">{t("Your PCs")}</h1>
-            {pcStatus && pcStatus.size > 0 && onCheckPcs && <CheckPcsButton status={pcStatus} onCheck={onCheckPcs} />}
+            {onCheckPcs && <CheckPcsButton status={pcStatus ?? new Map()} onCheck={onCheckPcs} />}
             <ul className="relay-shell-pcs">
               {state.devices.map((device) => (
                 <li key={device.server_id}>

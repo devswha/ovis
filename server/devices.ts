@@ -1011,9 +1011,12 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
     const drive = access.level === "full" && access.role === "drive";
+    // how the other devices are connected, and pinging them all, is for a caller that may manage them:
+    // not a watching device, nor a Portal visitor, who see the list as before
+    const manager = drive && access.via !== "portal";
     // `?check=1` ("Check now"): every session's round trip is measured before the answer, within CHECK_MS
-    if (connections && new URL(request.url).searchParams.get("check") === "1") await connections.check(CHECK_MS);
-    const live = connections?.list() ?? new Map<string, DeviceConnection>();
+    if (manager && connections && new URL(request.url).searchParams.get("check") === "1") await connections.check(CHECK_MS);
+    const live = manager ? connections?.list() ?? new Map<string, DeviceConnection>() : new Map<string, DeviceConnection>();
     const devices = store.list(access.level === "full" ? access.device?.id ?? null : null, drive)
       .map((device) => { const connection = live.get(device.id); return connection ? { ...device, connection } : device; });
     return jsonResponse({ devices }, 200, { "cache-control": "no-store" });
