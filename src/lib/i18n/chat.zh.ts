@@ -8,6 +8,8 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const CHAT_ZH: Record<string, string> = {
+  "Couldn't save the image.": "无法保存图片。",
+  "Image saving isn't available here. Open Ovis in a browser to download it.": "此处无法保存图片。请在浏览器中打开 Ovis 下载图片。",
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 聊天暂不可用。请打开终端查看运行状态和工具调用。",
   "Chat read timed out.": "读取对话超时。",
   "Thinking…": "思考中…",

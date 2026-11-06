@@ -3,7 +3,9 @@
  * The wheel or a pinch zooms at the pointer, a drag pans, a double-click toggles fit and the
  * picture's own pixels, and the bar and the keys (+ - 0, arrows) do the same; at fit, Left and
  * Right step through the gallery. Copy puts the picture on the clipboard as PNG and Download
- * saves it under its name. Escape, the close button, a phone's Back and a swipe down that starts
+ * shares the original file where supported, otherwise downloads it in a browser. App windows
+ * keep the viewer open with a note when saving is unavailable. Escape, the close button, a phone's
+ * Back and a swipe down that starts
  * on the bar or the caption leave (the stage takes every stroke for panning), and the focus
  * returns to the thumbnail that opened it while it is still drawn. ChatView holds the viewer, not
  * the chat row, so a row scrolled out of the render window does not close it. The zoom arithmetic
@@ -23,6 +25,9 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useResourceUrl } from "../lib/useResourceUrl.ts";
 import { getTransport } from "../lib/transport.ts";
+import { isAppWindow } from "../lib/install.ts";
+import { inNativeApp } from "../lib/nativeApp.ts";
+import { useImageShare } from "../lib/useImageShare.ts";
 import { FIT, MAX_ZOOM, MIN_ZOOM, PAN_STEP, STEP, zoomAt, type View } from "./MermaidLightbox.tsx";
 
 export function ImageLightbox({ images, index, onClose }: { images: GalleryImage[]; index: number; onClose: () => void }) {
@@ -50,6 +55,40 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
     ? `${image.src}${image.src.includes("?") ? "&" : "?"}download=1` : image?.src ?? null);
   const many = count > 1;
   const copyable = canCopyImage();
+  const shareFile = useImageShare(image?.src, image?.file, inNativeApp() || isAppWindow());
+  const sharing = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [saveNote, setSaveNote] = useState<{ src: string; text: string } | null>(null);
+
+  const save = async (event: ReactMouseEvent<HTMLAnchorElement>): Promise<void> => {
+    // The download attribute is only a hint in a WebView. Never let it replace an app window.
+    const app = inNativeApp() || isAppWindow();
+    if (sharing.current || shareFile === undefined) {
+      event.preventDefault();
+      return;
+    }
+    try {
+      if (app && shareFile !== null && navigator.canShare({ files: [shareFile] })) {
+        event.preventDefault();
+        sharing.current = true;
+        setSaving(true);
+        setSaveNote(null);
+        // Call in the click itself: Safari requires transient user activation.
+        await navigator.share({ files: [shareFile] });
+      } else if (app) {
+        event.preventDefault();
+        setSaveNote({ src: image!.src, text: t("Image saving isn't available here. Open Ovis in a browser to download it.") });
+      }
+    } catch (error) {
+      event.preventDefault();
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setSaveNote({ src: image!.src, text: t("Couldn't save the image.") });
+      }
+    } finally {
+      sharing.current = false;
+      setSaving(false);
+    }
+  };
 
   const measure = (): void => {
     const node = picture.current;
@@ -172,7 +211,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
           {copyable && <button type="button" className={`icon-button${copied === "done" ? " is-copied" : ""}`} onClick={() => void copy()} disabled={unavailable} aria-label={copied === "done" ? t("Copied") : t("Copy image")} title={copied === "done" ? t("Copied") : t("Copy image")}>
             {copied === "done" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
           </button>}
-          <a className="icon-button" href={download ?? undefined} download={image.file} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>
+          <a className="icon-button" href={download ?? undefined} download={image.file} target="_blank" rel="noopener noreferrer" onClick={save} aria-disabled={saving || shareFile === undefined} aria-label={t("Download")} title={shareFile === undefined ? t("Loading…") : t("Download")}><Download aria-hidden="true" /></a>
           <button ref={close} type="button" className="icon-button" onClick={onClose} aria-label={t("Close")} title={t("Close")}><X aria-hidden="true" /></button>
         </div>
         <div
@@ -206,6 +245,8 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
             </p>
             {many && <button type="button" className="icon-button" onClick={() => step(1)} aria-label={t("Next image")} title={t("Next image")}><ChevronRight aria-hidden="true" /></button>}
           </div>
+          {shareFile === undefined && <p className="image-lightbox-note" role="status">{t("Loading…")}</p>}
+          {saveNote?.src === image.src && <p className="image-lightbox-note" role="alert">{saveNote.text}</p>}
           {copied === "failed" && <p className="image-lightbox-note" role="alert">{t("Couldn't copy the image. Download it instead.")}</p>}
         </div>
       </div>

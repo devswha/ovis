@@ -134,12 +134,30 @@ try {
   await preview.waitFor({ state: "detached" });
   console.log("PASS a hover shows the picture larger, named by its tool and place, and leaving takes it away");
 
+  // Substitute only the OS share boundary; file bytes still come from the real image endpoint.
+  await page.evaluate(() => {
+    (globalThis as { Capacitor?: unknown }).Capacitor = { isNativePlatform: () => true };
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
+    Object.defineProperty(navigator, "share", { configurable: true, value: ({ files }: ShareData) => {
+      (window as unknown as { sharedImage: File }).sharedImage = files![0]!;
+      return Promise.resolve();
+    } });
+  });
   // a click opens the viewer on all six at that one; the tile opens it at the first
   await second.click();
   const viewer = page.getByRole("dialog", { name: "Image viewer" });
   await viewer.waitFor();
   assert.equal(await viewer.locator(".image-lightbox-count").textContent(), "4 of 6");
   assert.equal(await preview.count(), 0, "the viewer takes the preview's place");
+  await viewer.getByRole("button", { name: "Previous image", exact: true }).click();
+  await viewer.getByRole("button", { name: "Previous image", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="Download"]')?.getAttribute("aria-disabled") === "false");
+  const selectedName = await viewer.getByRole("link", { name: "Download", exact: true }).getAttribute("download");
+  await viewer.getByRole("link", { name: "Download", exact: true }).click();
+  assert.deepEqual(await page.evaluate(async () => {
+    const file = (window as unknown as { sharedImage: File }).sharedImage;
+    return { name: file.name, type: file.type, size: file.size };
+  }), { name: selectedName, type: "image/gif", size: Buffer.from(GIF, "base64").length }, "stepping rapidly shares the selected GIF, not the previous PNG");
   await page.keyboard.press("Escape");
   await viewer.waitFor({ state: "detached" });
   // by keyboard: Enter on a thumbnail opens the viewer, and the focus Escape gives back to the
@@ -158,7 +176,12 @@ try {
   assert.equal(await viewer.locator(".image-lightbox-count").textContent(), "1 of 6");
   await page.keyboard.press("Escape");
   await viewer.waitFor({ state: "detached" });
-  console.log("PASS a click opens the viewer on every picture of the block, at the one clicked or at the first from the tile");
+  console.log("PASS a click opens the viewer on every picture of the block, at the one clicked or at the first from the tile; rapid stepping shares the selected file");
+  await page.evaluate(() => {
+    Reflect.deleteProperty(globalThis, "Capacitor");
+    Reflect.deleteProperty(navigator, "share");
+    Reflect.deleteProperty(navigator, "canShare");
+  });
 
   // opened, the block's line gives its pictures to its rows, each on its own line; an opened row
   // shows them larger in its detail

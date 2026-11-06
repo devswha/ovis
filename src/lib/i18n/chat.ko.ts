@@ -8,6 +8,8 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const CHAT_KO: Record<string, string> = {
+  "Couldn't save the image.": "이미지를 저장하지 못했습니다.",
+  "Image saving isn't available here. Open Ovis in a browser to download it.": "여기에서는 이미지를 저장할 수 없습니다. 브라우저에서 Ovis를 열어 다운로드하세요.",
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
   "Chat read timed out.": "대화 읽기 시간이 초과되었습니다.",
   "Thinking…": "생각 중…",
