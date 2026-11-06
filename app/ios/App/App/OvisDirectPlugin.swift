@@ -218,11 +218,11 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         emit("close", ["id": id, "code": code, "reason": reason])
     }
 
-    /// To the page on the bridge's queue, where Capacitor adds and removes listeners; one serial queue, so a
+    /// To the page on the main queue, where Capacitor drops every listener when a navigation starts
+    /// (WebViewDelegationHandler didStartProvisionalNavigation -> CapacitorBridge.reset); one serial queue, so a
     /// socket's events keep their order.
     private func emit(_ event: String, _ data: [String: Any]) {
-        let target = (bridge as? CapacitorBridge)?.dispatchQueue ?? DispatchQueue.main
-        target.async { self.notifyListeners(event, data: data) }
+        DispatchQueue.main.async { self.notifyListeners(event, data: data) }
     }
 
     fileprivate func finish(task: URLSessionTask, code: Int, reason: String, error: Bool) {
@@ -267,10 +267,12 @@ private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
     }
 }
 
-/// Stands in front of Capacitor's script message handler: an OvisDirect call goes on only from the main
-/// frame of the app's own origin (the hosted shell, https://app.ovis.sh), never from a PC page opened by
-/// its address or any frame, which Capacitor's iOS bridge would otherwise let call every plugin. The
-/// plugin acts only on calls this let through, so without the gate it answers nothing.
+/// Stands in front of Capacitor's script message handler: every OvisDirect message (its own methods and the
+/// listener methods it inherits, addListener, removeListener and removeAllListeners) goes on only from the main
+/// frame of the app's own origin (the hosted shell, https://app.ovis.sh), never from a PC page opened by its
+/// address or any frame, which Capacitor's iOS bridge would otherwise let call every plugin. The plugin's own
+/// methods act only on calls this approved, so without the gate they answer nothing; only those calls leave an
+/// approval, and each takes its own, so none is kept unused.
 final class DirectCallGate: NSObject, WKScriptMessageHandler {
     static let appHost = "app.ovis.sh"
     private static let lock = NSLock()
@@ -285,8 +287,8 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
         handler.contentController.add(DirectCallGate(inner: handler), name: "bridge")
     }
 
-    /// The calls the gate guards; Capacitor's own listener methods go on as they are, as events reach only the main frame.
-    static let guarded: Set<String> = ["open", "send", "close", "ack"]
+    /// The plugin's own methods, each of which takes its approval (OvisDirectPlugin.allowed).
+    static let ownMethods: Set<String> = ["open", "send", "close", "ack"]
 
     /// A new page: approvals left by the old one are dropped.
     static func clear() {
@@ -307,12 +309,14 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let body = message.body as? [String: Any], body["pluginId"] as? String == "OvisDirect",
-           let method = body["methodName"] as? String, Self.guarded.contains(method) {
-            guard Self.fromApp(message.frameInfo), let callbackId = body["callbackId"] as? String else { return }
-            Self.lock.lock()
-            Self.approved.insert(callbackId)
-            Self.lock.unlock()
+        if let body = message.body as? [String: Any], body["pluginId"] as? String == "OvisDirect" || body["service"] as? String == "OvisDirect" {
+            guard Self.fromApp(message.frameInfo) else { return }
+            if body["type"] as? String == "message", let method = body["methodName"] as? String, Self.ownMethods.contains(method),
+               let callbackId = body["callbackId"] as? String {
+                Self.lock.lock()
+                Self.approved.insert(callbackId)
+                Self.lock.unlock()
+            }
         }
         inner.userContentController(controller, didReceive: message)
     }

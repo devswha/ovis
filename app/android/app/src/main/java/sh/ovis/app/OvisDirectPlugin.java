@@ -3,8 +3,6 @@ package sh.ovis.app;
 import android.net.Uri;
 import android.util.Base64;
 import android.webkit.WebView;
-import androidx.webkit.WebViewCompat;
-import androidx.webkit.WebViewFeature;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -39,12 +37,9 @@ public class OvisDirectPlugin extends Plugin {
     }
 
     private final Map<String, Entry> sockets = new HashMap<>();
-    /** Whether Capacitor's bridge runs on the WebView's message listener (main frame, origin rule only); null until known */
-    private volatile Boolean listenerBridge;
 
     @Override
     public void load() {
-        getActivity().runOnUiThread(() -> listenerBridge = provenListenerBridge());
         // a new page: the old one's sockets would hold both places and nobody reads them
         bridge.addWebViewListener(new WebViewListener() {
             @Override
@@ -60,18 +55,29 @@ public class OvisDirectPlugin extends Plugin {
     }
 
     /**
-     * Capacitor's MessageHandler puts its bridge on a WebView message listener for its origin rules, and when
-     * the feature is missing, the legacy bridge is configured, or adding the listener throws, on a JavaScript
-     * interface that every frame of every origin can call. The plugin cannot see which happened, so it adds a
-     * listener of its own with the same rules on the same WebView: if that works, Capacitor's did too. UI thread.
+     * Whether Capacitor's bridge on this WebView is its WebMessageListener, decided from Capacitor's own state.
+     *
+     * MessageHandler (Capacitor 8.5.3) installs exactly one of two bridges: a WebMessageListener for its origin
+     * rules, whose callback takes only main-frame messages, or, when the feature is missing, the legacy bridge is
+     * configured, or adding the listener throws, a JavaScript interface that every frame of every origin can call.
+     * Only that listener callback ever sets its private field `javaScriptReplyProxy`; nothing clears it, and the
+     * fallback never sets it. So a non-null proxy proves the listener is the bridge, and then no JavaScript
+     * interface exists to call plugins from a frame. The page sets it with its first plugin call (directSocket.ts
+     * adds its listeners before any open); the listener writes it before it hands the next call to the plugin
+     * thread's queue, which orders the write before this read. Read by reflection, as Capacitor exposes no
+     * accessor: a field that is missing or unreadable (another Capacitor version) refuses every call, as does
+     * a null proxy.
      */
-    private boolean provenListenerBridge() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) || bridge.getConfig().isUsingLegacyBridge()) return false;
+    private boolean listenerBridge() {
         try {
-            WebViewCompat.addWebMessageListener(bridge.getWebView(), "ovisDirectProbe", bridge.getAllowedOriginRules(), (view, message, origin, mainFrame, reply) -> {});
-            WebViewCompat.removeWebMessageListener(bridge.getWebView(), "ovisDirectProbe");
-            return true;
-        } catch (RuntimeException refused) {
+            java.lang.reflect.Field handlerField = com.getcapacitor.Bridge.class.getDeclaredField("msgHandler");
+            handlerField.setAccessible(true);
+            Object handler = handlerField.get(bridge);
+            if (handler == null) return false;
+            java.lang.reflect.Field proxyField = handler.getClass().getDeclaredField("javaScriptReplyProxy");
+            proxyField.setAccessible(true);
+            return proxyField.get(handler) != null;
+        } catch (ReflectiveOperationException | RuntimeException unknown) {
             return false;
         }
     }
@@ -80,10 +86,10 @@ public class OvisDirectPlugin extends Plugin {
      * Whether the page calling is the app's own. Capacitor's listener bridge takes calls only from the main frame of
      * its origin rules (a PluginCall does not name the caller's frame or origin), and those rules are the hosted
      * shell's origin and the app's bundled pages only while a relay PC is open; `open` then checks the page on screen.
-     * Without a proven listener bridge every call is refused.
+     * Without a proven listener bridge (listenerBridge) every call is refused.
      */
     private boolean allowed(PluginCall call) {
-        if (!Boolean.TRUE.equals(listenerBridge) || !APP_ORIGIN.equals(bridge.getServerUrl())) {
+        if (!listenerBridge() || !APP_ORIGIN.equals(bridge.getServerUrl())) {
             call.reject("OvisDirect answers only the app's own page", "not_allowed");
             return false;
         }
@@ -156,11 +162,11 @@ public class OvisDirectPlugin extends Plugin {
     }
 
     /**
-     * To the page on the bridge's plugin thread, where Capacitor adds and removes listeners: one thread, so the
-     * events of a socket keep the order its reader thread gave them.
+     * To the page on the main thread, where Capacitor drops every listener when a page starts (BridgeWebViewClient
+     * onPageStarted -> Bridge.reset): one thread, so the events of a socket keep the order its reader thread gave them.
      */
     private void emit(String event, JSObject data) {
-        bridge.execute(() -> notifyListeners(event, data));
+        bridge.executeOnMainThread(() -> notifyListeners(event, data));
     }
 
     /** One message to the page, unless the page is that far behind: then the socket ends with 1009. */
