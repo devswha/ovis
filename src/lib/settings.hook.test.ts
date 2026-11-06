@@ -187,6 +187,19 @@ describe("settings across tabs", () => {
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
+  it("keeps what this tab holds when the stored record is broken", async () => {
+    // Given a tab that loaded two locks, and a record that then no longer parses.
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+    await open();
+    records.set(SETTINGS_STORAGE_KEY, "{broken");
+
+    // When the pane moves.
+    await act(async () => { update(move); });
+
+    // Then both locks are kept, the moved one under its new ID.
+    expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
+  });
+
   it("keeps this tab's change that storage refused over storage's older copy", async () => {
     // Given a lock this tab stored, then removed while storage refused the write.
     await open();

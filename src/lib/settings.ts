@@ -1180,8 +1180,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     let made: Partial<Settings> | undefined;
     setSettings((current) => {
       const differs = (key: string, value: unknown, from: Settings): boolean => JSON.stringify(value) !== JSON.stringify(from[key as keyof Settings]);
-      // storage that no longer reads, or holds no record, has nothing newer: this tab's own copy stands
-      const readable = (): boolean => { try { return window.localStorage.getItem(SETTINGS_STORAGE_KEY) !== null; } catch { return false; } };
+      // storage that no longer reads, or holds no record or a broken one, has nothing newer: this tab's own copy stands
+      const readable = (): boolean => {
+        try {
+          const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+          if (raw === null) return false;
+          JSON.parse(raw);
+          return true;
+        } catch { return false; }
+      };
       const latest = (): Settings => !readable() ? current
         : sanitizeSettings({ ...loadSettings(), ...Object.fromEntries(Object.entries(current).filter(([key, value]) => differs(key, value, stored.current))) });
       const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? made ??= patch(latest()) : patch) });
