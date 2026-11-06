@@ -666,6 +666,13 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   agent's row shows what New tab starts it with (model and effort), as T3 Code's provider rows show
   their state, herdr's integrations for other agents fold under one line, and Plan limits is one row
   (Off, Used, Remaining).
+- Every page shares one grid, as Apple's System Settings and herdr-app lay their lists out: a row is
+  at least one control tall (a row of words alone too), a row's picture takes a column of its own so
+  every name of a card starts on one line and its sentence starts under the name, every control ends
+  on the card's inner edge (a switch's track, not its finger-sized box), and a group's caption, its
+  note and a page's More settings line start where the rows' content does. On a phone a stacked
+  stepper ends on that edge and a row's drawing stays at the end of its name's line
+  (`SettingsControls.css`).
 - `theme`: `dark`, `light`, or `system`; default `dark`.
 - `palette`: the legacy mirror of the drawn side's theme for older app versions; default `codex`.
   A record with no palette (saved before palettes) or a removed one (`report`, `lilac`, `forest`)
@@ -880,7 +887,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   into `--bg-panel` in a light theme, 5% in a dark one, so it stays near the pane's colour); each
   tab is its agent's mark (a shell's glyph when it has none) and its name, a working agent's ring
   turning round the mark, tabs at rest parted by short `--divider` rules and sharing the width
-  evenly (220px each at most, 44px at least); the open tab takes the pane's surface (`--bg` under
+  evenly (220px each at most, 120px at least, so a name stays readable and the close is a small part
+  of the tab). Tabs that do not fit at 120px wait behind a More button after `+` (`.tab-strip-more`:
+  a chevron and how many), whose list holds each with its agent's mark and state, as Firefox's
+  List all tabs and VS Code's tab overflow do, rather than Chrome's tabs shrinking to their icon:
+  an Ovis tab is told apart by its name, and a tab too narrow for it is a close button to
+  misclick. The open tab is always in the row (the last place when it is past the others), and
+  one picked from the list opens there; `lib/tabOverflow.ts` picks them. The open tab takes the pane's surface (`--bg` under
   the chat lens, `--term-bg` otherwise) with rounded top corners and no line under it, so it runs
   on into the pane; its close (×) shows on the open tab and a hovered one. A split view keeps a
   strip per half and the title in the header. The Herdr app's Changes button is not carried over:
@@ -4586,3 +4599,7 @@ app whichever PC is selected, and it goes through the same `panelUrl` checks: th
 and pages the panel refuses get no row. Nothing is proxied: the browser reaches the page under the
 app's hostname, as for a clicked link. This follows VS Code's Simple Browser, which a palette
 command opens on a typed address; no code is copied.
+
+## Touch prompt suggestions
+
+The empty composer follows Claude Code's [prompt suggestion model](https://code.claude.com/docs/en/interactive-mode): accept into an editable draft, then send separately. On a touch screen with Settings → Chat → Composer buttons → Suggestion on (off by default), the grey words also accept a tap; with it off, a tap there only focuses the box, so a user who taps the words to write their own reply never gets the suggestion inserted. Only the words receive taps; the surrounding input keeps native focus and scrolling. Tab and the optional suggestion chip share the same acceptance function. A focused inline suggestion also accepts Enter and Space. A suggestion that exceeds the message limit leaves the draft unchanged and shows the limit in the existing alert. No code or visual assets are copied.

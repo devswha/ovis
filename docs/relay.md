@@ -303,9 +303,10 @@ Both turn the relay on first when it is off, and wait until it is online.
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
   ID for the other device to compare. Both renew when they run out. When the relay mints no typed
   code (a relay that is not Ovis's own, or one that refuses it), it says why and shows the QR code
-  alone, as Settings does. Ctrl+C, or any error, takes both back
-  (`POST /api/devices/pair/cancel`, which ends the pending six-digit code and the typed code bound
-  to it). Redeeming them follows the usual admission rules.
+  alone, as Settings does. Ctrl+C, SIGTERM, SIGHUP (the terminal closing), or any error, takes both
+  back (`POST /api/devices/pair/cancel` with `{ "code" }`, the six-digit code it showed, which ends
+  that pending code and the typed code bound to it; a pairing started since, in Settings or on
+  another device, stays). Redeeming them follows the usual admission rules.
 
 **Which copy runs.** An in-app update (**Settings → Updates**) installs a new release beside the
 plugin checkout and does not replace the checkout. `link` follows the release that runs, as
@@ -772,7 +773,12 @@ encrypt end to end whichever relay passes the frames on, and each relay sees wha
 While the relay is on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
-([`server/relay/direct.ts`](../server/relay/direct.ts)). A phone that can reach one of them opens
+([`server/relay/direct.ts`](../server/relay/direct.ts)). It also listens on the PC's Tailscale IPv4
+address (100.64.0.0/10) on the same port, when one is up: a Tailscale-range address on Tailscale's
+own adapter (`tailscale0`, Windows' `Tailscale`), or on a macOS `utun` only when it is the address
+`tailscale status` names (with one named, only that one); never one on a real adapter (an ISP's
+shared address space) or another VPN's tunnel. It keeps one of the four
+places. A phone that can reach one of them opens
 it there instead of through `relay.ovis.sh`. The iOS and Android apps open it through their OvisDirect
 plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser stays on the relay.
 
@@ -787,7 +793,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
 - **Told inside the channel.** A phone that offers `direct-carrier` in `HELLO` is told in
   `AUTH_OK` `direct`: up to four `ws://<private IPv4>:<port>` addresses, checked on both ends. It
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
-  PC offers or answers nothing, and nothing changes for it.
+  PC offers or answers nothing, and nothing changes for it. The Tailscale address is named only to
+  a phone that also offers `direct-tailnet` (an app whose plugin answers `features` with
+  `tailnet: true`): an older phone would refuse the whole `AUTH_OK` over an address it does not take.
 - **Bounded, and never locked out.** A socket that names an `Origin` (any browser page, on the network
   or not) is refused: the apps' sockets name none. A gate in front ([`direct-gate.ts`](../server/relay/direct-gate.ts))
   counts connections before reading a byte (8 per address, 128 in all) and gives a request head 5 s
@@ -799,11 +807,15 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   back by itself; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
-  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
+  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
+  every peer outside Tailscale's range (each listener takes only its own network's peers). Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
-  tries the PC's direct carriers first, one at a time within 1.5 s, whenever it connects or
-  reconnects, then the relay. While the relay carries it, it probes them (a socket, `assigned` and
+  tries the PC's direct carriers first, all at once, each within 1.5 s, whenever it connects or
+  reconnects. When none is up within 300 ms it opens the relay too and keeps whichever channel is
+  admitted first; the other attempt is ended, and a channel it still admits is closed without
+  being reported as a lost carrier. The reconnect of a planned switch (below) does not open the
+  relay early: the carrier the probe just proved gets its whole 1.5 s first. While the relay carries it, it probes them (a socket, `assigned` and
   the Noise handshake to the pinned key, closed before `HELLO`, so the PC holds no session) after
   each admission (at most every 5 minutes, the next one due even across a reconnect), on `online`
   and when the page comes back to the foreground; once one proves to be the PC, no request is under
@@ -814,7 +826,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   relay. The carriers are saved with the pairing for the next start. A browser has no such socket
   and always uses the relay.
 - **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
-  Wi-Fi direct connection on" (who can sign in there) with its switch. `/api/health` names the
+  Wi-Fi direct connection on" (who can sign in there, and that it is on Tailscale too when it is)
+  with its one switch, which turns both off. `/api/health` names the
   listener to a client that got in (`lan_exposure` with `direct: true`), and the app's banner
   says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
   only; starting the relay closes the pairing gate, so it never applies while this listener runs.

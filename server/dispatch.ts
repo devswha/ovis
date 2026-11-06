@@ -310,6 +310,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("open-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Pair without a code from this PC itself, or from a paired device: an open LAN window is not told when a phone waits for approval." } }, 403);
   }
+  // the owner's other PCs answer this PC's own Tailscale login (server/tailnet-pcs.ts): an open LAN window, a Portal
+  // visitor or a device on the relay must not borrow it to pair this PC with them
+  if (pathname === "/api/machines/tailnet" && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
+  }
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {
@@ -599,6 +605,23 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (ctx.services.runtimeMove?.busy()) return jsonResponse({ error: { code: "runtime_switching", message: "a move to herdr-core is waiting or running" } }, 409);
     const answer = options.runtimeService.request(body !== null && typeof body === "object" ? (body as Record<string, unknown>)["runtime"] : undefined);
     return answer.ok ? jsonResponse({ accepted: true }, 202) : jsonResponse({ error: { code: answer.code, message: answer.message } }, answer.status);
+  }
+
+  if (pathname === `${RUNTIME_MOVE_PATH}/install`) {
+    setRequestRoute(pathname);
+    // downloads and runs a program on this PC: the runtime switch's own boundary, and only from this app's page
+    if (!(access.level === "full" && access.role === "drive" && access.via !== "open")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can install herdr-core" } }, 403);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
+    if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "an install must come from this app's own page" } }, 403);
+    const move = ctx.services.runtimeMove;
+    if (!move) return jsonResponse({ error: { code: "runtime_locked", message: "this server cannot switch its runtime" } }, 409);
+    try {
+      const refused = await move.install();
+      if (refused === null) return jsonResponse({ installed: true });
+      return jsonResponse({ error: { code: refused, message: refused === "installing" ? "herdr-core is already being installed" : "Ovis offers no herdr-core install here" } }, 409);
+    } catch (error) {
+      return jsonResponse({ error: { code: "install_failed", message: error instanceof Error ? error.message : String(error) } }, 502);
+    }
   }
 
   if (pathname === RUNTIME_MOVE_PATH) {

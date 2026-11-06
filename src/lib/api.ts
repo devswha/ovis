@@ -235,6 +235,13 @@ export async function startMove(revision: string): Promise<void> {
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** Installs herdr-core where the move offers it (`install` in the plan's answer); the move is offered once it is in. */
+export async function installHerdrCore(): Promise<void> {
+  const url = "/api/runtime/move/install";
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** Ends a wait for busy panes; a move under way is not stopped. */
 export async function cancelMove(): Promise<void> {
   const url = "/api/runtime/move";
@@ -1563,6 +1570,12 @@ export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>
  */
 export const findRelayPc = (code: string) => machineRequest<{ ticket: string; server_id: string; name: string | null }>("/relay/code", "POST", { code });
 export const addFoundRelayPc = (ticket: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: ticket });
+/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts). */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null }
+/** GET /api/machines/tailnet: the PCs on this PC's Tailscale that one tap adds through the relay. */
+export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
+/** POST /api/machines/tailnet: asks that PC for its code over Tailscale and adds it through the relay. */
+export const addTailnetPc = (url: string) => machineRequest<{ machine: Machine }>("/tailnet", "POST", { url });
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
