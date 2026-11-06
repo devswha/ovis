@@ -811,6 +811,8 @@ export function App() {
         <HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />
         {stripInHeader ? (
           <div className="header-tabs">
+            {/* the strip that cannot be drawn leaves the sidebar and the pane working, as the pane's own strip did */}
+            <RenderBoundary resetKey={`${selectedMachineId}:${selectedPane.pane_id}`} fallback={(retry) => <RegionCrash message={t("This pane can't be shown.")} retry={retry} />}>
             <PanePressContext.Provider value={pressPane}>
               <TabStrip snapshot={snapshot} workspace={selectedWorkspace} selectedPane={selectedPane} onSelectPane={selectPane} splitDrag browserTabs closable={auth?.role !== "watch"}
                 renameRequest={renameRequest?.machineId === selectedMachineId && renameRequest.paneId === selectedPane.pane_id ? renameRequest : null}
@@ -824,6 +826,7 @@ export function App() {
                   return paneActionsRef.current(target).map((item) => ({ ...item, run: () => paneActionsRef.current?.(target).find((fresh) => fresh.id === item.id)?.run() }));
                 }} />
             </PanePressContext.Provider>
+            </RenderBoundary>
           </div>
         ) : note !== null ? null : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>

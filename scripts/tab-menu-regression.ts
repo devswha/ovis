@@ -234,6 +234,21 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     await pointerOffStrip();
     await narrowMenu.waitFor({ state: "hidden" });
     assert.equal(await tab.evaluate((node) => node === document.activeElement), true, "the resize closes the menu and restores a visible tab");
+    // the strip moves between the header (from 769px) and the pane as the window is resized: a focused
+    // tab's focus goes with it to the open tab of the strip drawn now, both ways
+    const openTabFocused = (label: string) => until(async () => await page.evaluate(() => {
+      const active = document.activeElement;
+      return active?.getAttribute("role") === "tab" && active.getAttribute("aria-selected") === "true" && active.isConnected;
+    }), label);
+    await tab.focus();
+    await page.setViewportSize({ width: 700, height: 800 });
+    await page.locator(".pane-slot .tab-strip").waitFor();
+    await openTabFocused("narrowed, the pane's strip has the focused open tab");
+    assert.equal(await page.evaluate(() => document.activeElement?.closest(".header-tabs") === null), true, "the focus left the header's strip with it");
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.locator(".header-tabs .tab-strip").waitFor();
+    await openTabFocused("widened again, the header's strip has the focused open tab");
+    await pointerOffStrip();
 
     // Right-click targets an inactive tab without activating it; Close removes only that target.
     const nativeTab = (await sessionSnapshot()).tabs.find((candidate) => candidate.tab_id === tabId)!;
