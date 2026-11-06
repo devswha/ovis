@@ -96,6 +96,20 @@ describe('a message sent to a Codex pane', () => {
     }
   });
 
+  it('types nothing past a collapsed queue once one of its screens opened over it', async () => {
+    const queue = ['• Queued follow-up inputs', '  ? 1 question', '    alt+↑ to answer'];
+    const { read, prompt, typed, keys } = spies([...queue, ...FREE['its composer']!]);
+    spyOn(client, 'paneGet').mockResolvedValue({ ...pane, agent_status: 'blocked' });
+    prompt.mockRejectedValue(new client.HerdrError('agent_blocked', 'blocked'));
+    // free when first read; the transcript view opened before the refusal's own look
+    read.mockResolvedValueOnce({ text: screen([...queue, ...FREE['its composer']!]) } as Awaited<ReturnType<typeof client.paneRead>>)
+      .mockResolvedValue({ text: screen([...queue, ...HELD['the transcript view']!]) } as Awaited<ReturnType<typeof client.paneRead>>);
+    const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+    expect(typed).not.toHaveBeenCalled();
+    expect(keys).not.toHaveBeenCalled();
+  });
+
   it('goes to the agent at its composer', async () => {
     const { prompt } = spies(FREE['its composer at Ultra']!);
     await submitter()(pane.pane_id, 'Carry on without me', 'Carry on without me', Date.now());

@@ -153,7 +153,9 @@ export async function blockedOnlyByCodexQueue(paneId: string): Promise<boolean> 
   }), "codex");
   if (!(await codex())) return false;
   // A collapsed queue in scrollback must not bypass an approval on the live screen.
-  if (!codexQuestionsCollapsed((await paneRead({ paneId, source: "detection", format: "text" })).text)) return false;
+  // nor may one of Codex's own lists or fields that opened since (codexInputHeld): the raw typing below would land in it
+  const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+  if (!codexQuestionsCollapsed(screen) || registry.holdsInput("codex", screen)) return false;
   // the screen was Codex's only if Codex still runs once it is read: one that exited meanwhile left a shell to type into
   return await codex();
 }
