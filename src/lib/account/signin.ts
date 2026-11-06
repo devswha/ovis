@@ -1,5 +1,5 @@
 /**
- * Signing in with GitHub or Apple through the account service: OAuth's authorization code with
+ * Signing in with GitHub, Google or Apple through the account service: OAuth's authorization code with
  * PKCE, the service standing between this client and the provider. The service sends the browser
  * back with the code in the fragment, which no request carries, so the code never reaches the
  * host that serves the app.
@@ -12,7 +12,8 @@ import type { AccountProvider, AccountSession, AccountStore, PendingSignIn } fro
 export const SIGN_IN_MS = 10 * 60_000;
 
 export class SignInError extends Error {
-  constructor(readonly code: "no_sign_in" | "expired" | "denied" | "unsupported", message: string) {
+  /** `in_use`: a sign-in that was to add a method found an identity another account already has */
+  constructor(readonly code: "no_sign_in" | "expired" | "denied" | "unsupported" | "in_use", message: string) {
     super(message);
     this.name = "SignInError";
   }
@@ -24,8 +25,11 @@ function random(bytes: number): string {
   return toBase64Url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
-/** Where to send the browser to sign in; the verifier and state wait in the store for the return. */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number }): Promise<string> {
+/**
+ * Where to send the browser to sign in; the verifier and state wait in the store for the return.
+ * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead.
+ */
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string }): Promise<string> {
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
@@ -41,6 +45,7 @@ export async function beginSignIn(provider: AccountProvider, options: { store: A
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
+  if (options.linkToken !== undefined) url.searchParams.set("link_token", options.linkToken);
   return url.href;
 }
 
@@ -73,6 +78,7 @@ export async function finishSignIn(returned: SignInReturn, options: { store: Acc
   });
   if (pending === undefined) throw new SignInError("no_sign_in", "This sign-in was not started here, or has finished");
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
+  if ("error" in returned && returned.error === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
   if ("error" in returned) throw new SignInError("denied", "The sign-in was cancelled or refused");
   const session = await requestToken(pending.service, {
     grant_type: "authorization_code", code: returned.code, code_verifier: pending.verifier, redirect_uri: pending.redirect_uri,

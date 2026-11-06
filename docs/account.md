@@ -441,7 +441,7 @@ that stays with each PC's `devices.json` ([Rules](#rules)).
 
 OAuth's authorization code flow with PKCE, `S256` only:
 
-1. `GET /v1/signin/{github|apple}?redirect_uri&state&code_challenge&code_challenge_method=S256[&response_mode]`
+1. `GET /v1/signin/{github|google|apple}?redirect_uri&state&code_challenge&code_challenge_method=S256[&response_mode][&link_token]`
    sends the browser to the provider's sign-in, then back to `redirect_uri` with `code` and
    `state`: in the fragment (`#code=…&state=…`) for `https://app.ovis.sh/`, always, so the code never
    reaches that host's request logs; in the query for the loopback redirect, which a local server
@@ -462,8 +462,8 @@ OAuth's authorization code flow with PKCE, `S256` only:
    signature holds (Apple's published keys), `iss` is `https://appleid.apple.com`, `aud` is the
    app's id, it was issued at most 10 minutes ago and has not expired, and its `nonce` claim is that
    hash. Each nonce is accepted once.
-5. A PC without a browser signs in with GitHub's device flow (RFC 8628):
-   `POST /v1/signin/github/device` answers `{ "device_code", "user_code", "verification_uri",
+5. A PC without a browser signs in with GitHub's or Google's device flow (RFC 8628):
+   `POST /v1/signin/{github|google}/device` answers `{ "device_code", "user_code", "verification_uri",
    "expires_in", "interval" }`; the person opens `verification_uri` elsewhere and types `user_code`.
    The PC polls `POST /v1/token` `{ "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
    "device_code" }` every `interval` seconds: 400 `authorization_pending` until the person approves,
@@ -475,10 +475,38 @@ OAuth's authorization code flow with PKCE, `S256` only:
    `"code_verifier"`. A bound poll without that verifier, or with another, answers 400
    `invalid_grant` before GitHub is asked and without moving the interval, so the `device_code`
    alone redeems nothing. The page keeps the verifier in memory only, uses the service only when
-   it named the method, links only to `https://github.com/login/device`, waits `Retry-After` on a
+   it named the method, links only to the provider's own device page (`https://github.com/login/device`,
+   `https://www.google.com/device`), waits `Retry-After` on a
    429, and keeps no session from a sign-in cancelled meanwhile (it is stored under the same
    lock as a refresh or a sign-out).
 6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
+
+`GET /v1/providers` (no sign-in) answers `{ "providers": ["github", "google"], "device": ["github",
+"google"] }`: the sign-ins this service is set up for, and those of them a PC's own page can start
+(step 5). A provider that is not listed has no button anywhere; a client that cannot read the answer
+keeps the sign-ins its build names (GitHub alone by default), so a Google button never leads to a
+service that has no Google client.
+
+Google asks for `openid email profile` and nothing else, and the service keeps none of Google's
+tokens past the sign-in: it reads the identity token's `sub` (the account's key for that Google
+user), checks `iss`, `aud`, `exp` and the `nonce` it sent, and drops the rest.
+
+#### Sign-in methods
+
+Each provider is its own sign-in method: an account has at most one identity per provider, and a
+sign-in with an identity no account has makes a new account. The service never joins two accounts
+because their email addresses match (whoever controls an address at one provider would take the
+account). A signed-in person adds another method on purpose, from Settings:
+
+| request | body | answer |
+|---|---|---|
+| `GET /v1/identities` | | `{ "identities": [{ "provider", "label", "added_at" }] }`: this account's sign-in methods; `label` is what the person knows it by (GitHub login, Google email), shown only to the account's own clients |
+| `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this account and that provider. The client starts a sign-in (step 1, or step 5 with `link_token` in the body) carrying it; the identity that sign-in finds is added to this account, and the token answer is a session of this account with `provider` the added one. 409 `identity_exists` when the account already has that provider |
+| `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one |
+
+A linking sign-in whose identity already belongs to another account fails with 409 `identity_in_use`
+(as a callback `error=identity_in_use`, or on the device poll), and neither account changes. The client
+keeps the session the link answers with and ends the one it had (`POST /v1/signout`).
 
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
 for each sign-in, keeps them with that sign-in only, and drops a callback whose `state` is missing or
@@ -494,7 +522,8 @@ unless `OVIS_ACCOUNT_SERVICE_URL` names another https service. `OVIS_ACCOUNT_SER
 turns the account off for the app and its server alike: no sign-in, no account origin in the
 pages' policy, no mailbox. A browser on the PC's own address cannot take a redirect (the service
 sends a sign-in back only to the three above, none of which is that address), so it signs in
-with GitHub's device flow (step 5), in the same place, with GitHub only: the PC writes
+with the device flow (step 5), in the same place, with the providers `GET /v1/providers` lists
+under `device`: the PC writes
 `<meta name="ovis-pc-account-service">` into its own shell with exactly the origin its policy
 admits (none when the account is `off`), and the page offers the sign-in only on a secure page
 (https, or `localhost`), where no one on the network could have rewritten the script that holds

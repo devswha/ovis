@@ -24,14 +24,14 @@ export function desktopAccount(): DesktopAccountBridge | null {
     ? bridge as DesktopAccountBridge : null;
 }
 
-/** The sign-ins the desktop app's service offers: GitHub alone unless it names Apple too. */
+/** The sign-ins the desktop app was built to offer: GitHub alone unless it names Google or Apple too. */
 export function desktopProviders(bridge: DesktopAccountBridge): AccountProvider[] {
   const offered = ACCOUNT_PROVIDERS.filter((provider) => bridge.providers?.includes(provider));
   return offered.length > 0 ? offered : ["github"];
 }
 
-export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore): Promise<AccountSession> {
+export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore, options: { linkToken?: string } = {}): Promise<AccountSession> {
   const redirectUri = await bridge.start();
-  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri });
+  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, ...options });
   return finishOwnSignIn(url, await bridge.open(url), { store });
 }
