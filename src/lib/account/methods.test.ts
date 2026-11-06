@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { desktopSignIn } from "./desktop.ts";
 import { startDeviceSignIn } from "./deviceSignIn.ts";
 import { AccountService, offeredProviders } from "./service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
@@ -8,11 +9,16 @@ import { memoryAccountStore, memoryLock } from "./store.ts";
 
 const SERVICE = "https://account.example";
 
-async function redirectSignIn(fake: FakeAccountService, provider: AccountProvider, store: AccountStore, linkToken?: string) {
-  const start = await beginSignIn(provider, { store, service: SERVICE, redirectUri: WEB_REDIRECT, ...(linkToken ? { linkToken } : {}) });
+async function redirectSignIn(fake: FakeAccountService, provider: AccountProvider, store: AccountStore, link?: { linkToken: string; bearer?: string }) {
+  const start = await beginSignIn(provider, { store, service: SERVICE, redirectUri: WEB_REDIRECT, ...(link ? { linkToken: link.linkToken } : {}) });
   const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
   if (returned === null) throw new Error("no sign-in came back");
-  return finishSignIn(returned, { store, fetch: fake.fetch });
+  return finishSignIn(returned, { store, fetch: fake.fetch, ...(link?.bearer ? { bearer: link.bearer } : {}) });
+}
+
+async function linkToken(fake: FakeAccountService, bearer: string, provider: AccountProvider): Promise<string> {
+  const answer = await fake.fetch(new Request(`${SERVICE}/v1/identities/link`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify({ provider }) }));
+  return (await answer.json() as { link_token: string }).link_token;
 }
 
 describe("the sign-ins a service offers", () => {
@@ -60,7 +66,7 @@ describe("sign-in methods", () => {
     const store = memoryAccountStore();
     const before = await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
-    const after = await service.addMethod("google", (linkToken) => redirectSignIn(fake, "google", store, linkToken));
+    const after = await service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }));
     expect(after).toMatchObject({ account: "acct_1", provider: "google" });
     expect((await service.identities()).map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
     expect(fake.requests).toContain("POST /v1/signout");
@@ -76,7 +82,7 @@ describe("sign-in methods", () => {
     const store = memoryAccountStore();
     await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
-    await expect(service.addMethod("google", (linkToken) => redirectSignIn(fake, "google", store, linkToken))).rejects.toMatchObject({ code: "in_use" });
+    await expect(service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }))).rejects.toMatchObject({ code: "in_use" });
     expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
     expect((await store.get("session"))?.account).toBe("acct_1");
   });
@@ -87,9 +93,73 @@ describe("sign-in methods", () => {
     const store = memoryAccountStore();
     await redirectSignIn(fake, "github", store);
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
-    await service.addMethod("google", (linkToken) => redirectSignIn(fake, "google", store, linkToken));
+    await service.addMethod("google", (linkToken, bearer) => redirectSignIn(fake, "google", store, { linkToken, bearer }));
     await service.removeIdentity("github");
     expect((await service.identities()).map((identity) => identity.provider)).toEqual(["google"]);
     await expect(service.removeIdentity("google")).rejects.toMatchObject({ status: 409, code: "last_identity" });
   });
+
+  it("links nothing until the link's own account redeems the code, so a link token in someone else's sign-in adds nobody", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_attacker");
+    const attacker = memoryAccountStore();
+    const session = await redirectSignIn(fake, "github", attacker);
+    const token = await linkToken(fake, session.access_token, "google");
+    // the victim opens the attacker's link URL: their own Google identity, their own client, no attacker token
+    fake.signInAs("google", "acct_victim");
+    const victim = memoryAccountStore();
+    await expect(redirectSignIn(fake, "google", victim, { linkToken: token })).rejects.toMatchObject({ code: "invalid_grant" });
+    const service = new AccountService({ store: attacker, fetch: fake.fetch, lock: memoryLock() });
+    expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
+    // the victim's own Google sign-in still lands in their own account
+    expect((await redirectSignIn(fake, "google", memoryAccountStore())).account).toBe("acct_victim");
+  });
+
+  it("refuses a spent link token instead of signing in plainly, and keeps the session and the account", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const before = await redirectSignIn(fake, "github", store);
+    const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
+    await expect(service.addMethod("google", async (token, bearer) => {
+      await redirectSignIn(fake, "google", memoryAccountStore(), { linkToken: token, bearer });
+      return redirectSignIn(fake, "google", store, { linkToken: token, bearer });
+    })).rejects.toMatchObject({ code: "expired" });
+    expect(await store.get("session")).toEqual(before);
+  });
+
+  it("ends and refuses an answer for another account, keeping the session it had", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    fake.signInAs("google", "acct_other");
+    const store = memoryAccountStore();
+    const before = await redirectSignIn(fake, "github", store);
+    const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
+    await expect(service.addMethod("google", () => redirectSignIn(fake, "google", store))).rejects.toMatchObject({ code: "invalid_answer" });
+    expect(await store.get("session")).toEqual(before);
+    expect(fake.requests.filter((request) => request === "POST /v1/signout")).toHaveLength(1);
+  });
+
+  it("adds a method from the desktop app through its loopback return, redeemed with the account's token", async () => {
+    const fake = new FakeAccountService();
+    fake.signInAs("github", "acct_1");
+    const store = memoryAccountStore();
+    const bridge = {
+      service: SERVICE,
+      start: async () => "http://127.0.0.1:4567/callback",
+      open: async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").search.slice(1),
+    };
+    // the page redeems with the browser's fetch, as the desktop app's page does
+    const real = globalThis.fetch;
+    globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
+    try {
+      await desktopSignIn("github", bridge, store);
+      const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
+      const after = await service.addMethod("google", (token, bearer) => desktopSignIn("google", bridge, store, { linkToken: token, bearer }));
+      expect(after).toMatchObject({ account: "acct_1", provider: "google" });
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
 });

@@ -47,6 +47,7 @@ const BASE: Record<string, string> = {
   "Add another way to sign in before removing this one.": "이 방법을 지우기 전에 다른 로그인 방법을 먼저 추가하세요.",
   "The sign-in method could not be removed. Try again.": "로그인 방법을 지우지 못했습니다. 다시 시도하세요.",
   "Ways to sign in": "로그인 방법",
+  "Add another way to sign in from the Ovis desktop app.": "다른 로그인 방법은 Ovis 데스크톱 앱에서 추가하세요.",
   "Add {provider}": "{provider} 추가",
   "The code expired. Sign in again to get a new one.": "코드가 만료되었습니다. 다시 로그인해 새 코드를 받으세요.",
   "This account service can't sign in a browser on this PC yet.": "이 계정 서비스는 아직 이 PC의 브라우저 로그인을 지원하지 않습니다.",

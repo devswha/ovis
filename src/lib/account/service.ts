@@ -165,11 +165,11 @@ export function sessionOf(body: unknown, service: string, now: number): AccountS
   return { service, account, provider: provider as AccountProvider, access_token, refresh_token, expires_at: now + expires_in * 1000 };
 }
 
-/** `POST /v1/token`: a code, a refresh token or a native Apple token for a session. */
-export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number } = {}): Promise<AccountSession> {
+/** `POST /v1/token`: a code, a refresh token or a native Apple token for a session; `bearer` redeems a linking sign-in. */
+export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(grant),
+    method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
   });
   if (!response.ok) throw await failure(response);
   return sessionOf(await response.json(), service, now());
@@ -250,22 +250,29 @@ export class AccountService {
   }
 
   /**
-   * Adds `provider` to the signed-in account on purpose: the service hands a one-time link token,
-   * `signIn` runs that provider's sign-in with it, and its session (the same account) replaces the
-   * one this client had, which then ends at the service. An identity another account already has
-   * is refused (SignInError `in_use`) and nothing changes.
+   * Adds `provider` to the signed-in account on purpose, through a redirect sign-in only (a device
+   * code can be phished): the service hands a one-time link token, `signIn` runs that provider's
+   * sign-in with it and redeems the code with this account's access token (`bearer`), and only then
+   * does the service link it. Its session replaces the one this client had, which then ends at the
+   * service. An answer for any other account is ended and refused, and the session stays as it was;
+   * an identity another account already has is refused (SignInError `in_use`) and nothing changes.
    */
-  async addMethod(provider: AccountProvider, signIn: (linkToken: string) => Promise<AccountSession>): Promise<AccountSession> {
+  async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string) => Promise<AccountSession>): Promise<AccountSession> {
     const body = await this.call("POST", "/v1/identities/link", { provider });
     const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
     if (linkToken === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no link");
     const before = await this.session();
-    const after = await signIn(linkToken);
-    if (before !== undefined && before.refresh_token !== after.refresh_token) {
-      // the old sign-in's tokens would otherwise live on at the service until they expire
-      await this.fetch(new URL("/v1/signout", before.service), { method: "POST", headers: { authorization: `Bearer ${before.access_token}` } })
-        .catch((error: unknown) => console.warn("Ovis: the replaced sign-in was not ended at the account service", error instanceof Error ? error.name : error));
+    if (before === undefined) return this.signedOut();
+    const after = await signIn(linkToken, before.access_token);
+    const end = (session: AccountSession, what: string) => this.fetch(new URL("/v1/signout", session.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
+      .catch((error: unknown) => console.warn(`Ovis: ${what} was not ended at the account service`, error instanceof Error ? error.name : error));
+    if (after.account !== before.account) {
+      await this.options.store.update("session", (current) => current?.refresh_token === after.refresh_token ? before : current);
+      await end(after, "a sign-in for another account");
+      throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
+    // the old sign-in's tokens would otherwise live on at the service until they expire
+    if (before.refresh_token !== after.refresh_token) await end(before, "the replaced sign-in");
     return after;
   }
 

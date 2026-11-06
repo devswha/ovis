@@ -5,7 +5,7 @@
  * host that serves the app.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { requestToken } from "./service.ts";
+import { AccountServiceError, requestToken } from "./service.ts";
 import type { AccountProvider, AccountSession, AccountStore, PendingSignIn } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
@@ -67,7 +67,15 @@ export function signInReturn(params: string): SignInReturn | null {
  * transaction, so a return opened twice does nothing, and one this client never started touches no
  * sign-in that is still waiting.
  */
-export async function finishSignIn(returned: SignInReturn, options: { store: AccountStore; fetch?: Fetch; now?: () => number }): Promise<AccountSession> {
+export interface FinishOptions {
+  readonly store: AccountStore;
+  readonly fetch?: Fetch;
+  readonly now?: () => number;
+  /** the signed-in account's access token: a linking sign-in is redeemed by the account it adds to */
+  readonly bearer?: string;
+}
+
+export async function finishSignIn(returned: SignInReturn, options: FinishOptions): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   let pending: PendingSignIn | undefined;
   await options.store.update("pending", (current) => {
@@ -78,11 +86,17 @@ export async function finishSignIn(returned: SignInReturn, options: { store: Acc
   });
   if (pending === undefined) throw new SignInError("no_sign_in", "This sign-in was not started here, or has finished");
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
-  if ("error" in returned && returned.error === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
+  if ("error" in returned && returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");
   if ("error" in returned) throw new SignInError("denied", "The sign-in was cancelled or refused");
-  const session = await requestToken(pending.service, {
-    grant_type: "authorization_code", code: returned.code, code_verifier: pending.verifier, redirect_uri: pending.redirect_uri,
-  }, { ...(options.fetch ? { fetch: options.fetch } : {}), now });
+  let session: AccountSession;
+  try {
+    session = await requestToken(pending.service, {
+      grant_type: "authorization_code", code: returned.code, code_verifier: pending.verifier, redirect_uri: pending.redirect_uri,
+    }, { ...(options.fetch ? { fetch: options.fetch } : {}), now, ...(options.bearer === undefined ? {} : { bearer: options.bearer }) });
+  } catch (error) {
+    if (error instanceof AccountServiceError && error.code === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
+    throw error;
+  }
   await options.store.set("session", session);
   return session;
 }
@@ -92,7 +106,7 @@ export async function finishSignIn(returned: SignInReturn, options: { store: Acc
  * state (an older one, or one never started here) is refused before anything is consumed, and the
  * sign-in this call started is dropped whatever the outcome, so it cannot be finished later.
  */
-export async function finishOwnSignIn(started: string, back: string, options: { store: AccountStore; fetch?: Fetch; now?: () => number }): Promise<AccountSession> {
+export async function finishOwnSignIn(started: string, back: string, options: FinishOptions): Promise<AccountSession> {
   const state = new URL(started).searchParams.get("state") ?? "";
   const returned = signInReturn(back);
   if (returned === null || returned.state !== state) {

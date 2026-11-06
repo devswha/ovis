@@ -51,6 +51,7 @@ const BASE: Record<string, string> = {
   "Add another way to sign in before removing this one.": "请先添加另一种登录方式，再移除这一种。",
   "The sign-in method could not be removed. Try again.": "无法移除该登录方式。请重试。",
   "Ways to sign in": "登录方式",
+  "Add another way to sign in from the Ovis desktop app.": "请在 Ovis 桌面应用中添加其他登录方式。",
   "Add {provider}": "添加 {provider}",
   "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",
   "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",

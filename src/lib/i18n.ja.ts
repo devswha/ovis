@@ -49,6 +49,7 @@ const BASE: Record<string, string> = {
   "Add another way to sign in before removing this one.": "この方法を削除する前に、別のサインイン方法を追加してください。",
   "The sign-in method could not be removed. Try again.": "サインイン方法を削除できませんでした。もう一度お試しください。",
   "Ways to sign in": "サインイン方法",
+  "Add another way to sign in from the Ovis desktop app.": "別のサインイン方法は Ovis デスクトップアプリから追加してください。",
   "Add {provider}": "{provider} を追加",
   "The code expired. Sign in again to get a new one.": "コードの有効期限が切れました。もう一度サインインして新しいコードを受け取ってください。",
   "This account service can't sign in a browser on this PC yet.": "このアカウントサービスは、この PC のブラウザーでのサインインにまだ対応していません。",

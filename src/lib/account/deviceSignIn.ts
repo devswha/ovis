@@ -42,8 +42,6 @@ export interface DeviceSignInOptions {
   readonly lock?: AccountLock;
   /** GitHub unless named */
   readonly provider?: DeviceProvider;
-  /** adds the provider to the signed-in account (AccountService.addMethod) */
-  readonly linkToken?: string;
 }
 
 function waitFor(ms: number, signal: AbortSignal): Promise<void> {
@@ -89,7 +87,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const response = await fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...(options.linkToken === undefined ? {} : { link_token: options.linkToken }) }),
+    body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256" }),
   });
   if (!response.ok) throw await failure(response);
   const started: unknown = await response.json();
@@ -147,7 +145,6 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         if (answer.status === 429) { pause = retryAfterMs(answer, interval); continue; }
         const refused = await failure(answer);
         switch (refused.code) {
-          case "identity_in_use": throw new SignInError("in_use", "That sign-in already belongs to another account");
           case "authorization_pending": continue;
           case "slow_down": interval += SLOW_DOWN_MS; pause = interval; continue;
           case "access_denied": throw new SignInError("denied", "The sign-in was refused at the provider");

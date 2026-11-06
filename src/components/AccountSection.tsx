@@ -145,7 +145,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
 
   if (!offered) return null;
 
-  const unlinked = view.kind === "signed-in" && view.methods !== null
+  const unlinked = bridge !== null && view.kind === "signed-in" && view.methods !== null
     ? providers.filter((provider) => !view.methods?.some((method) => method.provider === provider)) : [];
 
   const cancelDeviceSignIn = (): void => {
@@ -166,14 +166,14 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     }
   };
 
-  /** A device sign-in on a PC's own page: shows the provider's code until it is approved; `linkToken` adds the provider instead. */
-  const signInWithCode = (pcServiceOrigin: string, provider: DeviceProvider, linkToken?: string): Promise<AccountSession> => {
+  /** A device sign-in on a PC's own page: shows the provider's code until it is approved. */
+  const signInWithCode = (pcServiceOrigin: string, provider: DeviceProvider): Promise<AccountSession> => {
     cancelDeviceSignIn();
     const controller = new AbortController();
     deviceSignIn.current = controller;
     setView({ kind: "device-code", provider, userCode: null, verificationUri: "" });
     return (async () => {
-      const started = await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, ...(linkToken === undefined ? {} : { linkToken }) });
+      const started = await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider });
       controller.signal.throwIfAborted();
       setView({ kind: "device-code", provider, userCode: started.userCode, verificationUri: started.verificationUri });
       return started.finish(controller.signal);
@@ -181,9 +181,9 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
   };
 
   /** Runs one provider's sign-in the way this page can; null when it cannot here. */
-  const runSignIn = (provider: AccountProvider, linkToken?: string): Promise<AccountSession> | null => {
-    if (bridge !== null) return desktopSignIn(provider, bridge, indexedAccountStore, linkToken === undefined ? {} : { linkToken });
-    return pcService !== null && isDeviceProvider(provider) ? signInWithCode(pcService, provider, linkToken) : null;
+  const runSignIn = (provider: AccountProvider): Promise<AccountSession> | null => {
+    if (bridge !== null) return desktopSignIn(provider, bridge, indexedAccountStore);
+    return pcService !== null && isDeviceProvider(provider) ? signInWithCode(pcService, provider) : null;
   };
 
   const signIn = (provider: AccountProvider): void => {
@@ -196,10 +196,14 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
     });
   };
 
-  /** Adds `provider` to the signed-in account on purpose; the account and its PCs stay as they are. */
+  /**
+   * Adds `provider` to the signed-in account on purpose, from the desktop app only: a link goes
+   * through a redirect sign-in, never a device code someone else could have typed.
+   */
   const addMethod = (provider: AccountProvider): void => {
-    if (bridge !== null) setView({ kind: "signing-in" });
-    new AccountService({ store: indexedAccountStore }).addMethod(provider, (linkToken) => runSignIn(provider, linkToken) ?? Promise.reject(new SignInError("unsupported", "This page cannot add that sign-in")))
+    if (bridge === null) return;
+    setView({ kind: "signing-in" });
+    new AccountService({ store: indexedAccountStore }).addMethod(provider, (linkToken, bearer) => desktopSignIn(provider, bridge, indexedAccountStore, { linkToken, bearer }))
       .then(() => load(), async (error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.warn("Ovis: the sign-in method was not added", error instanceof SignInError || error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
@@ -270,6 +274,7 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
                   </li>
                 ))}
               </ul>
+              {bridge === null && <p className="settings-description">{t("Add another way to sign in from the Ovis desktop app.")}</p>}
               {unlinked.length > 0 && (
                 <div className="account-method-add">
                   {unlinked.map((provider) => (

@@ -489,7 +489,8 @@ service that has no Google client.
 
 Google asks for `openid email profile` and nothing else, and the service keeps none of Google's
 tokens past the sign-in: it reads the identity token's `sub` (the account's key for that Google
-user), checks `iss`, `aud`, `exp` and the `nonce` it sent, and drops the rest.
+user), checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
+device flow carries none), and drops the rest.
 
 #### Sign-in methods
 
@@ -501,12 +502,21 @@ account). A signed-in person adds another method on purpose, from Settings:
 | request | body | answer |
 |---|---|---|
 | `GET /v1/identities` | | `{ "identities": [{ "provider", "label", "added_at" }] }`: this account's sign-in methods; `label` is what the person knows it by (GitHub login, Google email), shown only to the account's own clients |
-| `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this account and that provider. The client starts a sign-in (step 1, or step 5 with `link_token` in the body) carrying it; the identity that sign-in finds is added to this account, and the token answer is a session of this account with `provider` the added one. 409 `identity_exists` when the account already has that provider |
+| `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this account and that provider. The client starts a redirect sign-in (step 1) carrying it. 409 `identity_exists` when the account already has that provider |
 | `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one |
 
-A linking sign-in whose identity already belongs to another account fails with 409 `identity_in_use`
-(as a callback `error=identity_in_use`, or on the device poll), and neither account changes. The client
-keeps the session the link answers with and ends the one it had (`POST /v1/signout`).
+A link takes effect only when its code is redeemed: `POST /v1/token` (`authorization_code`) with the
+PKCE verifier and `Authorization: Bearer` of the account the link token was issued to, which then
+answers a session of that account with `provider` the added one. Starting a sign-in links nothing,
+so a link token in someone else's sign-in URL, whose code never comes back to its owner, adds
+nothing; a redemption without that account's token answers 400 `invalid_grant`. A link token that
+is unknown, spent, expired or for another provider sends the browser back with `error=invalid_link`
+and never falls back to a plain sign-in. A linking sign-in whose identity already belongs to
+another account answers 409 `identity_in_use` at redemption, and neither account changes. The
+device flow (step 5) never links (400 `invalid_request` for a `link_token`): a device code can be
+typed by someone it was phished from, so a PC's own page adds methods only through the desktop
+app or another redirect sign-in. The client keeps the session the link answers with only when it
+is for its own account, and ends the one it had (`POST /v1/signout`).
 
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
 for each sign-in, keeps them with that sign-in only, and drops a callback whose `state` is missing or

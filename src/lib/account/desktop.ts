@@ -30,8 +30,9 @@ export function desktopProviders(bridge: DesktopAccountBridge): AccountProvider[
   return offered.length > 0 ? offered : ["github"];
 }
 
-export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore, options: { linkToken?: string } = {}): Promise<AccountSession> {
+/** `link`: adds the provider to the signed-in account (AccountService.addMethod), redeemed with its access token. */
+export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore, link?: { linkToken: string; bearer: string }): Promise<AccountSession> {
   const redirectUri = await bridge.start();
-  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, ...options });
-  return finishOwnSignIn(url, await bridge.open(url), { store });
+  const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, ...(link ? { linkToken: link.linkToken } : {}) });
+  return finishOwnSignIn(url, await bridge.open(url), { store, ...(link ? { bearer: link.bearer } : {}) });
 }
