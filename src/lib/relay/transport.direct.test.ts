@@ -73,6 +73,14 @@ async function pcFixture(extraCarriers: readonly string[] = []) {
   return { app, service, offer, direct, directSocket, channels, openChannel, opened };
 }
 
+/** Settles once the transport's channel goes the given way: a channel reaches it only after the race that opened it settles. */
+function routeBecomes(transport: RelayTransport, route: RelayTransport["route"]): Promise<void> {
+  return bounded(new Promise<void>((resolve) => {
+    const stop = transport.onRouteChange(() => { if (transport.route === route) { stop(); resolve(); } });
+    if (transport.route === route) { stop(); resolve(); }
+  }));
+}
+
 async function transportFor(pc: Awaited<ReturnType<typeof pcFixture>>, store: MemoryStore, offer: RelayOffer, extra: Partial<Parameters<typeof openRelayTransport>[1]> = {}): Promise<RelayTransport> {
   const transport = await openRelayTransport(offer, { store, openChannel: pc.openChannel, directSocket: pc.directSocket, ...extra });
   cleanup.push(() => transport.close());
@@ -94,7 +102,7 @@ describe("direct carriers in the relay transport", () => {
     const direct = await moved;
     expect(direct.direct).toBe(store.saved!.direct![0]);
     expect(direct.device.device_id).toBe(pc.channels[0]!.device.device_id);
-    expect(transport.route).toBe("direct");
+    await routeBecomes(transport, "direct");
   });
 
   it("opens directly first next time, without the relay", async () => {
@@ -110,6 +118,23 @@ describe("direct carriers in the relay transport", () => {
     // Then its first channel is the direct one
     expect(pc.channels[before]!.direct).toBe(store.saved!.direct![0]);
     expect(transport.route).toBe("direct");
+  });
+
+  it("is told the PC's Tailscale carrier only once the app's socket says it opens one", async () => {
+    // Given a PC that also listens on a Tailscale address, and an app whose plugin has not said yet
+    const pc = await pcFixture(["ws://100.64.0.7:7319"]);
+    const store = new MemoryStore();
+    let tailnet = false;
+    const lan = (): string => `ws://${LAN}:${pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1)}`;
+    const first = await transportFor(pc, store, pc.offer, { directTailnet: () => tailnet });
+    expect(store.saved?.direct).toEqual([lan()]);
+    first.close();
+    // When the plugin has said it opens Tailscale addresses and the app connects again
+    tailnet = true;
+    const { code: _code, ...saved } = pc.offer;
+    await transportFor(pc, store, saved, { directTailnet: () => tailnet });
+    // Then the PC named its Tailscale carrier too
+    expect(store.saved?.direct).toEqual(["ws://100.64.0.7:7319", lan()]);
   });
 
   it("goes through the relay when the direct carrier does not answer", async () => {
@@ -215,6 +240,23 @@ describe("racing the relay at the start", () => {
     expect(transport.route).toBe("direct");
   });
 
+  it("races the PC's Tailscale carrier too when a saved LAN address stays silent", async () => {
+    // Given a phone away from home on Tailscale: its saved LAN address assigns and never answers, its Tailscale one is the PC
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const { pc, store, saved } = await paired();
+    const port = pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1);
+    const tailscale = `ws://100.64.0.7:${port}`;
+    store.saved = { ...store.saved!, direct: [`ws://${LAN}:9`, tailscale] };
+    const socketFor = (url: string): WebSocket => new WebSocket(url.startsWith(tailscale) ? url.replace("ws://100.64.0.7:", "ws://127.0.0.1:") : `ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+    // When it opens the PC
+    const transport = await transportFor(pc, store, saved, { directTailnet: () => true, directSocket: socketFor });
+    // Then the Tailscale carrier carries the channel, not the relay
+    expect(transport.route).toBe("direct");
+    expect(pc.channels.at(-1)!.direct).toBe(tailscale);
+  });
+
   it("gives a switch a probe just earned the direct carriers' whole budget, without racing the relay again", async () => {
     // Given a phone pairing through the relay, whose PC's direct carrier then admits it only slowly
     const pc = await pcFixture();
@@ -235,7 +277,7 @@ describe("racing the relay at the start", () => {
     clock.advance(300);
     gate.resolve();
     // Then the relay was not opened again, and the switch lands on the direct carrier
-    await bounded(new Promise<void>((resolve) => { const stop = transport.onRouteChange(() => { if (transport.route === "direct") { stop(); resolve(); } }); if (transport.route === "direct") { stop(); resolve(); } }));
+    await routeBecomes(transport, "direct");
     expect(relayAfterPairing).toBe(0);
   });
 });
@@ -280,7 +322,7 @@ describe("probing again", () => {
     // Then the phone probes again and comes back on it
     expect((await moved).direct).toBeDefined();
     // the channel reaches the transport once the race that opened it settles
-    await bounded(new Promise<void>((resolve) => { const stop = transport.onRouteChange(() => { if (transport.route === "direct") { stop(); resolve(); } }); if (transport.route === "direct") { stop(); resolve(); } }));
+    await routeBecomes(transport, "direct");
   });
 });
 
