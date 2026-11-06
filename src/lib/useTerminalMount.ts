@@ -43,6 +43,9 @@ import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
 
+/** Agents that select a plain drag themselves and copy it with OSC 52, so the drag is theirs (onMouseDown). */
+const SELF_SELECTING_AGENTS: ReadonlySet<string> = new Set(["opencode", "codex"]);
+
 /**
  * Build-time constant: on only in the browser lane's demo build (lib/crashProbe.ts). Read it through
  * `typeof`: fixture bundles built with Bun.build (scripts/chat-history-fixture.tsx) do not define it.
@@ -722,10 +725,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (edgeTimer !== null) window.clearInterval(edgeTimer);
         edgeTimer = null;
       };
-      /** the pane an OpenCode press went to as it is (xterm reports it): its release may copy too */
-      let openCodePress: string | null = null;
+      /** the pane a press went to as it is, in a program that selects on its own (xterm reports it): its release may copy too */
+      let programPress: string | null = null;
       const onMouseDown = (event: MouseEvent): void => {
-        openCodePress = null;
+        programPress = null;
         // a click handed on to the program (forwardClick) is not a new drag
         if (event.button !== 0 || !event.isTrusted) return;
         if ((event as MouseEvent & { sourceCapabilities?: { firesTouchEvents?: boolean } }).sourceCapabilities?.firesTouchEvents) return;
@@ -738,12 +741,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const selecting = isMac ? event.altKey : event.shiftKey;
         // a press that clears a selection, or opens a link, is not the program's click
         const onLink = term.element?.querySelector(".xterm-screen")?.classList.contains("xterm-cursor-pointer") === true;
-        // OpenCode reads the mouse and selects inside the panel a drag starts in, as in a native terminal
-        // (#2362): a plain press is its own, drags included, as a click is, and it clears a selection made
-        // here. herdr reports which agent runs, never a program's mouse mode, so this goes by the agent.
-        if (reporting && agentRef.current === "opencode" && !event.shiftKey && !event.altKey && !onLink && !term.options.disableStdin) {
+        // OpenCode and Codex read the mouse and select on their own, as in a native terminal: OpenCode inside
+        // the panel a drag starts in (#2362), Codex on its alternate screen, which herdr cannot scroll, so
+        // Codex scrolls its own history while a drag is held past an edge (#2384). A plain press is the
+        // program's, drags included, as a click is, and it clears a selection made here. herdr reports
+        // which agent runs, never a program's mouse mode, so this goes by the agent.
+        if (reporting && SELF_SELECTING_AGENTS.has(agentRef.current ?? "") && !event.shiftKey && !event.altKey && !onLink && !term.options.disableStdin) {
           term.clearSelection();
-          openCodePress = paneRef.current;
+          programPress = paneRef.current;
           return;
         }
         const click: ClickKeys | null = reporting && !selecting && !onLink && !term.hasSelection()
@@ -823,8 +828,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const d = drag;
         if (event.button !== 0) return;
         if (!d) {
-          const pane = openCodePress;
-          openCodePress = null;
+          const pane = programPress;
+          programPress = null;
           if (pane !== null && pane === paneRef.current && mayReserveCopy()) reserveCopy(pane);
           return;
         }

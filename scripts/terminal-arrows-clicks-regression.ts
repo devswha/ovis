@@ -397,10 +397,11 @@ try {
     await s.close();
   }
 
-  // 4. OpenCode reads the mouse and selects inside the panel a drag starts in (#2362): a plain drag is
-  // its own, as a click is, and the selection modifier still asks for the selection here.
-  {
-    const s = await open(browser, attached, "opencode", "\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1006hchat column text | side panel\\r\\n", "opencode");
+  // 4. OpenCode reads the mouse and selects inside the panel a drag starts in (#2362), and Codex selects
+  // on its alternate screen, scrolling its own history past an edge (#2384): a plain drag is the
+  // program's, as a click is, and the selection modifier still asks for the selection here.
+  for (const agent of ["opencode", "codex"]) {
+    const s = await open(browser, attached, agent, "\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1006hchat column text | side panel\\r\\n", agent);
     // the page knows the pane's agent once its row is in the sidebar
     await s.page.locator(`.agent-item[data-pane="${s.pane}"]`).waitFor();
     await mouseReporting(s);
@@ -420,9 +421,9 @@ try {
     const drag = /\x1b\[<0;\d+;\d+M(?:[\s\S]*?\x1b\[<32;\d+;\d+M)+[\s\S]*?\x1b\[<0;(\d+);(\d+)m/;
     let got = "";
     await dragged();
-    await until(() => drag.test(got += s.received()), () => `a plain drag received as press, moves and release (read ${JSON.stringify(got)})`);
+    await until(() => drag.test(got += s.received()), () => `${agent}: a plain drag received as press, moves and release (read ${JSON.stringify(got)})`);
     assert.equal(await s.page.locator(".xterm-selection div").count(), 0, "a plain drag selects nothing here");
-    if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-plain-drag.png") });
+    if (evidence) await s.page.screenshot({ path: join(evidence, `${agent}-plain-drag.png`) });
 
     // the selection modifier held by the user: the drag selects here and the program reads no button
     assert.equal((await mark(s, "the plain drag")).read, "", "nothing more after the plain drag");
@@ -432,7 +433,7 @@ try {
     await dragged();
     await s.page.keyboard.up(selecting);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, `${selecting}+drag selects`);
-    if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-modifier-drag.png") });
+    if (evidence) await s.page.screenshot({ path: join(evidence, `${agent}-modifier-drag.png`) });
 
     // a plain drag over that selection is the program's again and the highlight goes. Nothing reaches
     // xterm in between: a key, or a buttonless move (a hover report), would clear the selection first,
