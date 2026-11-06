@@ -10,6 +10,7 @@ import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
 import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
+import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier } from "./direct.ts";
 import type { DirectCarrierOptions } from "./direct.ts";
 import { RelayLink } from "./link.ts";
@@ -110,6 +111,8 @@ export class RelayService {
   readonly approvals = new RelayPairingApprovals();
   private pairCodes: RelayPairCodes | undefined;
   private directCarrier: DirectCarrier | undefined;
+  /** signed-in sessions over the relay links and the direct carriers alike, against one set of limits */
+  private readonly signedIn = new SignedInSessions();
   /** whether direct connections are on, read once from `relay/direct.json`: on unless turned off */
   private directOn: boolean | undefined;
 
@@ -169,10 +172,17 @@ export class RelayService {
 
   private directEnabled(): boolean {
     if (this.directOn === undefined) {
-      try {
-        const saved: unknown = JSON.parse(readFileSync(this.directPath(), "utf8"));
-        this.directOn = !(isJsonObject(saved) && saved.on === false);
-      } catch { this.directOn = true; }
+      // on unless turned off; a choice that cannot be read is taken as off, so a damaged file never opens the network
+      let text: string | undefined;
+      try { text = readFileSync(this.directPath(), "utf8"); }
+      catch (error) { if (!(isJsonObject(error) && error.code === "ENOENT")) text = ""; }
+      if (text === undefined) this.directOn = true;
+      else {
+        let saved: unknown;
+        try { saved = JSON.parse(text); } catch { saved = null; }
+        this.directOn = isJsonObject(saved) && saved.on === true;
+        if (!(isJsonObject(saved) && typeof saved.on === "boolean")) console.error("Direct connections are off: relay/direct.json cannot be read; turn them on again in Settings.");
+      }
     }
     return this.directOn;
   }
@@ -189,9 +199,9 @@ export class RelayService {
 
   private startDirect(services: RequestServices, identity: RelayIdentity): void {
     if (!this.options.direct || this.directCarrier || !this.directEnabled()) return;
-    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port,
+    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
       ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
-    this.directCarrier.start();
+    void this.directCarrier.start();
   }
 
   private stopDirect(): Promise<void> {
@@ -235,7 +245,7 @@ export class RelayService {
       const regional = new RelayLink({
         relay, identity, services, port: this.port,
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
-        relayHints: () => this.relayHints(), directCarriers: () => this.directCarriers(),
+        relayHints: () => this.relayHints(), directCarriers: () => this.directCarriers(), sessions: this.signedIn,
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
       });
       this.regionalLink = regional;
@@ -287,7 +297,7 @@ export class RelayService {
       const link = new RelayLink({
         relay: this.relay, identity: this.identity, services, port: this.port,
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
-        relayHints: () => this.relayHints(), directCarriers: () => this.directCarriers(),
+        relayHints: () => this.relayHints(), directCarriers: () => this.directCarriers(), sessions: this.signedIn,
         onState: (phase, error) => { if (this.link === link) { this.phase = phase; this.error = error; } },
       });
       this.link = link;

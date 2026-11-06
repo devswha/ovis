@@ -568,8 +568,7 @@ if (import.meta.main) {
   const version = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
   const telemetry = new Telemetry({ stateDir, version, env: process.env, fetch, previousVersion: () => updates.installed().previous_version, runtime: herdrCore === null ? "herdr" : "herdr-core" });
   const portal = new PortalService({ stateDir });
-  // direct connections on this PC's networks while the relay is on (server/relay/direct.ts); a switch turns them off
-  const relay = new RelayService({ stateDir, direct: {} });
+  const relay = new RelayService({ stateDir });
   const lanConfig = lanHttpsConfig(process.env);
   if (lanConfig !== null && "error" in lanConfig) console.error(`LAN HTTPS is off: ${lanConfig.error}.`);
   let instance: ReturnType<typeof createServer>;

@@ -11,12 +11,16 @@
  * nobody on the network can crowd out relay service; signed-in sessions keep the relay's limits.
  */
 import { randomBytes } from "node:crypto";
-import { importPublicKey, importSecretKey, openDaemonSecureChannel } from "../../shared/relay-e2ee.ts";
+import { createSocket } from "node:dgram";
+import { networkInterfaces } from "node:os";
+import type { NetworkInterfaceInfo } from "node:os";
+import { importPublicKey, importSecretKey, MAX_CARRIER_TEXT_BYTES, openDaemonSecureChannel } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 import { isDirectCarrier, MAX_DIRECT_CARRIERS } from "../../shared/relay-mux.ts";
 import type { RequestServices } from "../dispatch.ts";
-import { privateLanAddresses, privateLanPeer } from "../lan-https.ts";
+import { privateLanPeer } from "../lan-https.ts";
+import { SignedInSessions } from "./admissions.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { RelaySession, relayClock } from "./session.ts";
 import type { RelaySocketHandlers } from "./virtual-socket.ts";
@@ -24,18 +28,46 @@ import { version } from "../../package.json";
 
 /** The port asked for first; another one when it is taken (AUTH_OK says which). */
 export const DIRECT_PORT = 7319;
-/** Signed-in sessions over direct carriers at once, and per device key, as on a relay link (link.ts). */
-const MAX_SESSIONS = 8;
-const MAX_PER_DEVICE = 4;
 /** Carriers not yet signed in: per source address, and in total across every address listened on. */
 const MAX_PENDING_PER_SOURCE = 2;
 const MAX_PENDING = 8;
 /** From upgrade to an open protected channel, and from there to a signed-in device. */
 const HANDSHAKE_MS = 5_000;
 const SIGN_IN_MS = 15_000;
-/** The largest message a client may send before it signed in: a Noise handshake record or a setup frame. */
-const PENDING_MESSAGE_BYTES = 32 * 1024;
 const REFRESH_MS = 30_000;
+
+/** Adapters a phone on the PC's network is not on: containers, VMs, VPNs and tunnels. */
+const VIRTUAL_INTERFACE = /^(docker|br-|virbr|veth|vmnet|vboxnet|vnic|utun|tun|tap|tailscale|zt|wg|lxc|lxd|podman|cni|flannel|cali|vethernet|vmware|virtualbox|hyper-v|wsl|bridge)/i;
+
+/**
+ * The private IPv4 addresses to listen on and name, at most MAX_DIRECT_CARRIERS: the one the PC's
+ * default route leaves from first, then the others in the system's order, leaving out virtual
+ * adapters (unless the route leaves from one).
+ */
+export function rankLanAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, routed: string | null): string[] {
+  const found = Object.entries(interfaces).flatMap(([name, list]) => (list ?? [])
+    .filter((entry) => entry.family === "IPv4" && !entry.internal && privateLanPeer(entry.address))
+    .map((entry) => ({ name, address: entry.address })));
+  const real = found.filter((entry) => entry.address === routed || !VIRTUAL_INTERFACE.test(entry.name)).map((entry) => entry.address);
+  const ordered = routed !== null && real.includes(routed) ? [routed, ...real] : real;
+  return [...new Set(ordered)].slice(0, MAX_DIRECT_CARRIERS);
+}
+
+/** The address the default route leaves from: a UDP socket "connected" to a public address, which sends nothing. */
+function routedAddress(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const socket = createSocket("udp4");
+    const done = (address: string | null): void => { try { socket.close(); } catch { /* already closed */ } resolve(address); };
+    socket.once("error", () => done(null));
+    socket.connect(9, "1.1.1.1", () => {
+      try { done(socket.address().address); } catch { done(null); }
+    });
+  });
+}
+
+async function lanAddresses(): Promise<string[]> {
+  return rankLanAddresses(networkInterfaces(), await routedAddress());
+}
 
 export interface DirectCarrierOptions {
   readonly identity: RelayIdentity;
@@ -44,8 +76,10 @@ export interface DirectCarrierOptions {
   readonly port: number;
   readonly serverVersion?: string;
   readonly clock?: MuxClock;
-  /** The private addresses to listen on; this PC's own by default. Tests name loopback-free ones or stand in. */
+  /** The private addresses to listen on; this PC's own by default (rankLanAddresses). Tests name loopback. */
   readonly addresses?: () => readonly string[];
+  /** The PC's signed-in sessions over every way in (admissions.ts); its own when not given. */
+  readonly sessions?: SignedInSessions;
   /** The port to try first (DIRECT_PORT); 0 lets the system pick. */
   readonly preferredPort?: number;
   /** Whether a peer may connect; private IPv4 only by default. Tests on loopback widen it. */
@@ -66,7 +100,8 @@ interface Carrier {
   cancelTimeout: () => void;
   session?: RelaySession;
   deviceId?: string;
-  signedIn?: number;
+  /** Gives its signed-in place back (SignedInSessions.admit). */
+  release?: () => void;
 }
 
 export class DirectCarrier {
@@ -74,24 +109,32 @@ export class DirectCarrier {
   private bound: { addresses: readonly string[]; port: number } | null = null;
   private readonly carriers = new Map<string, Carrier>();
   private stopped = false;
-  private signIns = 0;
   private cancelRefresh: (() => void) | undefined;
   private readonly clock: MuxClock;
+  private readonly signedIn: SignedInSessions;
 
   constructor(private readonly options: DirectCarrierOptions) {
     this.clock = options.clock ?? relayClock;
+    this.signedIn = options.sessions ?? new SignedInSessions();
   }
 
-  /** Listens now and follows the PC's addresses; a failure leaves it off (and the relay as it is) with a message. */
-  start(): void {
+  /**
+   * Listens and follows the PC's addresses; settles once the first bind was tried. A failure leaves it
+   * off (and the relay as it is) with a message.
+   */
+  async start(): Promise<void> {
     if (this.stopped) return;
-    this.bind();
-    const refresh = (): void => {
+    await this.refresh();
+    const again = (): void => {
       if (this.stopped) return;
-      this.bind();
-      this.cancelRefresh = this.clock.setTimeout(refresh, this.options.refreshMs ?? REFRESH_MS);
+      void this.refresh().finally(() => { if (!this.stopped) this.cancelRefresh = this.clock.setTimeout(again, this.options.refreshMs ?? REFRESH_MS); });
     };
-    this.cancelRefresh = this.clock.setTimeout(refresh, this.options.refreshMs ?? REFRESH_MS);
+    if (!this.stopped) this.cancelRefresh = this.clock.setTimeout(again, this.options.refreshMs ?? REFRESH_MS);
+  }
+
+  private async refresh(): Promise<void> {
+    const addresses = this.options.addresses?.() ?? await lanAddresses();
+    if (!this.stopped) this.bind(addresses);
   }
 
   /** What AUTH_OK tells a phone: `ws://<address>:<port>` for each address listened on, at most MAX_DIRECT_CARRIERS. */
@@ -107,8 +150,8 @@ export class DirectCarrier {
   get sessions(): number { return [...this.carriers.values()].filter((carrier) => carrier.deviceId && carrier.session?.mux.active).length; }
 
   /** (Re)binds when the addresses changed: every one on one port, or none. Carriers already open stay. */
-  private bind(): void {
-    const addresses = [...new Set(this.options.addresses?.() ?? privateLanAddresses())].sort();
+  private bind(listed: readonly string[]): void {
+    const addresses = [...new Set(listed)];
     if (this.bound && addresses.join() === this.bound.addresses.join()) return;
     const previous = this.listeners;
     // the port in use is kept across a change, so phones told it a moment ago still find this PC
@@ -157,7 +200,8 @@ export class DirectCarrier {
       websocket: {
         // Bun's own pings find a phone that left without closing
         idleTimeout: 60, sendPings: true,
-        maxPayloadLength: 16 * 1024 * 1024,
+        // one protected mux frame is the largest message there is (relay-e2ee.ts); Bun refuses more before buffering it
+        maxPayloadLength: MAX_CARRIER_TEXT_BYTES,
         open: (socket) => this.open(socket),
         message: (socket, message) => this.message(socket, message),
         close: (socket, code, reason) => this.closed(socket, code, reason),
@@ -170,7 +214,8 @@ export class DirectCarrier {
     if (this.stopped) { socket.close(1001, "Direct connections stopped"); return; }
     const transport: Transport = {
       onmessage: null, onclose: null, onerror: null,
-      send: (data) => { socket.send(data); },
+      // a record Bun dropped (0) would break the protected stream after it: the carrier ends instead
+      send: (data) => { if (socket.send(data) === 0) socket.close(1011, "Send dropped"); },
       close: (code, reason) => socket.close(code, reason),
     };
     const carrier: Carrier = { socket, source, transport, sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
@@ -207,8 +252,6 @@ export class DirectCarrier {
   private message(socket: Bun.ServerWebSocket<SocketData>, message: string | Buffer): void {
     const carrier = this.carriers.get(socket.data.id);
     if (!carrier) { socket.close(); return; }
-    const size = typeof message === "string" ? message.length : message.byteLength;
-    if (!carrier.deviceId && size > PENDING_MESSAGE_BYTES) { socket.close(1009, "Message too large before sign-in"); return; }
     const data = typeof message === "string" ? message : message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength) as ArrayBuffer;
     carrier.transport.onmessage?.({ data, isBinary: typeof message !== "string" });
   }
@@ -217,6 +260,7 @@ export class DirectCarrier {
     const carrier = this.carriers.get(socket.data.id);
     if (!carrier) return;
     carrier.cancelTimeout();
+    carrier.release?.();
     this.carriers.delete(socket.data.id);
     carrier.transport.onclose?.(code, reason);
   }
@@ -225,11 +269,7 @@ export class DirectCarrier {
     if (this.carriers.get(id) !== carrier) return;
     carrier.cancelTimeout();
     carrier.deviceId = deviceId;
-    carrier.signedIn = ++this.signIns;
-    const signedIn = [...this.carriers.values()].filter((other) => other.deviceId);
-    if (signedIn.length > MAX_SESSIONS) { carrier.session?.close("resource_exhausted"); return; }
-    const own = signedIn.filter((other) => other.deviceId === deviceId).sort((a, b) => a.signedIn! - b.signedIn!);
-    for (const other of own.slice(0, Math.max(0, own.length - MAX_PER_DEVICE))) other.session?.close("resource_exhausted");
+    carrier.release = this.signedIn.admit(deviceId, () => carrier.session?.close("resource_exhausted"));
   }
 
   /** Stops listening and ends every carrier, signed in or not. */
@@ -248,6 +288,7 @@ export class DirectCarrier {
         await carrier.session.mux.flush();
       }
       carrier.socket.close();
+      carrier.release?.();
     }));
     this.carriers.clear();
   }

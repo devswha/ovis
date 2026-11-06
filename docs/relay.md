@@ -720,9 +720,11 @@ encrypt end to end whichever relay passes the frames on, and each relay sees wha
 ## Direct on the same network
 
 While the relay is on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
-port 7319, or another one when that is taken) for the same channel without the relay
+port 7319, or another one when that is taken): the one its default route leaves from first, then the
+others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
 ([`server/relay/direct.ts`](../server/relay/direct.ts)). A phone that can reach one of them opens
-it there instead of through `relay.ovis.sh`.
+it there instead of through `relay.ovis.sh`. Not yet started by `bun run server`: it is turned on together
+with the apps that open it.
 
 - **Same channel, same trust.** The listener speaks to a phone what the relay does (`/v1/ws`, an
   `assigned` frame, then the phone's Noise records) and hands the socket to the same session a
@@ -738,11 +740,12 @@ it there instead of through `relay.ovis.sh`.
   PC offers or answers nothing, and nothing changes for it.
 - **Bounded.** At most two clients that have not signed in per source address and eight in all,
   refused at upgrade beyond that, apart from the relay's places; 5 s to finish the handshake and
-  15 s to sign in. Signed-in direct sessions keep a relay link's limits: eight at once and four per
-  device key. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
+  15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
+  against one set of limits whichever way they came (relay links and direct carriers together):
+  eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
-  `relay/direct.json`); `GET /api/relay` says whether it is on and where it listens. Addresses are
+  `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first
   bind of a network address shows Windows' own firewall prompt; declining it leaves the relay as
   the only way in.

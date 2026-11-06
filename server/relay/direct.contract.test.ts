@@ -5,7 +5,10 @@ import { openRelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { DIRECT_CARRIER, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
-import { DirectCarrier } from "./direct.ts";
+import { SignedInSessions } from "./admissions.ts";
+import { DirectCarrier, rankLanAddresses } from "./direct.ts";
+import { writeFileSync, mkdirSync } from "node:fs";
+import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture } from "./test-helpers.ts";
@@ -14,12 +17,12 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
 /** A PC with its relay identity and a direct carrier on loopback (a test stands in for a private address). */
-function directFixture() {
+async function directFixture() {
   const fixture = relayFixture();
   const identity = loadRelayIdentity(fixture.stateDir);
   const direct = new DirectCarrier({ identity, services: fixture.app.context.services, port: fixture.app.port,
     addresses: () => ["127.0.0.1"], preferredPort: 0, peerAllowed: () => true });
-  direct.start();
+  await direct.start();
   cleanup.push(() => fixture.close(), () => direct.stop());
   const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.ovis.example" };
   const url = (): string => `ws://127.0.0.1:${direct.port}/v1/ws?v=1`;
@@ -50,7 +53,7 @@ function opened(socket: WebSocket): Promise<void> {
 describe("direct carrier", () => {
   it("lets a paired device sign in over the same Noise channel, without the relay", async () => {
     // Given a PC listening directly and a phone paired with it through the relay
-    const { fixture, direct, offer, url } = directFixture();
+    const { fixture, direct, offer, url } = await directFixture();
     const device = await relayDevice(fixture);
     // When the phone opens its channel to the PC's address
     const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()) }));
@@ -63,7 +66,7 @@ describe("direct carrier", () => {
 
   it("is not the PC when the key it proves is another one", async () => {
     // Given a phone that pinned another PC's key under this PC's id
-    const { fixture, offer, url } = directFixture();
+    const { fixture, offer, url } = await directFixture();
     const device = await relayDevice(fixture);
     const elsewhere = relayFixture();
     cleanup.push(() => elsewhere.close());
@@ -75,7 +78,7 @@ describe("direct carrier", () => {
 
   it("ends a direct session when its device is removed", async () => {
     // Given a phone signed in directly
-    const { fixture, offer, url } = directFixture();
+    const { fixture, offer, url } = await directFixture();
     const device = await relayDevice(fixture);
     const closed = deferred<Error>();
     const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()), onClose: (error) => closed.resolve(error) }));
@@ -91,7 +94,7 @@ describe("direct carrier", () => {
 
   it("pairs nothing: a code sent there is refused and stays unspent", async () => {
     // Given a pairing code the PC shows
-    const { fixture, offer, url } = directFixture();
+    const { fixture, offer, url } = await directFixture();
     const store = fixture.app.context.services.devices;
     const code = store.startPairing().code;
     const phone = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
@@ -107,7 +110,7 @@ describe("direct carrier", () => {
 
   it("holds at most two clients that have not signed in per address", async () => {
     // Given two sockets from one address that never start a handshake
-    const { url } = directFixture();
+    const { url } = await directFixture();
     const first = new WebSocket(url());
     const second = new WebSocket(url());
     cleanup.push(() => first.close(), () => second.close());
@@ -124,7 +127,7 @@ describe("direct carrier", () => {
     const fixture = relayFixture();
     const strict = new DirectCarrier({ identity: loadRelayIdentity(fixture.stateDir), services: fixture.app.context.services,
       port: fixture.app.port, addresses: () => ["127.0.0.1"], preferredPort: 0 });
-    strict.start();
+    await strict.start();
     cleanup.push(() => fixture.close(), () => strict.stop());
     // Then a loopback client is refused
     await expect(opened(new WebSocket(`ws://127.0.0.1:${strict.port}/v1/ws?v=1`))).rejects.toThrow();
@@ -132,7 +135,7 @@ describe("direct carrier", () => {
 
   it("ends every direct session when it stops", async () => {
     // Given a phone signed in directly
-    const { fixture, direct, offer, url } = directFixture();
+    const { fixture, direct, offer, url } = await directFixture();
     const device = await relayDevice(fixture);
     const closed = deferred<Error>();
     const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()), onClose: (error) => closed.resolve(error) }));
@@ -187,5 +190,75 @@ describe("direct connections setting", () => {
     cleanup.push(() => fixture.close());
     expect(new RelayService({ stateDir: fixture.stateDir }).status()).not.toHaveProperty("direct");
     expect(existsSync(join(fixture.stateDir, "relay", "direct.json"))).toBe(false);
+  });
+});
+
+describe("addresses listened on", () => {
+  const nic = (address: string): NetworkInterfaceInfo => ({ address, netmask: "255.255.255.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: false, cidr: `${address}/24` });
+  it("puts the default route's first, leaves out virtual adapters and keeps four", () => {
+    const interfaces = { docker0: [nic("172.17.0.1")], "br-1a2b": [nic("172.18.0.1")], virbr0: [nic("192.168.122.1")], "vEthernet (WSL)": [nic("172.24.0.1")],
+      eth1: [nic("10.0.0.2")], eth2: [nic("10.0.1.2")], eth3: [nic("10.0.2.2")], eth4: [nic("10.0.3.2")], wlan0: [nic("192.168.0.10")],
+      tailscale0: [nic("100.100.1.1")], lo: [{ ...nic("127.0.0.1"), internal: true }] };
+    expect(rankLanAddresses(interfaces, "192.168.0.10")).toEqual(["192.168.0.10", "10.0.0.2", "10.0.1.2", "10.0.2.2"]);
+  });
+
+  it("keeps a virtual adapter the default route leaves from", () => {
+    expect(rankLanAddresses({ "vEthernet (Default Switch)": [nic("172.20.0.5")], docker0: [nic("172.17.0.1")] }, "172.20.0.5")).toEqual(["172.20.0.5"]);
+  });
+
+  it("takes another port when the one asked for is busy", async () => {
+    // Given the preferred port held by something else
+    const fixture = relayFixture();
+    const held = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const direct = new DirectCarrier({ identity: loadRelayIdentity(fixture.stateDir), services: fixture.app.context.services, port: fixture.app.port,
+      addresses: () => ["127.0.0.1"], preferredPort: held.port, peerAllowed: () => true });
+    cleanup.push(() => fixture.close(), () => held.stop(true), () => direct.stop());
+    // When direct connections start, they listen on another one
+    await direct.start();
+    expect(direct.port).not.toBeNull();
+    expect(direct.port).not.toBe(held.port);
+  });
+});
+
+describe("signed-in sessions over every way in", () => {
+  it("count against one limit, a device's oldest giving way", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const closed: string[] = [];
+    for (const name of ["r1", "r2", "d1", "d2", "d3"]) sessions.admit("phone", () => closed.push(name));
+    expect(closed).toEqual(["r1"]);
+    expect(sessions.size).toBe(4);
+  });
+
+  it("close a session past every place, and give places back", () => {
+    const sessions = new SignedInSessions(2, 4);
+    const closed: string[] = [];
+    const release = sessions.admit("a", () => closed.push("a"));
+    sessions.admit("b", () => closed.push("b"));
+    sessions.admit("c", () => closed.push("c"));
+    expect(closed).toEqual(["c"]);
+    release();
+    sessions.admit("d", () => closed.push("d"));
+    expect(closed).toEqual(["c"]);
+  });
+});
+
+describe("direct connections setting, read back", () => {
+  it("stays off when the saved choice cannot be read", () => {
+    const fixture = relayFixture();
+    cleanup.push(() => fixture.close());
+    mkdirSync(join(fixture.stateDir, "relay"), { recursive: true });
+    writeFileSync(join(fixture.stateDir, "relay", "direct.json"), '{ "on": fal');
+    expect(new RelayService({ stateDir: fixture.stateDir, direct: {} }).status().direct?.on).toBe(false);
+  });
+
+  it("refuses a switch without on: true or false", async () => {
+    const stateDir = relayFixture();
+    stateDir.close();
+    const fixture = relayFixture(false, { relay: new RelayService({ stateDir: stateDir.stateDir, direct: { addresses: () => [] } }) });
+    cleanup.push(() => fixture.close());
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const response = await fetch(`${base}/api/relay/direct`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ on: "yes" }) });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("invalid_relay_direct");
   });
 });
