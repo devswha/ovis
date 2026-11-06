@@ -32,6 +32,8 @@ export interface GateOptions {
   readonly allowed: (address: string) => boolean;
   /** shared by every gate of one carrier: connections per address and in all */
   readonly counts: Map<string, number>;
+  /** how the upstream is reached; Bun.connect, and in tests one that is slow to resolve */
+  readonly connect?: typeof Bun.connect;
 }
 
 interface Side {
@@ -54,6 +56,8 @@ interface Conn {
   counted: boolean;
   /** the upstream answered 101: from here bytes flow both ways */
   upgraded: boolean;
+  /** this connection was ended: nothing more goes either way */
+  ended: boolean;
 }
 
 const total = (counts: Map<string, number>): number => [...counts.values()].reduce((sum, count) => sum + count, 0);
@@ -124,6 +128,7 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
   };
   const end = (socket: Socket<Conn>): void => {
     const conn = socket.data;
+    conn.ended = true;
     if (conn.deadline) clearTimeout(conn.deadline);
     release(conn);
     conn.up?.socket?.end();
@@ -135,10 +140,11 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
     conn.up = up;
     conn.down.source = () => up.socket;
     try {
-      up.socket = await Bun.connect({
+      up.socket = await (options.connect ?? Bun.connect)({
         hostname: "127.0.0.1", port: options.upstreamPort,
         socket: {
-          open: (upstream) => { up.socket = upstream; flush(up); },
+          // the peer may have gone while connecting: then the upstream ends at once and gets nothing
+          open: (upstream) => { if (conn.ended) { upstream.end(); return; } up.socket = upstream; flush(up); },
           data: (_upstream, chunk) => {
             // anything but a switch to WebSocket is the whole answer: it goes to the peer and the connection ends,
             // so no further request can ride on it past the head's deadline
@@ -158,6 +164,7 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
           error: () => end(socket),
         },
       });
+      if (conn.ended) { up.socket?.end(); return; }
       flush(up);
     } catch { end(socket); }
   };
@@ -166,7 +173,7 @@ export function openGate(options: GateOptions): TCPSocketListener<Conn> {
     socket: {
       open: (socket) => {
         const source = socket.remoteAddress;
-        const conn: Conn = { source, head: [], headBytes: 0, deadline: undefined, up: undefined, down: { socket, pending: [], pendingBytes: 0 }, counted: false, upgraded: false };
+        const conn: Conn = { source, head: [], headBytes: 0, deadline: undefined, up: undefined, down: { socket, pending: [], pendingBytes: 0 }, counted: false, upgraded: false, ended: false };
         socket.data = conn;
         if (!options.allowed(source) || (counts.get(source) ?? 0) >= MAX_CONNECTIONS_PER_SOURCE || total(counts) >= MAX_CONNECTIONS) {
           socket.end();

@@ -434,6 +434,21 @@ describe("direct connections with the relay", () => {
     expect(health.lan_exposure).toEqual({ host: "10.0.0.7", direct: true });
   });
 
+  it("are told in /api/health while herdr does not answer", async () => {
+    // Given a PC with the relay and direct connections on, whose herdr is away
+    const { fixture } = await liveFixture();
+    const previous = process.env["HERDR_SOCKET"];
+    process.env["HERDR_SOCKET"] = join(fixture.stateDir, "no-herdr.sock");
+    cleanup.push(() => { if (previous === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = previous; });
+    // When this PC asks for its health
+    const response = await fetch(`http://127.0.0.1:${fixture.app.port}/api/health`);
+    const health = await response.json() as { error?: unknown; lan_exposure?: { host: string; direct?: true } };
+    // Then the answer is the failure, and still names the direct listener
+    expect(response.ok).toBe(false);
+    expect(health.error).toBeDefined();
+    expect(health.lan_exposure).toEqual({ host: "10.0.0.7", direct: true });
+  });
+
   it("stop with the relay", async () => {
     const { service } = await liveFixture();
     await service.stop();
@@ -544,6 +559,30 @@ describe("the gate in front of the direct carrier", () => {
     client.resume();
     await bounded(Promise.race([done.promise, closed.promise.then(() => { throw new Error(`closed after ${received} bytes`); })]));
     expect(received).toBeGreaterThanOrEqual(total);
+  });
+
+  it("ends the upstream and forwards nothing when the peer left while connecting", async () => {
+    // Given an upstream that records what reaches it, and a connect the test holds until the peer has gone
+    const forwarded: number[] = [];
+    const upstreamClosed = deferred<void>();
+    const upstream = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: {
+      data: (_socket, chunk) => { forwarded.push(chunk.byteLength); }, close: () => upstreamClosed.resolve() } });
+    const asked = deferred<void>();
+    const release = deferred<void>();
+    const connect = (async (options: Parameters<typeof Bun.connect>[0]) => { asked.resolve(); await release.promise; return Bun.connect(options); }) as typeof Bun.connect;
+    const gate = openGate({ hostname: "127.0.0.1", port: 0, upstreamPort: upstream.port, secret: "s", allowed: () => true, counts: new Map(), connect });
+    cleanup.push(() => gate.stop(true), () => upstream.stop(true));
+    const peerClosed = deferred<void>();
+    const peer = await Bun.connect({ hostname: "127.0.0.1", port: gate.port, socket: { data() {}, close: () => peerClosed.resolve(), error: () => peerClosed.resolve() } });
+    peer.write("GET /v1/ws?v=1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
+    await bounded(asked.promise);
+    // When the peer leaves before the upstream connection is made
+    peer.end();
+    await bounded(peerClosed.promise);
+    release.resolve();
+    // Then the upstream connection is ended at once, with nothing forwarded
+    await bounded(upstreamClosed.promise);
+    expect(forwarded).toEqual([]);
   });
 
   it("names the peer it saw, whatever header the peer forged", async () => {

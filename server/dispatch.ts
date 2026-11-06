@@ -573,7 +573,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       return jsonResponse({ ok: true, herdr, auth, ...relay, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null, ...(serverId ? { server_id: serverId } : {}) } }, 200, securityHeaders);
     } catch (error) {
-      return errorResponse(error);
+      const failed = errorResponse(error);
+      if (!lan_exposure) return failed;
+      // herdr away says nothing of this PC's network listeners: they are told all the same
+      const body: unknown = await failed.json();
+      return jsonResponse({ ...(body !== null && typeof body === "object" ? body : {}), lan_exposure }, failed.status, { "cache-control": "no-store" });
     }
   }
 
