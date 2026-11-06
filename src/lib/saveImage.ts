@@ -5,7 +5,9 @@
  * There the picture goes to the share sheet instead, whose Save Image keeps it. Everywhere else the
  * link downloads as before.
  */
+import { drawnPng } from "./clipboard.ts";
 import { inAndroidApp, inNativeApp } from "./nativeApp.ts";
+import { getTransport } from "./transport.ts";
 
 /** Whether a download link here would load the file over the app instead of saving it. */
 export function downloadLeavesApp(): boolean {
@@ -13,12 +15,20 @@ export function downloadLeavesApp(): boolean {
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || (inNativeApp() && !inAndroidApp());
 }
 
-/** The picture at `url` (a PC path, a blob: or a data: URL) as a file named `name`. */
-export async function imageFile(url: string, name: string, signal?: AbortSignal): Promise<File> {
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const blob = await response.blob();
-  return new File([blob], name, { type: blob.type });
+/**
+ * The picture `src` as a file named `name`. A PC path is read through the transport, as the page's
+ * CSP lets no fetch reach a blob: or data: URL (a relay PC's pictures are blob: URLs once shown);
+ * any other picture is the decoded `shown` one, encoded as PNG.
+ */
+export async function imageFile(src: string, name: string, shown: HTMLImageElement | null, signal?: AbortSignal): Promise<File> {
+  if (src.startsWith("/api/")) {
+    const response = await getTransport().fetch(src, { signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    return new File([blob], name, { type: blob.type });
+  }
+  if (shown === null) throw new Error("picture not shown");
+  return new File([await drawnPng(shown)], name, { type: "image/png" });
 }
 
 export type ShareOutcome = "shared" | "cancelled" | "failed";

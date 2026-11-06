@@ -55,26 +55,36 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
     ? `${image.src}${image.src.includes("?") ? "&" : "?"}download=1` : image?.src ?? null);
   const many = count > 1;
   const copyable = canCopyImage();
-  // the sheet opens only within the tap, so the file is read before it: Download waits for it
-  const [prepared, setPrepared] = useState<{ url: string; file: File | null } | null>(null);
+  // the sheet opens only within the tap, so the file is read once the picture has loaded, and
+  // Download waits for it
+  const [prepared, setPrepared] = useState<{ src: string; file: File | null } | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
-  const shown = useRef(src);
-  shown.current = src;
-  useEffect(() => {
-    if (!viaShare || src === null || image === undefined) return;
+  const preparing = useRef<AbortController | null>(null);
+  const shown = useRef(image?.src);
+  shown.current = image?.src;
+  useEffect(() => () => preparing.current?.abort(), []);
+  const prepare = (): void => {
+    if (!viaShare || image === undefined) return;
+    preparing.current?.abort();
     const abort = new AbortController();
-    imageFile(src, image.file, abort.signal).then(
-      (file) => setPrepared({ url: src, file }),
-      () => { if (!abort.signal.aborted) setPrepared({ url: src, file: null }); },
+    preparing.current = abort;
+    const at = image.src;
+    imageFile(at, image.file, picture.current, abort.signal).then(
+      (file) => setPrepared({ src: at, file }),
+      () => { if (!abort.signal.aborted) setPrepared({ src: at, file: null }); },
     );
-    return () => abort.abort();
-  }, [viaShare, src, image?.file]);
-  const ready = prepared !== null && prepared.url === src ? prepared : null;
+  };
+  const ready = prepared !== null && prepared.src === image?.src ? prepared : null;
   const save = (): void => {
     if (ready === null) return;
-    const outcome: Promise<ShareOutcome> = ready.file === null ? Promise.resolve("failed") : shareFile(ready.file);
+    if (ready.file === null) {
+      // the read failed: say so, and read again for the next tap
+      setSaveFailed(true);
+      prepare();
+      return;
+    }
     // a result for a picture the viewer has stepped away from says nothing under the next one
-    void outcome.then((result) => { if (shown.current === ready.url) setSaveFailed(result === "failed"); });
+    void shareFile(ready.file).then((result: ShareOutcome) => { if (shown.current === ready.src) setSaveFailed(result === "failed"); });
   };
 
   const measure = (): void => {
@@ -100,6 +110,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
     setFit(1);
     setCopied(null);
     setSaveFailed(false);
+    preparing.current?.abort();
   };
 
   useEffect(() => {
@@ -220,7 +231,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
               src={src ?? undefined}
               alt={image.name}
               draggable={false}
-              onLoad={measure}
+              onLoad={() => { measure(); prepare(); }}
               onError={() => setFailed(image.src)}
             />}
           </div>
