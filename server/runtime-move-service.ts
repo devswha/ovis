@@ -3,8 +3,8 @@ import { chmodSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HerdrRuntimeFacts } from "../shared/machines.ts";
-import type { PaneProcessInfo } from "../shared/herdr-api.generated.ts";
-import type { MovePlan, MovePlanResponse, MoveStatus } from "../shared/runtime-move.ts";
+import type { PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
+import type { MovePlan, MovePlanResponse, MoveStatus, MoveStopAllOffer } from "../shared/runtime-move.ts";
 import { agentLaunch } from "./agent-launch.ts";
 import { freeAgentName } from "./agent-name.ts";
 import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
@@ -43,6 +43,25 @@ export interface MoveServiceOptions {
   switching: () => boolean;
   /** installs herdr-core where the PC has none (server/herdr-core/install.ts), so the move can be offered */
   installer?: HcInstaller;
+  /** what a stop of a busy pane reads and signals; herdr and this PC unless a test stands in */
+  stopDeps?: PaneStopDeps;
+}
+
+export type StopRefusal = "not_waiting" | "not_running" | "changed" | "not_tried" | "own_server" | "own_group_unknown";
+
+/** a running command End all and move now offered to end, with the group it found in front */
+interface StopAllPane { pane_id: string; command: string | null; shell: number; group: number }
+
+/** herdr and this PC, as a stop of a busy pane reads and signals them */
+export interface PaneStopDeps {
+  snapshot: () => Promise<SessionSnapshot>;
+  processInfo: (paneId: string) => Promise<PaneProcessInfo | undefined>;
+  /** `guard` is asked right before herdr writes the keys: false sends nothing */
+  sendKeys: (paneId: string, keys: string[], guard: () => boolean) => Promise<void>;
+  /** SIGTERM to the process group */
+  signalGroup: (group: number) => void;
+  /** this server's own process group, or null when the system does not tell */
+  ownGroup: () => Promise<number | null>;
 }
 
 export interface HcInstaller {
@@ -63,7 +82,11 @@ export interface MoveService {
    * SIGTERM to the pane's foreground process group. `command`, when given, is the one the person was
    * shown: another one running there now is not ended (`changed`). An error code when it does nothing.
    */
-  stopPane: (paneId: string, force: boolean, command?: string) => Promise<"not_waiting" | "not_running" | "changed" | "not_tried" | "own_server" | null>;
+  stopPane: (paneId: string, force: boolean, command?: string) => Promise<StopRefusal | null>;
+  /** End all and move now, asked: the running commands it would end, under a token for exactly that list */
+  prepareStopAll: () => Promise<"not_waiting" | MoveStopAllOffer>;
+  /** End all and move now, confirmed: Ctrl+C to each, only while the list is the one the token was given for */
+  stopAll: (token: string) => Promise<"no_offer" | StopRefusal | null>;
   /** installs herdr-core where only that keeps the move from being offered; an error code when it is not offered, throws when the install fails */
   install: () => Promise<"unavailable" | "installing" | null>;
   /** a move waits or runs: no other runtime switch meanwhile */
@@ -178,13 +201,43 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
 }
 
 /** This server's own process group where the system tells it (Linux /proc), else null. */
-function ownGroup(): number | null {
+function procGroup(): number | null {
   try {
     // after the command name's closing parenthesis: state, ppid, pgrp
     const group = Number(readFileSync("/proc/self/stat", "utf8").replace(/^.*\) /s, "").split(" ")[2]);
-    return Number.isSafeInteger(group) ? group : null;
+    return Number.isSafeInteger(group) && group > 0 ? group : null;
   } catch { return null; }
 }
+
+/** A process's group as `ps` reports it (macOS has no /proc), or null when ps cannot tell. */
+export async function psProcessGroup(pid: number): Promise<number | null> {
+  try {
+    const ps = Bun.spawn(["ps", "-o", "pgid=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+    const [out, code] = await Promise.all([new Response(ps.stdout).text(), ps.exited]);
+    const group = Number(out.trim());
+    return code === 0 && Number.isSafeInteger(group) && group > 0 ? group : null;
+  } catch { return null; }
+}
+
+/** this server's group never changes: read once it is known */
+let knownOwnGroup: number | null = null;
+async function ownGroup(): Promise<number | null> {
+  knownOwnGroup ??= procGroup() ?? await psProcessGroup(process.pid);
+  return knownOwnGroup;
+}
+
+const herdrStopDeps: PaneStopDeps = {
+  snapshot: () => sessionSnapshot(),
+  processInfo: async (paneId) => { try { return await paneProcessInfo(paneId); } catch { return undefined; } },
+  sendKeys: (paneId, keys, guard) => paneSendKeys(paneId, keys, undefined, guard),
+  signalGroup: (group) => {
+    try { process.kill(-group, "SIGTERM"); } catch (error) {
+      // the group ended meanwhile: what the force was for
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  },
+  ownGroup,
+};
 
 /** The shell and the process group in front of it, when that group is a command's and not the shell's own. */
 function commandGroup(info: PaneProcessInfo | undefined): { shell: number; group: number } | null {
@@ -215,13 +268,14 @@ export function moveService(options: MoveServiceOptions): MoveService {
   let confirmed: MovePlan | null = null;
   /** each shell pane this wait sent Ctrl+C to: its shell, the group then in front, and when */
   const tries = new Map<string, { shell: number; group: number; at: number }>();
+  const deps = options.stopDeps ?? herdrStopDeps;
   const facts: MoveFacts = {
     findResume: storeResume(options.stores),
-    processInfo: async (paneId) => { try { return await paneProcessInfo(paneId); } catch { return undefined; } },
+    processInfo: deps.processInfo,
     inputEmpty: options.inputEmpty,
     holdsPending: options.holdsPending,
   };
-  const plan = async (): Promise<MovePlan> => planMove(await sessionSnapshot(), facts);
+  const plan = async (): Promise<MovePlan> => planMove(await deps.snapshot(), facts);
   const go = async (current: MovePlan): Promise<void> => {
     running = true;
     const id = randomUUID();
@@ -261,6 +315,87 @@ export function moveService(options: MoveServiceOptions): MoveService {
     } catch { /* herdr did not answer this look: the next one asks again */ }
     if (wait === generation && status.state === "waiting") timer = setTimeout(() => void look(wait), WAIT_LOOK_MS);
   };
+  /** the wait this stop belongs to is still the one waiting */
+  const stillWaiting = (wait: number): boolean => wait === generation && status.state === "waiting";
+  const stopPane: MoveService["stopPane"] = async (paneId, force, command) => {
+    if (status.state !== "waiting") return "not_waiting";
+    const wait = generation;
+    // fail closed: without this server's own group, a signal could reach the server or its launcher
+    const own = await deps.ownGroup();
+    if (own === null) return "own_group_unknown";
+    const verdict = (await plan()).panes.find((pane) => pane.pane_id === paneId)?.verdict;
+    if (verdict?.kind !== "busy" || verdict.reason !== "command_running") return "not_running";
+    if (command !== undefined && verdict.command !== command) return "changed";
+    const info = await facts.processInfo(paneId);
+    const front = commandGroup(info);
+    if (front === null) return "not_running";
+    // this server (or the launcher it runs under) in front of that shell: ending it would end the move
+    if (front.group === own || info?.foreground_processes?.some((entry) => entry.pid === process.pid || entry.pid === process.ppid)) return "own_server";
+    if (!stillWaiting(wait)) return "not_waiting";
+    if (!force) {
+      // behind anything typed or sent before it, checked again there: the same command still in front
+      const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | null> => {
+        // keys typed into the pty just before still on their way: Ctrl+C must not overtake them
+        await options.settleAfterTyping(paneId);
+        const now = commandGroup(await facts.processInfo(paneId));
+        // after the last await: a cancel that came while herdr answered sends nothing
+        if (!stillWaiting(wait)) return "not_waiting";
+        if (now === null || now.group !== front.group || now.shell !== front.shell) return "not_running";
+        // and herdr asks again right before it writes the keys
+        try { await deps.sendKeys(paneId, ["ctrl+c"], () => stillWaiting(wait)); } catch (error) {
+          if (error instanceof HerdrError && error.code === "cancelled") return "not_waiting";
+          throw error;
+        }
+        return null;
+      });
+      if (sent !== null) return sent;
+      if (stillWaiting(wait)) tries.set(paneId, { ...front, at: Date.now() });
+      return null;
+    }
+    const tried = tries.get(paneId);
+    if (tried && (tried.group !== front.group || tried.shell !== front.shell)) tries.delete(paneId);
+    if (!tried || tried.group !== front.group || tried.shell !== front.shell || Date.now() - tried.at < FORCE_AFTER_MS) return "not_tried";
+    // Not atomic: a process group has no pidfd to hold, so between herdr's answer above and this kill
+    // the group can end and its id be handed to a new group. Nothing is awaited in between, so the gap
+    // is these few synchronous lines; a reused id would need the PC's pid space to wrap within them.
+    deps.signalGroup(front.group);
+    return null;
+  };
+  /** the running commands End all would end now, each with the group it found in front */
+  const untriedCommands = async (): Promise<StopAllPane[]> => {
+    const panes: StopAllPane[] = [];
+    for (const pane of (await plan()).panes) {
+      const { verdict } = pane;
+      if (verdict.kind !== "busy" || verdict.reason !== "command_running" || tries.has(pane.pane_id)) continue;
+      const front = commandGroup(await facts.processInfo(pane.pane_id));
+      if (front !== null) panes.push({ pane_id: pane.pane_id, command: verdict.command, ...front });
+    }
+    return panes;
+  };
+  /** the list End all and move now was confirmed for: one offer at a time, used once */
+  let offer: { token: string; wait: number; panes: StopAllPane[] } | null = null;
+  const prepareStopAll: MoveService["prepareStopAll"] = async () => {
+    if (status.state !== "waiting") return "not_waiting";
+    const wait = generation;
+    const panes = await untriedCommands();
+    if (!stillWaiting(wait)) return "not_waiting";
+    offer = { token: randomUUID(), wait, panes };
+    return { token: offer.token, panes: panes.map(({ pane_id, command }) => ({ pane_id, command })) };
+  };
+  const stopAll: MoveService["stopAll"] = async (token) => {
+    const held = offer;
+    if (held === null || held.token !== token) return "no_offer";
+    offer = null;
+    if (!stillWaiting(held.wait)) return "not_waiting";
+    // a pane added, gone, or running another command or group since the person confirmed: ask again
+    if (JSON.stringify(await untriedCommands()) !== JSON.stringify(held.panes)) return "changed";
+    // one at a time, in the plan's order: a refusal stops there, and its pane keeps the move waiting
+    for (const pane of held.panes) {
+      const refused = await stopPane(pane.pane_id, false, pane.command ?? undefined);
+      if (refused !== null) return refused;
+    }
+    return null;
+  };
   let installing = false;
   /** herdr-core is all the move lacks here, and Ovis can install it */
   const installOffer = (): { version: string } | null => {
@@ -289,42 +424,9 @@ export function moveService(options: MoveServiceOptions): MoveService {
       }).map(([paneId, tried]) => ({ pane_id: paneId, force: Date.now() - tried.at >= FORCE_AFTER_MS }));
       return { available: true, plan: current, status: stopping.length === 0 ? status : { ...status, stopping } };
     },
-    stopPane: async (paneId, force, command) => {
-      if (status.state !== "waiting") return "not_waiting";
-      const wait = generation;
-      const verdict = (await plan()).panes.find((pane) => pane.pane_id === paneId)?.verdict;
-      if (verdict?.kind !== "busy" || verdict.reason !== "command_running") return "not_running";
-      if (command !== undefined && verdict.command !== command) return "changed";
-      const info = await facts.processInfo(paneId);
-      const front = commandGroup(info);
-      if (front === null) return "not_running";
-      // this server (or the launcher it runs under) in front of that shell: ending it would end the move
-      if (front.group === ownGroup() || info?.foreground_processes?.some((entry) => entry.pid === process.pid || entry.pid === process.ppid)) return "own_server";
-      if (wait !== generation || status.state !== "waiting") return "not_waiting";
-      if (!force) {
-        // behind anything typed or sent before it, checked again there: the same command still in front
-        const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | null> => {
-          // keys typed into the pty just before still on their way: Ctrl+C must not overtake them
-          await options.settleAfterTyping(paneId);
-          if (wait !== generation || status.state !== "waiting") return "not_waiting";
-          const now = commandGroup(await facts.processInfo(paneId));
-          if (now === null || now.group !== front.group || now.shell !== front.shell) return "not_running";
-          await paneSendKeys(paneId, ["ctrl+c"]);
-          return null;
-        });
-        if (sent !== null) return sent;
-        if (wait === generation) tries.set(paneId, { ...front, at: Date.now() });
-        return null;
-      }
-      const tried = tries.get(paneId);
-      if (tried && (tried.group !== front.group || tried.shell !== front.shell)) tries.delete(paneId);
-      if (!tried || tried.group !== front.group || tried.shell !== front.shell || Date.now() - tried.at < FORCE_AFTER_MS) return "not_tried";
-      try { process.kill(-front.group, "SIGTERM"); } catch (error) {
-        // the group ended meanwhile: what the force was for
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-      }
-      return null;
-    },
+    stopPane,
+    prepareStopAll,
+    stopAll,
     start: async (revision) => {
       if (moveUnavailable(options.serving(), options.facts()) !== null) return "unavailable";
       if (options.switching()) return "runtime_switching";
@@ -338,6 +440,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
         if (current.ready) { void go(current); return null; }
         confirmed = current;
         tries.clear();
+        offer = null;
         const wait = ++generation;
         status = { state: "waiting", revision };
         timer = setTimeout(() => void look(wait), WAIT_LOOK_MS);
@@ -366,6 +469,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
       timer = null;
       confirmed = null;
       tries.clear();
+      offer = null;
       status = { state: "idle" };
     },
     busy: () => starting || running || status.state === "waiting" || status.state === "moving",

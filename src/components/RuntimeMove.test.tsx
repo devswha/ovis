@@ -14,7 +14,7 @@ const { RuntimeMove } = await import("./RuntimeMove.tsx");
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
 let requests: { method: string; path: string; body: unknown }[];
-let answers: Record<string, () => Response>;
+let answers: Record<string, (body: unknown) => Response>;
 
 beforeEach(() => {
   requests = [];
@@ -36,9 +36,10 @@ beforeEach(() => {
   } });
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7421").pathname;
-    requests.push({ method: init?.method ?? "GET", path, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+    requests.push({ method: init?.method ?? "GET", path, body });
     const answer = answers[path];
-    return answer ? answer() : Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+    return answer ? answer(body) : Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
   };
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
 });
@@ -125,19 +126,39 @@ describe("ending busy panes from the move's wait", () => {
     expect(posts()).toHaveLength(1);
   });
 
-  it("asks before ending every running command, and ends no agent", async () => {
+  /** the server's offers for End all: a new token each time, and how it answers a confirm */
+  const offerStopAll = (confirm: () => Response) => {
+    let offers = 0;
+    answers["/api/runtime/move/stop-all"] = (body) => (body as { token?: string }).token === undefined
+      ? Response.json({ token: `t${++offers}`, panes: [{ pane_id: "p1", command: "top" }, { pane_id: "p2", command: "python3" }] })
+      : confirm();
+  };
+
+  it("asks before ending every running command, ends only the list the server offered, and no agent", async () => {
+    offerStopAll(() => Response.json({ ok: true }));
     await open();
     await press(button("End all and move now"));
-    expect(posts()).toEqual([]);
+    expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop-all", body: {} }]);
     expect(text(renderer!.root)).toContain("Ends 2 running commands. Unsaved work may be lost.");
 
     await press(button("Back"));
-    expect(posts()).toEqual([]);
+    expect(posts()).toHaveLength(1);
     expect(text(renderer!.root)).not.toContain("Unsaved work may be lost.");
 
     await press(button("End all and move now"));
     await press(button("End and move"));
-    expect(posts().map((request) => request.body)).toEqual([{ pane_id: "p1", command: "top" }, { pane_id: "p2", command: "python3" }]);
+    expect(posts().map((request) => request.body)).toEqual([{}, {}, { token: "t2" }]);
+    expect(posts().some((request) => request.path === "/api/runtime/move/stop")).toBe(false);
+  });
+
+  it("asks again when the panes changed since the confirm", async () => {
+    offerStopAll(() => Response.json({ error: { code: "changed", message: "the panes changed since you looked: look again" } }, { status: 409 }));
+    await open();
+    await press(button("End all and move now"));
+    await press(button("End and move"));
+    expect(text(renderer!.root.find((node) => node.props.role === "alert"))).toContain("the panes changed since you looked");
+    expect(buttons("End and move")).toEqual([]);
+    expect(buttons("End all and move now")).toHaveLength(1);
   });
 
   it("offers to force a pane only once the server says Ctrl+C had its time", async () => {

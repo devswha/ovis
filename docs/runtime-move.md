@@ -48,8 +48,16 @@ While it waits, the dialog lets the person end a shell's command where they woul
   `pane.process_info`), never to a process found by name. The group is the job the shell runs, so
   everything in it ends. A pane running this Ovis server, its process group or its launcher is
   refused. This relies on herdr and the server sharing one PC's process ids, as the move does.
-- End all and move now asks once ("Ends N running commands. Unsaved work may be lost."), then
-  sends Ctrl+C to each running command in turn.
+- End all and move now asks the server for the running commands it would end
+  (`POST /api/runtime/move/stop-all` with `{}`), shows "Ends N running commands. Unsaved work may be
+  lost." for that list, and sends its token on confirm. The server ends nothing when the list (panes,
+  commands, process groups) is no longer the one it offered; the person is asked again. A token is
+  used once and belongs to one wait.
+- Nothing is sent or signalled when Ovis cannot tell its own process group (Linux reads
+  `/proc/self/stat`, macOS asks `ps`), and a cancel that arrives while herdr answers the last look
+  sends nothing: herdr checks the wait again right before it writes Ctrl+C.
+- Force end is not atomic: a process group has no pidfd, so between herdr's answer and the kill the
+  group could end and its id be reused. Nothing is awaited in between.
 
 Agents are never ended from the wait: their row opens the agent's pane, where the person ends it.
 A pane that does not end keeps the move waiting, as before.

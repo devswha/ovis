@@ -101,6 +101,20 @@ export interface MoveStopRequest {
   command?: string;
 }
 
+/**
+ * POST /api/runtime/move/stop-all with no token: the running commands End all and move now would end,
+ * under a token for exactly that list. With the token: Ctrl+C to each, refused (`changed`) when the
+ * list is no longer the one shown, so the person is asked again.
+ */
+export interface MoveStopAllOffer {
+  token: string;
+  panes: { pane_id: string; command: string | null }[];
+}
+
+export interface MoveStopAllRequest {
+  token?: string;
+}
+
 /** POST /api/runtime/move: the plan's revision as shown. Busy panes make it wait; DELETE cancels a wait. */
 export interface MoveStartRequest {
   revision: string;

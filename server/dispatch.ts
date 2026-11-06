@@ -34,6 +34,7 @@ import { handleFileRequest } from "./file-routes.ts";
 import { BACKGROUND_AGENT_PATH, handleBackgroundAgentRequest } from "./background-agent.ts";
 import { paneGet, ping } from "./herdr/client.ts";
 import { RUNTIME_MOVE_PATH } from "./runtime-move.ts";
+import type { StopRefusal } from "./runtime-move-service.ts";
 import type { MoveService } from "./runtime-move-service.ts";
 import { handlePushRequest } from "./push.ts";
 import { handlePromptRequest, type OpenCodePromptState } from "./prompt.ts";
@@ -643,9 +644,32 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     try {
       const refused = await move.stopPane(paneId, fields["force"] === true, command);
       if (refused === null) return jsonResponse({ ok: true });
-      const message = refused === "not_waiting" ? "no move is waiting" : refused === "not_running" ? "that pane is not a shell running a command"
-        : refused === "changed" ? "another command runs in that pane now: look again" : refused === "own_server" ? "that pane runs this Ovis server" : "send Ctrl+C first, and force only once it has had a few seconds";
-      return jsonResponse({ error: { code: refused, message } }, 409);
+      return jsonResponse({ error: { code: refused, message: stopRefusalText(refused) } }, 409);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+
+  if (pathname === `${RUNTIME_MOVE_PATH}/stop-all`) {
+    setRequestRoute(pathname);
+    // ends commands in panes of this PC: the move's own boundary, and only from this app's page
+    if (!(access.level === "full" && access.role === "drive" && access.via !== "open")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can end a pane's command" } }, 403);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
+    if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "a stop must come from this app's own page" } }, 403);
+    const move = ctx.services.runtimeMove;
+    if (!move) return jsonResponse({ error: { code: "runtime_locked", message: "this server cannot switch its runtime" } }, 409);
+    let body: unknown;
+    try { body = await request.json(); } catch { return badRequest("invalid_json", "send {} to ask, or { \"token\": \"...\" } to confirm"); }
+    const token = body !== null && typeof body === "object" ? (body as Record<string, unknown>)["token"] : undefined;
+    if (token !== undefined && (typeof token !== "string" || token === "")) return badRequest("invalid_token", "token must be the one the ask returned");
+    try {
+      if (token === undefined) {
+        const offer = await move.prepareStopAll();
+        return offer === "not_waiting" ? jsonResponse({ error: { code: offer, message: stopRefusalText(offer) } }, 409) : jsonResponse(offer);
+      }
+      const refused = await move.stopAll(token);
+      if (refused === null) return jsonResponse({ ok: true });
+      return jsonResponse({ error: { code: refused, message: refused === "no_offer" ? "that confirm is used or unknown: ask again" : stopRefusalText(refused) } }, 409);
     } catch (error) {
       return errorResponse(error);
     }
@@ -779,4 +803,16 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   return serveStatic(pathname, request.headers.get("accept-encoding"), requestOrigin(request));
   })());
   });
+}
+
+/** Why a stop of a busy pane did nothing, in the words the move's dialog shows. */
+function stopRefusalText(refused: StopRefusal): string {
+  switch (refused) {
+    case "not_waiting": return "no move is waiting";
+    case "not_running": return "that pane is not a shell running a command";
+    case "changed": return "the panes changed since you looked: look again";
+    case "own_server": return "that pane runs this Ovis server";
+    case "own_group_unknown": return "Ovis cannot tell its own process group here, so it ends nothing";
+    case "not_tried": return "send Ctrl+C first, and force only once it has had a few seconds";
+  }
 }

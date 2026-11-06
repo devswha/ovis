@@ -127,6 +127,29 @@ describe("ending a busy pane from the move's wait", () => {
     await until("the new command's end", () => shellInFront(pane), (front) => front);
   }, WAIT_MS * 3);
 
+  it("ends all only for the list it offered, and refuses once a pane changed", async () => {
+    const first = await running("move-stop-all-a", "sleep 600");
+    const second = await running("move-stop-all-b", "sleep 600");
+    await waitingMove();
+    const all = async (body: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/runtime/move/stop-all`, { method: "POST", headers, body: JSON.stringify(body) });
+      return { status: response.status, answer: (await response.json()) as { token?: string; panes?: { pane_id: string }[]; error?: { code: string } } };
+    };
+    const offered = await all({});
+    expect(offered.status).toBe(200);
+    expect(offered.answer.panes?.map((pane) => pane.pane_id)).toEqual(expect.arrayContaining([first, second]));
+    // the person ends one pane themselves after the confirm was shown: the confirm no longer holds
+    await paneSendKeys(first, ["ctrl+c"]);
+    await until("the pane ended by hand", () => shellInFront(first), (front) => front);
+    const refused = await all({ token: offered.answer.token });
+    expect([refused.status, refused.answer.error?.code]).toEqual([409, "changed"]);
+    expect(await shellInFront(second)).toBe(false);
+    // asked again, the new list is ended
+    const again = await all({});
+    expect((await all({ token: again.answer.token })).status).toBe(200);
+    await until("the second pane", () => shellInFront(second), (front) => front);
+  }, WAIT_MS * 4);
+
   it("forces only after Ctrl+C was tried and the command still runs, and only that pane's group", async () => {
     const stubborn = await running("move-stop-stubborn", "sh -c 'trap \"\" INT; exec sleep 600'");
     const other = await running("move-stop-bystander", "sleep 600");

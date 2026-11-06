@@ -14,9 +14,9 @@ import { X } from "lucide-react";
 
 import "./RuntimeMove.css";
 
-import type { MovePane, MovePlanResponse } from "../../shared/runtime-move.ts";
+import type { MovePane, MovePlanResponse, MoveStopAllOffer } from "../../shared/runtime-move.ts";
 import { LOCAL_MACHINE } from "../../shared/machines.ts";
-import { ApiError, cancelMove, fetchBridgeHealth, fetchMovePlan, installHerdrCore, startMove, stopMovePane } from "../lib/api.ts";
+import { ApiError, cancelMove, confirmStopAll, fetchBridgeHealth, fetchMovePlan, installHerdrCore, prepareStopAll, startMove, stopMovePane } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { moveInProgress, runningCommands } from "../lib/runtimeMove.ts";
@@ -127,8 +127,8 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const [error, setError] = useState<string | null>(null);
   // a rollback the person has read: Try again shows the plan as it stands now
   const [acknowledged, setAcknowledged] = useState(false);
-  // End all and move now was pressed: the footer asks once more before anything is ended
-  const [confirming, setConfirming] = useState(false);
+  // End all and move now was pressed: the list the server offered to end, asked once more before anything is ended
+  const [confirming, setConfirming] = useState<MoveStopAllOffer | null>(null);
   useSheetSwipe(surface, pending ? null : onClose);
   usePhoneSheetBack(() => { if (pending) return false; onClose(); });
   const { status } = answer;
@@ -155,7 +155,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
     return () => { live = false; clearInterval(timer); };
   }, [onAnswer]);
   useEffect(() => { if (status.state === "done") follow(); }, [status.state, follow]);
-  useEffect(() => { if (view !== "waiting") setConfirming(false); }, [view]);
+  useEffect(() => { if (view !== "waiting") setConfirming(null); }, [view]);
   useEffect(() => { if (!answer.available && status.state !== "done" && !moveInProgress(status)) onClose(); }, [answer.available, status, onClose]);
 
   const act = async (deed: () => Promise<void>): Promise<void> => {
@@ -179,16 +179,20 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   // the command each row shows: the server ends none that runs in its place
   const shown = (pane: MovePane): string | null => pane.verdict.kind === "busy" ? pane.verdict.command : null;
   const stop = (pane: MovePane, force: boolean) => act(async () => { await stopMovePane(pane.pane_id, shown(pane), force); onAnswer(await fetchMovePlan()); });
-  // one at a time, in the plan's order: a refusal stops there, and its pane keeps the move waiting
-  const stopAll = (panes: readonly MovePane[]) => act(async () => {
-    setConfirming(false);
-    for (const pane of panes) await stopMovePane(pane.pane_id, shown(pane));
-    onAnswer(await fetchMovePlan());
+  const askStopAll = () => act(async () => {
+    const offer = await prepareStopAll();
+    if (offer.panes.length > 0) setConfirming(offer);
+    else onAnswer(await fetchMovePlan());
+  });
+  // the server ends exactly the list it offered, or refuses when the panes changed: then the person asks again
+  const stopAll = (offer: MoveStopAllOffer) => act(async () => {
+    setConfirming(null);
+    try { await confirmStopAll(offer.token); } finally { onAnswer(await fetchMovePlan()); }
   });
 
   if (!answer.available) return null;
   const { plan } = answer;
-  const untried = runningCommands(plan).filter((pane) => !stopping.some((entry) => entry.pane_id === pane.pane_id));
+  const untried = runningCommands(plan).filter((pane) => !stopping.some((entry) => entry.pane_id === pane.pane_id)).length;
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
       <div ref={surface} className="modal runtime-move" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-lead`} tabIndex={-1} data-view={view}>
@@ -198,7 +202,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
         </header>
         <div className="modal-body">
           {view === "plan" && <PlanView t={t} plan={plan} leadId={`${id}-lead`} />}
-          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? untried.length : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
+          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? confirming.panes.length : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
           {view === "moving" && status.state === "moving" && <MovingView t={t} status={status} leadId={`${id}-lead`} />}
           {view === "done" && <p className="runtime-move-lead" id={`${id}-lead`} role="status">{t("Now running on herdr-core. To go back to herdr, switch the runtime again.")}</p>}
           {view === "result" && (status.state === "rolled_back" || status.state === "interrupted") && <ResultView t={t} plan={plan} status={status} leadId={`${id}-lead`} />}
@@ -209,13 +213,13 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
             <button ref={first} type="button" className="btn" disabled={pending} onClick={onClose}>{t("Cancel")}</button>
             <button type="button" className="btn btn-primary" disabled={pending} onClick={() => void start(plan.revision)}>{plan.ready ? t("Move everything") : t("Move everything once all work is done")}</button>
           </>}
-          {view === "waiting" && (confirming && untried.length > 0 ? <>
-            <button ref={first} type="button" className="btn" disabled={pending} onClick={() => setConfirming(false)}>{t("Back")}</button>
-            <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void stopAll(untried)}>{t("End and move")}</button>
+          {view === "waiting" && (confirming ? <>
+            <button ref={first} type="button" className="btn" disabled={pending} onClick={() => setConfirming(null)}>{t("Back")}</button>
+            <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void stopAll(confirming)}>{t("End and move")}</button>
           </> : <>
             <button ref={first} type="button" className="btn" disabled={pending} onClick={() => void cancel()}>{t("Cancel")}</button>
-            {untried.length > 0
-              ? <button type="button" className="btn btn-primary" disabled={pending} onClick={() => setConfirming(true)}>{t("End all and move now")}</button>
+            {untried > 0
+              ? <button type="button" className="btn btn-primary" disabled={pending} onClick={() => void askStopAll()}>{t("End all and move now")}</button>
               : <button type="button" className="btn btn-primary" disabled>{t("Waiting for work to finish…")}</button>}
           </>)}
           {(view === "moving" || view === "done") && <button ref={first} type="button" className="btn" onClick={onClose}>{t("Close")}</button>}
