@@ -52,4 +52,5 @@ export const SETTINGS_ACCESS_ZH: Record<string, string> = {
   "Tablet": "平板",
   "phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs": "手机 浏览器 PC 配对 配对码 QR 中继 Tailscale Wi-Fi SSH Portal 添加 PC 远程 PC",
   "machines computers ssh bridge plugins phone pair relay QR code Remote PCs": "机器 电脑 ssh 桥接 插件 手机 配对 中继 QR 代码 远程 PC",
+"While a terminal or chat pane is open.": "打开终端或聊天窗格时保持屏幕常亮。",
 };

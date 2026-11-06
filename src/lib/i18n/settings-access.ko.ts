@@ -52,4 +52,5 @@ export const SETTINGS_ACCESS_KO: Record<string, string> = {
   "Tablet": "태블릿",
   "phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs": "폰 브라우저 PC 페어링 코드 QR 릴레이 Tailscale Wi-Fi SSH Portal PC 추가 원격 PC",
   "machines computers ssh bridge plugins phone pair relay QR code Remote PCs": "기기 컴퓨터 ssh 브리지 플러그인 폰 페어링 릴레이 QR 코드 원격 PC",
+"While a terminal or chat pane is open.": "터미널이나 채팅 패널을 보는 동안 화면을 켜 둡니다.",
 };

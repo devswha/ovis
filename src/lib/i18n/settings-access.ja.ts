@@ -52,4 +52,5 @@ export const SETTINGS_ACCESS_JA: Record<string, string> = {
   "Tablet": "タブレット",
   "phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs": "スマートフォン ブラウザー PC ペアリング コード QR リレー Tailscale Wi-Fi SSH Portal PC を追加 リモート PC",
   "machines computers ssh bridge plugins phone pair relay QR code Remote PCs": "マシン コンピューター ssh ブリッジ プラグイン スマートフォン ペアリング リレー QR コード リモート PC",
+"While a terminal or chat pane is open.": "ターミナルやチャットのペインを開いている間、画面をオンに保ちます。",
 };
