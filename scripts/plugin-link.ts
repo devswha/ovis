@@ -2,8 +2,9 @@
  * `link`: a PC with no screen of its own joins the relay from its terminal (docs/relay.md, "A PC
  * with no screen"). Both ways are the ones its own Settings page offers, through the same routes:
  *
- * - `link`: sign in to the account with the provider's device flow (as a PC's own page does,
- *   src/lib/account/deviceSignIn.ts), list this PC in the account (src/lib/account/addThisPc.ts),
+ * - `link`: sign in to the account with a device code (as a PC's own page does,
+ *   src/lib/account/deviceSignIn.ts): the Ovis link page's where the service has it, else, or with
+ *   `--github` / `--google`, the provider's own device flow. Then list this PC in the account (src/lib/account/addThisPc.ts),
  *   then approve here, after comparing six digits, the device of the account that adds it.
  * - `link --code`: the code to type and the relay QR code that Connect a device shows, renewed
  *   as they run out, until Ctrl+C.
@@ -18,7 +19,7 @@ import { decodeOffer } from "../shared/relay-offer.ts";
 import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { startDeviceSignIn } from "../src/lib/account/deviceSignIn.ts";
 import { NEW_PC_MS } from "../src/lib/account/myPcs.ts";
-import { AccountService, DEVICE_PROVIDERS, type DeviceProvider } from "../src/lib/account/service.ts";
+import { AccountService, DEVICE_PROVIDERS, offeredProviders, type DeviceProvider } from "../src/lib/account/service.ts";
 import { memoryAccountStore, memoryLock } from "../src/lib/account/store.ts";
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -231,7 +232,7 @@ async function putListing(service: AccountService, listing: Listing): Promise<bo
 }
 
 /** `link`: sign in, list this PC in the account, and approve here the account's device that adds it. */
-async function linkToAccount(options: LinkOptions, api: Api, provider: DeviceProvider): Promise<number> {
+async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined): Promise<number> {
   const { out, signal } = options;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
@@ -254,14 +255,25 @@ async function linkToAccount(options: LinkOptions, api: Api, provider: DevicePro
   const store = memoryAccountStore();
   const lock = memoryLock();
   const serviceFetch = options.serviceFetch ?? fetch;
+  // the Ovis link page where the service has it (one code, GitHub or Google picked there); a provider's own device page otherwise, or when named
+  const provider = forced ?? ((await offeredProviders(options.accountService, ["github"], { fetch: serviceFetch })).page.length > 0 ? "ovis" : "github");
   const signIn = await startDeviceSignIn({ service: options.accountService, store, lock, fetch: serviceFetch, now, wait, provider });
-  out([
-    "",
-    `Sign in to your Ovis account with ${provider === "github" ? "GitHub" : "Google"}:`,
-    `open ${signIn.verificationUri} on any device and enter the code: ${signIn.userCode}`,
-    "Waiting for the sign-in…",
-    "",
-  ].join("\n"));
+  out((provider === "ovis"
+    ? [
+      "",
+      "Sign in to your Ovis account:",
+      `open ${signIn.verificationUri} on any device and enter the code: ${signIn.userCode}`,
+      ...(signIn.verificationUriComplete === null ? [] : ["or scan this QR code with the phone's camera:", qr(signIn.verificationUriComplete)]),
+      "Then continue with GitHub or Google there. Waiting for the sign-in…",
+      "",
+    ]
+    : [
+      "",
+      `Sign in to your Ovis account with ${provider === "github" ? "GitHub" : "Google"}:`,
+      `open ${signIn.verificationUri} on any device and enter the code: ${signIn.userCode}`,
+      "Waiting for the sign-in…",
+      "",
+    ]).join("\n"));
   await signIn.finish(signal);
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
   let pending: Listing | null = null;
@@ -323,7 +335,7 @@ async function linkToAccount(options: LinkOptions, api: Api, provider: DevicePro
   }
 }
 
-/** Runs `link [--code] [--google]`; the exit code. */
+/** Runs `link [--code] [--github | --google]`; the exit code. */
 export async function link(args: readonly string[], options: LinkOptions): Promise<number> {
   let host: string;
   try { host = new URL(options.origin).host; } catch { host = ""; }
@@ -331,7 +343,7 @@ export async function link(args: readonly string[], options: LinkOptions): Promi
     options.out(`The server at ${options.origin} is not on a loopback address. Run link only on the PC itself, with Ovis listening on 127.0.0.1 (HOST unset).\n`);
     return 1;
   }
-  const provider = DEVICE_PROVIDERS.find((name) => args.includes(`--${name}`)) ?? "github";
+  const provider = DEVICE_PROVIDERS.find((name) => args.includes(`--${name}`));
   const api = localApi(options);
   try {
     return args.includes("--code") ? await linkWithCode(options, api) : await linkToAccount(options, api, provider);

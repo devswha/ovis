@@ -277,6 +277,41 @@ describe("signing in on a PC's own page, with GitHub's device flow", () => {
   });
 });
 
+describe("signing in on a PC's own page, with the Ovis link page", () => {
+  function setup() {
+    let now = 1_000_000;
+    const fake = new FakeAccountService(() => now);
+    fake.offerLinkPage(["github", "google"]);
+    const store = memoryAccountStore();
+    const wait = async (ms: number) => { now += ms; };
+    return { fake, store, options: { service: SERVICE, store, fetch: fake.fetch, wait, now: () => now, lock: memoryLock(), provider: "ovis" as const } };
+  }
+
+  it("shows the Ovis code with the service's own link page, and keeps the session the page approved", async () => {
+    const { fake, store, options } = setup();
+    const started = await startDeviceSignIn(options);
+    expect(started.verificationUri).toBe(`${SERVICE}/link`);
+    expect(started.verificationUriComplete).toBe(`${SERVICE}/link?code=${started.userCode}`);
+    const finishing = started.finish(new AbortController().signal);
+    fake.approveOnLinkPage(started.userCode, "acct_page", "google");
+    expect(await finishing).toMatchObject({ account: "acct_page", provider: "google" });
+    expect((await store.get("session"))?.provider).toBe("google");
+  });
+
+  it("refuses a link page on another address, and shows no QR code for a link carrying another code", async () => {
+    const { fake, options } = setup();
+    const rewrite = (fields: Record<string, string>) => async (input: Request | string | URL, init?: RequestInit) => {
+      const answer = await fake.fetch(input instanceof Request ? input : new Request(input, init));
+      const body = await answer.json() as Record<string, unknown>;
+      return Response.json({ ...body, ...fields }, { status: answer.status });
+    };
+    await expect(startDeviceSignIn({ ...options, fetch: rewrite({ verification_uri: "https://account.evil.example/link" }) })).rejects.toMatchObject({ code: "unsupported" });
+    const other = await startDeviceSignIn({ ...options, fetch: rewrite({ verification_uri_complete: `${SERVICE}/link?code=BBBB-BBBB` }) });
+    expect(other.verificationUri).toBe(`${SERVICE}/link`);
+    expect(other.verificationUriComplete).toBeNull();
+  });
+});
+
 describe("which account service a page signs in with", () => {
   const page = (content: string | null) => ({ querySelector: () => content === null ? null : { getAttribute: () => content } });
 

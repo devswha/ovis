@@ -5,6 +5,9 @@
  * (github.com/login/device, google.com/device), and the page polls the service until it says yes. The sign-in is bound to a verifier that never leaves this page's
  * memory, so the device code alone redeems nothing, and a service that does not say it bound the
  * sign-in is not used.
+ *
+ * With `provider: "ovis"` the code is the service's own, typed at its link page (<service>/link),
+ * where the person picks GitHub or Google; the polls are the same.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { failure, sessionOf, type DeviceProvider } from "./service.ts";
@@ -21,11 +24,16 @@ export const GITHUB_DEVICE_PAGE = "https://github.com/login/device";
 /** Each provider's own device page: the only address the page links to for typing the code. */
 export const DEVICE_PAGES: Readonly<Record<DeviceProvider, string>> = { github: GITHUB_DEVICE_PAGE, google: "https://www.google.com/device" };
 
+/** Where a device sign-in's code is typed: a provider's device page, or the account service's own link page. */
+export type DeviceSignInProvider = DeviceProvider | "ovis";
+
 export interface DeviceSignIn {
   /** the code the person types at GitHub */
   readonly userCode: string;
-  /** the provider's device page, and never another address */
+  /** the provider's device page, or the service's link page, and never another address */
   readonly verificationUri: string;
+  /** the link page with this code filled in, for a QR code; null for a provider's page, or a link carrying another code */
+  readonly verificationUriComplete: string | null;
   /** when the code runs out, in ms since the epoch */
   readonly expiresAt: number;
   /** Polls until GitHub answers; the session is kept only if `signal` was not aborted by then. */
@@ -41,7 +49,7 @@ export interface DeviceSignInOptions {
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly lock?: AccountLock;
   /** GitHub unless named */
-  readonly provider?: DeviceProvider;
+  readonly provider?: DeviceSignInProvider;
 }
 
 function waitFor(ms: number, signal: AbortSignal): Promise<void> {
@@ -101,9 +109,24 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const expiresAt = now() + seconds(body["expires_in"], 900) * 1000;
   const firstInterval = seconds(body["interval"], 5) * 1000;
 
+  let verificationUri: string;
+  let verificationUriComplete: string | null = null;
+  if (provider === "ovis") {
+    // the link page is the service's own, exactly: an answer naming any other address is not followed
+    const page = new URL("/link", options.service);
+    if (body["verification_uri"] !== page.href) throw new SignInError("unsupported", "The account service named another sign-in page");
+    verificationUri = page.href;
+    const complete = new URL(page);
+    complete.searchParams.set("code", userCode);
+    if (body["verification_uri_complete"] === complete.href) verificationUriComplete = complete.href;
+  } else {
+    verificationUri = devicePage(body["verification_uri"], provider);
+  }
+
   return {
     userCode,
-    verificationUri: devicePage(body["verification_uri"], provider),
+    verificationUri,
+    verificationUriComplete,
     expiresAt,
     async finish(signal) {
       let interval = firstInterval;
