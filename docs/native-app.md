@@ -387,6 +387,17 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   for Try again and Change PC. For the same reason `error.html` carries its own style and
   script, which `app/scripts/build-web.ts` inlines.
 - The manifest allows cleartext http to any host (see the connect screen's warning above).
+- A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
+  PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
+  `https://app.ovis.sh/s/`, which Android verifies against
+  `https://app.ovis.sh/.well-known/assetlinks.json` (written by `scripts/shell-build.ts` with Play's
+  app signing certificate and the upload certificate, so it is live once a release deploys the
+  hosted shell). `MainActivity` keeps the link in memory (`PCStore.link`) and shows the connect
+  screen, which takes it once (`HerdrShellPlugin.takeLink`) and opens it as a scanned QR code, so
+  `relayLink()` checks it the same way. A link handed back when the app is restored or started
+  from Recents is not opened again. Until the link is verified, Android opens such links in the
+  browser as before. The hosted shell also serves `apple-app-site-association` for the iOS app,
+  which still needs the Associated Domains capability (`applinks:app.ovis.sh`) and a handler.
   `minSdkVersion` is 26 (Android 8), which the QR scanner's library needs. The merged manifest
   asks for INTERNET, ACCESS_NETWORK_STATE, CAMERA (the QR scanner) and androidx's own
   `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`.

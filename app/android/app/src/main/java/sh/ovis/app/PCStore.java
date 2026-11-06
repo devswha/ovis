@@ -40,6 +40,26 @@ final class PCStore {
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
 
+    /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
+    static volatile String link;
+
+    /**
+     * `data` when an intent of `action` is a view of a PC's page on the hosted shell
+     * (`https://app.ovis.sh/s/...`, the manifest's verified link), else null. The connect screen
+     * checks the rest as it does a scanned QR code (app/web/shell.js relayLink).
+     */
+    static String appLink(String action, String data) {
+        if (!"android.intent.action.VIEW".equals(action) || data == null) return null;
+        URI uri;
+        try {
+            uri = new URI(data);
+        } catch (URISyntaxException notAnAddress) {
+            return null;
+        }
+        boolean hostedShell = "https".equalsIgnoreCase(uri.getScheme()) && "app.ovis.sh".equalsIgnoreCase(uri.getHost()) && uri.getPort() == -1;
+        return hostedShell && uri.getRawPath() != null && uri.getRawPath().startsWith("/s/") ? data : null;
+    }
+
     /** Why the PC's page failed, for the error page: WebView's reason, or the HTTP status it answered. */
     static volatile String failure;
 

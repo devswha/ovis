@@ -57,6 +57,19 @@ public class HerdrShellPlugin extends Plugin {
         reopen();
     }
 
+    /**
+     * The app link the app was opened with (MainActivity), once, or "": the connect screen opens it
+     * as it would a scanned QR code.
+     */
+    @PluginMethod
+    public void takeLink(PluginCall call) {
+        String link = PCStore.link;
+        PCStore.link = null;
+        JSObject result = new JSObject();
+        result.put("url", link == null ? "" : link);
+        call.resolve(result);
+    }
+
     @PluginMethod
     public void forget(PluginCall call) {
         String key = call.getString("url");

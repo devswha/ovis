@@ -316,4 +316,22 @@ public class PCStoreTest {
         assertEquals("https://pc.example.com/?pair=123456", PCStore.startOn("https://pc.example.com", "http://100.64.0.1/?pair=123456"));
         assertEquals("https://pc.example.com/", PCStore.startOn("https://pc.example.com", "http://100.64.0.1"));
     }
+
+    @Test
+    public void takesOnlyAViewOfAPcPageOnTheHostedShellAsAnAppLink() {
+        String offer = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/#offer=eyJ2IjoxfQ";
+        assertEquals(offer, PCStore.appLink("android.intent.action.VIEW", offer));
+        assertEquals("https://APP.ovis.sh/s/x", PCStore.appLink("android.intent.action.VIEW", "https://APP.ovis.sh/s/x"));
+        assertNull(PCStore.appLink("android.intent.action.MAIN", offer));
+        assertNull(PCStore.appLink("android.intent.action.VIEW", null));
+        for (String other : new String[] {
+            "http://app.ovis.sh/s/0123456789abcdef0123456789abcdef/",
+            "https://app.ovis.sh:8443/s/0123456789abcdef0123456789abcdef/",
+            "https://app.ovis.sh.evil.example/s/0123456789abcdef0123456789abcdef/",
+            "https://app.ovis.sh/",
+            "https://app.ovis.sh/sx/",
+            "ovis://account/callback?code=1",
+            "https://app.ovis.sh/s/ bad",
+        }) assertNull(other, PCStore.appLink("android.intent.action.VIEW", other));
+    }
 }
