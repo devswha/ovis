@@ -51,7 +51,7 @@ import { dictationLocale, VOICE_CONFIG_EVENT } from "../lib/voice.ts";
 import { DevicesPanel } from "./DevicesPanel.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
-import { failureText, openOwnOffer, statusText } from "./RelayPanel.tsx";
+import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountOffered, type AccountState } from "./AccountSection.tsx";
 import { accountPcStateText } from "./AccountPcs.tsx";
 import { STATE_WORD } from "./MachineSidebar.tsx";
@@ -1284,6 +1284,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
         <SettingsRow label={t("Connect a device")} keywords={t("phone browser PC pair pairing code QR relay Tailscale Wi-Fi SSH Portal add PC remote PCs")}>
           <button type="button" className="btn btn-primary" onClick={() => setConnecting(true)}><Plus aria-hidden="true" />{t("Connect")}</button>
         </SettingsRow>
+        {relayOffered(relay) && <RelayDirectRow relay={relay} readOnly={relayReadOnly} />}
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
           <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} />

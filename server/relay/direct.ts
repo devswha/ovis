@@ -100,6 +100,10 @@ interface Carrier {
   readonly transport: Transport;
   readonly sockets: Set<Parameters<RelaySocketHandlers["open"]>[0]>;
   cancelTimeout: () => void;
+  /** opening order, for giving way oldest first */
+  readonly order: number;
+  /** given way to a newer client; closing */
+  dropped?: boolean;
   session?: RelaySession;
   deviceId?: string;
   /** Gives its signed-in place back (SignedInSessions.admit). */
@@ -111,6 +115,7 @@ export class DirectCarrier {
   private bound: { addresses: readonly string[]; port: number } | null = null;
   private readonly carriers = new Map<string, Carrier>();
   private stopped = false;
+  private opened = 0;
   private cancelRefresh: (() => void) | undefined;
   private readonly clock: MuxClock;
   private readonly signedIn: SignedInSessions;
@@ -192,11 +197,10 @@ export class DirectCarrier {
         const source = server.requestIP(request)?.address;
         if (!(this.options.peerAllowed ?? privateLanPeer)(source) || source === undefined) return new Response(null, { status: 403 });
         if (new URL(request.url).pathname !== "/v1/ws") return new Response(null, { status: 404 });
+        // a browser page always names its origin; the apps' sockets name none. No web page on the network opens this.
+        if (request.headers.has("origin")) return new Response(null, { status: 403 });
         if (this.stopped) return new Response(null, { status: 503 });
-        const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId);
-        if (pending.length >= MAX_PENDING || pending.filter((carrier) => carrier.source === source).length >= MAX_PENDING_PER_SOURCE) {
-          return new Response(null, { status: 503 });
-        }
+        this.makeRoom(source);
         return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex") } })
           ? undefined : new Response(null, { status: 426 });
       },
@@ -212,6 +216,34 @@ export class DirectCarrier {
     });
   }
 
+  /**
+   * Room for one more client that has not signed in: the newest attempt always gets in, so filling the
+   * places can never shut a paired phone out. Past the source's share its own oldest gives way; past every
+   * place, the oldest of the source holding the most. A phone that still cannot finish uses the relay.
+   */
+  private makeRoom(source: string): void {
+    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId && !carrier.dropped).sort((a, b) => a.order - b.order);
+    const own = pending.filter((carrier) => carrier.source === source);
+    const evict = (carrier: Carrier | undefined): void => {
+      if (!carrier) return;
+      pending.splice(pending.indexOf(carrier), 1);
+      this.drop(carrier);
+    };
+    while (own.length >= MAX_PENDING_PER_SOURCE) evict(own.shift());
+    while (pending.length >= MAX_PENDING) {
+      const counts = new Map<string, number>();
+      for (const carrier of pending) counts.set(carrier.source, (counts.get(carrier.source) ?? 0) + 1);
+      const busiest = [...counts].sort((a, b) => b[1] - a[1])[0]![0];
+      evict(pending.find((carrier) => carrier.source === busiest));
+    }
+  }
+
+  /** Ends a client that had not signed in: its place is free at once, and its close runs as any other. */
+  private drop(carrier: Carrier): void {
+    carrier.dropped = true;
+    carrier.socket.close(1013, "Try again");
+  }
+
   private open(socket: Bun.ServerWebSocket<SocketData>): void {
     const { id, source } = socket.data;
     if (this.stopped) { socket.close(1001, "Direct connections stopped"); return; }
@@ -221,7 +253,7 @@ export class DirectCarrier {
       send: (data) => { if (socket.send(data) === 0) socket.close(1011, "Send dropped"); },
       close: (code, reason) => socket.close(code, reason),
     };
-    const carrier: Carrier = { socket, source, transport, sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
+    const carrier: Carrier = { socket, source, transport, order: ++this.opened, sockets: new Set(), cancelTimeout: this.clock.setTimeout(() => socket.close(), HANDSHAKE_MS) };
     this.carriers.set(id, carrier);
     // the relay's word to a client that it reached the PC (shared/relay-channel.ts)
     socket.send(JSON.stringify({ type: "assigned", connection_id: id }));

@@ -738,8 +738,11 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   `AUTH_OK` `direct`: up to four `ws://<private IPv4>:<port>` addresses, checked on both ends. It
   comes from the PC the phone authenticated, so the relay cannot add an address. An older phone or
   PC offers or answers nothing, and nothing changes for it.
-- **Bounded.** At most two clients that have not signed in per source address and eight in all,
-  refused at upgrade beyond that, apart from the relay's places; 5 s to finish the handshake and
+- **Bounded, and never locked.** A socket that names an `Origin` (any browser page, on the network or
+  not) is refused: the apps' sockets name none. At most two clients that have not signed in per source
+  address and eight in all, apart from the relay's places; the newest attempt always gets in (its
+  address's oldest gives way, then the oldest of the busiest address), so filling the places cannot
+  shut a paired phone out, and a phone that still cannot finish uses the relay; 5 s to finish the handshake and
   15 s to sign in, and no message larger than one protected mux frame. Signed-in sessions count
   against one set of limits whichever way they came (relay links and direct carriers together):
   eight at once and four per device key, whose oldest gives way. Peers outside private IPv4 are refused before upgrade. Removing a device, stopping
@@ -756,6 +759,9 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   falls back to the relay silently; a refusal by the PC (a removed device) is final as over the
   relay. The carriers are saved with the pairing for the next start. A browser has no such socket
   and always uses the relay.
+- **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
+  Wi-Fi direct connection on" (who can sign in there) with its switch, and the network-exposure
+  warning (`lanExposed`) counts this listener as a network bind.
 - **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
   `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first

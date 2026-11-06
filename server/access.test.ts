@@ -253,6 +253,14 @@ describe("lanExposed", () => {
     });
   }
 
+  it("warns for a loopback or Tailscale bind too while the relay's direct carriers listen on the network", () => {
+    for (const hostname of ["127.0.0.1", "100.64.0.2"]) {
+      expect(lanExposed({ ...open, hostname, lanListener: true })).toBe(true);
+      expect(lanExposed({ ...open, hostname, lanListener: true, gated: true })).toBe(false);
+      expect(lanExposed({ ...open, hostname, lanListener: true, tokenConfigured: true })).toBe(false);
+    }
+  });
+
   it("is quiet whenever one of the three is not the case", () => {
     // a loopback bind is unreachable from the network however it is addressed or spelt
     for (const hostname of ["127.0.0.1", "localhost", "::1", "127.0.0.2", "[::1]", "LOCALHOST", "::ffff:127.0.0.1", "app.localhost", " localhost "]) {

@@ -108,18 +108,29 @@ describe("direct carrier", () => {
     expect(store.pairRelay(code, "Phone", publicKey)).toBeTruthy();
   });
 
-  it("holds at most two clients that have not signed in per address", async () => {
-    // Given two sockets from one address that never start a handshake
-    const { url } = await directFixture();
+  it("lets a paired phone in even when silent clients from its address hold every place", async () => {
+    // Given two sockets from the phone's address that never start a handshake
+    const { fixture, offer, url } = await directFixture();
+    const device = await relayDevice(fixture);
     const first = new WebSocket(url());
     const second = new WebSocket(url());
     cleanup.push(() => first.close(), () => second.close());
     await opened(first);
     await opened(second);
-    // When a third comes from the same address, it is refused before upgrade
-    const third = new WebSocket(url());
-    cleanup.push(() => third.close());
-    await expect(opened(third)).rejects.toThrow();
+    const firstClosed = new Promise<number>((resolve) => { first.onclose = (event) => resolve(event.code); });
+    // When the phone opens its channel from the same address
+    const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()) }));
+    cleanup.push(() => channel.close());
+    // Then it is admitted, and the oldest silent client gave way
+    expect(channel.device.device_id).toBe(device.id);
+    expect(await bounded(firstClosed)).toBe(1013);
+  });
+
+  it("refuses a browser page: a socket that names an origin", async () => {
+    const { url } = await directFixture();
+    const page = new WebSocket(url(), { headers: { origin: "http://192.168.0.20:8080" } } as never);
+    cleanup.push(() => page.close());
+    await expect(opened(page)).rejects.toThrow();
   });
 
   it("answers only private network peers", async () => {

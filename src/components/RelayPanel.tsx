@@ -48,27 +48,28 @@ export async function openOwnOffer(url: string): Promise<void> {
 }
 
 /**
- * Settings → Phones and devices → More: whether phones paired through the relay connect straight to this
- * PC when they can reach it on the same network (docs/relay.md, "Direct on the same network"). Only where
- * the PC can say (an older one has no `direct`) and the relay can be changed from: a direct connection by
- * someone who drives this PC.
+ * Settings → Devices and PCs → My devices, in sight while the relay is on: whether this PC takes the relay's
+ * channel straight on its home network (docs/relay.md, "Direct on the same network"), on by default. Said
+ * plainly because it is a listener on the network; who can sign in there is said with it. The switch only
+ * where the relay can be changed from (a direct connection by someone who drives this PC).
  */
 export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnly: boolean }) {
   const t = useT();
   const [failure, setFailure] = useState<string | null>(null);
   const direct = relay.status?.direct;
-  if (direct === undefined || readOnly) return null;
-  const label = t("Connect directly on the same network");
+  if (direct === undefined || relay.status?.phase === "off") return null;
   const change = (on: boolean) => {
     setFailure(null);
     relay.request({ direct: on }).catch((reason: unknown) => setFailure(failureText(reason)));
   };
   return (
-    <SettingsRow label={label} description={<>
-      {t("Phones paired through the relay skip it when they are on this PC's network.")}
+    <SettingsRow label={direct.on ? t("Same Wi-Fi direct connection on") : t("Same Wi-Fi direct connection off")} description={<>
+      {direct.on
+        ? t("This PC takes connections on your home network. Only devices already paired can sign in there; nothing new pairs.")
+        : t("Phones paired through the relay always go through the relay.")}
       {failure !== null && <span className="settings-hint relay-error" role="alert">{failure}</span>}
     </>}>
-      <Toggle label={label} checked={direct.on} disabled={relay.pending} onChange={change} />
+      {!readOnly && <Toggle label={t("Same Wi-Fi direct connection")} checked={direct.on} disabled={relay.pending} onChange={change} />}
     </SettingsRow>
   );
 }
