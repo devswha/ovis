@@ -584,6 +584,10 @@ describe("the preview Claude draws for the option under its cursor (#1212)", () 
     expect(card?.options).toEqual(shown("grid", 67)?.options);
     expect(card?.id).toBe(shown("grid", 67)?.id);
     expect(card?.option_preview).toEqual({ option_index: 0, text: "+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards" });
+    // nor at a corner in the first option's own label, left of the preview box
+    const label = parseInteractivePrompt("claude", screen.replace("❯ 1. Grid                         ┌", "❯ 1. API  ┌────┐                  ┌"));
+    expect(label?.options.map((option) => option.label)).toEqual(["API  ┌────┐", "Wide", "Tall"]);
+    expect(label?.option_preview?.text).toBe("+--+ +--+\n|  | |  |\n+--+ +--+\ngrid of cards");
   });
 
   test("shows no preview from a box too narrow to read, and still the card", () => {

@@ -118,8 +118,9 @@ export function withoutClaudeSidePanel(screen: string): string {
 function previewBox(lines: string[], from: number, to: number): { top: number; column: number; inner: number } | null {
   for (let index = from; index <= to; index += 1) {
     const line = lines[index] ?? "";
-    const corner = /\s{2,}[┌╭]/.exec(line);
-    if (corner === null) continue;
+    // the box stands right of the menu: a corner in an option's own label is further left
+    const corner = [...line.matchAll(/\s{2,}[┌╭]/g)].at(-1);
+    if (corner === undefined) continue;
     const left = corner.index + corner[0].length - 1;
     const right = /^[─━]*[┐╮]/.exec(line.slice(left + 1));
     return { top: index, column: Bun.stringWidth(line.slice(0, left)), inner: right === null ? 0 : right[0].length - 1 };
