@@ -349,15 +349,28 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     // herdr 0.9.3 leaves out the argv of a process it finds in uninterruptible sleep (D) or exiting:
     // one such answer for a Copilot still in front is not that Copilot gone
     const realProcessInfo = herdrClient.paneProcessInfo;
-    let unreadAnswers = 0;
+    const answers: ("read" | "unread")[] = [];
+    let unreadLeft = 1;
     const unread = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async (paneId, socketPath) => {
       const info = await realProcessInfo(paneId, socketPath);
-      if (paneId !== current || unreadAnswers > 0 || info === undefined) return info;
-      unreadAnswers++;
-      return { ...info, foreground_processes: info.foreground_processes?.map((entry) => ({ ...entry, argv: null, cmdline: null })) };
+      if (paneId !== current || info === undefined) return info;
+      if (unreadLeft === 0) { answers.push("read"); return info; }
+      unreadLeft--;
+      answers.push("unread");
+      const front = info.foreground_processes ?? [];
+      if (!front.some((entry) => entry.pid === pid)) throw new Error("the stand-in is not in herdr's answer");
+      return { ...info, foreground_processes: front.map((entry) => ({ ...entry, argv: null, cmdline: null })) };
     });
-    try { expect((await read()).source).toBe("copilot-transcript"); } finally { unread.mockRestore(); }
-    expect(unreadAnswers).toBe(1);
+    try {
+      expect((await read()).source).toBe("copilot-transcript");
+      expect(answers.slice(0, 2)).toEqual(["unread", "read"]);
+      // still unread when asked again: which process is Copilot, and which store it names, stays unproved
+      answers.length = 0;
+      unreadLeft = 2;
+      expect(await read()).toEqual({ source: "scrollback", turns: [] });
+      expect(answers).toEqual(["unread", "unread"]);
+    } finally { unread.mockRestore(); }
+    expect((await read()).source).toBe("copilot-transcript");
     // Even valid legacy report/marker evidence cannot rescue a refused API request.
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${first}\n` });
     for (const deadline = Date.now() + 4000;;) {
