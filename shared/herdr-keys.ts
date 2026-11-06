@@ -74,9 +74,19 @@ const NAMED_KEYS: ReadonlyMap<string, string> = new Map([
 export function parseHerdrBinding(raw: string): HerdrBinding | null {
   const trimmed = raw.trim();
   const prefixed = trimmed.startsWith("prefix+");
-  const parts = (prefixed ? trimmed.slice("prefix+".length) : trimmed).split("+").map((part) => part.trim());
-  if (parts.some((part) => part === "")) return null;
+  const body = (prefixed ? trimmed.slice("prefix+".length) : trimmed).trim();
   const flags = { ctrl: false, alt: false, shift: false, meta: false, hyper: false };
+  // a literal plus is the key after the last separator: `+` alone, or modifiers then `++`
+  if (body === "+" || body.endsWith("++")) {
+    for (const part of body === "+" ? [] : body.slice(0, -2).split("+")) {
+      const modifier = MODIFIERS.get(part.trim().toLowerCase());
+      if (modifier === undefined) return null;
+      flags[modifier] = true;
+    }
+    return { prefixed, range: false, chord: { ...flags, key: "+" } };
+  }
+  const parts = body.split("+").map((part) => part.trim());
+  if (parts.some((part) => part === "")) return null;
   let key: string | null = null;
   let range = false;
   for (const part of parts) {
@@ -137,7 +147,7 @@ export function resolveHerdrKeys(keys: unknown): HerdrKeys {
   const wellTyped = ["prefix", "extra_prefixes", ...FIELDS.map(([field]) => field)].every((field) => !Object.hasOwn(user, field) || bindingValues(user[field]) !== null)
     && indexed !== null && Object.values(indexed).every((value) => typeof value === "string")
     && Array.isArray(commands) && commands.every((command) => table(command) !== null);
-  if (!wellTyped) user = {};
+  if (!wellTyped) return resolveHerdrKeys(undefined);
   const prefixes: string[] = [];
   const prefixIds = new Set<string>();
   for (const raw of ["prefix", "extra_prefixes"].flatMap((field) => Object.hasOwn(user, field) ? bindingValues(user[field]) ?? [] : [])) {

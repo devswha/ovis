@@ -110,6 +110,13 @@ describe("herdr's [keys] prefix bindings", () => {
     // a prefix binding on any of the prefixes sends that prefix: dropped
     expect(keysOf('[keys]\nprefix = ["ctrl+a", "ctrl+b"]\nnew_tab = "prefix+ctrl+b"\n').bindings.new_tab).toEqual([]);
     expect(keysOf('[keys]\nprefix = ["ctrl+a", 1]\nnew_tab = "prefix+t"\n').bindings.new_tab).toEqual(["prefix+c"]);
+    // nor are the indexed keys or commands of a config herdr does not read
+    const unread = keysOf('[keys]\nextra_prefixes = 1\n[keys.indexed]\ntabs = "ctrl"\n[[keys.command]]\nkey = "prefix+c"\ncommand = "echo hi"\n');
+    expect(unread.bindings).toMatchObject({ switch_tab: ["prefix+1..9"], new_tab: ["prefix+c"] });
+    // the plus key is a prefix, so a binding on it is dropped
+    const plus = keysOf('[keys]\nprefix = ["ctrl+a", "+"]\nnew_tab = "prefix+plus"\n');
+    expect([plus.prefixes, plus.bindings.new_tab]).toEqual([["ctrl+a", "+"], []]);
+    expect(keysOf('[keys]\nclear_pane = "prefix++"\nzoom = "prefix+plus"\n').bindings.zoom).toEqual([]);
   });
 
   it("let every action herdr registers take a default's key, those the app does not run included", () => {
