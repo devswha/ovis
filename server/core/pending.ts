@@ -28,7 +28,7 @@ import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText, type
 import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaudeHeld, heldCandidate, noteSubmitted, parseInteractivePrompt, piRunsCommand, piListsTemplate, prepareCommandSend, shownInputBox } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
-import { PendingInputs, samePendingIdentity, sameProcessBirth, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
+import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
 import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { processStartedAtAsync } from "../process-start.ts";
 import { agentProcessInFront } from "../agent-process.ts";
@@ -490,7 +490,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * The process a check passed for is still in front, read once more after the awaits that followed it and just
    * before a write: herdr cannot compare and send in one step, so this keeps the window to the write's own call.
    */
-  async function stillInFront(paneId: string, pid: number | null | undefined, pinned: PendingIdentity | null = null, agentOnly = false): Promise<void> {
+  async function stillInFront(paneId: string, current: number | null | undefined, pinned: PendingIdentity | null = null, agentOnly = false): Promise<void> {
+    // the process the message is bound to, once known: one no longer in front is not looked past to whatever is there now
+    const pid = pinned?.processPid ?? current;
     const inFront = async (): Promise<NonNullable<ProcessInfo["foreground_processes"]>> => {
       if (agentOnly) {
         // a message for an agent alone (#511): by this last read too, the PID it was checked against runs the agent's
@@ -511,25 +513,33 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const session = pinned?.agent === "claude" ? pinned.claudeSession ?? null : null;
     if (pid == null && session === null && !agentOnly) return;
     const foreground = await inFront();
-    // the PID by its start too, read after it was seen in front: a process that ended and left its PID to another, or
-    // whose known start cannot be read any more, is not the one checked
-    if (pid != null && pinned?.processPid === pid && pinned.processBirth != null) {
-      const birth = await processStartedAtAsync(pid);
-      if (birth === null || !sameProcessBirth(pinned.processBirth, birth)) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+    if (session !== null) {
+      if ((await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+      await inFront();
     }
-    if (session === null) return;
-    if ((await claudeForegroundSession(foreground) ?? await claudeForegroundSession(foreground)) !== session) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
-    await inFront();
+    // the PID by its start too, read last, after it was seen in front
+    await sameStart(pinned);
+  }
+  /**
+   * The bound process by its start: one that ended and left its PID to another, or whose known start cannot be read any
+   * more, is not the one checked (samePendingIdentity). Read from /proc or sysctl, no herdr call.
+   */
+  async function sameStart(pinned: PendingIdentity | null): Promise<void> {
+    if (pinned?.processPid == null || pinned.processBirth == null) return;
+    const birth = await processStartedAtAsync(pinned.processPid);
+    if (!samePendingIdentity(pinned, { ...pinned, processBirth: birth })) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
   }
   /**
    * The screen once more, right before a write and after every other check: a masked prompt that came up while those were
-   * awaited gets no paste and no Enter. herdr cannot compare and write in one step, so a prompt that comes up during this
-   * read or herdr's write is still not seen: the window is this read and the write's own call.
+   * awaited gets no paste and no Enter. Then the bound process's start again, which costs no herdr call: one that took
+   * its PID during this read is not written to. herdr cannot compare and write in one step, so what changes during the
+   * last reads or herdr's write is still not seen: the window is those reads and the write's own call.
    */
-  async function noMaskedPrompt(paneId: string, cols: number | undefined): Promise<void> {
+  async function noMaskedPrompt(paneId: string, cols: number | undefined, pinned: PendingIdentity | null): Promise<void> {
     if (secretPrompt((await paneRead({ paneId, source: "detection", format: "text" })).text, cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
     }
+    await sameStart(pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
     authorizePending(owner, paneId, lease);
@@ -641,7 +651,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
       await stillInFront(paneId, context.identity.processPid, identity, agentOnly);
-      await noMaskedPrompt(paneId, lease.sighting.facts().cols);
+      await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
@@ -657,6 +667,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         const revalidate = async (): Promise<void> => {
           const current = await pendingContext(owner, paneId, lease, identity, typed);
           if (automatic && !typed && (current.working || queueHeld(paneId))) throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+          // and the screen last, as before the plain paste: no skill key goes into a masked prompt that came up meanwhile
+          await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
         const result = await typeWithSkills(text, skills, typing, herdrSkillAttachIo(paneId), revalidate).catch((error: unknown) => {
           // nothing was written before a refused check or guard: the message is unsent, not uncertain
@@ -697,12 +709,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (piAnchor !== undefined) {
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
         if (automatic && (beforeEnter.working || queueHeld(paneId))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
-        await stillInFront(paneId, beforeCapturePid, null, agentOnly).catch(enterRefused);
+        await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
       }
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
       if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
-      await noMaskedPrompt(paneId, lease.sighting.facts().cols).catch(enterRefused);
+      await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
       committing(steering);
@@ -720,6 +732,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       await interruptCodexSteering(interruptWorkingCodex, closeMention(text), { agent: beforeEnter.identity.agent, working: beforeEnter.working, screen: beforeEnter.screen }, {
         read: async () => {
           const current = await pendingContext(owner, paneId, lease, identity, true);
+          // no Escape into a masked prompt that came up during the read's last process check
+          await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
           statusAtRead = pending.current(paneId);
           return { agent: current.identity.agent, working: current.working, screen: current.screen };
         },

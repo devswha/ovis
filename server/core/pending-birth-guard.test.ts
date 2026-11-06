@@ -1,9 +1,13 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 
-import type { HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
+import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
+import * as claude from "../claude-store.ts";
 import * as client from "../herdr/client.ts";
 import * as opencode from "../opencode-native.ts";
+import * as pi from "../pi.ts";
+import * as prompt from "../prompt.ts";
 import * as processStart from "../process-start.ts";
+import * as composer from "./composer.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 
@@ -16,7 +20,10 @@ const PROMPT = "Enter passphrase for key '/tmp/key': ";
  * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
  * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
  */
-async function drain({ after = () => {}, afterPaste = () => {} }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode }) {
+  spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
+  if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
+  if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
   const shown: Pane = { birth: 1_000 as number | null, screen: "", foreground: [{ pid: 41001, name: "gjc", argv: ["gjc"] }] };
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => shown.birth);
   spyOn(client, "paneProcessInfo").mockImplementation(async () => {
@@ -26,16 +33,26 @@ async function drain({ after = () => {}, afterPaste = () => {} }: { after?: (pan
   spyOn(client, "paneRead").mockImplementation(async () => ({ text: shown.screen }) as Awaited<ReturnType<typeof client.paneRead>>);
   const skillsToType = opencode.openCodeSkillsToType;
   spyOn(opencode, "openCodeSkillsToType").mockImplementation(async (...args: Parameters<typeof skillsToType>) => {
-    const result = await skillsToType(...args);
+    const result = mode === "skill" ? { sent: {} as never, skills: ["effect"] } : await skillsToType(...args);
     after(shown);
     return result;
   });
   const writes: string[] = [];
   spyOn(client, "paneSendText").mockImplementation(async () => { writes.push("paste"); afterPaste(shown); });
-  spyOn(client, "paneSendKeys").mockImplementation(async (_pane: string, keys: string[]) => { writes.push(keys.join("+")); });
+  spyOn(client, "paneSendKeys").mockImplementation(async (_pane: string, keys: string[]) => {
+    writes.push(keys.join("+"));
+    // Codex shows the steered message waiting after its Enter; a masked prompt comes up during the steering's process check
+    if (mode === "codex" && keys[0] === "Enter") {
+      shown.screen = "• Working (2s • esc to interrupt)\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ FOLLOWUP\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n";
+      let reads = 0;
+      shown.onProcessRead = () => { if (++reads === 3) shown.screen = PROMPT; };
+    }
+  });
 
-  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "gjc", agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
-  const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: () => 1 } as unknown as Client;
+  const agent = mode === "skill" || mode === "missing" ? "gjc" : mode;
+  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
+  const frames: ServerMessage[] = [];
+  const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
   owner.data.attached.set("p", { keepSize: false });
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = tail.catch(() => {}).then(task); tail = run; return run; };
@@ -47,13 +64,22 @@ async function drain({ after = () => {}, afterPaste = () => {} }: { after?: (pan
     clientSnapshot: async () => ({ panes: [{ ...pane }] }) as unknown as SessionSnapshot,
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
   });
-  await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
+  const text = mode === "skill" ? "@effect" : "FOLLOWUP";
+  await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text, payload: text, delivery: mode === "codex" ? "hold" : "queue" });
+  if (mode === "codex") {
+    // a held message's Send now steers the working agent
+    const held = frames.flatMap((frame) => frame.type === "submit-result" && frame.pending ? [frame.pending] : [])[0]!;
+    await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: held.id, action: "steer" });
+    return writes;
+  }
+  if (mode === "missing") shown.foreground = [];
   pane.agent_status = "idle";
   delivery.pending.status("p", "idle");
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
   return writes;
 }
+type Mode = "gjc" | "claude" | "pi" | "codex" | "skill" | "missing";
 interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void }
 
 it("types nothing into another process that took the agent's PID before the paste", async () => {
@@ -76,4 +102,24 @@ it("types nothing into a masked prompt that appears during the last process chec
 it("withholds the Enter from a masked prompt that appears during the last process check before it", async () => {
   // the check before Enter reads the screen, then the process: the prompt comes up at the last process read
   expect(await drain({ afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads >= 3) pane.screen = PROMPT; }; } })).toEqual(["paste"]);
+});
+
+it("types nothing once the bound process is no longer in front", async () => {
+  expect(await drain({ mode: "missing" })).toEqual([]);
+});
+
+it("types nothing into Claude when another process took its PID during the last session check", async () => {
+  expect(await drain({ mode: "claude", after: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 2) pane.birth = 2_000; }; } })).toEqual([]);
+});
+
+it("withholds Pi's Enter from another process that took its PID during the last check after the receipt anchor", async () => {
+  expect(await drain({ mode: "pi", afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 7) pane.birth = 2_000; }; } })).toEqual(["paste"]);
+});
+
+it("types no OpenCode skill into a masked prompt that comes up during the check before it", async () => {
+  expect(await drain({ mode: "skill", after: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 4) pane.screen = PROMPT; }; } })).toEqual([]);
+});
+
+it("sends no steering Escape into a masked prompt that comes up during the steering's check", async () => {
+  expect(await drain({ mode: "codex" })).toEqual(["paste", "Enter"]);
 });
