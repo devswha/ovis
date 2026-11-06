@@ -51,8 +51,14 @@ export function serverDialable(carrier: string): boolean {
  * dropping (a relay that ends it, say) does not dial them again on each return: when they were last tried, how much
  * longer the next try waits, whether that try found none answering, and the network this PC was on then.
  */
-export interface RouteProbes { at: number; backoff: number; failed: boolean; network?: string }
+export interface RouteProbes { at: number; backoff: number; failed: boolean; network?: string; wallAt?: number }
 export function newRouteProbes(): RouteProbes { return { at: -Infinity, backoff: 1, failed: false }; }
+/** Notes a try now, on both clocks: the monotonic one may stand still while the PC sleeps. */
+function tried(probes: RouteProbes): void { probes.at = performance.now(); probes.wallAt = Date.now(); }
+/** Whether this PC slept since the last try: much more wall-clock time passed than monotonic time. */
+function sleptSince(probes: RouteProbes): boolean {
+  return probes.wallAt !== undefined && (Date.now() - probes.wallAt) - (performance.now() - probes.at) > 60_000;
+}
 
 export function relayPcLabel(): string { return `Ovis on ${hostname()}`.slice(0, 64); }
 
@@ -230,9 +236,10 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
   const probes = options.probes ?? newRouteProbes();
   // this PC on another network than at the last try: the PC's routes may answer now, whatever that try found
   const startNetwork = readNetwork();
-  if (probes.network !== undefined && probes.network !== startNetwork) Object.assign(probes, newRouteProbes());
+  // or after a sleep, which may end on another network with the same addresses
+  if ((probes.network !== undefined && probes.network !== startNetwork) || sleptSince(probes)) Object.assign(probes, newRouteProbes());
   probes.network = startNetwork;
-  /** whether the direct routes may be tried now: they answered last time, or the wait after they did not is over */
+  /** whether a sign-in tries the direct routes: none was found silent from the relay, or the wait after that is over */
   const due = (): boolean => !probes.failed || probes.at + PROBE_EVERY_MS * probes.backoff <= performance.now();
   const directSocket = options.directSocket ?? ((url: string) => new WebSocket(url) as unknown as RelaySocket);
   // a pairing's one-time code is spent once admitted: every channel after the first signs in with the key
@@ -304,7 +311,7 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
       }
     }
     // none answered: this counts as the check, so the relay's admission does not probe them again at once
-    probes.at = performance.now();
+    tried(probes);
     probes.failed = true;
     return undefined;
   };
@@ -504,20 +511,23 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
     if (closed || checking) return;
     const candidates = earlier();
     if (candidates.length === 0) return;
-    const wait = probes.failed ? probes.at + PROBE_EVERY_MS * probes.backoff - performance.now() : 0;
+    const wait = probes.at + PROBE_EVERY_MS * probes.backoff - performance.now();
     if (wait > 0) { if (nextCheck === undefined) later(wait); return; }
     checking = true;
     recheck = false;
-    probes.at = performance.now();
+    tried(probes);
     clearTimeout(nextCheck); nextCheck = undefined;
     const from = current;
     const still = (): boolean => !closed && current === from;
     void (async () => {
       /** a carrier that proved to be the PC but could not carry a session: the next check waits longer */
       let unusable = false;
+      /** some carrier proved to be the PC */
+      let answered = false;
       for (const direct of candidates) {
         if (!still()) return;
         if (!await probeDirect(signIn, direct, directSocket, DIRECT_BUDGET_MS, ending.signal)) continue;
+        answered = true;
         let outcome: "moved" | "busy" | "failed" = "busy";
         for (let round = 0; round < IDLE_CHECKS && still() && outcome === "busy"; round++) {
           // input a moment ago: only until it has been quiet long enough; a request under way: a while
@@ -527,8 +537,9 @@ export async function openRelayPcTunnel(offer: RelayOffer, key: RelayPcKey, opti
         if (outcome === "failed") unusable = true;
         if (outcome === "moved" || !still()) return;
       }
-      // nothing moved: the routes are not this PC's to use for now
-      probes.failed = true;
+      // from the relay, and no carrier answered at all: a sign-in skips them until the next check is due. Not when a
+      // later direct route carries the channel (it works), nor when one answered but the move had to wait.
+      if (from?.direct === undefined && !answered) probes.failed = true;
       if (unusable) probes.backoff = Math.min(probes.backoff * 2, 12);
     })().catch(() => { /* a probe that fails is a route that is not there: the current one stays */ }).finally(() => {
       checking = false;

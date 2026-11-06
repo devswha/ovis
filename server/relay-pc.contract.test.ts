@@ -9,6 +9,7 @@ import { createServer } from "./index.ts";
 import { RelayService } from "./relay/service.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey } from "./relay-pc.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
+import type { RelayOffer } from "../shared/relay-offer.ts";
 import { bounded, deferred } from "./relay/test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -25,13 +26,15 @@ function stateDir(): string {
  * a PC server dials); A's dials to it reach B's loopback listener on whatever port that got.
  */
 const LAN = "10.99.0.1";
+/** B's Tailscale address in the tests that name one */
+const TAILNET = "100.64.0.7";
 const listener = { port: 0 };
 
 /**
  * PC B with the relay on, PC A that adds it through the relay, and the local relay between them. `direct`: B also
  * listens on its network, and A reaches that address on the dials `reachable` lets through (else nothing answers).
  */
-async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] } } = {}) {
+async function twoPcs(options: { direct?: { reachable: (dial: number, host: string) => boolean; held?: (dial: number) => Promise<void> | undefined; named?: (port: number) => readonly string[] } } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -73,16 +76,17 @@ async function twoPcs(options: { direct?: { reachable: (dial: number) => boolean
   expect(approvals.localOnlyOpen()).toBe(true);
   const { url: link } = await offered.json() as { url: string };
   const aState = stateDir();
-  const lan = { dials: 0, dialed: [] as string[] };
+  const lan = { dials: 0, dialed: [] as string[], ended: [] as string[] };
   const onLan = (url: string): WebSocket => {
     const target = new URL(url);
     lan.dialed.push(target.host);
-    // anything but B's own address goes nowhere (and is recorded)
-    if (target.hostname !== LAN) return new WebSocket("ws://127.0.0.1:1/");
+    // anything but B's own addresses goes nowhere (and is recorded)
+    if (target.hostname !== LAN && target.hostname !== TAILNET) return new WebSocket("ws://127.0.0.1:1/");
     // port 1 on loopback refuses at once, as an address of another network does
     const dial = ++lan.dials;
-    const port = options.direct?.reachable(dial) ? (target.port === "7319" ? String(listener.port) : target.port) : "1";
+    const port = options.direct?.reachable(dial, target.hostname) ? (target.port === "7319" ? String(listener.port) : target.port) : "1";
     const socket = new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`);
+    socket.addEventListener("close", () => lan.ended.push(target.hostname));
     const held = options.direct?.held?.(dial);
     if (!held) return socket;
     // what the PC answers on this dial reaches A only once `held` settles: a sign-in that takes its time
@@ -494,4 +498,33 @@ it("tries a PC's routes again on reconnect when this PC changed networks while a
   cleanup.push(() => second.close());
   // Then it tried B's address again at once
   expect(lan.dials).toBeGreaterThan(before);
+}, 60_000);
+
+it("still signs in on a working Tailscale route after a check of its same-network route found that silent", async () => {
+  // Given B named on its network (not reachable from A) and on Tailscale (reachable), and A moved to Tailscale
+  const { link, local, onLan, lan } = await twoPcs({ direct: { reachable: (_dial, host) => host === TAILNET,
+    named: () => [`ws://${LAN}:7319`, `ws://${TAILNET}:7319`] } });
+  const offer = decodeOffer(link)!;
+  const key = await RelayPcKey.create(join(stateDir(), "key.json"), offer, () => true);
+  const probes = newRouteProbes();
+  const network = { now: "192.168.1.5" };
+  const open = (from: RelayOffer, moved?: () => void) => openRelayPcTunnel(from, key, { socket: local as never, directSocket: onLan as never,
+    onLost: () => {}, ...(moved ? { onMoved: moved } : {}), probes, network: () => network.now, networkCheckMs: 50 });
+  const moved = deferred<void>();
+  (await open(offer, () => moved.resolve())).close;
+  await bounded(moved.promise);
+  const { code: _code, ...signIn } = offer;
+  const second = await open(signIn);
+  expect(second.route).toBe("direct");
+  // When this PC's addresses change and the check of the earlier, same-network route finds it silent
+  const endedBefore = lan.ended.filter((host) => host === LAN).length;
+  network.now = "10.20.0.3";
+  await until(() => lan.ended.filter((host) => host === LAN).length > endedBefore);
+  // the check settles in the turn its probe's socket closed
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  second.close();
+  // Then a reconnect still signs in on Tailscale, the route that works
+  const third = await open(signIn);
+  cleanup.push(() => third.close());
+  expect(third.route).toBe("direct");
 }, 60_000);
