@@ -162,13 +162,22 @@ function gjcSkillCommand(entry: Readonly<Record<string, unknown>>): string | nul
   if (entry.type !== "custom_message" || entry.customType !== "skill-prompt") return null;
   const details = object(entry.details);
   if (typeof details.name !== "string" || !details.name) return null;
-  return normalize(`/skill:${details.name} ${typeof details.args === "string" ? details.args : ""}`);
+  return gjcSkillText(`/skill:${details.name} ${typeof details.args === "string" ? details.args : ""}`);
+}
+
+/** gjc keeps the spaces inside a skill's arguments (`"a  b"` is not `"a b"`) and trims only their ends. */
+function gjcSkillText(text: string): string {
+  const [, command = "", args = ""] = /^(\S*)\s*([\s\S]*)$/u.exec(text.trim()) ?? [];
+  return args ? `${command} ${args}` : command;
 }
 
 /** The agent's own record of a typed command, which a later record can be told apart from. */
 function commandEcho(agent: string, entry: Readonly<Record<string, unknown>>): string | null {
   return agent === "claude" ? claudeCommand(entry) : agent === "gjc" ? gjcSkillCommand(entry) : null;
 }
+
+/** The sent text as `commandEcho` records it. */
+const echoText = (agent: string, text: string): string => agent === "gjc" ? gjcSkillText(text) : normalize(text);
 
 /**
  * The end of the turn a gjc skill record started: its first assistant message off that record's branch that asks
@@ -181,7 +190,7 @@ function gjcSkillTurnEnd(sent: CommandSend, records: readonly CommandTranscriptR
     return time > sent.at && time < until;
   };
   const echoes = records.filter(({ entry, offset }) => (echoOffset === undefined || offset === echoOffset)
-    && inWindow(entry) && gjcSkillCommand(entry) === normalize(sent.text));
+    && inWindow(entry) && gjcSkillCommand(entry) === gjcSkillText(sent.text));
   const echo = echoes.length === 1 ? echoes[0] : undefined;
   if (!echo || typeof echo.entry.id !== "string") return null;
   const turn = new Set([echo.entry.id]);
@@ -506,9 +515,9 @@ export class CommandReservations {
         const candidates = records.filter(({ entry, offset }) => {
           const time = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
           return (!echoes.has(offset) || offset === sent.transcriptEcho)
-            && time > sent.at && time < sent.at + WINDOW_MS && commandEcho(sent.agent, entry) === normalize(sent.text);
+            && time > sent.at && time < sent.at + WINDOW_MS && commandEcho(sent.agent, entry) === echoText(sent.agent, sent.text);
         });
-        const pending = sends.filter(other => other.agent === sent.agent && normalize(other.text) === normalize(sent.text)
+        const pending = sends.filter(other => other.agent === sent.agent && echoText(other.agent, other.text) === echoText(sent.agent, sent.text)
           && !other.transcriptEvidence && !other.transcriptAmbiguous
           && (other === sent || other.transcriptEcho === undefined)
           && (other.transcriptStore === undefined || other.transcriptStore === store)

@@ -44,6 +44,7 @@ it.each(["stop", "error", "aborted"])("settles a Chat-typed gjc skill when the t
 it.each([
   ["another skill", jsonl(skillPrompt(10, "s1", "other"), assistant(20, "a1", "s1", "stop"))],
   ["other arguments", jsonl(skillPrompt(10, "s1", "probe", "something else"), assistant(20, "a1", "s1", "stop"))],
+  ["other spacing inside the arguments", jsonl(skillPrompt(10, "s1", "probe", "hello  there"), assistant(20, "a1", "s1", "stop"))],
   ["a run from before the send", jsonl(skillPrompt(-10), assistant(20, "a1", "s1", "stop"))],
   ["a turn another prompt joined before it ended", jsonl(skillPrompt(10), assistant(20, "a1", "s1", "toolUse"), user(25, "u1", "a1"), assistant(30, "a2", "u1", "stop"))],
   ["an end on another branch", jsonl(skillPrompt(10), assistant(20, "a1", "p0", "stop"))],
