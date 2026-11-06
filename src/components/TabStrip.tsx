@@ -45,8 +45,10 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 
-/** a strip that held the focus is unmounting in this commit (TabStrip's handoff effect) */
-let focusHandoff = false;
+/** when a strip that held the focus went (TabStrip's handoff effect); the next strip to mount within
+ *  FOCUS_HANDOFF_MS takes it, while nothing else has */
+let focusHandoffAt = -Infinity;
+const FOCUS_HANDOFF_MS = 500;
 
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
@@ -200,19 +202,24 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   });
   // The strip moves between the header (from 769px) and the pane as the window is resized, and a move is
   // a new strip: the focus the old one held, on a tab or in the menu it had open, goes to the new one's
-  // open tab. The old one's cleanup runs in the same commit as the new one's mount, before any microtask.
+  // open tab. The two need not be one commit (the layout settles over a render or two), so the old one's
+  // leaving is timed, and only a page whose focus fell to the body is handed on.
   const menuOpen = useRef(false);
-  menuOpen.current = picker !== null;
+  const menuClosedAt = useRef(-Infinity);
+  useLayoutEffect(() => {
+    if (menuOpen.current && picker === null) menuClosedAt.current = performance.now();
+    menuOpen.current = picker !== null;
+  }, [picker]);
   useLayoutEffect(() => {
     const row = strip.current;
-    if (focusHandoff && (!document.activeElement || document.activeElement === document.body)) {
-      focusHandoff = false;
+    if (performance.now() - focusHandoffAt < FOCUS_HANDOFF_MS && (!document.activeElement || document.activeElement === document.body)) {
+      focusHandoffAt = -Infinity;
       row?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
     }
     return () => {
-      if (!row?.contains(document.activeElement) && !menuOpen.current) return;
-      focusHandoff = true;
-      queueMicrotask(() => { focusHandoff = false; });
+      const dropped = !document.activeElement || document.activeElement === document.body;
+      // its menu may have closed a render before it went (a resize closes it), leaving the focus nowhere
+      if (row?.contains(document.activeElement) || menuOpen.current || (dropped && performance.now() - menuClosedAt.current < FOCUS_HANDOFF_MS)) focusHandoffAt = performance.now();
     };
   }, []);
   // a name herdr never showed back (renamed again elsewhere) does not stay on the tab

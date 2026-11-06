@@ -876,7 +876,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   its bubble, the terminal's in `--font-mono` beside its prompt glyph, so the two read as
   different places. A phone draws the two glyphs alone in a bordered control, each a
   `--touch-target-header` wide. Mod+Shift+J switches too.
-- From `769px` the pane column ends in a 28px status bar (`.status-bar`, after the Herdr app's
+- From `769px` with a fine pointer (a touch screen keeps the room for its key bar) the pane column ends in a 28px status bar (`.status-bar`, after the Herdr app's
   workspace status line) on `--bg-panel` under a `--divider` rule: the PC › workspace (› folder)
   and the branch at its start, the session's worked time; at its end View only on a watching
   device, a tinted "N waiting for you" button that opens the next session waiting, and the

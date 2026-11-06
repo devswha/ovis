@@ -715,8 +715,9 @@ export function App() {
   // then the lens switch, Files and More (styles.css .header-tabs, THIRD_PARTY_NOTICES.md). A split keeps a
   // strip per half and the title here; a phone keeps the title that lists the tabs.
   const stripInHeader = wideScreen && !splitOn && !tabsInHeader && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
-  // from 769px the pane column ends in the Herdr app's status bar: where the pane is, its branch, the connection
-  const statusBarShown = wideScreen && selectedPane !== null && !guideShown;
+  // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
+  // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
+  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && !guideShown;
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when
