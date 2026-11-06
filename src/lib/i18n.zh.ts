@@ -200,6 +200,7 @@ const BASE: Record<string, string> = {
   "{count} done": "{count} 个已完成",
   "Open the next session waiting for you": "打开下一个等待你回应的会话",
   "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
+  "Tabs of {workspace}": "{workspace} 的标签页",
   "Reconnecting…": "正在重连…",
   "Add PC": "添加 PC",
   "Connect": "连接",
@@ -435,6 +436,9 @@ const BASE: Record<string, string> = {
   "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "在已加入账号的手机上打开 Ovis 应用，点按 {name} 的“添加”。然后在这里批准。",
   "This PC could not be listed in your account. Try again.": "无法将此电脑列入你的账号。请重试。",
   "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
+  "New terminal": "新建终端",
+  "New terminal failed: {reason}": "新建终端失败：{reason}",
+  "herdr prefix: press a key": "herdr 前缀键：请按一个键",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -930,10 +930,13 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   before anything is typed: in Windows PowerShell one whose whitespace all follows an odd number of
   `"` (`"fix the bug"`, `x="a b"`); in PowerShell 7 an empty one, one holding a `"`, or one holding
   whitespace and ending in a backslash; in cmd one holding a `"` or a `%`. In PowerShell one
-  holding `&`, `|`, `<`, `>`, `^` or `%` is refused too: an agent PowerShell starts through a
+  holding `%` or `^` is refused too, and one holding `&`, `|`, `<` or `>` unless it also holds a
+  space and no `!`, and no argument of the line holds a `"`: an agent PowerShell starts through a
   `.cmd` file alone (an npm install also has a `.ps1`, which PowerShell prefers) has its arguments
   read by cmd as well, where an `&` outside cmd's quotes would end the agent's line and run the
-  rest, and which file the agent's name finds is not known before. Where the execution policy blocks scripts (`Restricted`, the Windows
+  rest. PowerShell quotes an argument only for its whitespace, a `"` in any argument moves cmd's
+  quotes, cmd expands `%NAME%` (and `!NAME!` with delayed expansion) inside quotes too, a shim's
+  `call` doubles a `^`, and which file the agent's name finds is not known before. Where the execution policy blocks scripts (`Restricted`, the Windows
   default), PowerShell refuses that `.ps1` and does not fall back to the `.cmd`: the start fails,
   and the pane says why. cmd looks in the pane's folder before the `PATH`, as it does for what you
   type. Command Code is not offered on Windows, where its command `cmd` is cmd.exe, and a Windows
@@ -1138,6 +1141,20 @@ List and tab controls also have focus-local keys; those do not become global ter
 On a focused tab, Alt+Shift+Left/Right reorders it and Shift+F10 opens its menu. For the pane menu
 on desktop, tab to the pane header's **⋯** (it appears on keyboard focus) and press Enter.
 Shift+F10 inside the terminal stays with the terminal program.
+
+**Settings → Shortcuts → Use herdr's prefix keys** (off by default) brings herdr's own prefix
+keys to the app. It reads `[keys]` in herdr's `config.toml` on the PC serving the page (read only,
+herdr's defaults when there is none): herdr's prefix (`ctrl+b` unless the config sets another),
+then a key herdr binds runs the same action here. These actions are taken: `new_tab` (a terminal
+tab, at once), `split_vertical` / `split_horizontal`, `zoom`, `previous_tab` / `next_tab`,
+`switch_tab` (`1..9`), `rename_tab`, `previous_workspace` / `next_workspace`, `new_workspace`,
+`toggle_sidebar`, `settings`, and `help` / `goto` / `workspace_picker` (the command palette).
+Bindings resolve as herdr resolves them: one key or a list per action, and a key the config gives any
+other action or custom command is no longer the default's. The Settings row lists what it read. Every
+other action, a direct (non-prefix) binding and `[[keys.command]]` stay herdr's. The header says when the prefix waits for its key; Escape, a click
+or leaving the window cancels it, and a key with no action behind it (the prefix again too) goes to
+the pane as typed, so the prefix pressed twice sends it. Text fields, dialogs, menus, IME
+composition and the app's own shortcuts keep their keys.
 
 On a phone, use the header, the tab's ⋯ and the More menu for app actions. The command palette
 and its plugin actions are not available in the phone touch UI. Use a wider screen or an external

@@ -196,6 +196,7 @@ const BASE: Record<string, string> = {
   "{count} done": "완료 {count}개",
   "Open the next session waiting for you": "응답을 기다리는 다음 세션 열기",
   "Tab {index} of {count}": "탭 {count}개 중 {index}번째",
+  "Tabs of {workspace}": "{workspace}의 탭",
   "Reconnecting…": "재연결 중…",
   "Add PC": "PC 추가",
   "Connect": "연결",
@@ -431,6 +432,9 @@ const BASE: Record<string, string> = {
   "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "이미 계정에 있는 폰에서 Ovis 앱을 열고 {name}의 추가를 누르세요. 그런 다음 여기서 승인하세요.",
   "This PC could not be listed in your account. Try again.": "이 PC를 계정에 올리지 못했습니다. 다시 시도하세요.",
   "Turn on remote access through the Ovis relay above first.": "먼저 위에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
+  "New terminal": "새 터미널",
+  "New terminal failed: {reason}": "새 터미널 열기 실패: {reason}",
+  "herdr prefix: press a key": "herdr 접두키: 키를 누르세요",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
