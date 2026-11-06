@@ -20,7 +20,7 @@ import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
 // HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
 const devApp = mkdtempSync(join(tmpdir(), "herdr-settings-dev-"));
-const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Agents", "Shortcuts", "Devices and PCs", "About"];
+const PAGES = ["Appearance", "Chat", "Terminal", "Alerts", "Agents", "Shortcuts", "Devices and PCs", "Experimental", "About"];
 const SETTINGS = { language: "en", showUsage: true, voiceInput: true, showQuickReplies: true, fileOpen: "panel" };
 
 const dialogOf = (page: Page) => page.getByRole("dialog", { name: "Settings", exact: true });
@@ -614,6 +614,72 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
  * row each with a hairline under it and a PC pill, after this PC; the Account group lists none of its own. The sign-in is a fixture in this page's IndexedDB and the account service a route
  * of this context: nothing reaches GitHub or account.ovis.sh.
  */
+/**
+ * About's first line names the runtime this PC serves with its version. With herdr's TUI and the
+ * Herdr app's core both installed (`?demo_runtime=both`) it is a choice between them, and picking
+ * the other asks before switching; with one installed it is a plain fact.
+ */
+async function runtimeInUse(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  for (const width of [390, 1280]) {
+    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    try {
+      await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(`${url}?settings=about`);
+      const panel = dialogOf(page).getByRole("tabpanel", { name: "About", exact: true });
+      const row = panel.locator(".settings-row").filter({ hasText: "In use" });
+      await row.getByText("herdr 0.9.0", { exact: true }).waitFor();
+      assert.equal(await row.getByRole("group", { name: "In use" }).count(), 0, `${width}px: one runtime installed, no switch`);
+      await page.goto(`${url}?demo_runtime=both&settings=about`);
+      const choice = row.getByRole("group", { name: "In use" });
+      await choice.getByRole("button", { name: "herdr-core 0.1.17", exact: true }).waitFor();
+      assert.equal(await choice.getByRole("button", { name: "herdr 0.9.0", exact: true }).getAttribute("aria-pressed"), "true", `${width}px: the runtime served is the one pressed`);
+      await choice.getByRole("button", { name: "herdr-core 0.1.17", exact: true }).click();
+      const confirm = page.getByRole("alertdialog", { name: "Show the Herdr app's terminals?" });
+      await confirm.waitFor();
+      await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+      await confirm.waitFor({ state: "detached" });
+      assert.equal(await choice.getByRole("button", { name: "herdr 0.9.0", exact: true }).getAttribute("aria-pressed"), "true", `${width}px: cancelled, nothing switched`);
+      assert.deepEqual(errors, []);
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS About names the runtime in use, and offers the switch only with two installed, asking first");
+}
+
+/**
+ * Alerts' one line of chips: Any turn finished lights Long turn finished too, and the row's ↺ puts
+ * back all five, the two kept in the alert filters' own store included.
+ */
+async function alertChipsReset(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  try {
+    await context.addInitScript((settings) => {
+      localStorage.setItem("ovis:settings", settings);
+      localStorage.setItem("ovis:alert-filters", JSON.stringify({ permission: false, error: true, pcsOff: [] }));
+    }, JSON.stringify({ ...SETTINGS, alertDone: "always" }));
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${url}?settings=alerts`);
+    const chips = dialogOf(page).getByRole("group", { name: "Alert me when", exact: true });
+    const pressed = async () => Object.fromEntries(await Promise.all(["Needs input", "Needs permission", "Long turn finished", "Any turn finished", "Stopped on an error"]
+      .map(async (name) => [name, await chips.getByRole("button", { name, exact: true }).getAttribute("aria-pressed")])));
+    await chips.waitFor();
+    assert.deepEqual(await pressed(), { "Needs input": "true", "Needs permission": "false", "Long turn finished": "true", "Any turn finished": "true", "Stopped on an error": "true" }, "every turn lights the long turns too");
+    await dialogOf(page).getByRole("button", { name: "Restore defaults: Alert me when", exact: true }).click();
+    await dialogOf(page).getByRole("button", { name: "Restore defaults: Alert me when", exact: true }).waitFor({ state: "detached" });
+    assert.deepEqual(await pressed(), { "Needs input": "true", "Needs permission": "true", "Long turn finished": "true", "Any turn finished": "false", "Stopped on an error": "false" }, "↺ puts back all five");
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+  console.log("PASS Alerts' chips: every turn lights the long turns, and ↺ restores all five");
+}
+
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
   const service = "https://account.ovis.sh";
   for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) {
@@ -1492,6 +1558,8 @@ try {
       await rowResets(browser, url);
       await accountPcList(browser, url);
       await accountGoogle(browser, url);
+      await runtimeInUse(browser, url);
+      await alertChipsReset(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();
