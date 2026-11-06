@@ -11,6 +11,7 @@ import { commandInvocations, commandOutcome, CommandReservations, dialogSettling
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
+import { isHermesProcess } from "./hermes.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
@@ -805,6 +806,18 @@ async function piOwnsInput(paneId: string): Promise<boolean> {
     || agentProcesses([entry], "pi").length > 0 || agentProcesses([entry], "omo").length > 0);
 }
 
+/**
+ * Whether Hermes holds the pane's input (it is the pane's foreground process), not a shell it was
+ * suspended behind (Ctrl+Z), where herdr still names the pane Hermes and anything run there can show an
+ * approval's text. Unknown (herdr did not answer) is not Hermes's. Windows lists no foreground process
+ * group: read as before.
+ */
+async function hermesOwnsInput(paneId: string): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  const info = await paneProcessInfo(paneId).catch(() => null);
+  return (info?.foreground_processes ?? []).some(isHermesProcess);
+}
+
 /** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
 class MoveLapsed extends KeyRefused {}
 
@@ -1128,6 +1141,13 @@ async function readKnownPrompt(
   }
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
+    return { prompt: null, screen, suppressFallback: true };
+  }
+  // Hermes's approval answers by keys that grant or refuse: offered only while Hermes holds the input.
+  // Looked at before the read that settles a key, never after it: a look between that read's check and
+  // the key would let a cursor moved meanwhile take the Enter. A Hermes suspended during that read takes
+  // that one key at the shell's fresh prompt, where an arrow or Enter runs nothing, and refuses the next
+  if (agent === "hermes" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "hermes-approval" && !(await hermesOwnsInput(paneId))) {
     return { prompt: null, screen, suppressFallback: true };
   }
   // and every card pi's own dialogs and questionnaires draw, which answer by keys (pi-ask's form answers

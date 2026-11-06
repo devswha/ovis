@@ -150,6 +150,153 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
 }
 
 /**
+ * Hermes's dangerous-command approval, as its classic CLI (0.21.5, its default interface) draws it over
+ * the input (hermes_cli/cli_tui_mixin.py _get_approval_display_fragments), recorded on panes 120 and
+ * 38 columns wide, 15 and 14 rows high, and 41 columns attached from a phone, in
+ * server/fixtures/hermes-approval/:
+ *
+ *   ╭────────────────────────────────────────────────╮
+ *   │ ⚠️  Dangerous Command                          │
+ *   │                                                │
+ *   │ rm -rf ./scratch                               │
+ *   │                                                │
+ *   │ ❯ 1. Allow once                                │
+ *   │   2. Allow for this session                    │
+ *   │   3. Add to permanent allowlist                │
+ *   │   4. Deny                                      │
+ *   │                                                │
+ *   │ recursive delete                               │
+ *   ╰────────────────────────────────────────────────╯
+ *
+ *     💻 rm -rf ./scratch  (  6.7s · ↓ 5 tok)
+ *     ↑/↓ to select, Enter to confirm  (3593s)
+ *    ☤ fixture-model │ …
+ *   ─────────────────
+ *   ⚠ ❯
+ *   ─────────────────
+ *
+ * A pane short of rows drops the blank rows, then the description (the warning), with nothing to say
+ * so; a command over 70 characters adds a last row, Show full command, which only redraws the panel.
+ * A digit picks a row and confirms it at once: the card's answer moves to the row and takes Enter.
+ *
+ * The card is the panel as drawn, its command lines as they wrap. A panel that leaves anything out
+ * (its own "… (" note where it cut the command or the description, or no description), a box out of
+ * line (a newline or tab in the command breaks its rows), labels other than these, or anything under
+ * it but Hermes's own lines is no card, and no generic card either: the terminal answers it.
+ */
+const HERMES_APPROVAL_TITLE_RE = /^⚠\uFE0F?\s+Dangerous Command$/u;
+
+/** the hint under the panel (locales/en.yaml cli.tui.hint_approval), its countdown cut by a narrow pane */
+const HERMES_APPROVAL_HINT_RE = /^ {2}↑\/↓ to select, Enter to confirm(?: {2}\((?:\d+(?:s\)?)?)?)?$/u;
+
+/** the input line while a panel holds it, the prompt's mark after it on a pane 64 columns or wider */
+const HERMES_APPROVAL_INPUT_RE = /^⚠(?: ❯)?$/u;
+
+/**
+ * the input line while any of Hermes's modals holds it (an approval, or a command's own confirmation), in
+ * every language and with a draft typed into it (cli_tui_mixin.py _get_tui_prompt_fragments)
+ */
+const HERMES_MODAL_INPUT_RE = /^⚠(?: .*)?$/u;
+
+const HERMES_RULE_RE = /^─{8,}$/u;
+
+const HERMES_APPROVAL_ROW_RE = /^([❯ ]) (\d)\. (.+)$/u;
+
+/** what Hermes left out, in its own words: "… (choose Show full command)", "… (command truncated — …)", "… (description truncated)" */
+const HERMES_APPROVAL_CUT_RE = /^… \((?:choose |command truncated|description truncated)/u;
+
+/** the menus Hermes offers, in its order (cli_modal_mixin.py _approval_choices), Show full command left off */
+const HERMES_APPROVAL_MENUS = [
+  ["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"],
+  ["Allow once", "Allow for this session", "Deny"],
+  ["Allow once", "Deny"],
+];
+
+const HERMES_SHOW_FULL = "Show full command";
+
+/**
+ * Where the approval hint is, read up from the bottom of the screen: the input line the panel holds
+ * between its rules, the status bar, then the hint. A pane under 64 columns has no rule under the
+ * input, and for a moment after a resize Hermes hides both rules and the status bar
+ * (cli_terminal_mixin.py _status_bar_suppressed_after_resize). -1 when the screen ends otherwise.
+ */
+function hermesApprovalHint(lines: string[]): number {
+  let at = hermesInputLine(lines);
+  if (!HERMES_APPROVAL_INPUT_RE.test(lines[at] ?? "")) return -1;
+  at -= 1;
+  if (HERMES_RULE_RE.test(lines[at] ?? "")) at -= 1;
+  if (lines[at]?.startsWith(" ☤ ")) at -= 1;
+  return HERMES_APPROVAL_HINT_RE.test(lines[at] ?? "") ? at : -1;
+}
+
+/** Where the input line is: the last line shown, or the one over the rule a pane 64 columns or wider closes it with. */
+function hermesInputLine(lines: string[]): number {
+  let at = lines.length - 1;
+  while (at >= 0 && !lines[at]!.trim()) at -= 1;
+  return HERMES_RULE_RE.test(lines[at] ?? "") ? at - 1 : at;
+}
+
+/**
+ * Whether a modal of Hermes's holds the pane's input, read or not: no generic card is offered over it.
+ * Its Enter takes the row under the cursor, Allow once as an approval opens, and the countdown on its hint
+ * changes the generic card's id every second anyway. An approval this reader leaves out (cut, in another
+ * language, a pane too narrow for its hint) and a command's confirmation alike stay for the terminal.
+ */
+export function hermesModalWaits(screen: string): boolean {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
+  return HERMES_MODAL_INPUT_RE.test(lines[hermesInputLine(lines)] ?? "");
+}
+
+function parseHermesApproval(screen: string): ParsedPrompt | null {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
+  const hint = hermesApprovalHint(lines);
+  if (hint < 0) return null;
+  // the panel's bottom border, over the spinner's line or lines; the rows a pane has to spare (a phone's
+  // pane taller than Hermes needs) stay blank under the panel
+  let bottom = hint - 1;
+  for (let spinner = 0; bottom >= 0 && !/^╰─+╯$/u.test(lines[bottom]!); bottom -= 1) {
+    if (lines[bottom]!.trim() && ++spinner > 3) return null;
+  }
+  if (bottom < 0) return null;
+  // every row `│ `, the panel's text and ` │` at the borders' width, up to the top border
+  const width = [...lines[bottom]!].length;
+  let top = bottom - 1;
+  while (top >= 0 && /^│ .* │$/u.test(lines[top]!) && [...lines[top]!].length === width) top -= 1;
+  if (top < 0 || !/^╭─+╮$/u.test(lines[top]!) || [...lines[top]!].length !== width) return null;
+  const [title, ...rows] = lines.slice(top + 1, bottom).map((line) => line.slice(2, -1).trimEnd());
+  if (!HERMES_APPROVAL_TITLE_RE.test(title ?? "")) return null;
+  // the choices: rows numbered from 1, a label wrapped onto the rows under it at four spaces in
+  const first = rows.findIndex((row) => HERMES_APPROVAL_ROW_RE.exec(row)?.[2] === "1");
+  if (first < 1) return null;
+  const choices: { label: string; cursor: boolean }[] = [];
+  let end = first;
+  for (; end < rows.length; end += 1) {
+    const row = HERMES_APPROVAL_ROW_RE.exec(rows[end]!);
+    if (row && Number(row[2]) === choices.length + 1) choices.push({ label: row[3]!, cursor: row[1] === "❯" });
+    else if (/^ {4}\S/u.test(rows[end]!)) choices.at(-1)!.label += ` ${rows[end]!.trim()}`;
+    else break;
+  }
+  const labels = choices.map((choice) => choice.label);
+  const offered = labels.at(-1) === HERMES_SHOW_FULL ? labels.slice(0, -1) : labels;
+  if (!HERMES_APPROVAL_MENUS.some((menu) => menu.join("\n") === offered.join("\n"))) return null;
+  if (choices.filter((choice) => choice.cursor).length !== 1) return null;
+  // a blank row under the title, over the choices and over the description, or none at all
+  const spaced = rows[0] === "";
+  const command = rows.slice(spaced ? 1 : 0, spaced ? first - 1 : first);
+  const description = rows.slice(spaced ? end + 1 : end);
+  if ((spaced && (rows[first - 1] !== "" || rows[end] !== "")) || !command.some(Boolean) || !description.some(Boolean)) return null;
+  if ([...command, ...description].some((line) => HERMES_APPROVAL_CUT_RE.test(line))) return null;
+  return finishPrompt("hermes", {
+    kind: "approval", title: title!.replace(/^⚠\uFE0F?\s+/u, ""), question: description.map((line) => line.trim()).filter(Boolean).join(" "),
+    body: command.join("\n"),
+    options: offered.map((label) => ({ label, description: null })), multi_select: false, custom_option_index: null,
+  }, {
+    responder: "hermes-approval", menuLabels: labels, selectedIndex: choices.findIndex((choice) => choice.cursor),
+    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
+  });
+}
+
+/**
  * What Hermes's classic CLI (0.21.5, its default interface) prints for /help, /status, /version,
  * /profile and /reload-skills: each is printed inline under the CLI's own echo of the command
  * (cli_tui_runtime_mixin.py: `⚙️  /status`); none opens a pager. Recorded at 40 and 120 columns
@@ -336,6 +483,11 @@ export const readers: readonly DialogReader[] = [
       const parsed = clarifyRead(screen, ctx);
       return parsed?.responder === "hermes-input" ? parsed : null;
     },
+  },
+  {
+    id: "hermes-approval", agents: ["hermes"], priority: 10,
+    reread: "none", list: "none",
+    parse: (screen) => parseHermesApproval(screen),
   },
   ...HERMES_LAYOUTS.map(({ reader }) => resultReader(reader)),
 ];
