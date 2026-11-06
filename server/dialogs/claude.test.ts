@@ -541,6 +541,20 @@ describe("Claude Code's question tabs as the card's steps", () => {
     expect(first?.id).not.toBe(second?.id);
   });
 
+  test("keeps the tab shown beside the diff panel drawn without its edge (#2730)", () => {
+    // the 2.1.318 edgeless panel's geometry around the question: its `✕` on the top row, its note on the last,
+    // the session's rule ending at column 108; the cut must keep the colors that say which tab is shown
+    const bar = (lit: number) => "← " + [" ☐ Device ", " ☐ Device ", " ✔ Submit "]
+      .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
+    const on = (lit: number) => ["Claude Code".padEnd(195) + "✕", ...tabsPanel("first").replace(/─{100,}/g, "─".repeat(108)).split("\n")
+      .map((line) => line.replace(ANSI_RE, "").startsWith("←") ? bar(lit) : line), `${" ".repeat(109)}+3 files edited before this session (show)`].join("\n");
+    const first = parseInteractivePrompt("claude", on(0));
+    const second = parseInteractivePrompt("claude", on(1));
+    expect(first?.steps?.[0]?.current).toBe(true);
+    expect(second?.steps?.[1]?.current).toBe(true);
+    expect(first?.id).not.toBe(second?.id);
+  });
+
   test("gives the review its steps and Back", () => {
     const review = parseInteractivePrompt("claude", tabsPanel("review"));
     expect(review).toMatchObject({ kind: "menu", title: "Review your answers", can_step_back: true });
