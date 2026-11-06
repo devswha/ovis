@@ -5,9 +5,9 @@ import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { EventSourceLike, Transport, WebSocketLike } from "../transport.ts";
 import { openRelayChannel, RelayPcOfflineError, UnsafeRelayDestinationError } from "./channel.ts";
-import { openRelayChannelWithFallback } from "../../../shared/relay-channel.ts";
-import type { RelayChannel, RelayChannelOptions, RelayServerInfo } from "./channel.ts";
-import { ServerIdentityChangedError } from "./device.ts";
+import { DirectCarrierUnusableError, openRelayChannelWithFallback, probeDirect } from "../../../shared/relay-channel.ts";
+import type { RelayChannel, RelayChannelOptions, RelayServerInfo, RelaySocket } from "./channel.ts";
+import { indexedDeviceStore, ServerIdentityChangedError } from "./device.ts";
 import { relayResourceUrl, serveRelayResources } from "./resources.ts";
 
 export interface RelayTransportOptions extends RelayChannelOptions {
@@ -15,7 +15,21 @@ export interface RelayTransportOptions extends RelayChannelOptions {
   readonly clock?: MuxClock;
   /** A reconnect the PC refused for good (`isFatalRelayError`): the transport has closed itself, and the shell shows why. */
   readonly onFatal?: (error: Error) => void;
+  /**
+   * Opens a socket to one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md "Direct on the
+   * same network"): the native apps' plugin, as a page on https cannot. Without it the PC is reached through the
+   * relay only.
+   */
+  readonly directSocket?: (url: string) => RelaySocket;
 }
+
+/** How long a connection tries the PC's direct carriers before going through the relay. */
+export const DIRECT_BUDGET_MS = 1_500;
+/** A probe of the direct carriers at most this often while the relay carries the channel, unless the network changed. */
+const DIRECT_PROBE_EVERY_MS = 5 * 60_000;
+/** A switch to a direct carrier waits for no request to be under way, checking this often, this many times. */
+const DIRECT_IDLE_CHECK_MS = 5_000;
+const DIRECT_IDLE_CHECKS = 12;
 
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
@@ -128,11 +142,22 @@ export class RelayTransport implements Transport {
   private readonly waitingHttp = new Set<{ run: () => boolean; fail: (error: unknown) => void }>();
   /** renews waiting for a carrier: each settles on the first one whose attempt started after it was asked */
   private readonly renewing = new Set<{ after: number; up: () => void }>();
+  /** the PC's direct carriers its latest AUTH_OK named; read from the saved pairing before the first one */
+  private directCarriers: readonly string[] | undefined;
+  /** HTTP requests whose stream is open: a switch to a direct carrier waits until there are none */
+  private openHttp = 0;
+  /** a probe or a wait to switch is under way, and when the latest probe began */
+  private upgrading = false;
+  private probedAt = -Infinity;
+  /** the relay channel is being closed to reconnect on a direct carrier, not lost */
+  private switching: RelayChannel | undefined;
   private readonly stopResources: () => void;
   private readonly wake = (): void => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     // a carrier left closing while nothing used it is ended now, and its onClose reconnects
     if (!this.stopped && this.channel && !this.channel.carrierOpen) { this.channel.close(); return; }
+    // back on a network: the PC may be on this one now
+    if (!this.stopped && this.channel && this.channel.direct === undefined) { this.probedAt = -Infinity; this.upgrade(this.channel); }
     if (this.stopped || this.channel || this.opening) return;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
@@ -167,13 +192,20 @@ export class RelayTransport implements Transport {
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
+        const switching = this.switching !== undefined && this.switching === this.channel;
+        this.switching = undefined;
         this.channel = undefined;
         this.failWaitingHttp(new TypeError("Relay carrier is disconnected"));
         this.options.onClose?.(error);
-        this.failed(error);
+        // closed on purpose to come back on a direct carrier: at once, with no pause
+        if (switching) void this.connect().catch((failure: unknown) => this.failed(failure));
+        else this.failed(error);
       },
     };
-    const { channel, relay } = await openRelayChannelWithFallback(offer, options, this.options.openChannel ?? openRelayChannel, this.relay);
+    const direct = generation === 1 && this.offer.code !== undefined ? undefined : await this.openDirect(offer, options);
+    if (generation !== this.generation || this.stopped) { direct?.close(); return; }
+    const { channel, relay } = direct ? { channel: direct, relay: this.relay }
+      : await openRelayChannelWithFallback(offer, { ...options, offerDirect: this.options.directSocket !== undefined }, this.options.openChannel ?? openRelayChannel, this.relay);
     this.relay = relay;
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
@@ -189,11 +221,80 @@ export class RelayTransport implements Transport {
       if (generation > waiting.after) { this.renewing.delete(waiting); waiting.up(); }
     }
     // a renew asked while this attempt was on its way: it may have signed with the old key, so the next one signs again
-    if (this.renewing.size > 0) channel.close();
+    if (this.renewing.size > 0) { channel.close(); return; }
+    if (this.options.directSocket) {
+      this.directCarriers = channel.directCarriers ?? [];
+      if (channel.direct === undefined) this.upgrade(channel);
+    }
+  }
+
+  /**
+   * The channel on one of the PC's direct carriers, tried one after another within DIRECT_BUDGET_MS; undefined when
+   * none answered (off this network, or the PC names none), and the relay is used. Only a refusal by the PC itself,
+   * after Noise proved it is the PC, is final there as it is through the relay.
+   */
+  private async openDirect(offer: RelayOffer, options: RelayChannelOptions): Promise<RelayChannel | undefined> {
+    const socket = this.options.directSocket;
+    if (!socket) return undefined;
+    this.directCarriers ??= (await (this.options.store ?? indexedDeviceStore).get(offer.server_id).catch(() => undefined))?.direct ?? [];
+    const ends = performance.now() + DIRECT_BUDGET_MS;
+    for (const direct of this.directCarriers) {
+      const left = ends - performance.now();
+      if (left <= 0 || this.stopped) return undefined;
+      const attempt = new AbortController();
+      const timer = setTimeout(() => attempt.abort(), left);
+      const stopped = (): void => attempt.abort();
+      this.abort.signal.addEventListener("abort", stopped, { once: true });
+      try {
+        return await (this.options.openChannel ?? openRelayChannel)(offer, { ...options, signal: attempt.signal, direct, socket, offerDirect: true });
+      } catch (error) {
+        // a channel that opened keeps the listener: closing the transport ends it
+        this.abort.signal.removeEventListener("abort", stopped);
+        if (this.stopped) throw error;
+        if (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)) throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * While the relay carries `channel`: when one of the PC's direct carriers proves to be the PC (a probe that makes
+   * no session), and no request is under way, closes `channel` so the reconnect comes back on that carrier. Never
+   * moves a stream: the switch is a reconnect like any other, and nothing typed is sent again by itself.
+   */
+  private upgrade(channel: RelayChannel): void {
+    const socket = this.options.directSocket;
+    const carriers = this.directCarriers ?? [];
+    if (!socket || carriers.length === 0 || this.upgrading || performance.now() - this.probedAt < DIRECT_PROBE_EVERY_MS) return;
+    this.upgrading = true;
+    this.probedAt = performance.now();
+    const current = (): boolean => !this.stopped && this.channel === channel;
+    void (async () => {
+      let proven = false;
+      for (const direct of carriers) {
+        if (!current()) return;
+        if (await probeDirect(this.offer, direct, socket, DIRECT_BUDGET_MS)) { proven = true; break; }
+      }
+      if (!proven) return;
+      for (let check = 0; check < DIRECT_IDLE_CHECKS; check++) {
+        if (!current()) return;
+        if (this.openHttp === 0 && this.waitingHttp.size === 0) {
+          this.switching = channel;
+          channel.close();
+          return;
+        }
+        await new Promise<void>((resolve) => (this.options.clock ?? clock).setTimeout(resolve, DIRECT_IDLE_CHECK_MS));
+      }
+    })().finally(() => { this.upgrading = false; });
   }
 
   /** What the PC said of itself on the latest admission: a reconnect after its update names the new version. */
   get server(): RelayServerInfo | undefined { return this.known; }
+
+  /** How the channel up now reaches the PC: through the relay, or on one of its direct carriers. */
+  get route(): "relay" | "direct" | undefined { return this.channel ? this.channel.direct === undefined ? "relay" : "direct" : undefined; }
 
   /**
    * Ends this carrier and connects again, signing in with the key the saved pairing holds now: after
@@ -320,7 +421,9 @@ export class RelayTransport implements Transport {
       return new Promise<Response>((resolve, reject) => {
         const aborted = (): void => { stream.reset(); reject(request.signal.reason); };
         request.signal.addEventListener("abort", aborted, { once: true });
+        this.openHttp++;
         stream.onDispose = (error) => {
+          this.openHttp--;
           request.signal.removeEventListener("abort", aborted);
           if (error) reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay request failed", { cause: error }));
         };
