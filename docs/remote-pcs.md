@@ -82,12 +82,14 @@ end-to-end encryption and the same device key, kept on this server in
 **PCs on your Tailscale**, in the same **Connect a device** dialog, saves typing the code: it lists
 the other PCs of this PC's own Tailscale login whose Ovis already lets this PC in as you (served by
 `tailscale serve`, no token), and **Add PC** adds one through the relay in one tap. This PC reads
-`tailscale status`, asks only online, untagged peers of its own login that are not phones, asks the
+`tailscale status`, asks only online, untagged peers of its own login that do not report iOS or
+Android (the first 32 of them in that list; type a code for one past that), asks the
 chosen PC for its code over Tailscale, and checks that the relay found the same PC (`server_id`)
 before it pairs; on a mismatch nothing is added. A PC whose relay is off shows **Turn the relay on
-on that PC first**. PCs of another login, tagged nodes and phones are never asked, and Tailscale
+on that PC first**. PCs of another login, tagged nodes and iOS or Android devices are never asked, and Tailscale
 alone never adds a PC to your account (`GET` and `POST /api/machines/tailnet`; the `POST` takes only
-an address the list found in the last 10 minutes).
+an address the latest look found in the last 10 minutes, including a PC it left off the list because
+it was already added).
 
 Its workspaces then join the sidebar as an SSH PC's do. Nothing is installed on that PC: it runs
 its own Ovis, which updates itself, so it has no bridge controls. Its connection carries the PC's

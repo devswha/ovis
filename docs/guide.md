@@ -498,13 +498,13 @@ Good to know:
 
 #### Which way the app connects
 
-While the relay is on, this PC also takes connections straight from the iPhone and Android apps: on its home network addresses and, when Tailscale runs on it, on its Tailscale address. Each time the app opens the PC, it goes for the nearest way in:
+While the relay is on, this PC also takes connections straight from the iPhone and Android apps: on its home network addresses and, when Tailscale runs on it, on its Tailscale address. Each time the app opens the PC, it has three ways in:
 
-1. **Same Wi-Fi**: the PC's home network address.
-2. **Tailscale**: the PC's Tailscale address, when the phone has Tailscale on.
-3. **The relay**, which always works.
+- **Same Wi-Fi**: the PC's home network address.
+- **Tailscale**: the PC's Tailscale address, when the phone has Tailscale on.
+- **The relay**, which always works.
 
-It does not wait for one to fail before trying the next: it tries the direct addresses at once, opens the relay too when none of them is up within 300 ms, and keeps whichever connects first. So a phone at home connects straight, and a phone away from home is not held up by an address that leads nowhere. While the relay carries it, the app checks the direct addresses again now and then (after it connects, at most every five minutes, when the phone is back online and when the app comes back to the front) and moves back to one once nothing is under way. The PC tells the app these addresses inside the encrypted connection, so they follow the PC to another network. A browser, including the home-screen app from `app.ovis.sh`, always uses the relay.
+It does not wait for one to fail before trying the next: it tries both direct ways at once, opens the relay too when neither is up within 300 ms, and keeps whichever connects first (a firewall that blocks the PC's direct port leaves it on the relay). So a phone at home connects straight, and a phone away from home is not held up by an address that leads nowhere. While the relay carries it, the app checks the direct addresses again now and then (after it connects, at most every five minutes, when the phone is back online and when the app comes back to the front) and moves back to one once nothing is under way. The PC tells the app these addresses inside the encrypted connection, so they follow the PC to another network. A browser, including the home-screen app from `app.ovis.sh`, always uses the relay.
 
 Nothing new is trusted. Only a device already paired through the relay can sign in on those addresses, with the same key and the same end-to-end encryption, and nothing pairs there. **Settings → Devices and PCs → My devices** shows **Same Wi-Fi direct connection on** (and says when it is on Tailscale too), with one switch that turns both off. On an iPhone the app asks for Local Network access once; declining it keeps the app on the relay. On Windows the PC shows Windows' firewall prompt the first time; declining it leaves the relay as the only way in. [Direct on the same network](relay.md#direct-on-the-same-network) has the details.
 
@@ -531,7 +531,7 @@ To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell`
 
 Signing in links your devices once instead of pairing each phone with each PC. It's optional: a QR code and a pairing code work as before, with or without an account.
 
-1. At `app.ovis.sh`, choose **Continue with GitHub** or **Continue with Google**. **Your PCs** lists the PCs of your account and the ones this phone is already paired with.
+1. Sign in with **Continue with GitHub** or **Continue with Google** where the app offers it: in the desktop app, or on a PC's own page (**Settings → Devices and PCs → Account**). The public `app.ovis.sh` shows no sign-in at the moment; a phone pairs there with a QR code, and a hosted app built with `OVIS_ACCOUNT_SERVICE_URL` offers it. **Your PCs** lists the PCs of your account and the ones this phone is already paired with.
 2. A phone already paired by QR code needs nothing more: the next time it opens each PC, it moves that pairing into the account by itself. Until then the PC's row says **Ready · not in the account yet**, since removing the phone through the account would not reach it.
 3. A PC marked **Needs approval** has not let this device in yet. Tap it: this device and the PC show the same six digits, as with a link without a code. The first device of an account is approved on the PC itself. After that, any device already in the account can approve: it asks whether to add the new device and shows three numbers, and you pick the one the new device shows. One approval adds the device to every PC of the account: the approving device signs a record that adds it to each PC, and a PC that was off picks that record up when it comes back.
 

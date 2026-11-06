@@ -35,8 +35,9 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
 7. **The account service can hide records, never forge them.** It stores the PC directory
    (`server_id` and a name, no keys), a mailbox of signed records per PC, and admission requests.
 8. **Tailscale is not membership.** **PCs on your Tailscale** ([remote-pcs.md](remote-pcs.md#through-the-relay))
-   adds a PC through the relay with a code that PC hands over to your own Tailscale login; it never
-   adds a PC or a device to the account. That still takes an approval on a device already in it.
+   adds a PC through the relay with a code that PC hands over to your own Tailscale login. That makes
+   it a paired device of that PC, never an account member by itself: membership comes only from the
+   rules here (a device linking its own pairing, or an approval by a member).
 
 ## Account members
 
