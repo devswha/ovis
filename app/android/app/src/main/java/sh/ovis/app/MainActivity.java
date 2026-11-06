@@ -118,6 +118,11 @@ public class MainActivity extends BridgeActivity {
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
         followThemeColor(host == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
         if (host != null) {
+            // CapacitorCookies is off (not in the plugins configuration), yet its load() still adds a
+            // JavaScript interface whose setCookie writes a cookie for any origin, open to every page
+            // and frame: a sign-in page in front of the PC must not reach it. Capacitor's page script
+            // looks for it before use. Pages loaded from now on no longer see it.
+            bridge.getWebView().removeJavascriptInterface("CapacitorCookiesAndroidInterface");
             // Capacitor injects its bridge only into the PC's origin, so error.html (served from the
             // app while a PC is open) reaches the app through this listener instead. It answers only
             // the app's own origin in the main frame: a PC page or a frame it opens gets nothing.
