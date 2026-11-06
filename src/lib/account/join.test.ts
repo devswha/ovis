@@ -604,8 +604,11 @@ describe("enrolling a PC this device brings into the account", () => {
 });
 
 describe("approving a device that asks to join the account", () => {
+  // the service's clock: a test moves it on so a second admission is really the newer one
+  let clock = Date.now();
   async function setUp() {
-    const fake = new FakeAccountService();
+    clock = Date.now();
+    const fake = new FakeAccountService(() => clock);
     const store = memoryAccountStore();
     await store.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: fake.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
     const service = new AccountService({ store, fetch: fake.fetch });
@@ -671,6 +674,7 @@ describe("approving a device that asks to join the account", () => {
   it("refuses to approve when the device asked again with other details after the card was shown", async () => {
     const { service, mac, X } = await setUp();
     const shown = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now())!;
+    clock += 1_000;
     await service.postAdmission(X, "Other name", mac.public_spki, "windows");
     const decisions: string[] = [];
     const outcome = approveJoin({
@@ -692,10 +696,23 @@ describe("approving a device that asks to join the account", () => {
     expect(decisions).toEqual([]);
   });
 
+  it("refuses an admission shown for another key or PC, even with the same details", async () => {
+    const { service, mac, X } = await setUp();
+    const vouched = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now())!;
+    for (const shown of [{ ...vouched, key: "other-key" }, { ...vouched, server_id: "f".repeat(32) }]) {
+      const outcome = approveJoin({
+        request: { id: "r1", label: "Mac app", intent: "account", choices: ["111111", "222222", "333333"], expires_at: "", key: mac.public_spki },
+        digits: "111111", through: X, service, shown, decide: async () => {}, admit: async () => {},
+      });
+      await expect(outcome).rejects.toBeInstanceOf(AdmissionChangedError);
+    }
+  });
+
   it("keeps the newest admission even when its name has nothing left once made plain", async () => {
     const { service, mac, X } = await setUp();
+    clock += 1_000;
     await service.postAdmission(X, "\u202E\u2066", mac.public_spki, "windows");
-    const newest = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, Date.now());
+    const newest = vouchedAdmission(await service.recentAdmissions(), X, mac.public_spki, clock);
     expect(newest?.os).toBe("windows");
     expect(newest?.label).toBe("Device");
   });
@@ -720,8 +737,9 @@ describe("approving a device that asks to join the account", () => {
     expect(vouchedAdmission(listed, "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([...listed].reverse(), "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([admission("stale", 11)], "pc-x", "k", now)).toBeUndefined();
-    // the same millisecond: the row the service lists later is its newer one
-    expect(vouchedAdmission([admission("first", 2), admission("second", 2)], "pc-x", "k", now)?.label).toBe("second");
+    // the same millisecond: one pick whatever order the service lists them in
+    const tied = [admission("first", 2), admission("second", 2)];
+    expect(vouchedAdmission(tied, "pc-x", "k", now)?.label).toBe(vouchedAdmission([...tied].reverse(), "pc-x", "k", now)?.label);
   });
 
   it("approves a request for this PC only without adding the device to the account", async () => {

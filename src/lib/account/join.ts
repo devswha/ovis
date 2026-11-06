@@ -166,8 +166,11 @@ export class AdmissionChangedError extends Error {
   }
 }
 
-const sameAdmission = (a: Admission, b: Admission): boolean =>
-  a.at === b.at && a.label === b.label && a.os === b.os && a.country === b.country && a.city === b.city;
+const sameAdmission = (a: Admission, b: Admission): boolean => a.key === b.key && a.server_id === b.server_id
+  && a.at === b.at && a.label === b.label && a.os === b.os && a.country === b.country && a.city === b.city;
+
+/** What breaks a same-millisecond tie: the details themselves, so the pick never depends on listing order. */
+const tieKey = (admission: Admission): string => [admission.label, admission.os, admission.country, admission.city].join("\u0000");
 
 /** An admission counts for this long after the device rang (docs/account.md, "Joining through the account"). */
 export const ADMISSION_MS = 10 * 60_000;
@@ -209,8 +212,8 @@ export function vouchedAdmission(admissions: readonly Admission[], through: stri
   for (const admission of admissions) {
     const at = Date.parse(admission.at);
     if (admission.server_id !== through || admission.key !== key || !(now - at <= ADMISSION_MS)) continue;
-    // a tie goes to the one listed later, the service's newer row
-    if (newest === undefined || at >= Date.parse(newest.at)) newest = admission;
+    const newestAt = newest === undefined ? -Infinity : Date.parse(newest.at);
+    if (newest === undefined || at > newestAt || (at === newestAt && tieKey(admission) > tieKey(newest))) newest = admission;
   }
   return newest;
 }

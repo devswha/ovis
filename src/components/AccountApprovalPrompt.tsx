@@ -99,7 +99,7 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
         <div className="account-approval-choices" role="radiogroup" aria-labelledby={`${id}-ask`}>
           {request.choices.map((choice) => (
             <button key={choice} type="button" role="radio" aria-checked={picked === choice} aria-label={choice.split("").join(" ")}
-              className="account-approval-choice" disabled={busy} onClick={() => setPicked(choice)}>{grouped(choice)}</button>
+              className="account-approval-choice" disabled={busy || asker === undefined} onClick={() => setPicked(choice)}>{grouped(choice)}</button>
           ))}
         </div>
         {error !== null && <p className="account-approval-error" role="alert">{error}</p>}
