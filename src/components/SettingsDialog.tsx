@@ -1280,8 +1280,9 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup title={t("Connected to this PC")} section="devices">
         <div className="settings-item my-devices">
-          <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} />
-          <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} />
+          <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`}>
+            <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} />
+          </MyPcRows>
         </div>
         {/* how anything else gets connected: one button, its sheet picks the way; a search finds it as a row by every way it holds */}
         {searching ? (
@@ -1421,7 +1422,9 @@ function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; clos
  * (a reset in another window) is read again too. Removing a PC stays
  * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
  */
-function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string }) {
+function MyPcRows({ machines, accountPcs, relayKey, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
+  /** the paired phones and browsers, the one in use first: right under this PC, above the other PCs */
+  children?: ReactNode }) {
   const t = useT();
   const local = machines.find((machine) => machine.kind === "local");
   const [ownId, setOwnId] = useState<string | null>(null);
@@ -1435,15 +1438,19 @@ function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machi
   const shown = new Set<string>([id, local?.server_id, ...others.map((machine) => machine.server_id ?? machine.relay?.server_id)].filter((id): id is string => id !== undefined));
   const fromAccount = (accountPcs ?? []).filter((pc) => !shown.has(pc.server_id));
   return (
-    <ul className="devices-list my-pcs">
-      {local !== undefined && (
+    <>
+    {local !== undefined && (
+      <ul className="devices-list my-pc-self">
         <li className="devices-row my-device-self" data-testid="this-pc">
           <div className="devices-name">
             <span className="settings-label">{local.name}<span className="devices-kind is-self">{t("This PC")}</span></span>
             {id !== undefined && <span className="settings-description my-device-id">{t("ID {id}", { id: groupedId(id) })}</span>}
           </div>
         </li>
-      )}
+      </ul>
+    )}
+    {children}
+    <ul className="devices-list my-pcs">
       {others.map((machine) => (
         <li key={machine.id} className="devices-row">
           <div className="devices-name">
@@ -1461,6 +1468,7 @@ function MyPcRows({ machines, accountPcs, relayKey }: { machines: readonly Machi
         </li>
       ))}
     </ul>
+    </>
   );
 }
 
