@@ -13,6 +13,7 @@
  * Calls are typed by hc's own schema (hc-api.generated.ts, `bun run generate:types`).
  */
 
+import { liveSessionsRefused } from "../herdr/client.ts";
 import type { HcMethod, HcMethods } from "./hc-api.generated.ts";
 
 /** The calls that answer with a stream of their own. */
@@ -157,6 +158,11 @@ export interface HcTransport {
 export function spawnHcConnect(bin: string, env?: Record<string, string | undefined>): HcTransport {
   // runtime.ts hands out this path that cannot exist while a moved hc is found again
   if (bin === "/dev/null/herdr-core-moved") throw new HcError("closed", "herdr-core moved (an update?), and Ovis is looking for it again: try again in a moment");
+  // a process that asked for an isolated herdr reaches only a core it names (HC_SOCKET, or a session of its own)
+  const named = env ?? process.env;
+  if (liveSessionsRefused(process.env) && !named["HC_SOCKET"] && (named["HC_SESSION"]?.trim() || "default") === "default") {
+    throw new HcError("live_core_refused", "HERDR_TEST_SESSION is set, but hc would reach the user's own herdr-core: give it HC_SOCKET or an HC_SESSION of its own, or set OVIS_ALLOW_LIVE_HERDR=1");
+  }
   let child: Bun.Subprocess<"pipe", "pipe", "ignore">;
   try {
     child = Bun.spawn([bin, "connect"], { stdin: "pipe", stdout: "pipe", stderr: "ignore", ...(env ? { env } : {}) });
