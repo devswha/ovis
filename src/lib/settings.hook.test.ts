@@ -13,6 +13,7 @@ describe("settings across tabs", () => {
   let update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
   let writes: number;
   let full: boolean;
+  let unreadable: boolean;
 
   beforeEach(() => {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) {
@@ -23,11 +24,12 @@ describe("settings across tabs", () => {
     settings = DEFAULT_SETTINGS;
     writes = 0;
     full = false;
+    unreadable = false;
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       localStorage: {
-        getItem: (key: string) => records.get(key) ?? null,
+        getItem: (key: string) => { if (unreadable) throw new Error("SecurityError"); return records.get(key) ?? null; },
         setItem: (key: string, value: string) => { if (full) throw new Error("QuotaExceededError"); writes++; records.set(key, value); },
       },
       addEventListener: events.addEventListener.bind(events),
@@ -168,6 +170,20 @@ describe("settings across tabs", () => {
     // Then both locks are kept, the moved one under its new ID, in this tab and in storage.
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
     expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
+  });
+
+  it("keeps what this tab holds when storage stops reading after it loaded (#2977)", async () => {
+    // Given a tab that loaded two locks, and storage that then refuses reads and writes.
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+    await open();
+    unreadable = true;
+    full = true;
+
+    // When the pane moves.
+    await act(async () => { update(move); });
+
+    // Then both locks are kept, the moved one under its new ID.
+    expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
   it("keeps this tab's change that storage refused over storage's older copy", async () => {
