@@ -148,6 +148,8 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   try {
     for (;;) {
       asked = true;
+      // until this round's offer names its code, the pending pairing is the one this round asks for
+      shown = null;
       // the code first: it starts a new pairing, which the offer then carries (RelayPanel CompactRelay);
       // the offer comes whether the code did or not, since its QR code still pairs
       let code: { code: string; expires_at: string; server_id: string } | null = null;
@@ -316,7 +318,10 @@ async function linkToAccount(options: LinkOptions, api: Api, provider: DevicePro
       }
       if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null;
       if (now() - listedAt >= RELIST_MS) {
-        await listThisPc(api, service, now, pending);
+        // a renewal that failed after its DELETE went out keeps waiting: the listing is put back above, as after a failed PUT
+        try { await listThisPc(api, service, now, pending); } catch (error) {
+          if (pending.listing === null) throw error;
+        }
         if (pending.listing !== null) out(unlisted);
         listedAt = now();
       }

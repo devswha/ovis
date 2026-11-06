@@ -128,6 +128,26 @@ describe("ovis link, on the PC itself", () => {
     expect(cancelled).toBe(1);
   });
 
+  it("--code takes back the pairing a renewal started when it fails before its QR code came", async () => {
+    const pc = identity();
+    const time = clock();
+    let offers = 0;
+    const cancels: unknown[] = [];
+    const local = localPc(async (request, path) => {
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id });
+      if (path === "/api/relay/offer") {
+        if (++offers === 2) return Response.json({ error: { code: "internal_error", message: "internal error (x)" } }, { status: 500 });
+        return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: "111111" }, "https://app.ovis.sh"), expires_at: new Date(time.now() + 600_000).toISOString() });
+      }
+      if (path === "/api/devices/pair/cancel") { cancels.push(await request.json()); return Response.json({ ok: true }); }
+      return undefined;
+    });
+    expect(await link(["--code"], { origin: ORIGIN, headers: {}, fetch: local.fetch, out: () => undefined, signal: new AbortController().signal, now: time.now, wait: time.wait, lines: answers(), accountService: SERVICE })).toBe(1);
+    // not the first round's 111111: the renewal's /api/relay/code started a pairing whose code never came back
+    expect(cancels).toEqual([{}]);
+  });
+
   it("--code turns the relay on first when it is off, and waits until it is online to ask for a code", async () => {
     const pc = identity();
     const time = clock();
@@ -337,13 +357,17 @@ describe("ovis link, on the PC itself", () => {
     const service = new FakeAccountService(time.now);
     let polls = 0;
     let loseDelete = false;
+    let account: string | null = null;
+    let listedAfter: boolean | null = null;
     const local = localPc(async (request, path) => {
-      if (path === "/api/account/status") return Response.json({ account: null, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/account/status") return Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       if (path === "/api/relay/pairings") {
         // the renewal is due after nine minutes of polls (2 s each)
         if (++polls === 271) loseDelete = true;
+        // it keeps waiting, and the listing is back on the next round
+        if (polls === 273) { listedAfter = service.pcs("acct_1").length === 1; account = "acct_1"; }
         return Response.json({ pairings: [] });
       }
       return undefined;
@@ -358,8 +382,8 @@ describe("ovis link, on the PC itself", () => {
         return answer;
       },
       out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
-    })).toBe(1);
-    expect(polls).toBe(271);
+    })).toBe(0);
+    expect(listedAfter).toBe(true);
     expect(service.pcs("acct_1").map((entry) => entry.server_id)).toEqual([pc.server_id]);
     expect(out.join("")).not.toContain("dropped out of your account's list");
   });
@@ -431,6 +455,8 @@ describe("ovis link, on the PC itself", () => {
           if (chunk.done) break;
           stdout += decoder.decode(chunk.value, { stream: true });
         }
+        // twice, as a process group and a checkout's link passing it on deliver it: the second must not cut the clean-up short
+        child.kill(signal);
         child.kill(signal);
         const [stderr, exit] = await Promise.all([new Response(child.stderr).text(), child.exited]);
         expect(cancels, stderr).toEqual([{ code: "123456" }]);
