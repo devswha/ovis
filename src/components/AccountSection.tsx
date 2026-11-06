@@ -81,11 +81,20 @@ function AddThisPc() {
   );
 }
 
-export function AccountSection() {
+/** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
+export interface AccountState { signedIn: boolean; pcs: MyPc[] | null }
+
+/** the phone and Mac apps sign in their own way, never with a code from a PC's page */
+const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
+
+/** whether this page can sign in to the account: the desktop app's bridge, or the account service a PC's page names */
+export const accountOffered = (): boolean => desktopAccount() !== null || pcServiceHere() !== null;
+
+/** `onAccount`: the page lists the account's PCs itself (My devices), so this group does not */
+export function AccountSection({ onAccount }: { onAccount?: (state: AccountState) => void } = {}) {
   const t = useT();
   const bridge = desktopAccount();
-  // the phone and Mac apps sign in their own way, never with a code from a PC's page
-  const pcService = bridge === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
+  const pcService = pcServiceHere();
   const offered = bridge !== null || pcService !== null;
   const [view, setView] = useState<View>({ kind: "loading" });
   const deviceSignIn = useRef<AbortController | null>(null);
@@ -108,6 +117,9 @@ export function AccountSection() {
   }, [t]);
 
   useEffect(() => { if (offered) void load(); }, [offered, load]);
+  useEffect(() => {
+    onAccount?.({ signedIn: view.kind === "signed-in", pcs: view.kind === "signed-in" ? view.pcs : null });
+  }, [onAccount, view]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
 
@@ -185,10 +197,10 @@ export function AccountSection() {
       {view.kind === "signed-in" && (
         <>
           <SettingsRow label={t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}>
-            <button type="button" className="btn" onClick={signOut}>{t("Sign out")}</button>
+            <button type="button" className="btn" onClick={signOut}>{t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })}</button>
           </SettingsRow>
           <AddThisPc />
-          {view.pcs !== null && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
+          {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}
         </>
       )}
