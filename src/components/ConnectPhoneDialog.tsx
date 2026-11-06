@@ -231,7 +231,7 @@ function HeadlessPc() {
     <div className="connect-headless">
       <p className="settings-hint">{t("In that PC's terminal, in Ovis's folder, run:")}</p>
       <code className="connect-command">bun scripts/plugin.ts link</code>
-      <p className="settings-hint">{t("It signs that PC in to your account, then you approve it here.")}{" "}
+      <p className="settings-hint">{t("It signs that PC in to your account. Then tap Add on it in Ovis on a device already in your account, and approve it in that PC's terminal.")}{" "}
         <a href="https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen" target="_blank" rel="noreferrer">{t("Details")}</a></p>
     </div>
   );

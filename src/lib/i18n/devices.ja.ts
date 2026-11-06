@@ -44,7 +44,7 @@ export const DEVICES_JA: Record<string, string> = {
   "This device now": "いま使っているデバイス",
   "A PC with no screen": "画面のないPC",
   "In that PC's terminal, in Ovis's folder, run:": "そのPCのターミナルで、Ovisのフォルダーで実行します:",
-  "It signs that PC in to your account, then you approve it here.": "そのPCがアカウントにサインインしたら、ここで一度承認します。",
+  "It signs that PC in to your account. Then tap Add on it in Ovis on a device already in your account, and approve it in that PC's terminal.": "そのPCがアカウントにサインインします。続いて、アカウントに入っている端末のOvisでそのPCの追加をタップし、そのPCのターミナルで承認します。",
   "Offline · last seen {when}": "オフライン · 最終接続 {when}",
   "The app is closed, or its network is off.": "アプリが閉じているか、ネットワークが切れています。",
   "Rename {name}": "{name} の名前を変更",
