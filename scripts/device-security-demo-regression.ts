@@ -393,6 +393,8 @@ try {
             measurements[prefix]!.confirmCancelFocus = { focusVisible: await page.evaluate(() => document.activeElement?.matches(":focus-visible") ?? false), ...await contrast(page, ".confirm-dialog .modal-footer .btn:not(.btn-danger)", "outline-color") };
             assert.deepEqual(await overflow(page), [], "the confirmation fits");
             if (phone) {
+              // sizes at rest: under the rising sheet's transform a rect reads 43.99994 for 44
+              await settled(page);
               const targets = await touchTargets(page, ".confirm-dialog button");
               for (const target of targets) assert.ok(target.height >= 44, `${target.label}: ${target.height} px tall`);
             }
@@ -588,7 +590,9 @@ try {
             // the current device's pill beside names of every length up to a long one (#1179: "iPhone · Safari"
             // at 390 split it between its two words): one box each time, on the name's line or the next, and one
             // line high, as beside a one-letter name (a box of its own could still wrap its words inside it).
-            // The name is set in place and put back, so React's own text stays what it rendered
+            // The name is set in place and put back, so React's own text stays what it rendered. Read at rest:
+            // under the rising sheet's transform, a pill on the next line reads a hair off the first one's height
+            await settled(page);
             const split = await page.locator(".devices-current").evaluate(async (badge) => {
               const name = badge.parentElement!.firstChild as Text;
               const rendered = name.data;
@@ -687,9 +691,9 @@ try {
               for (const target of targets) assert.ok(target.width >= 44 - SUBPIXEL && target.height >= 44 - SUBPIXEL, `${target.label}: ${target.width}x${target.height} is a 44 px target`);
             }
             // its action: Phone & devices opens, and the line is read
-            await press(notice.getByRole("button", { name: label("Phone & devices"), exact: true }));
+            await press(notice.getByRole("button", { name: label("Devices and PCs"), exact: true }));
             await page.locator(".settings-dialog").waitFor();
-            assert.equal((await page.locator(".settings-dialog .modal-title").innerText()).trim(), label("Phone & devices"));
+            assert.equal((await page.locator(".settings-dialog .modal-title").innerText()).trim(), label("Devices and PCs"));
             assert.equal(await notice.count(), 0, "opening Phone & devices dismisses the line");
             assert.equal(await page.locator(".devices-row").count(), 4, "the new device is on the list");
             // a second pairing, dismissed by its X

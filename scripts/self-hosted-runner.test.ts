@@ -160,9 +160,16 @@ esac
 printf 'docker %s\\n' "$(printf '%s' "$*" | tr '\\n' ' ')" >> "$RUNNER_TEST_LOG"
 case "$1" in
   image) exit 0 ;;
+  # a slot's container an earlier launcher left running, while this file exists
+  # (its State.Running is the file's content: true while it runs its job, false once it stopped)
+  container) [ "$2" = inspect ] && [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
+  # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
+  rm) for last; do :; done; case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
-    # the shared network namespace container is detached and reads no token
-    [ "$2" = -d ] && exit 0
+    # docker's own refusal of a CPU list the host does not have
+    case " $* " in *" --cpuset-cpus 0-500 "*) echo "docker: Requested CPUs are not available" >&2; exit 125 ;; esac
+    # the launcher's check of its CPU list, and the shared network namespace container: neither reads a token
+    case " $* " in *" --entrypoint true "*|*" -d "*) exit 0 ;; esac
     shift
     name=""
     while [ "$#" -gt 0 ]; do
@@ -301,7 +308,7 @@ exit 0
 }
 
 /** A runner container: it reads its registration token on stdin. */
-const runnerRun = /^docker run --rm -i /;
+const runnerRun = /^docker run (?:--cpuset-cpus \S+ )?--rm -i /;
 /** What the git stub reports for the mirror's default branch and its bun.lock. */
 const commitSha = "1".repeat(40);
 const lockBlob = "2".repeat(40);
@@ -318,6 +325,33 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(dockerRun).not.toContain("--cpus");
     expect(dockerRun).not.toContain("--memory");
     expect(dockerRun).toContain("--shm-size 2g");
+  });
+
+  it("puts each runner container's checkout and /tmp in RAM only when asked", () => {
+    const tmpfsCalls = (args: string[]) => {
+      const { result, calls } = runRunner({ count: 2, args });
+      expect(result.status).toBe(0);
+      return calls.split("\n").filter((call) => runnerRun.test(call));
+    };
+    for (const run of tmpfsCalls([])) expect(run).not.toContain("--tmpfs");
+    const runs = tmpfsCalls(["--work-tmpfs", "16g"]);
+    expect(runs).toHaveLength(2);
+    for (const run of runs) {
+      // the runner registers with --work /w as uid 1001 (entrypoint.sh), so the mount must be its own
+      expect(run).toContain("--tmpfs /w:rw,exec,nosuid,size=16g,uid=1001,gid=1001,mode=0755");
+      expect(run).toContain("--tmpfs /tmp:rw,exec,nosuid,size=16g,mode=1777");
+    }
+    for (const size of ["16", "0g", "16t", "1,uid=0g", "123456g", "g"]) {
+      expect(runRunner({ args: ["--work-tmpfs", size] }).result.status).toBe(2);
+    }
+  });
+
+  it("turns core dumps off in every runner container, so a crash leaves no file in the checkout", () => {
+    const { result, calls } = runRunner({ count: 2 });
+    expect(result.status).toBe(0);
+    const runs = calls.split("\n").filter((call) => runnerRun.test(call));
+    expect(runs).toHaveLength(2);
+    for (const run of runs) expect(run).toContain("--ulimit core=0");
   });
 
   it("hands a host env file to every runner container, never to the network namespace one", () => {
@@ -370,6 +404,63 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("pins every container it starts to --cpuset-cpus, and none without it", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-95"] });
+    expect(result.status).toBe(0);
+    const runs = calls.split("\n").filter((call) => call.startsWith("docker run "));
+    // the network namespace container (the stub never reports it running, so each runner starts it again) and both runners, each pinned
+    expect(runs.filter((call) => call.startsWith("docker run --cpuset-cpus 0-95 -d ")).length).toBeGreaterThanOrEqual(1);
+    expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
+    for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 ");
+    expect(runRunner().calls).not.toContain("--cpuset-cpus");
+  });
+
+  it("refuses a CPU list docker cannot give before starting anything", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-500"] });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--cpuset-cpus 0-500");
+    expect(calls).not.toContain("registration-token");
+    expect(calls.split("\n").filter((call) => runnerRun.test(call) || call.includes(" -d "))).toEqual([]);
+  });
+
+  it("starts a slot's runner only once the container an earlier launcher left in that slot has ended", async () => {
+    const { tempDir, args, env, logPath } = prepareRunner({});
+    const held = join(tempDir, "slot-held");
+    writeFileSync(held, "true\n");
+    const child = Bun.spawn(["bash", ...args], { env: { ...env, RUNNER_TEST_SLOT_HELD: held }, stdout: "ignore", stderr: "ignore" });
+    try {
+      const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+      // it asks about the slot's container before anything else of the slot
+      const deadline = Date.now() + LOADED_BOUND_MS;
+      while (!/docker container inspect .*herdr-ci-\S+-1/.test(calls()) && Date.now() < deadline) await Bun.sleep(25);
+      expect(calls()).toMatch(/docker container inspect .*herdr-ci-\S+-1/);
+      expect(calls()).not.toContain("registration-token");
+      expect(calls().split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      rmSync(held);
+      expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(0);
+      expect(calls().split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, HUNG_RUN_MS);
+
+  it("removes a stopped container left in a slot's name, instead of waiting on it forever", () => {
+    const { tempDir, args, env, logPath } = prepareRunner({});
+    try {
+      const held = join(tempDir, "slot-held");
+      writeFileSync(held, "false\n");
+      const result = spawnSync("bash", args, { encoding: "utf8", timeout: LOADED_BOUND_MS, env: { ...env, RUNNER_TEST_SLOT_HELD: held } });
+      expect(result.status).toBe(0);
+      const calls = readFileSync(logPath, "utf8").split("\n");
+      expect(calls.some((call) => /^docker rm -f herdr-ci-\S+-1$/.test(call))).toBe(true);
+      expect(calls.filter((call) => runnerRun.test(call))).toHaveLength(1);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -791,7 +882,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const slot = "herdr-ci-host-3";
 
   /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -830,24 +921,47 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
         symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
       }
       const sha = "5".repeat(40);
+      const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
+      if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
       const answers: Record<string, unknown> = {
         jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
         run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
         pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
       };
       for (const [name, value] of Object.entries(answers)) writeFileSync(join(dir, `${name}.json`), JSON.stringify(value));
+      };
+      answer(github);
       writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$2" >> "\${0%/bin/gh}/gh.log"
+# GitHub failing for a moment
+[ -e "\${0%/bin/gh}/fail" ] && exit 1
 case "$2" in
-  repos/owner/repo/actions/runs/7/attempts/1/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
   repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
   repos/owner/repo) echo main ;;
-  *) exit 1 ;;
+  # as GitHub answers for a run or pull request that does not exist
+  *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
-      const result = spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
+      const result = pass();
+      // later passes, each after the job claimed again (the claim's run and attempt), each for another build
+      const callsBefore: number[] = [];
+      later.forEach((again, i) => {
+        const other = String(i).padStart(64, "f");
+        spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
+        writeFileSync(join(outbox, `${other}.claim`), again);
+        callsBefore.push(existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean).length : 0);
+        if (thenGithub) answer(thenGithub);
+        // the slot's ten minutes are over
+        if (slotHeldOffUntilNow) {
+          const old = new Date(Date.now() - 20 * 60_000);
+          for (const name of readdirSync(join(outboxes, ".refused")).filter((name) => name.startsWith("slot-"))) utimesSync(join(outboxes, ".refused", name), old, old);
+        }
+        pass();
+      });
       const entry = join(root, "entries", key);
       return {
         status: result.status,
@@ -857,6 +971,7 @@ esac
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
         ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
+        callsBefore,
       };
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", dir]);
@@ -898,6 +1013,57 @@ esac
     expect(run.ghCalls.filter((call) => call.includes("/jobs"))).toHaveLength(1);
     expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
     expect(run.outbox).toHaveLength(6);
+  });
+
+  it("asks GitHub about a refused run once: its claims after that are refused without a call", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n", "7 1\n", "7 1\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.callsBefore[0]).toBeGreaterThan(0);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+    expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
+  });
+
+  it("holds off a slot whose claim was refused, whatever run its next claims name", () => {
+    const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n", "9 1\n", "7 2\n"]);
+    expect(run.entries).toEqual([]);
+    expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
+  });
+
+  it("remembers a refused run for longer than it holds off its slot", () => {
+    const same = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true);
+    expect(same.ghCalls).toHaveLength(same.callsBefore[0]!);
+    const other = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"], true);
+    expect(other.ghCalls.length).toBeGreaterThan(other.callsBefore[0]!);
+  });
+
+  it("never lets a claim from another slot refuse a trusted run's own claims", () => {
+    // another slot's job names run 7, whose job runs on this slot only once GitHub says so below
+    const run = promote({ runner: "herdr-ci-host-9" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], true, { runner: slot });
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("holds off a slot whose claims name runs that do not exist", () => {
+    const run = promote({}, "files", "devswha", false, false, "99999991 1\n", 0, false, ["99999992 1\n", "99999993 1\n", "99999994 1\n"]);
+    expect(run.callsBefore[0]).toBe(1);
+    expect(run.ghCalls).toHaveLength(1);
+  });
+
+  it("refuses a stale run of the writer's pull request without holding off its slot", () => {
+    // the pull request moved on to another head while run 7's job was still running
+    const run = promote({ prSha: "6".repeat(40) }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 2\n"], false, {});
+    // its re-run on the same slot, at the pull request's head, is taken in
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("remembers no refusal when GitHub failed to answer", () => {
+    const run = promote({ fail: true }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(run.entries).toHaveLength(1);
+  });
+
+  it("goes on asking about trusted runs: only refusals are remembered", () => {
+    const run = promote({}, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"]);
+    expect(run.entries).toHaveLength(2);
+    expect(run.ghCalls.length).toBeGreaterThan(run.callsBefore[0]!);
   });
 
   it("refuses a build holding a file named like the manifest", () => {

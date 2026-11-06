@@ -5,6 +5,7 @@ import { claudeImages, isCommandEntry, senpiPrompt, withoutPictureBytes } from "
 import { copilotPromptOpens, copilotRootRecord } from "./copilot.ts";
 import { musePrompt } from "./muse.ts";
 import { lettaPrompt } from "./letta.ts";
+import { kimiPrompt } from "./kimi.ts";
 
 /**
  * A Claude session's branch, followed as the file is scanned. Claude Code links each record to the
@@ -49,7 +50,7 @@ function answeredBetween(answers: readonly number[], from: number, to: number): 
 }
 
 /** a slash command the user ran, as Claude Code echoes it: a local_command record, or a user one on older versions */
-function claudeCommandEchoRecord(entry: { type?: unknown; subtype?: unknown; isMeta?: unknown; content?: unknown; message?: { content?: unknown } }): boolean {
+export function claudeCommandEchoRecord(entry: { type?: unknown; subtype?: unknown; isMeta?: unknown; content?: unknown; message?: { content?: unknown } }): boolean {
   const text = entry.type === "system" && entry.subtype === "local_command" ? entry.content : entry.type === "user" && !entry.isMeta ? entry.message?.content : undefined;
   return typeof text === "string" && /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>\//.test(text);
 }
@@ -98,6 +99,7 @@ const TURN_MARK: Record<StreamSource, Buffer> = {
   "copilot-transcript": Buffer.from('"user.message"'),
   "grok-transcript": Buffer.from('"user_message_chunk"'),
   "agy-transcript": Buffer.from('"USER_INPUT"'),
+  "kimi-transcript": Buffer.from('"context.append_message"'),
   "muse-transcript": Buffer.from('"payload_type":"runtime.user_intent.accepted"'),
   "letta-transcript": Buffer.from('"kind":"user"'),
   "codex-transcript": Buffer.from('"task_started"'),
@@ -117,7 +119,7 @@ const TURN_MARK: Record<StreamSource, Buffer> = {
  * task_started), a Claude or omp prompt (tool results answer the turn before it),
  * and the same for pi, whose prompts are `message` records with a user role.
  */
-function opensTurn(source: StreamSource, line: string, blobs: string | null): boolean | "inline" {
+export function opensTurn(source: StreamSource, line: string, blobs: string | null): boolean | "inline" {
   let entry: { type?: unknown; uuid?: unknown; origin?: unknown; permissionMode?: unknown; data?: { content?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
@@ -125,6 +127,7 @@ function opensTurn(source: StreamSource, line: string, blobs: string | null): bo
   if (source === "codex-transcript") return entry.type === "event_msg" && entry.payload?.type === "task_started";
   if (source === "muse-transcript") return musePrompt(entry as Record<string, unknown>) !== null;
   if (source === "letta-transcript") return lettaPrompt(entry as Record<string, unknown>) !== null;
+  if (source === "kimi-transcript") return kimiPrompt(entry) !== null;
   if (source !== "claude-transcript") {
     const message = piMessage(entry);
     if (message?.role !== "user") return false;

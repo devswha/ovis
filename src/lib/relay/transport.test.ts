@@ -649,6 +649,42 @@ it("tells a refusal that cannot change from a carrier that may come back", () =>
   expect(isFatalRelayError(new TypeError("Network offline"))).toBe(false);
 });
 
+it("signs in again on renew, so a session proves the key the saved pairing holds now", async () => {
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  const first = f.connections.at(-1);
+  if (!first) throw new Error("Missing relay connection");
+  f.transport.renew();
+  await bounded(first.closed);
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(f.attempts.count).toBe(2);
+  expect(f.fatal).toEqual([]);
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+});
+
+it("settles a renew once the carrier that replaces it is up, not on one already on its way", async () => {
+  // Given a carrier that drops, and one renew asked while its reconnect is under way.
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  await f.drop();
+  f.clock.advance(1000);
+  const reconnecting = f.transport.connect();
+  let up = false;
+  const renewed = f.transport.renew().then(() => { up = true; });
+  // When the reconnect started before the renew lands.
+  await reconnecting;
+  // Then it may have signed with the old key: it is ended, and the renew waits for the next carrier.
+  await bounded(f.connections.at(-1)!.closed);
+  expect(up).toBe(false);
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await f.transport.connect();
+  await bounded(renewed);
+  expect(up).toBe(true);
+  expect(f.attempts.count).toBe(3);
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+});
+
 it("reconnects after an authorization change without telling the shell to forget the PC", async () => {
   // Keep the post-reconnect request independent of herdr, which unit runs never start.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { DevicePairedEvent, Machine, MachineEvent, RelayPairingRequest } from "../../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, Machine, MachineEvent, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 import { ApiError, authenticate, fetchMachines, observePaneSessions, paneSessionEvents, paneSessionsMoving, verifySourceBoot } from "./api.ts";
 import { passingFolder, recentDirectories } from "./recent-directories.ts";
 import { keepMachineEvents } from "./machineEventStream.ts";
@@ -15,7 +15,7 @@ import type { AppLink } from "./deepLink.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { NotificationTarget } from "./notificationTarget.ts";
 import type { SelectionMark } from "./selectionMark.ts";
-import type { SplitState } from "./split.ts";
+import { otherTargets, type SplitState } from "./split.ts";
 import { deviceInUse, followsHerdrFocus, movingHerdrFocusOn } from "./followFocus.ts";
 import { pruneWaitingSends } from "./sentWaiting.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
@@ -24,6 +24,8 @@ import type { usePreferencesSync } from "./preferencesSync.ts";
 import type { useAlertSignals } from "./useAlertSignals.ts";
 
 const POLL_MS = 5000;
+const STREAM_BACKSTOP_MS = 30_000;
+type RosterStreamUpdate = "opened" | "lost" | "closed" | Machine[];
 
 /**
  * Polls and the event stream hand over fresh objects every few seconds even when nothing
@@ -82,7 +84,12 @@ export function useRefetchTimer() {
   return { refetchTimer };
 }
 
-export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
+const localConnectedIn = (machines: readonly Machine[]): boolean => machines.some((machine) => machine.id === "local" && machine.state === "connected");
+
+export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer }: {
+  locked: boolean | null;
+  /** this PC's last health read failed: health is watched every five seconds until one answers */
+  healthFailing: boolean;
   rosterIn: () => void;
   setMachines: Dispatch<SetStateAction<Machine[]>>;
   setMachineRosterLoaded: Dispatch<SetStateAction<boolean>>;
@@ -93,6 +100,33 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
   refetchTimer: RefObject<number | null>;
 }) {
   const snapshotRequests = useRef(new SnapshotRequests());
+  const stream = useRef({ open: false, localConnected: false });
+  const polling = useRef<((readNow: boolean) => void) | null>(null);
+  const onRosterStream = useCallback((update: RosterStreamUpdate) => {
+    const previous = stream.current.open && stream.current.localConnected;
+    if (Array.isArray(update)) stream.current.localConnected = localConnectedIn(update);
+    // Every opening, a switch from SSE to the terminal socket included, waits for its own first
+    // roster (each subscription sends one at once) rather than trusting the last transport's.
+    else if (update === "opened") stream.current = { open: true, localConnected: false };
+    else stream.current = { open: false, localConnected: false };
+    const slow = stream.current.open && stream.current.localConnected;
+    // Repeated pushed rosters must not postpone the backstop. Leaving the slow backstop (a lost
+    // local PC or stream) reads at once, then watches health as quickly as a tab without push; a
+    // stream that never saw a connected local PC was polling every five seconds already.
+    if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
+  }, []);
+  // a failed health read is not something the stream tells: until one answers, the cadence is a tab's without push
+  const healthFailingRef = useRef(healthFailing);
+  useEffect(() => {
+    if (healthFailingRef.current === healthFailing) return;
+    healthFailingRef.current = healthFailing;
+    polling.current?.(false);
+  }, [healthFailing]);
+  useEffect(() => {
+    if (locked !== true) return;
+    stream.current = { open: false, localConnected: false };
+    polling.current?.(true);
+  }, [locked]);
   // every PC's dragged workspace order, held until a roster read after its moves comes
   // (lib/workspaceOrder.ts): App's, so a Sidebar remount or PC switch cannot lose it. A roster load
   // once the moves settle may bring that roster sooner; it proves nothing by itself.
@@ -109,6 +143,12 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
         pruneWaitingSends(next);
         // a pane's conversation answers stand for the session it was on: the chats read this roster's
         observePaneSessions(next, readAfter);
+        // a read showing this PC away ends the slow backstop as a pushed roster would: a stream can
+        // stay open and say nothing. Only a pushed roster starts it.
+        if (stream.current.localConnected && !localConnectedIn(next)) {
+          stream.current.localConnected = false;
+          polling.current?.(false);
+        }
         reorderCoordinator.roster(next, { kind: "load", started });
         setMachines((previous) => sameData(previous, next) ? previous : next);
         rosterIn();
@@ -133,6 +173,12 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
     };
     let timer = 0;
     let disposed = false;
+    const schedule = (readNow: boolean): void => {
+      window.clearInterval(timer);
+      if (readNow) tick();
+      const slow = lockedRef.current !== true && !healthFailingRef.current && stream.current.open && stream.current.localConnected;
+      timer = window.setInterval(tick, slow ? STREAM_BACKSTOP_MS : POLL_MS);
+    };
     void (async (): Promise<void> => {
       // a bookmarked `#auth=<token>` link unlocks without typing; the fragment is
       // stripped before anything renders, and a stale token falls through to the
@@ -140,15 +186,16 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
       const linkToken = takeAuthTokenFromUrl();
       if (linkToken !== null) await authenticate(linkToken).catch(() => undefined);
       if (disposed) return;
-      tick();
-      timer = window.setInterval(tick, POLL_MS);
+      polling.current = schedule;
+      schedule(true);
     })();
     const onVisible = (): void => {
-      if (document.visibilityState === "visible" && !disposed) tick();
+      if (document.visibilityState === "visible" && !disposed) schedule(true);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       disposed = true;
+      polling.current = null;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -166,12 +213,13 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
   useEffect(() => () => {
     if (refetchTimer.current !== null) window.clearTimeout(refetchTimer.current);
   }, []);
-  return { snapshotRequests, reorderCoordinator, load, scheduleRefetch };
+  return { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream };
 }
 
-export function useRosterEvents({ onPaneMoved, machineSessions, locked, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, getTakeNotificationTargetRef }: {
+export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, setRemotePairings, setRemovedNotices, getTakeNotificationTargetRef }: {
   machineSessions: MachineSessionRegistry;
   locked: boolean | null;
+  onRosterStream: (update: RosterStreamUpdate) => void;
   receivePreferencesRef: RefObject<ReturnType<typeof usePreferencesSync>["receive"]>;
   snapshotRequests: RefObject<SnapshotRequests>;
   onRoster: ReturnType<typeof useAlertSignals>["onRoster"];
@@ -203,6 +251,10 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, receiveP
   setPairedNotices: Dispatch<SetStateAction<readonly DevicePairedEvent[]>>;
   /** relay pairings waiting for this PC's owner (components/RelayPairingPrompt.tsx) */
   setRelayPairings: Dispatch<SetStateAction<readonly RelayPairingRequest[]>>;
+  /** devices asking to join the account through this PC (components/AccountApprovals.tsx) */
+  setRemotePairings: Dispatch<SetStateAction<readonly RemotePairingRequest[]>>;
+  /** devices removed from this PC (components/DevicePairedNotice.tsx, DeviceRemovedNotice) */
+  setRemovedNotices: Dispatch<SetStateAction<readonly DeviceRemovedEvent[]>>;
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
   useCloseSessionsWhenLocked(machineSessions, locked);
@@ -217,9 +269,13 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, receiveP
       // a device paired with this server: told once per enrollment, kept until read, the oldest giving way
       if (payload.type === "device-paired") { setPairedNotices((list) => withPairedNotice(list, payload)); return; }
       if (payload.type === "relay-pairings") { setRelayPairings(payload.pairings); return; }
+      if (payload.type === "remote-pairings") { setRemotePairings(payload.pairings); return; }
+      // a device removed from this PC: told once per removal, kept until read, the oldest giving way
+      if (payload.type === "device-removed") { setRemovedNotices((list) => withPairedNotice(list, payload)); return; }
       // A poll started before this event can carry an older roster or pane status.
       snapshotRequests.current.invalidate();
       if (payload.type === "machines") {
+        onRosterStream(payload.machines);
         paneLifetimes.observe(payload.machines, displayPaneTitle);
         pruneWaitingSends(payload.machines);
         observePaneSessions(payload.machines);
@@ -239,7 +295,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, receiveP
           let changed = false;
           const next = list.map((m) => {
             if (m.id !== machine.id || !m.snapshot) return m;
-            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch);
+            const snapshot = applyPaneStatus(m.snapshot, message.pane_id, message.agent_status, message.background_tasks, message.background_wait === true, message.plan, message.finish_id, message.finish_epoch, message.context);
             if (snapshot === m.snapshot) return m;
             changed = true;
             return { ...m, snapshot };
@@ -256,7 +312,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, receiveP
       // is confirmed with its PC first, as a pane made here is (the selection effect below)
       if (message.type === "pane-focused" && followsHerdrFocus({
         enabled: followFocusRef.current, machineId: machine.id, paneId: message.pane_id, selection: selectionRef.current,
-        splitOther: splitShownRef.current ? splitRef.current?.other ?? null : null, linkPending: pendingLink.current !== null,
+        splitOthers: splitShownRef.current ? otherTargets(splitRef.current) : [], linkPending: pendingLink.current !== null,
         busy: deviceInUse(selectionRef.current), ownMove: movingHerdrFocusOn(machine.id),
       })) {
         selectionHint.current = null;
@@ -272,16 +328,17 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, receiveP
         scheduleRefetch();
       }
     };
-    return keepMachineEvents(machineSessions.get("local").socket, {
+    const stop = keepMachineEvents(machineSessions.get("local").socket, {
       // opened or reopened: a shared-settings save paused by failures gets a new round
-      opened: () => preferencesResubscribedRef.current(),
+      opened: () => { onRosterStream("opened"); preferencesResubscribedRef.current(); },
       // lost (the browser reconnects by itself): a shared-settings save waits for that instead of retrying
-      lost: () => preferencesDisconnectedRef.current(),
+      lost: () => { onRosterStream("lost"); preferencesDisconnectedRef.current(); },
       // the browser gave up on it (a proxy's 502 during a restart): a save nobody refused stops waiting for
       // it while a new one is opened, and a refused one waits for that one's opening document (after a 401
       // the next poll locks the app, which ends this effect and its wait)
-      closed: () => preferencesClosedRef.current(),
+      closed: () => { onRosterStream("closed"); preferencesClosedRef.current(); },
       message: onMessage,
     });
-  }, [machineSessions, locked, scheduleRefetch, dropIn, chime, reorderCoordinator]);
+    return () => { stop(); onRosterStream("closed"); };
+  }, [machineSessions, locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
 }

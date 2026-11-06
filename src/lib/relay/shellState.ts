@@ -10,10 +10,13 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { MyPc } from "../account/myPcs.ts";
+import type { AccountProvider } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
 import { ServerIdentityChangedError } from "./device.ts";
+import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
 
 /** Where a relay key the phone holds came from: the link it opened, or the pairing it saved. */
@@ -43,7 +46,9 @@ export function keyMismatch(serverId: string, keys: readonly { key: string; from
 }
 
 /** Why a connection did not come up; each is a screen with its own `data-relay-state`. */
-export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer";
+export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer"
+  /** a PC an introduction named just now refused this device: its mailbox has not brought the add yet */
+  | "not-added-yet";
 
 /**
  * Where a PC below MIN_SERVER_VERSION is in its update (skew.ts): its update status being read, an
@@ -58,14 +63,28 @@ export type PcUpdate =
   | { phase: "restarting" }
   | { phase: "failed"; detail: string | null };
 
+/**
+ * The front page's account part: the sign-in buttons, the wait while the provider's pages are up,
+ * or the account's PCs (null while they load). Null on a PC's own page, which has no account part.
+ */
+export type AccountView =
+  | { kind: "signed-out"; error: string | null }
+  | { kind: "signing-in" }
+  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
+
 export type RelayShellState =
-  | { kind: "list"; devices: RelayDevice[] }
+  | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
-  | { kind: "empty" }
+  | { kind: "empty"; account?: AccountView | null }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }
+  /** Pair with a code: the field to type it in, with why the last code gave no PC */
+  | { kind: "code-entry"; failure: TypedCodeFailure | null }
+  | { kind: "code-looking" }
+  /** a typed code found a PC: its full ID to compare with the PC's screen before anything is paired */
+  | { kind: "code-compare"; offer: RelayOffer }
   /** pairing without a code: the digits to compare with the PC's screen; `confirmed` once this phone said they match */
-  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean }
+  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean }
   /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */

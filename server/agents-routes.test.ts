@@ -66,7 +66,7 @@ describe("GET /api/agents", () => {
     expect(located.sort()).toEqual(["gjc", "omo"]);
   });
 
-  it("offers on herdr-core only the kinds its manifests name: none it cannot start, as on Windows", async () => {
+  it("offers on herdr-core only the kinds its manifests name: none of herdr's own beside them", async () => {
     process.env["PATH"] = bin;
     const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
     manifests.mockImplementationOnce(async () => ({ manifests: [] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
@@ -76,6 +76,21 @@ describe("GET /api/agents", () => {
       expect(agents.map((agent) => agent.kind)).toEqual(["gjc"]);
     } finally {
       serving.mockRestore();
+    }
+  });
+
+  it("offers on another machine of the core only its manifests' kinds, whether installed unknown: this PC's PATH is not that machine's", async () => {
+    process.env["PATH"] = bin;
+    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const machine = spyOn(runtime, "hcMachine").mockReturnValue({ name: "lab", id: "lab-id" });
+    manifests.mockImplementationOnce(async () => ({ manifests: [{ agent: "codex" }] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
+    try {
+      expect(await (await fetch(url("/api/agents"))).json()).toEqual({ agents: [{ kind: "codex", label: "Codex" }] });
+      // no shell-started agent is looked for here: it would start from this PC's path in that machine's shell
+      expect(located).toEqual([]);
+    } finally {
+      serving.mockRestore();
+      machine.mockRestore();
     }
   });
 

@@ -6,7 +6,7 @@
  */
 
 import type { TelemetrySettings } from "../../shared/telemetry.ts";
-import { mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
+import { MAX_PINS, mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type ThemeEntry } from "./themes.ts";
 import { LANGUAGE_SETTINGS, LOCALE_TAGS, resolveLanguage, setCurrentLanguage, type Language, type LanguageSetting } from "./i18n.ts";
@@ -25,6 +25,9 @@ export type Density = "compact" | "comfortable";
 export type SidebarRows = "one" | "two";
 /** the Agents list's order: herdr's workspace order, or a waiting agent first and then the latest change */
 export type AgentOrder = "workspace" | "activity";
+/** Settings → Within a state: how each state group of the Agents list is ordered (lib/agentRoster.ts) */
+export const AGENT_GROUP_SORTS = ["wait", "recent", "name"] as const;
+export type AgentGroupSort = (typeof AGENT_GROUP_SORTS)[number];
 /** how agent logos are drawn: in their brand colors, or without color: Claude's in the text color, the others in grey (data-marks on <html>) */
 export type AgentMarks = "color" | "mono";
 /** what the plan meters count: the share of a limit used, or what is left of it */
@@ -43,6 +46,10 @@ export const CHAT_WIDTHS: readonly ChatWidth[] = ["narrow", "default", "wide", "
  *  on: there, on a phone and in the terminal input line, disabled with its reason where it cannot work; off: nowhere */
 export type VoiceButton = "auto" | "on" | "off";
 export const VOICE_BUTTONS: readonly VoiceButton[] = ["auto", "on", "off"];
+/** what turns speech into text. auto: the server's API key when one is saved, else the browser's
+ *  speech recognition; browser and server hold to the one chosen, and the mic says why when it cannot */
+export type VoiceEngineChoice = "auto" | "browser" | "server";
+export const VOICE_ENGINES: readonly VoiceEngineChoice[] = ["auto", "browser", "server"];
 /**
  * The languages dictation can be set to, as BCP 47 tags (SpeechRecognition.lang; the transcribe
  * route takes the first subtag). Auto can also use a browser language outside this list when
@@ -56,11 +63,15 @@ export const DICTATION_LANGUAGES = [
 export type DictationLanguage = "auto" | (typeof DICTATION_LANGUAGES)[number];
 /** the lens a pane opens in until it is switched there: auto is chat for an agent on a touch screen, else terminal */
 export type DefaultView = "auto" | "chat" | "terminal";
+/** Where a chosen file text size started: the chat's and the interface's sizes when it was chosen, with the size they
+ *  were recorded for, so a size written without them (an older tab) is never paired with them. */
+export interface FileFontBase { size: number; chat: number; ui: number }
 import { sanitizeShortcutOverrides, type ShortcutOverrides } from "./shortcutBindings.ts";
 import type { StatusIndicators } from "./status.ts";
+import { sanitizeGroupNames, sanitizeGroupOf } from "./namedAgentGroups.ts";
 import { WEB_LINK_TARGETS, type WebLinkTarget } from "./webPanel.ts";
 import { FILE_OPEN_TARGETS, type FilePresentation } from "./filePresentation.ts";
-import { CLAUDE_LAUNCH_MODES, CODEX_LAUNCH_MODES, type ClaudeLaunchMode, type CodexLaunchMode } from "./agentLaunchMode.ts";
+import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, type ClaudeLaunchMode, type CodexLaunchMode } from "./agentLaunchMode.ts";
 
 export interface Settings {
   terminalInputMode: "auto" | "line" | "direct";
@@ -68,7 +79,12 @@ export interface Settings {
   keyBarExtras: KeyBarExtra[];
   /** This device's terminal keys, sticky modifiers and exact chords, in display order. */
   keyBarItems: KeyBarItem[];
+  /** the touch key bar's second row (Esc, Tab, | ~ / -) and its arrow pad, opened from the bar's own toggle */
+  keyBarExpanded: boolean;
   shortcutOverrides: ShortcutOverrides;
+  /** herdr's prefix, then a key its config.toml binds, runs the app's action for it (lib/herdrKeys.ts); off until chosen,
+   *  since the prefix (Ctrl+B by default) then no longer reaches the pane */
+  herdrPrefixKeys: boolean;
   theme: ThemeSetting;
   density: Density;
   /** How much a workspace row says: its name, or its pane's title over its place. */
@@ -76,10 +92,33 @@ export interface Settings {
   /** the Filter field above the sidebar's lists (components/MachineSidebar.tsx); off, the command palette's
    *  Filter workspaces and agents still opens it for the time it holds words or the focus */
   sidebarFilter: boolean;
+  /** the composer's context ring on each agent row of the sidebar (components/Sidebar.tsx ContextBadge); off until chosen */
+  sidebarContext: boolean;
+  /** an agent's helpers folded under its row in the Agents list (components/AgentSidebar.tsx); off until chosen */
+  foldHelpers: boolean;
+  /** each workspace's agents listed under its row in the PCs list (components/Sidebar.tsx), a PC > workspace > agent tree; off until chosen */
+  sidebarAgentTree: boolean;
+  /** CPU, memory and the fullest disk under each open PC in the sidebar (components/MachineStats.tsx); null until
+   *  chosen on this device, which shows it while two or more PCs are connected (pcLoadOn) */
+  pcLoad: boolean | null;
   /** The Agents list's order. Activity is display-only: herdr's own order never changes. */
   agentOrder: AgentOrder;
+  /** this device lists the agents above the workspaces, in groups by state (lib/agentRoster.ts groupAgentRows); off, the list is as agentOrder says */
+  agentGroups: boolean;
+  /** the order within each state group while agentGroups is on */
+  agentGroupSort: AgentGroupSort;
   /** Agent logos: brand colors, or without color, so a list of one agent is not a stripe of tiles */
   agentMarks: AgentMarks;
+  /** Settings -> Lock pinned agents (experimental): the Agents list offers Lock agent, and the locks below hold; off, none does */
+  agentLocks: boolean;
+  /** pinned agent rows this app does not close (lib/paneLocks.ts), by their pin key; a lock holds only while its row is pinned */
+  lockedAgents: string[];
+  /** Settings -> Named agent groups: the Agents list splits into the groups below, which New workspace and New tab offer (lib/namedAgentGroups.ts); off, none is drawn or offered */
+  agentNamedGroups: boolean;
+  /** the groups' names, in the order the list draws them */
+  agentGroupNames: string[];
+  /** each grouped agent row's group, by its pin key */
+  agentGroupOf: Record<string, string>;
   /** the sidebar's state marks: this app's own, or herdr's dots or symbols, as its `[ui] status_indicators` (lib/status.ts) */
   statusIndicators: StatusIndicators;
   /** the chrome color family, keyed as data-palette in src/styles.css */
@@ -100,6 +139,18 @@ export interface Settings {
    *  Stored under this key, not 0.4.1's `terminalOsc52`: settings are saved whole, so a `false` there
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
+  /** draw the pictures a pane program prints as sixel or iTerm2 inline images (lib/terminalImages.ts); off by
+   *  default. Only herdr-core passes them on: herdr redraws a pane from its own grid, which keeps no pictures. */
+  terminalImages: boolean;
+  /** on a touch screen, an Attach files button in the terminal's input line and a key in the key bar while typing
+   *  straight into the grid pick files to store beside the pane (POST /api/pane/image); off by default */
+  terminalAttachButton: boolean;
+  /** on a touch screen, the soft keyboard comes up for the terminal only from the key bar's keyboard control:
+   *  while it is down, the input line and xterm's field carry inputmode="none" (#1635). Off by default. */
+  terminalKeyboardOnRequest: boolean;
+  /** on a touch screen in Input line mode, the key bar's row stays folded under the line until its Terminal keys
+   *  button opens it, and the Input line / Direct typing key sits in the line (#1531). Off by default. */
+  terminalFoldKeyBar: boolean;
   /** a pane whose grid this device does not size and is wider than this screen (a mirrored pane: a Windows
    *  PC, no terminal attach; an attached pane it only watches, or holds under the keyboard, at the grid
    *  another device gave the pty) is drawn folded to the screen's width (lib/terminalFold.ts); false draws
@@ -110,15 +161,30 @@ export interface Settings {
   /** a desktop tab out of use for a moment detaches its pane (PaneTerminal's release) and only watches it, so herdr's own
    *  window keeps the pane at its size; paused where the server cannot watch. Off: the tab keeps the pane and its size. */
   releasePaneAway: boolean;
+  /** the split view takes more than two panes, in rows and columns, and its boundaries move (lib/split.ts);
+   *  off: two halves side by side, as before */
+  splitGrid: boolean;
+  /** a plain drag in a Codex pane is Codex's, which selects and scrolls its own history (lib/useTerminalMount.ts);
+   *  off: Ovis's selection, which stops at the screen's edge but copies on every device */
+  codexDrag: boolean;
   /** this device opens the pane herdr's own focus moves to (a `pane-focused` frame from the selected PC), as
    *  herdr's window does after `herdr tab focus` or a click there; off: only this device's own picks move it */
   followHerdrFocus: boolean;
+  /** a mouse resting on the collapsed sidebar's toggle shows the sidebar over the pane for a moment (lib/sidebarPeek.ts, #2588) */
+  sidebarPeek: boolean;
+  /** workspaces a launcher tagged `role=background` stand after the others under a folded heading (components/Sidebar.tsx); off until chosen */
+  sidebarBackgroundWorkspaces: boolean;
   /** chat text size in px (its body text; the rest scales with it); null follows the interface size */
   chatFontSize: number | null;
   /** fonts tried before the UI font in the chat's prose (code stays mono), as a CSS font-family list; "" keeps the UI font */
   chatFontFamily: string;
-  /** prompts per history page in the chat; older turns load a page at a time as the reader scrolls up */
-  historyPrompts: number;
+  /** a file's text size in px in the file viewer and reader (a Markdown preview's body text, the source scaled with it);
+   *  null follows the chat's size, and leaves the source at the interface's */
+  fileFontSize: number | null;
+  /** the chat's and the interface's sizes when fileFontSize was chosen: the source scales by fileFontSize over the chat's
+   *  and by the interface's then over now, so a step moves it with the preview and a later chat or interface size leaves
+   *  it be; null, or one recorded for another size (none chosen, an older tab's size), reads the sizes of now */
+  fileFontBase: FileFontBase | null;
   /** the interface's body size in px (--fs-md; every other --fs-* scales with it as --ui-scale); null follows the density.
    *  The chat follows it until it has a size of its own; the terminal keeps terminalFontSize */
   uiFontSize: number | null;
@@ -136,12 +202,15 @@ export interface Settings {
   autoSendQueued: boolean;
   /** true: a tab herdr still names by its number shows a few words of its first message (lib/tabLabels.ts); false keeps tabs as they are */
   autoTabNames: boolean;
-  /** a New tab with an agent… button in the chat's composer, in a mouse-driven window; off until chosen, so the
-   *  composer's row stays minimal: the tab menu opens the same dialog either way */
-  composerNewTabButton: boolean;
   /** the Artifacts chip in a Claude Code pane's composer, listing the pages its session published; off until chosen,
    *  so the composer's row stays minimal */
   composerArtifacts: boolean;
+  /** a Paste and send button in the chat's composer, sending this device's clipboard text as a message (#2493); off until
+   *  chosen, so the composer's row stays minimal */
+  composerPasteSend: boolean;
+  /** the Side conversations chip in an OMP pane's composer, listing what was asked and answered with `/btw`; off until
+   *  chosen, so the composer's row stays minimal */
+  composerBtw: boolean;
   /** on a touch screen, a chip above the message box offers the prompt the agent suggests next.
    * Not `showSuggestionChip`: that key was on by default until 0.4.9 and is still stored on phones */
   suggestionChip: boolean;
@@ -152,6 +221,9 @@ export interface Settings {
   /** a turn's work blocks start folded to their head line, the running one included, but the one that waits on the user (#2228);
    *  a block the reader opens or folds stays so for its message */
   foldWork: boolean;
+  /** a compaction card names the token counts its record states, and a turn's failed requests read as one row their errors open from (#901);
+   *  off, each failed request is an error line, as before */
+  chatRequestDetails: boolean;
   /** request a screen wake lock while a pane is open in this visible tab */
   keepScreenOn: boolean;
   /** UI language; `system` follows the browser (src/lib/i18n.ts) */
@@ -184,17 +256,24 @@ export interface Settings {
   voiceInput: VoiceButton;
   /** the language dictation listens for; auto: the UI language's, or the browser's the UI lacks (src/lib/voice.ts dictationLocale) */
   voiceLanguage: DictationLanguage;
+  voiceEngine: VoiceEngineChoice;
   voicePolishChat: boolean;
   /** off by default: a terminal line is usually a command, kept as spoken */
   voicePolishTerminal: boolean;
   /** the file viewer wraps long lines instead of scrolling sideways */
   wrapCode: boolean;
-  /** the width of a Markdown preview: the chat's lane (--chat-w), centered, or the viewer's width */
-  markdownWidth: MarkdownWidth;
+  /** off by default: the file viewer offers Edit for a text file in the pane's folder, saved after a confirm (#771) */
+  editTextFiles: boolean;
+  /** a Markdown preview lists its headings beside the text (a drawer on a narrow viewer), marking the one being read (#636). Off by default. */
+  markdownOutline: boolean;
   /** a repository diff as one column of old and new lines, or the two side by side (a phone shows one column either way) */
   diffStyle: DiffStyle;
   /** where a file opens from the chat, terminal or Files: the popup, or beside the pane on a wide window (lib/filePresentation.ts) */
   fileOpen: FilePresentation;
+  /** off by default: on a wide window, Files opens as a panel beside the pane (right) instead of a dialog */
+  filesPanel: boolean;
+  /** off by default: Files shows a Documents tab, the Markdown files of the pane's folder newest first (components/MarkdownDocuments.tsx) */
+  filesDocuments: boolean;
   /** where a click on a web address opens it: a new tab, or the panel beside the pane (lib/webPanel.ts); Shift opens the other one */
   webLinks: WebLinkTarget;
   /** when a web address opens outside Ovis, replace one tab instead of opening another tab each time */
@@ -203,23 +282,31 @@ export interface Settings {
   claudeLaunchMode: ClaudeLaunchMode;
   /** the same for Codex: a sandbox and approval preset */
   codexLaunchMode: CodexLaunchMode;
+  /** the model (`--model`) a Claude Code started from those dialogs is filled in with; "" is its own (lib/agentLaunchMode.ts launchDefaults) */
+  claudeLaunchModel: string;
+  /** the same for its effort level (`--effort`) */
+  claudeLaunchEffort: (typeof CLAUDE_EFFORTS)[number] | "";
+  /** the same for Codex's model (`--model`) */
+  codexLaunchModel: string;
+  /** and Codex's effort (`-c model_reasoning_effort=`) */
+  codexLaunchEffort: (typeof CODEX_EFFORTS)[number] | "";
 }
 
-export const MARKDOWN_WIDTHS = ["readable", "full"] as const;
-export type MarkdownWidth = (typeof MARKDOWN_WIDTHS)[number];
 export const DIFF_STYLES = ["unified", "split"] as const;
 export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, autoTabNames, composerNewTabButton, composerArtifacts, terminalMirrorWrap, sidebarFilter, the
- * interface font, the chat's history page size and the folds its blocks start in are not collected: the telemetry schema
+ * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, the named agent groups, fileOpen, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, sidebarBackgroundWorkspaces, splitGrid, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, the agent groups, the
+ * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
-  "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
-  | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
-  | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
-  | "expandThinking" | "foldWork" | "autoTabNames">;
+  "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
+  | "quickReplies" | "agentLocks" | "lockedAgents" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "filesDocuments" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
+  | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
+  | "followHerdrFocus" | "sidebarPeek" | "sidebarBackgroundWorkspaces" | "splitGrid" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "expandThinking" | "foldWork" | "chatRequestDetails" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
+  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "markdownOutline" | "fileFontSize" | "fileFontBase" | "editTextFiles">;
 
 /** Compare structured custom settings by content against this app's built-in defaults. */
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -267,7 +354,8 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
     voicePolishChat: settings.voicePolishChat,
     voicePolishTerminal: settings.voicePolishTerminal,
     wrapCode: settings.wrapCode,
-    markdownWidth: settings.markdownWidth,
+    // Settings no longer offers the width (the preview is the chat's readable lane); the schema keeps the field
+    markdownWidth: "readable",
     diffStyle: settings.diffStyle,
     terminalFontCustom: settings.terminalFontFamily !== DEFAULT_SETTINGS.terminalFontFamily,
     chatFontCustom: settings.chatFontFamily !== DEFAULT_SETTINGS.chatFontFamily,
@@ -290,32 +378,62 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  */
 export const SETTING_SCOPE = {
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
-  agentMarks: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
+  agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
-  terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", shortcutOverrides: "device", density: "device",
+  terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", herdrPrefixKeys: "device", density: "device",
   terminalFontSize: "device",
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
+  // a phone has less memory for decoded pictures than a desk
+  terminalImages: "device",
+  // a phone's picker, not a desk's drop
+  terminalAttachButton: "device",
+  // a phone's soft keyboard is no desk's
+  terminalKeyboardOnRequest: "device",
+  // a phone's key row, as the keyboard above
+  terminalFoldKeyBar: "device",
   // a phone folds a wide mirror, a desk's window may draw it whole
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
-  chatFontSize: "device", chatFontFamily: "device", historyPrompts: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
+  // a wide desk splits its pane area into rows and columns where a laptop keeps two halves
+  splitGrid: "device",
+  // a desk's mouse, where Codex's copy reaches or not
+  codexDrag: "device",
+  // a desk's mouse, which a phone has not
+  sidebarPeek: "device",
+  // a phone's short list may set the workers apart while a desk keeps herdr's order, as with the filter
+  sidebarBackgroundWorkspaces: "device",
+  chatFontSize: "device", chatFontFamily: "device", fileFontSize: "device", fileFontBase: "device", uiFontSize: "device", uiFontFamily: "device", chatWidth: "device", enterSends: "device",
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
+  // how much detail the chat shows is this screen's choice, as its folds
+  chatRequestDetails: "device",
   // a desk's composer button: a phone never shows it
-  composerNewTabButton: "device",
   // the composer's row is this screen's: a phone may keep it bare while a desk shows the chip
   composerArtifacts: "device",
+  composerPasteSend: "device",
+  composerBtw: "device",
   // a desk with a keyboard may do without the field a phone keeps, as with the PCs it shows (lib/hiddenMachines.ts)
   sidebarFilter: "device",
+  // a phone's narrow rows may do without the ring a desk shows, as with the filter
+  sidebarContext: "device",
+  // a phone's short list may fold the helpers a desk lists, as with the ring
+  foldHelpers: "device",
+  // a phone's short drawer may keep the flat list a desk trades for the tree, as with the ring
+  sidebarAgentTree: "device",
+  // a phone's narrow sidebar may do without the line a desk keeps, as with the filter
+  pcLoad: "device",
+  // a phone may group its agents by state while a desk keeps herdr's order, as with the filter
+  agentGroups: "device", agentGroupSort: "device",
   keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertInApp: "device", alertSound: "device",
   paletteLight: "device", paletteDark: "device", statusIndicators: "device",
-  voiceInput: "device", voiceLanguage: "device", voicePolishChat: "device", voicePolishTerminal: "device",
+  voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device",
   // Viewer layout follows this screen, as chatWidth does.
-  wrapCode: "device", markdownWidth: "device", diffStyle: "device", fileOpen: "device", webLinks: "device", reuseExternalLinkTab: "device",
+  wrapCode: "device", editTextFiles: "device", markdownOutline: "device", diffStyle: "device", fileOpen: "device", filesPanel: "device", filesDocuments: "device", webLinks: "device", reuseExternalLinkTab: "device",
   // a new agent starts the same way whichever device opened it
   claudeLaunchMode: "shared", codexLaunchMode: "shared",
+  claudeLaunchModel: "shared", claudeLaunchEffort: "shared", codexLaunchModel: "shared", codexLaunchEffort: "shared",
 } as const satisfies Record<keyof Settings, "shared" | "device">;
 
 /** The shared part of `settings`, by the names shared/preferences.ts lists. */
@@ -327,13 +445,26 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalInputMode: "auto",
   keyBarExtras: ["alt"],
   keyBarItems: DEFAULT_KEY_BAR_ITEMS,
+  keyBarExpanded: false,
   shortcutOverrides: {},
+  herdrPrefixKeys: false,
   theme: "dark",
   density: "comfortable",
   sidebarRows: "one",
   sidebarFilter: true,
+  sidebarContext: false,
+  foldHelpers: false,
+  sidebarAgentTree: false,
+  pcLoad: null,
   agentOrder: "workspace",
+  agentGroups: false,
+  agentGroupSort: "wait",
   agentMarks: "color",
+  agentLocks: false,
+  lockedAgents: [],
+  agentNamedGroups: false,
+  agentGroupNames: [],
+  agentGroupOf: {},
   statusIndicators: "classic",
   palette: DEFAULT_THEME,
   paletteLight: DEFAULT_THEME,
@@ -344,11 +475,20 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
   paneClipboard: true,
+  terminalImages: false,
+  terminalAttachButton: false,
+  terminalKeyboardOnRequest: false,
+  terminalFoldKeyBar: false,
   terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
+  splitGrid: false,
+  codexDrag: false,
+  sidebarPeek: false,
+  sidebarBackgroundWorkspaces: false,
   chatFontSize: null,
-  historyPrompts: 10,
+  fileFontSize: null,
+  fileFontBase: null,
   chatFontFamily: "",
   uiFontSize: null,
   uiFontFamily: "",
@@ -356,12 +496,14 @@ export const DEFAULT_SETTINGS: Settings = {
   enterSends: null,
   autoSendQueued: true,
   autoTabNames: true,
-  composerNewTabButton: false,
   composerArtifacts: false,
+  composerPasteSend: false,
+  composerBtw: false,
   suggestionChip: false,
   showThinking: false,
   expandThinking: false,
   foldWork: false,
+  chatRequestDetails: false,
   keepScreenOn: false,
   language: "system",
   alertsOn: true,
@@ -379,21 +521,35 @@ export const DEFAULT_SETTINGS: Settings = {
   usageHidden: [],
   voiceInput: "auto",
   voiceLanguage: "auto",
+  voiceEngine: "auto",
   voicePolishChat: true,
   voicePolishTerminal: false,
   wrapCode: false,
-  markdownWidth: "readable",
+  editTextFiles: false,
+  markdownOutline: false,
   diffStyle: "unified",
   fileOpen: "popup",
+  filesPanel: false,
+  filesDocuments: false,
   webLinks: "tab",
   reuseExternalLinkTab: false,
   claudeLaunchMode: "default",
   codexLaunchMode: "default",
+  claudeLaunchModel: "",
+  claudeLaunchEffort: "",
+  codexLaunchModel: "",
+  codexLaunchEffort: "",
 };
 
 export const QUICK_REPLIES_MAX = 12;
 /** accounts the usage order and hiding remember; more are a hand-edited record */
 export const USAGE_KEYS_MAX = 64;
+
+/** A new agent's model from Settings > Agents: one name its `--model` takes, trimmed, or "" for its own. */
+function launchModel(kind: "claude" | "codex", value: unknown): string {
+  const model = typeof value === "string" ? value.trim() : "";
+  return launchChoiceFault(kind, { model }) === null ? model : "";
+}
 
 /** A list of usage keys: strings only, each once, bounded. */
 function usageKeys(value: unknown): string[] {
@@ -432,8 +588,8 @@ export const TERMINAL_WHEEL_SPEED_MIN = 1;
 export const TERMINAL_WHEEL_SPEED_MAX = 10;
 
 export const CHAT_FONT_MIN = 11;
-/** The chat's history page sizes, in prompts (one user turn and its answer each). */
-export const HISTORY_PROMPTS = [10, 25, 50] as const;
+/** The chat's history page size, in prompts (one user turn and its answer each): older turns load a page at a time. */
+export const HISTORY_PROMPTS = 10;
 
 export const CHAT_FONT_MAX = 24;
 /** each density's body size, --fs-md in src/styles.css: the interface's size when none is chosen, and through it the chat's */
@@ -451,6 +607,11 @@ export function uiFontSize(settings: Settings): number {
 /** The chat's body text size in px: the chosen one, or the interface's. */
 export function chatFontSize(settings: Settings): number {
   return settings.chatFontSize ?? uiFontSize(settings);
+}
+
+/** A file's text size in px in the file viewer: the chosen one, or the chat's. */
+export function fileFontSize(settings: Settings): number {
+  return settings.fileFontSize ?? chatFontSize(settings);
 }
 
 /** The Default chat lane never runs narrower than this, in px: --content-w, the Narrow step. */
@@ -510,13 +671,28 @@ export function sanitizeSettings(raw: unknown): Settings {
     terminalInputMode: record["terminalInputMode"] === "line" || record["terminalInputMode"] === "direct" ? record["terminalInputMode"] : "auto",
     keyBarExtras,
     keyBarItems: sanitizeKeyBarItems(record["keyBarItems"], keyBarFallback),
+    keyBarExpanded: typeof record["keyBarExpanded"] === "boolean" ? record["keyBarExpanded"] : DEFAULT_SETTINGS.keyBarExpanded,
     shortcutOverrides: sanitizeShortcutOverrides(record["shortcutOverrides"]),
+    herdrPrefixKeys: typeof record["herdrPrefixKeys"] === "boolean" ? record["herdrPrefixKeys"] : DEFAULT_SETTINGS.herdrPrefixKeys,
     theme,
     density: density === "compact" || density === "comfortable" ? density : DEFAULT_SETTINGS.density,
     sidebarRows: record["sidebarRows"] === "one" || record["sidebarRows"] === "two" ? record["sidebarRows"] : DEFAULT_SETTINGS.sidebarRows,
     sidebarFilter: typeof record["sidebarFilter"] === "boolean" ? record["sidebarFilter"] : DEFAULT_SETTINGS.sidebarFilter,
+    sidebarContext: typeof record["sidebarContext"] === "boolean" ? record["sidebarContext"] : DEFAULT_SETTINGS.sidebarContext,
+    foldHelpers: typeof record["foldHelpers"] === "boolean" ? record["foldHelpers"] : DEFAULT_SETTINGS.foldHelpers,
+    sidebarAgentTree: typeof record["sidebarAgentTree"] === "boolean" ? record["sidebarAgentTree"] : DEFAULT_SETTINGS.sidebarAgentTree,
+    pcLoad: typeof record["pcLoad"] === "boolean" ? record["pcLoad"] : null,
     agentOrder: record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
+    agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,
+    agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,
+    agentLocks: typeof record["agentLocks"] === "boolean" ? record["agentLocks"] : DEFAULT_SETTINGS.agentLocks,
+    lockedAgents: Array.isArray(record["lockedAgents"])
+      ? [...new Set(record["lockedAgents"].filter((key): key is string => typeof key === "string" && key.length > 0))].slice(0, MAX_PINS)
+      : [...DEFAULT_SETTINGS.lockedAgents],
+    agentNamedGroups: typeof record["agentNamedGroups"] === "boolean" ? record["agentNamedGroups"] : DEFAULT_SETTINGS.agentNamedGroups,
+    agentGroupNames: sanitizeGroupNames(record["agentGroupNames"]),
+    agentGroupOf: sanitizeGroupOf(record["agentGroupOf"]),
     statusIndicators: record["statusIndicators"] === "classic" || record["statusIndicators"] === "dots" || record["statusIndicators"] === "symbols" ? record["statusIndicators"] : DEFAULT_SETTINGS.statusIndicators,
     darkTheme,
     lightTheme,
@@ -530,27 +706,38 @@ export function sanitizeSettings(raw: unknown): Settings {
     chatFontSize: typeof chatFont === "number" && Number.isFinite(chatFont)
       ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(chatFont)))
       : DEFAULT_SETTINGS.chatFontSize,
-    historyPrompts: HISTORY_PROMPTS.includes(record["historyPrompts"] as (typeof HISTORY_PROMPTS)[number])
-      ? (record["historyPrompts"] as number)
-      : DEFAULT_SETTINGS.historyPrompts,
+    fileFontSize: typeof record["fileFontSize"] === "number" && Number.isFinite(record["fileFontSize"])
+      ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(record["fileFontSize"])))
+      : DEFAULT_SETTINGS.fileFontSize,
+    fileFontBase: sanitizeFileFontBase(record["fileFontBase"]),
     terminalFontFamily: sanitizeFontFamily(record["terminalFontFamily"]),
     uiFontSize: sanitizeUiFontSize(record["uiFontSize"]),
     uiFontFamily: sanitizeFontFamily(record["uiFontFamily"]),
     paneClipboard: typeof record["paneClipboard"] === "boolean" ? record["paneClipboard"] : DEFAULT_SETTINGS.paneClipboard,
+    terminalImages: record["terminalImages"] === true,
+    terminalAttachButton: record["terminalAttachButton"] === true,
+    terminalKeyboardOnRequest: record["terminalKeyboardOnRequest"] === true,
+    terminalFoldKeyBar: record["terminalFoldKeyBar"] === true,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
+    splitGrid: record["splitGrid"] === true,
+    codexDrag: record["codexDrag"] === true,
+    sidebarPeek: record["sidebarPeek"] === true,
+    sidebarBackgroundWorkspaces: record["sidebarBackgroundWorkspaces"] === true,
     chatFontFamily: sanitizeFontFamily(record["chatFontFamily"]),
     chatWidth: CHAT_WIDTHS.includes(record["chatWidth"] as ChatWidth) ? record["chatWidth"] as ChatWidth : DEFAULT_SETTINGS.chatWidth,
     enterSends: typeof record["enterSends"] === "boolean" ? record["enterSends"] : null,
     autoSendQueued: typeof record["autoSendQueued"] === "boolean" ? record["autoSendQueued"] : DEFAULT_SETTINGS.autoSendQueued,
     autoTabNames: typeof record["autoTabNames"] === "boolean" ? record["autoTabNames"] : DEFAULT_SETTINGS.autoTabNames,
-    composerNewTabButton: typeof record["composerNewTabButton"] === "boolean" ? record["composerNewTabButton"] : DEFAULT_SETTINGS.composerNewTabButton,
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
+    composerPasteSend: typeof record["composerPasteSend"] === "boolean" ? record["composerPasteSend"] : DEFAULT_SETTINGS.composerPasteSend,
+    composerBtw: typeof record["composerBtw"] === "boolean" ? record["composerBtw"] : DEFAULT_SETTINGS.composerBtw,
     suggestionChip: typeof record["suggestionChip"] === "boolean" ? record["suggestionChip"] : DEFAULT_SETTINGS.suggestionChip,
     showThinking: typeof record["showThinking"] === "boolean" ? record["showThinking"] : DEFAULT_SETTINGS.showThinking,
     expandThinking: typeof record["expandThinking"] === "boolean" ? record["expandThinking"] : DEFAULT_SETTINGS.expandThinking,
     foldWork: typeof record["foldWork"] === "boolean" ? record["foldWork"] : DEFAULT_SETTINGS.foldWork,
+    chatRequestDetails: typeof record["chatRequestDetails"] === "boolean" ? record["chatRequestDetails"] : DEFAULT_SETTINGS.chatRequestDetails,
     keepScreenOn: typeof record["keepScreenOn"] === "boolean" ? record["keepScreenOn"] : DEFAULT_SETTINGS.keepScreenOn,
     language: LANGUAGE_SETTINGS.includes(record["language"] as LanguageSetting) ? record["language"] as LanguageSetting : DEFAULT_SETTINGS.language,
     alertsOn: typeof record["alertsOn"] === "boolean" ? record["alertsOn"] : DEFAULT_SETTINGS.alertsOn,
@@ -571,16 +758,25 @@ export function sanitizeSettings(raw: unknown): Settings {
     usageHidden: usageKeys(record["usageHidden"]),
     voiceInput: voiceButton(record["voiceInput"]),
     voiceLanguage: DICTATION_LANGUAGES.includes(record["voiceLanguage"] as (typeof DICTATION_LANGUAGES)[number]) ? record["voiceLanguage"] as DictationLanguage : DEFAULT_SETTINGS.voiceLanguage,
+    voiceEngine: VOICE_ENGINES.includes(record["voiceEngine"] as VoiceEngineChoice) ? record["voiceEngine"] as VoiceEngineChoice : DEFAULT_SETTINGS.voiceEngine,
     voicePolishChat: typeof record["voicePolishChat"] === "boolean" ? record["voicePolishChat"] : DEFAULT_SETTINGS.voicePolishChat,
     voicePolishTerminal: typeof record["voicePolishTerminal"] === "boolean" ? record["voicePolishTerminal"] : DEFAULT_SETTINGS.voicePolishTerminal,
     wrapCode: typeof record["wrapCode"] === "boolean" ? record["wrapCode"] : DEFAULT_SETTINGS.wrapCode,
-    markdownWidth: MARKDOWN_WIDTHS.find((width) => width === record["markdownWidth"]) ?? DEFAULT_SETTINGS.markdownWidth,
+    editTextFiles: typeof record["editTextFiles"] === "boolean" ? record["editTextFiles"] : DEFAULT_SETTINGS.editTextFiles,
+    markdownOutline: record["markdownOutline"] === true,
     diffStyle: DIFF_STYLES.find((style) => style === record["diffStyle"]) ?? DEFAULT_SETTINGS.diffStyle,
     fileOpen: FILE_OPEN_TARGETS.find((target) => target === record["fileOpen"]) ?? DEFAULT_SETTINGS.fileOpen,
+    filesPanel: typeof record["filesPanel"] === "boolean" ? record["filesPanel"] : DEFAULT_SETTINGS.filesPanel,
+    filesDocuments: typeof record["filesDocuments"] === "boolean" ? record["filesDocuments"] : DEFAULT_SETTINGS.filesDocuments,
     webLinks: WEB_LINK_TARGETS.find((target) => target === record["webLinks"]) ?? DEFAULT_SETTINGS.webLinks,
     reuseExternalLinkTab: typeof record["reuseExternalLinkTab"] === "boolean" ? record["reuseExternalLinkTab"] : DEFAULT_SETTINGS.reuseExternalLinkTab,
     claudeLaunchMode: CLAUDE_LAUNCH_MODES.find((mode) => mode === record["claudeLaunchMode"]) ?? DEFAULT_SETTINGS.claudeLaunchMode,
     codexLaunchMode: CODEX_LAUNCH_MODES.find((mode) => mode === record["codexLaunchMode"]) ?? DEFAULT_SETTINGS.codexLaunchMode,
+    // only a name the agent's launch takes: anything else would start it on a flag nobody chose
+    claudeLaunchModel: launchModel("claude", record["claudeLaunchModel"]),
+    claudeLaunchEffort: CLAUDE_EFFORTS.find((level) => level === record["claudeLaunchEffort"]) ?? DEFAULT_SETTINGS.claudeLaunchEffort,
+    codexLaunchModel: launchModel("codex", record["codexLaunchModel"]),
+    codexLaunchEffort: CODEX_EFFORTS.find((level) => level === record["codexLaunchEffort"]) ?? DEFAULT_SETTINGS.codexLaunchEffort,
   };
 }
 
@@ -626,15 +822,84 @@ function readSidebarFilter(): boolean {
   }
 }
 
-/** Settings → Chat → History page size, kept in a key of its own for the same reason: an old tab's save drops a field it does not know. */
-export const HISTORY_PROMPTS_STORAGE_KEY = "ovis:history-prompts";
+/** Settings → Remote PCs → PC load in the sidebar, kept in a key of its own for the same reason; null until chosen. */
+export const PC_LOAD_STORAGE_KEY = "ovis:pc-load";
 
-function readHistoryPrompts(): number {
+function readPcLoad(): boolean | null {
   try {
-    const raw = window.localStorage.getItem(HISTORY_PROMPTS_STORAGE_KEY);
-    return sanitizeSettings({ historyPrompts: raw === null ? null : JSON.parse(raw) }).historyPrompts;
+    const raw = window.localStorage.getItem(PC_LOAD_STORAGE_KEY);
+    const value: unknown = raw === null ? null : JSON.parse(raw);
+    return typeof value === "boolean" ? value : null;
   } catch {
-    return DEFAULT_SETTINGS.historyPrompts;
+    return null;
+  }
+}
+
+/** Settings → Appearance → Group agents by state and Within a state, kept in keys of their own for the same reason: an old tab's save drops a field it does not know. */
+export const AGENT_GROUPS_STORAGE_KEY = "ovis:agent-groups";
+export const AGENT_GROUP_SORT_STORAGE_KEY = "ovis:agent-group-sort";
+
+function readAgentGroups(): Pick<Settings, "agentGroups" | "agentGroupSort"> {
+  const read = (key: string): unknown => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? null : JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+  const { agentGroups, agentGroupSort } = sanitizeSettings({ agentGroups: read(AGENT_GROUPS_STORAGE_KEY), agentGroupSort: read(AGENT_GROUP_SORT_STORAGE_KEY) });
+  return { agentGroups, agentGroupSort };
+}
+
+/** Settings → Voice input → Speech recognition, in a key of its own: an older tab's whole-record save would put it back on Auto. */
+export const VOICE_ENGINE_STORAGE_KEY = "ovis:voice-engine";
+
+function readVoiceEngine(): VoiceEngineChoice {
+  try {
+    const raw = window.localStorage.getItem(VOICE_ENGINE_STORAGE_KEY);
+    return sanitizeSettings({ voiceEngine: raw === null ? null : JSON.parse(raw) }).voiceEngine;
+  } catch {
+    return DEFAULT_SETTINGS.voiceEngine;
+  }
+}
+
+/** Settings → File text size, kept in a key of its own for the same reason. */
+export const FILE_FONT_SIZE_STORAGE_KEY = "ovis:file-font-size";
+
+/** fileFontBase, beside it for the same reason; it names the size it was recorded for, read only beside that size. */
+export const FILE_FONT_BASE_STORAGE_KEY = "ovis:file-font-base";
+
+function sanitizeFileFontBase(value: unknown): FileFontBase | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { size, chat, ui } = value as Record<string, unknown>;
+  const chatSize = (px: unknown): number | null => typeof px === "number" && Number.isFinite(px) ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(px))) : null;
+  const base = { size: chatSize(size), chat: chatSize(chat), ui: sanitizeUiFontSize(ui) };
+  return base.size === null || base.chat === null || base.ui === null ? null : { size: base.size, chat: base.chat, ui: base.ui };
+}
+
+function readFileFontBase(size: number | null): FileFontBase | null {
+  try {
+    const raw = window.localStorage.getItem(FILE_FONT_BASE_STORAGE_KEY);
+    const base = sanitizeFileFontBase(raw === null ? null : JSON.parse(raw));
+    return base !== null && base.size === size ? base : null;
+  } catch {
+    return DEFAULT_SETTINGS.fileFontBase;
+  }
+}
+
+/** The file text size and its base, the base only where it was recorded for that size. */
+function readFileFont(): Pick<Settings, "fileFontSize" | "fileFontBase"> {
+  const fileFontSize = readFileFontSize();
+  return { fileFontSize, fileFontBase: readFileFontBase(fileFontSize) };
+}
+
+function readFileFontSize(): number | null {
+  try {
+    const raw = window.localStorage.getItem(FILE_FONT_SIZE_STORAGE_KEY);
+    return sanitizeSettings({ fileFontSize: raw === null ? null : JSON.parse(raw) }).fileFontSize;
+  } catch {
+    return DEFAULT_SETTINGS.fileFontSize;
   }
 }
 
@@ -654,8 +919,34 @@ function readComposerArtifacts(): boolean {
 /** Settings > Chat > Expand thinking and Collapse work, each kept in a key of its own for the same reason: off until chosen. */
 export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
+/** Settings > Chat > Compaction and failed requests, in a key of its own for the same reason: off until chosen. */
+export const CHAT_REQUEST_DETAILS_STORAGE_KEY = "ovis:chat-request-details";
+/** Settings > Terminal > Pictures in the terminal, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
+/** Settings > Terminal > Attach files button, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_ATTACH_BUTTON_STORAGE_KEY = "ovis:terminal-attach-button";
+/** Settings > Terminal > Keyboard only from the key bar, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY = "ovis:terminal-keyboard-on-request";
+/** Settings > Terminal > Fold the key bar, in a key of its own for the same reason: off until chosen. */
+export const TERMINAL_FOLD_KEY_BAR_STORAGE_KEY = "ovis:terminal-fold-key-bar";
+/** Settings > File viewer > Markdown outline, in a key of its own for the same reason: off until chosen. */
+export const MARKDOWN_OUTLINE_STORAGE_KEY = "ovis:markdown-outline";
 /** Settings > Chat > Reuse tab for external links, kept in a key of its own for the same reason: off until chosen. */
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
+/** Settings > Chat > Files beside the pane, kept in a key of its own for the same reason: off until chosen. */
+export const FILES_PANEL_STORAGE_KEY = "ovis:files-panel";
+/** Settings > Chat > Documents in Files, kept in a key of its own for the same reason: off until chosen. */
+export const FILES_DOCUMENTS_STORAGE_KEY = "ovis:files-documents";
+/** Settings > Chat > Composer > Paste and send button, kept in a key of its own for the same reason: off until chosen. */
+export const COMPOSER_PASTE_SEND_STORAGE_KEY = "ovis:composer-paste-send";
+/** Settings > Chat > Composer > Side conversations chip, kept in a key of its own for the same reason: off until chosen. */
+export const COMPOSER_BTW_STORAGE_KEY = "ovis:composer-btw";
+/** Settings > Appearance > Context left on agent rows, kept in a key of its own for the same reason: off until chosen. */
+export const SIDEBAR_CONTEXT_STORAGE_KEY = "ovis:sidebar-context";
+/** Settings > Appearance > Fold helpers under their agent, kept in a key of its own for the same reason: off until chosen. */
+export const FOLD_HELPERS_STORAGE_KEY = "ovis:fold-helpers";
+/** Settings > Appearance > Agents under workspaces, kept in a key of its own for the same reason: off until chosen. */
+export const SIDEBAR_AGENT_TREE_STORAGE_KEY = "ovis:sidebar-agent-tree";
 
 function readChatFold(key: string, fallback: boolean): boolean {
   try {
@@ -693,6 +984,11 @@ function coarsePointer(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 }
 
+/** Whether the sidebar shows each open PC's load: as chosen on this device, else while two or more PCs are connected. */
+export function pcLoadOn(settings: Pick<Settings, "pcLoad">, machines: readonly { state: string }[]): boolean {
+  return settings.pcLoad ?? machines.filter((machine) => machine.state === "connected").length >= 2;
+}
+
 /** Whether Enter (Return) sends from the composer: the device's choice, else not on a touch screen. */
 export function enterSendsOn(settings: Pick<Settings, "enterSends">, touch: boolean): boolean {
   return settings.enterSends ?? !touch;
@@ -703,9 +999,22 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), historyPrompts: readHistoryPrompts(), composerArtifacts: readComposerArtifacts(),
+  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), pcLoad: readPcLoad(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), ...readFileFont(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
-    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab) };
+    chatRequestDetails: readChatFold(CHAT_REQUEST_DETAILS_STORAGE_KEY, DEFAULT_SETTINGS.chatRequestDetails),
+    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
+    filesPanel: readChatFold(FILES_PANEL_STORAGE_KEY, DEFAULT_SETTINGS.filesPanel),
+    filesDocuments: readChatFold(FILES_DOCUMENTS_STORAGE_KEY, DEFAULT_SETTINGS.filesDocuments),
+    composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
+    composerBtw: readChatFold(COMPOSER_BTW_STORAGE_KEY, DEFAULT_SETTINGS.composerBtw),
+    sidebarContext: readChatFold(SIDEBAR_CONTEXT_STORAGE_KEY, DEFAULT_SETTINGS.sidebarContext),
+    foldHelpers: readChatFold(FOLD_HELPERS_STORAGE_KEY, DEFAULT_SETTINGS.foldHelpers),
+    sidebarAgentTree: readChatFold(SIDEBAR_AGENT_TREE_STORAGE_KEY, DEFAULT_SETTINGS.sidebarAgentTree),
+    terminalImages: readChatFold(TERMINAL_IMAGES_STORAGE_KEY, DEFAULT_SETTINGS.terminalImages),
+    terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
+    terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
+    terminalFoldKeyBar: readChatFold(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
+    markdownOutline: readChatFold(MARKDOWN_OUTLINE_STORAGE_KEY, DEFAULT_SETTINGS.markdownOutline) };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -716,15 +1025,34 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, historyPrompts, composerArtifacts, expandThinking, foldWork, reuseExternalLinkTab, ...main } = mirrored;
+    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, chatRequestDetails, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, filesDocuments, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, markdownOutline, ...main } = mirrored;
+    window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
     window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
     window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
     window.localStorage.setItem(SIDEBAR_FILTER_STORAGE_KEY, JSON.stringify(sidebarFilter));
-    window.localStorage.setItem(HISTORY_PROMPTS_STORAGE_KEY, JSON.stringify(historyPrompts));
+    window.localStorage.setItem(PC_LOAD_STORAGE_KEY, JSON.stringify(pcLoad));
+    window.localStorage.setItem(AGENT_GROUPS_STORAGE_KEY, JSON.stringify(agentGroups));
+    window.localStorage.setItem(AGENT_GROUP_SORT_STORAGE_KEY, JSON.stringify(agentGroupSort));
+    window.localStorage.setItem(FILE_FONT_SIZE_STORAGE_KEY, JSON.stringify(fileFontSize));
+    // only beside the size it was recorded for: a Reset over another tab's base must not leave that base behind
+    window.localStorage.setItem(FILE_FONT_BASE_STORAGE_KEY, JSON.stringify(fileFontBase?.size === fileFontSize ? fileFontBase : null));
     window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
     window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
     window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
+    window.localStorage.setItem(CHAT_REQUEST_DETAILS_STORAGE_KEY, JSON.stringify(chatRequestDetails));
     window.localStorage.setItem(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, JSON.stringify(reuseExternalLinkTab));
+    window.localStorage.setItem(FILES_PANEL_STORAGE_KEY, JSON.stringify(filesPanel));
+    window.localStorage.setItem(FILES_DOCUMENTS_STORAGE_KEY, JSON.stringify(filesDocuments));
+    window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
+    window.localStorage.setItem(COMPOSER_BTW_STORAGE_KEY, JSON.stringify(composerBtw));
+    window.localStorage.setItem(SIDEBAR_CONTEXT_STORAGE_KEY, JSON.stringify(sidebarContext));
+    window.localStorage.setItem(FOLD_HELPERS_STORAGE_KEY, JSON.stringify(foldHelpers));
+    window.localStorage.setItem(SIDEBAR_AGENT_TREE_STORAGE_KEY, JSON.stringify(sidebarAgentTree));
+    window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
+    window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
+    window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
+    window.localStorage.setItem(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, JSON.stringify(terminalFoldKeyBar));
+    window.localStorage.setItem(MARKDOWN_OUTLINE_STORAGE_KEY, JSON.stringify(markdownOutline));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
@@ -763,6 +1091,18 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   // ChatView.css scales its type tokens by this (the chat's and a Markdown preview's): the chat's size over the
   // interface's, so a chosen chat size is drawn as itself whatever the interface size, and an unchosen one follows it
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));
+  // ChatView.css gives a file viewer's preview this scale in place of the chat's, the same until a file size is chosen;
+  // FileViewer.css scales the source by the second one, which only a chosen size writes (the interface's size till then):
+  // the chosen size over the chat's when it was chosen (where the stepper started), so choosing that size changes nothing,
+  // a step moves the source the way it moves the preview, and a later chat size leaves it be; times the interface's size
+  // then over now, as the source is --fs-xs, which moves with the interface's
+  root.style.setProperty("--file-scale", String(fontScale(fileFontSize(settings), uiPx)));
+  if (settings.fileFontSize === null) root.style.removeProperty("--file-source-scale");
+  else {
+    const base = settings.fileFontBase?.size === settings.fileFontSize ? settings.fileFontBase : null;
+    const scale = base === null ? fontScale(settings.fileFontSize, chatFontSize(settings)) : fontScale(settings.fileFontSize, base.chat) * fontScale(base.ui, uiPx);
+    root.style.setProperty("--file-source-scale", String(scale));
+  }
   // Settings → Appearance → Interface font, written as the token itself: the chosen list in front of the built-in stack
   const uiFont = uiFontStack(settings.uiFontFamily, language);
   if (uiFont === null) root.style.removeProperty("--font-ui");
@@ -794,10 +1134,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== null)) return;
-      const { shortcutOverrides, enterSends } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides, enterSends };
-      setSettings((current) => ({ ...current, shortcutOverrides, enterSends }));
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== null)) return;
+      // the recognition another tab chose: audio must not keep going where this tab last sent it
+      const { shortcutOverrides, enterSends, voiceEngine } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine };
+      setSettings((current) => ({ ...current, shortcutOverrides, enterSends, voiceEngine }));
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

@@ -21,6 +21,8 @@ export interface AppActions {
   selectAdjacentPane: (direction: -1 | 1) => void;
   /** the previous/next tab of the selected pane's workspace in tab strip order; wraps around */
   selectAdjacentTab: (direction: -1 | 1) => void;
+  /** the selected pane's workspace's tab at `number` (1-based) in tab strip order, as herdr's prefix+1..9; nothing past the last */
+  selectTabNumber: (number: number) => void;
   /** the previous/next workspace of the selected PC in sidebar order (pins, worktree groups); wraps around */
   selectAdjacentWorkspace: (direction: -1 | 1) => void;
   setView: (view: PaneView) => void;
@@ -76,6 +78,10 @@ export interface AppActions {
   refresh: () => void;
   /** null without a pane: the files of its folder, each opened in the file viewer */
   openFiles: (() => void) | null;
+  /** a page this PC serves (lib/webPanel.ts localPageAddress) in the web panel; null unless Web links open in the app */
+  openLocalPage: ((url: string) => void) | null;
+  /** Search conversation over the selected pane's chat; null where it shows no chat, or its PC's bridge does not search */
+  searchConversation: (() => void) | null;
   /**
    * herdr's split beside the selected pane (its prefix+v and prefix+-), null without a pane. The
    * selection stays on this pane, as herdr's --no-focus keeps its focus, unless `focus` asks for
@@ -87,4 +93,9 @@ export interface AppActions {
    * lib/layoutMap.ts): its tab shows it alone, or every pane again; null without a pane
    */
   zoomPane: ((mode: ZoomMode) => void) | null;
+  /**
+   * The Zoom pane shortcut: zooms the selected pane, or unzooms it where its tab shows it alone;
+   * nothing for a pane alone in its tab. null where zoomPane is
+   */
+  toggleZoom: (() => void) | null;
 }

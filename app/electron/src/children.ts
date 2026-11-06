@@ -5,7 +5,7 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
@@ -66,6 +66,8 @@ export function serverEnv(base: Env, options: { hc: string; stateDir: string; po
     OVIS_STATE_DIR: options.stateDir,
     HOST: "127.0.0.1",
     PORT: String(options.port),
+    // the app updates itself and this server with it: Settings says so instead of the plain server's way (shared/update.ts)
+    OVIS_DESKTOP_APP: "1",
   };
   const dropped = new Set(["HERDR_PLUGIN_ROOT", "HERDR_SOCKET", "OVIS_MANAGED", "OVIS_BOOT_ID", "OVIS_TOKEN"]);
   // the server would take a dropped setting back from its name before the rename (server/legacy-env.ts)
@@ -76,7 +78,8 @@ export function serverEnv(base: Env, options: { hc: string; stateDir: string; po
 export function openLog(path: string): WriteStream {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) renameSync(path, `${path}.1`);
-  return createWriteStream(path, { flags: "a" });
+  // opened now, not on a later tick: the file exists once this returns, and a folder removed meanwhile cannot fail the stream
+  return createWriteStream(path, { fd: openSync(path, "a") });
 }
 
 export function tail(text: string, lines = 20): string {

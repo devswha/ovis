@@ -1,13 +1,17 @@
 import { existsSync, rmSync } from "node:fs";
+import { basename } from "node:path";
 import { createConnection } from "node:net";
 import type { Socket } from "bun";
 import { AGENT_LABELS } from "../agents-routes.ts";
 import { LINE_BYTES, makeLineReader } from "../herdr/client.ts";
-import { SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
+import { cmdQuote, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
+import { descendantProcesses, type ProcessRow, windowsProcessTable } from "../windows-processes.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, leaves, neighbour, OVIS_LAYOUT_DOC, type OvisLayout, type PaneDirection, resizeLeaf, setRatio, splitLeaf, swapLeaves, type TabLayout } from "./layout-doc.ts";
-import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, keptLayout, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { agentInfoOf, agentOfStatus, agentStatusOf, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.generated.ts";
+import type { WorktreeInfo } from "../herdr/client.ts";
 
 /**
  * herdr's socket API, answered from herdr-core. The server talks to herdr through one client
@@ -30,7 +34,8 @@ import type { AgentStatus, SessionSnapshot } from "../../shared/herdr-api.genera
  * Ovis keeps names and a pane's workspace and tab in terminal labels, and the order of workspaces
  * and tabs, each tab's splits and its zoom in a document of its own, `ovis-layout`
  * (layout-doc.ts; `ping` says which in `layout`). Where the app arranges them, they are the app's.
- * Everything else (focus, worktrees, plugins) is refused as `unsupported`.
+ * hc has no worktrees: `worktree.*` runs git itself and opens a checkout as a workspace of its own
+ * (worktrees.ts). Everything else (focus, plugins) is refused as `unsupported`.
  * The live terminal itself is `hc attach`, which the server
  * runs in place of `herdr terminal attach` (server/core/terminal-process.ts).
  *
@@ -93,7 +98,25 @@ export interface HerdrCoreAdapter {
  */
 export type SeenObserver = (address: string, turn: number, labels: Record<string, string>) => void;
 
-export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string, observeSeen?: SeenObserver): Promise<HerdrCoreAdapter> {
+/**
+ * `otherMachine`: the terminals are another machine's, reached through this PC's core (machine-scope.ts):
+ * their processes and folders are not this PC's, so no process facts are told and no checkout opened,
+ * and a Windows PC, which reads what runs in a pane off its own processes, starts no agent there.
+ */
+export interface AdapterOptions {
+  otherMachine?: boolean;
+  /** the OpenCode sessions whose terminal title this is (opencode.ts `opencodeSessionsTitled`); unset, no OpenCode pane shows a session */
+  opencodeTitled?: (terminalTitle: string) => readonly string[];
+  /** the PC this server runs on; a test names another */
+  platform?: NodeJS.Platform;
+  /** this PC's process table, read afresh within `timeoutMs` each time; a test stands in for it */
+  processTable?: (timeoutMs: number) => Promise<ProcessRow[]>;
+}
+
+/** The sessions a terminal named that it keeps as candidates, the newest last. */
+const NAMED_SESSIONS = 32;
+
+export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string, observeSeen?: SeenObserver, options: AdapterOptions = {}): Promise<HerdrCoreAdapter> {
   if (existsSync(socketPath)) {
     const live = await new Promise<boolean>((resolve, reject) => {
       const probe = createConnection(socketPath);
@@ -113,8 +136,29 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
     if (!firstTurns.has(terminal.address)) firstTurns.set(terminal.address, terminal.turn ?? 0);
     return firstTurns.get(terminal.address)!;
   };
-  const forgetTurns = (live: ReadonlySet<string>) => { for (const address of firstTurns.keys()) if (!live.has(address)) firstTurns.delete(address); };
-  const answers = createAnswers(hc, firstTurn, forgetTurns);
+  // the OpenCode sessions each terminal named while they were pending (snapshot.ts `opencodeRecords`),
+  // in every snapshot and status event, so a turn that ended between two snapshots is still one
+  const sessions = new Map<string, string[]>();
+  const noteSession = (address: string, status: HcStatus | null | undefined, records: unknown): readonly string[] => {
+    if (agentOfStatus(status) !== "opencode") { sessions.delete(address); return []; }
+    const pending = opencodeRecords(records);
+    const named = [...(sessions.get(address) ?? []).filter((id) => !pending.includes(id)), ...pending].slice(-NAMED_SESSIONS);
+    sessions.set(address, named);
+    return named;
+  };
+  // a record names a busy tab, not the one on screen: the terminal title OpenCode sets says which,
+  // when no other session in OpenCode's store, reported here or not, has that title
+  const sessionOf: SessionOf = (terminal) => {
+    const named = noteSession(terminal.address, terminal.status, terminal.records);
+    const titled = named.length === 0 || !terminal.title || !options.opencodeTitled ? [] : options.opencodeTitled(terminal.title);
+    const session = titled.length === 1 && named.includes(titled[0]!) ? titled[0]! : null;
+    return session === null ? null : { agent: "opencode", source: "herdr:opencode", kind: "id", value: session };
+  };
+  const forgetTurns = (live: ReadonlySet<string>) => {
+    for (const address of firstTurns.keys()) if (!live.has(address)) firstTurns.delete(address);
+    for (const address of sessions.keys()) if (!live.has(address)) sessions.delete(address);
+  };
+  const answers = createAnswers(hc, firstTurn, forgetTurns, options, sessionOf);
   const listener = Bun.listen<ConnectionState>({
     unix: socketPath,
     socket: {
@@ -131,7 +175,7 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
             first = false;
             const request = parseRequest(line);
             if (!request) { send(socket, `${JSON.stringify({ id: "", error: { code: "bad_frame", message: "not a herdr request" } })}\n`, true); return; }
-            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, observeSeen); return; }
+            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, observeSeen, noteSession); return; }
             void answers(request).then((reply) => send(socket, `${JSON.stringify({ id: request.id, ...reply })}\n`, true));
           }, () => socket.end()),
         };
@@ -206,6 +250,56 @@ const SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
 /** The flags a plain interactive shell may be started with; anything else (`-c`) runs a program in it. */
 const SHELL_FLAGS = new Set(["-l", "--login", "-i"]);
 const plainShell = (argv: readonly string[]): boolean => SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => SHELL_FLAGS.has(arg));
+/** The switches that leave PowerShell an interactive shell. */
+const POWERSHELL_SWITCHES = new Set(["-nologo", "-noexit", "-noprofile", "-login"]);
+/** How the `-Command` of hc's own PowerShell begins (a live record, hc 0.1.17): its prompt hook, which keeps the terminal's cwd current. */
+const HC_PROMPT_HOOK = "$global:__hc_prompt = $function:prompt;";
+/** What Windows may start below a shell for a console, which is no program of the pane's. */
+const CONSOLE_HOSTS = new Set(["conhost", "openconsole"]);
+
+/** A Windows program's name as its path ends: Windows takes it in any case, with or without its `.exe`. */
+const windowsProgram = (program: string): string => (program.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
+
+/** A shell a start line is typed into, each quoted its own way: `powershell` is Windows PowerShell 5.1, `pwsh` PowerShell 7. */
+type StartShell = "posix" | "powershell" | "pwsh" | "cmd";
+
+/**
+ * The shell a terminal's program is, or null for one that runs a program: `claude`, `sh -c claude`,
+ * the app's `powershell.exe -NoExit -Command "& 'claude'"`. On Windows it is hc's own PowerShell
+ * (its `-Command` is only its prompt hook), another PowerShell or cmd.exe, and no POSIX one: Git
+ * Bash's MSYS turns an argument that looks like a path (`/review`) into a Windows path on its way
+ * to the agent, and the variable that stops it would stay set for every command the agent runs
+ * there; WSL's bash runs the agent where this PC's process table does not see it.
+ */
+function startShellOf(argv: readonly string[], platform: NodeJS.Platform): StartShell | null {
+  if (platform !== "win32") return plainShell(argv) ? "posix" : null;
+  const name = windowsProgram(argv[0] ?? "");
+  const args = argv.slice(1);
+  // cmd runs what follows a /c, /k or /r, even one run together with another switch (`/q/c`), and
+  // its /v reads `!` in an argument, which nothing here quotes for
+  if (name === "cmd") return args.every((arg) => !/\/[ckrv]/i.test(arg)) ? "cmd" : null;
+  if (name !== "powershell" && name !== "pwsh") return null;
+  const hooked = args.length >= 2 && /^-(?:command|c)$/i.test(args.at(-2)!) && args.at(-1)!.startsWith(HC_PROMPT_HOOK);
+  return (hooked ? args.slice(0, -2) : args).every((arg) => POWERSHELL_SWITCHES.has(arg.toLowerCase())) ? name : null;
+}
+
+/**
+ * The line that starts `command` with `args` in `shell`. Ctrl-U first in a POSIX shell: a line
+ * someone left half typed is cleared, not run with the command after it. PowerShell's default
+ * editing mode would type Ctrl-U into the line, and no key clears a line in each of its modes: a
+ * PowerShell or cmd line goes alone, in PowerShell as a call (`& 'claude' …`), as a bare quoted
+ * name is a string there, and in cmd with the name unquoted: a `.cmd` shim found on the PATH under
+ * a quoted name reads the current folder as its own (`%~dp0`, live-verified), and the name is only
+ * letters, digits and `-`. An argument the shell would not pass unchanged is refused.
+ */
+function startLine(shell: StartShell, command: string, args: readonly string[]): string {
+  if (shell === "posix") return `\u0015${shellCommandLine("posix", command, args)}\r`;
+  try {
+    return `${shell === "cmd" ? [command, ...args.map(cmdQuote)].join(" ") : shellCommandLine("powershell", command, powershellNativeArgs(shell, args))}\r`;
+  } catch (error) {
+    throw new AdapterError("invalid_params", error instanceof Error ? error.message : String(error));
+  }
+}
 
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
@@ -299,7 +393,12 @@ function herdrCode(error: HcError, missing: string): string {
   }
 }
 
-function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void): (request: Request) => Promise<Reply> {
+function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
+  const platform = options.platform ?? process.platform;
+  const processTable = options.processTable ?? windowsProcessTable;
+  /** A Windows pane's programs are read off this PC's process table, which says nothing of another machine's. */
+  const programsUnseen = platform === "win32" && options.otherMachine === true;
+
   const terminal = async (address: string, missing = "pane_not_found"): Promise<HcTerminal> => {
     const found = await hc.call("terminal.get", { terminal: address }).catch((error: unknown) => {
       throw error instanceof HcError ? new AdapterError(herdrCode(error, missing), error.message) : error;
@@ -317,7 +416,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       hc.hello(),
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
-    return { shown: buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value), own: ownsLayout(doc.value) };
+    return { shown: buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf), own: ownsLayout(doc.value) };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
   /** The snapshot, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
@@ -464,6 +563,26 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   };
 
   /**
+   * What runs in a pane's shell, each program by the parts of the words that name it (its name, then
+   * argv), or null when that cannot be read. hc names the program in front of the shell, but on
+   * Windows only ever the shell (live-verified, hc 0.1.17: a running claude.exe was the shell's
+   * child, and the shell was in front): there it is what is below the shell in this PC's process
+   * table, in lower case as Windows takes a name in any.
+   */
+  const running = async (record: HcTerminal, timeoutMs: number): Promise<string[][] | null> => {
+    if (platform !== "win32") {
+      const front = record.foreground;
+      return front && front.pid !== record.pid ? [[front.name, ...(front.argv ?? []).slice(0, 2)].flatMap((part) => part.split("/"))] : [];
+    }
+    if (!record.pid) return null;
+    const rows = await processTable(timeoutMs);
+    // a PC runs hundreds of processes: none at all is a table that could not be read
+    if (rows.length === 0) return null;
+    return descendantProcesses(rows, record.pid).filter((entry) => !CONSOLE_HOSTS.has(windowsProgram(entry.argv[0] ?? "")))
+      .map((entry) => entry.argv.slice(0, 2).flatMap((word) => word.toLowerCase().split(/[\\/]/)));
+  };
+
+  /**
    * A shell hc keeps (a lost program comes back as a shell), labeled `labels`, answered as herdr
    * answers a new one: the workspace, tab and pane it shows as in the snapshot right after.
    */
@@ -492,13 +611,92 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     if (failed) throw failed.reason;
   };
 
+  /** The repository a workspace works in: the checkout its facts name, or its first pane's folder. */
+  const inRepository = async (workspaceId: string): Promise<{ shown: SessionSnapshot; repository: Repository }> => {
+    // a checkout opens as a workspace Ovis places: refused where the Herdr app arranges the core, as ping says
+    const shown = await ownLayout();
+    const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+    if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+    const folder = workspace.worktree?.checkout_path ?? shown.panes.find((pane) => pane.workspace_id === workspaceId)?.cwd;
+    if (!folder) throw new AdapterError("not_git_worktree", `workspace ${workspaceId} has no folder`);
+    return { shown, repository: await repositoryOf(folder) };
+  };
+  /**
+   * Which workspace shows each checkout: the one its facts name, else the one whose first pane works
+   * in it. A folder below a checkout's own is that checkout's only when git says so: it may be a
+   * repository of its own nested in it.
+   */
+  const openWorkspaces = async (shown: SessionSnapshot, repository: Repository): Promise<Map<string, string>> => {
+    const open = new Map<string, string>();
+    for (const workspace of shown.workspaces) {
+      if (workspace.workspace_id === OTHER_WORKSPACE_ID) continue;
+      const facts = workspace.worktree;
+      const folder = facts ? (facts.repo_key === repository.repo_key ? facts.checkout_path : null) : shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
+      if (!folder) continue;
+      const real = realPath(folder);
+      const checkout = checkoutHolding(repository.checkouts, real);
+      if (!checkout || open.has(checkout)) continue;
+      if (checkout !== real) {
+        const top = await git(real, ["rev-parse", "--show-toplevel"]);
+        if (!top.ok || realPath(top.stdout.trim()) !== checkout) continue;
+      }
+      open.set(checkout, workspace.workspace_id);
+    }
+    return open;
+  };
+  /** create and open one at a time: two asking for the same checkout get one workspace */
+  let opening: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = opening.then(run, run);
+    opening = next.catch(() => undefined);
+    return next;
+  };
+  const infoOf = (repository: Repository, checkout: Checkout, open: ReadonlyMap<string, string>): WorktreeInfo => ({
+    ...checkout,
+    label: checkout.branch ? worktreeFolder(checkout.branch) : basename(checkout.path),
+    is_linked_worktree: checkout.path !== repository.repo_root,
+    open_workspace_id: open.get(checkout.path) ?? null,
+  });
+  /**
+   * Opens a checkout as a workspace of its own, a shell in its folder carrying its facts. The
+   * repository's own workspace gets its facts too, so the new one is drawn under it.
+   */
+  const openCheckout = async (shown: SessionSnapshot, repository: Repository, checkout: string, name: string) => {
+    const head = (await openWorkspaces(shown, repository)).get(repository.repo_root);
+    // the repository's own checkout keeps its git folder in the common one
+    if (head && !shown.workspaces.find((workspace) => workspace.workspace_id === head)?.worktree) {
+      await label(shown.panes.filter((pane) => pane.workspace_id === head).map((pane) => pane.pane_id), { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, repository.repo_root), repository.repo_key) });
+    }
+    const own = checkout === repository.repo_root ? repository.repo_key : (await repositoryOf(checkout)).git_dir;
+    return startShell({ cwd: checkout }, {
+      [SPACE_LABEL]: `ovis-${crypto.randomUUID()}`,
+      [TAB_LABEL]: `ovis-${crypto.randomUUID()}`,
+      [WORKSPACE_NAME_LABEL]: name,
+      [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, checkout), own),
+    });
+  };
+  /** The worktree label of a workspace's terminals as written, for a terminal joining it; none for a workspace outside git. */
+  const worktreeLabelOf = async (shown: SessionSnapshot, workspaceId: string): Promise<Record<string, string>> => {
+    if (!shown.workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.worktree) return {};
+    for (const pane of shown.panes.filter((candidate) => candidate.workspace_id === workspaceId)) {
+      const raw = (await terminal(pane.pane_id)).labels?.[WORKTREE_LABEL];
+      if (labeledWorktree({ [WORKTREE_LABEL]: raw ?? "" })) return { [WORKTREE_LABEL]: raw! };
+    }
+    return {};
+  };
+  const textOf = (params: Record<string, unknown>, field: string): string | undefined => {
+    const value = params[field];
+    return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+  };
+
   const methods: Record<string, (params: Record<string, unknown>) => Promise<unknown>> = {
     async ping() {
       const [hello, doc, ovis] = await Promise.all([hc.hello(), hc.call("doc.get", { name: LAYOUT_DOC }), hc.call("doc.get", { name: OVIS_LAYOUT_DOC })]);
       const own = ownsLayout(doc.value);
       // splits, their ratios, zoom, swap and order live in Ovis's document: only where hc writes one this Ovis may write
       const arrange = own && layoutCalls(hello) && !foreignLayout(ovis.value);
-      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: arrange, move: own, arrange } } };
+      // a checkout opens as a workspace Ovis places: only where Ovis keeps the layout
+      return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: arrange, move: own, arrange, worktrees: own && !options.otherMachine } } };
     },
     async "session.snapshot"() {
       return { snapshot: await snapshot() };
@@ -512,7 +710,10 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       return { type: "agent_info", agent: agentInfoOf(pane) };
     },
     async "pane.process_info"(params) {
-      return { type: "pane_process_info", process_info: processInfoOf(await terminal(paneIdOf(params))) };
+      const found = await terminal(paneIdOf(params));
+      // another machine's pids name nothing here: a reader must not take one of this PC's processes for it
+      if (options.otherMachine) return { type: "pane_process_info", process_info: { pane_id: found.address, shell_pid: null, foreground_process_group_id: null, foreground_processes: [] } };
+      return { type: "pane_process_info", process_info: processInfoOf(found) };
     },
     async "pane.read"(params) {
       const paneId = paneIdOf(params);
@@ -537,11 +738,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // herdr starts an agent by its kind (its command is its kind) from herdr's own manifests; hc has
     // none, so the kinds Ovis knows are offered, and the start types the command into the pane's
     // shell as a person would. Ovis's own shell-started agents are offered and started by the
-    // server itself (shell-agent.ts), through pane.send_text. On Windows hc's shell is PowerShell or
-    // cmd, which the typed start does not quote for yet (plainShell refuses it): no kind is offered there.
+    // server itself (shell-agent.ts), through pane.send_text. On Windows that shell is PowerShell or
+    // cmd (startShellOf), and another machine's terminals, whose programs its table does not show,
+    // are offered no kind; nor is Command Code, whose command `cmd` is cmd.exe there.
     async "server.agent_manifests"() {
-      if (process.platform === "win32") return { manifests: [] };
-      const manifests = Object.keys(AGENT_LABELS).filter((agent) => !Object.hasOwn(SHELL_AGENTS, agent))
+      if (programsUnseen) return { manifests: [] };
+      const manifests = Object.keys(AGENT_LABELS).filter((agent) => !Object.hasOwn(SHELL_AGENTS, agent) && !(platform === "win32" && agent === "cmd"))
         .map((agent) => ({ agent, source: "herdr-core", source_kind: "herdr-core", local_override_shadowing_remote: false }));
       return { manifests };
     },
@@ -549,43 +751,52 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const paneId = paneIdOf(params);
       const kind = params["kind"];
       if (typeof kind !== "string" || !/^[a-z][a-z0-9-]*$/.test(kind)) throw new AdapterError("invalid_params", "kind is required");
+      // Command Code's command `cmd` is cmd.exe here, which would answer as a started agent
+      if (platform === "win32" && kind === "cmd") throw new AdapterError("invalid_params", "Command Code's command is cmd.exe on Windows");
       const args = Array.isArray(params["args"]) ? params["args"].filter((arg): arg is string => typeof arg === "string") : [];
       // a control character could end the quoted line early and type something else
       if (args.some((arg) => /[\u0000-\u001f\u007f]/.test(arg))) throw new AdapterError("invalid_params", "an argument holds a control character");
       const command = AGENT_COMMANDS[kind] ?? kind;
       // only into the pane's own shell, once hc has seen it in front: a running program would take
       // the line as its input (agent-launch.ts retries a busy pane while a new shell comes up). The
-      // pane's input turn is held for the typing only, so nothing typed after waits on the start.
+      // pane's input turn is held for the check and the typing only, so nothing typed after waits on the start.
       await inTurn(paneId, async () => {
         const ready = await terminal(paneId);
+        if (programsUnseen) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} is on another machine, whose programs this PC cannot see`);
         // the terminal's own program must be a plain shell: one the app started as a program (`claude`)
         // is in front of itself too, and `sh -c claude` (a template, a line) runs it under dash's pid.
         // Such a pane never takes a start: no retry
         const own = ready.argv ?? [];
-        if (!plainShell(own)) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} runs no shell of its own to start an agent in`);
+        const shell = startShellOf(own, platform);
+        if (shell === null) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} runs no shell of its own to start an agent in`);
         // fish reads a backslash inside single quotes as an escape: the argument would change
         const front = ready.foreground;
         const frontArgv = front?.argv ?? (front ? [front.name] : []);
         if ([own[0], frontArgv[0]].some((program) => /(?:^|\/)-?fish$/u.test(program ?? "")) && args.some((arg) => arg.includes("\\"))) throw new AdapterError("invalid_params", "fish would read a backslash in an argument differently");
+        const line = startLine(shell, command, args);
         // and a plain shell in front now: a program it runs, or one it `exec`ed (same pid, `exec bash -c …` too), would take the line
-        if (!ready.pid || front?.pid !== ready.pid || !plainShell(frontArgv)) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
-        // Ctrl-U first: a line someone left half typed is cleared, not run with the command after it
-        await type(paneId, `\u0015${shellCommandLine("posix", command, args)}\r`);
+        if (!ready.pid || front?.pid !== ready.pid || startShellOf(frontArgv, platform) === null) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+        // on Windows the shell is in front whatever it runs: what it runs is below it
+        if (platform === "win32") {
+          const programs = await running(ready, AGENT_START_MS);
+          if (programs === null) throw new AdapterError("agent_pane_busy", `what runs in pane ${paneId} could not be read`);
+          if (programs.length > 0) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+        }
+        await type(paneId, line);
       });
-      // started means the agent itself came up in front (hc samples it about twice a second): a
-      // program or script named for the kind (`claude`, `node …/claude-code/cli.js`,
-      // `codex-x86_64-…`). Not any program: a shell's command-not-found handler runs in front too,
-      // and then the shell is back
+      // started means the agent itself came up in front (hc samples it about twice a second), or
+      // below the shell on Windows: a program or script named for the kind (`claude`,
+      // `node …/claude-code/cli.js`, `codex-x86_64-…`, `claude.exe`). Not any program: a shell's
+      // command-not-found handler runs in front too, and then the shell is back
       const deadline = Date.now() + AGENT_START_MS;
       let left = false;
       for (;;) {
-        const now = await terminal(paneId);
-        const front = now.foreground;
-        if (front && front.pid !== now.pid) {
+        // a table that could not be read answers neither way
+        const programs = await running(await terminal(paneId), Math.max(500, deadline - Date.now()));
+        if (programs?.length) {
           left = true;
-          const parts = [front.name, ...(front.argv ?? []).slice(0, 2)].flatMap((part) => part.split("/"));
-          if (parts.some((part) => part === command || part.startsWith(`${command}-`) || part.startsWith(`${command}.`))) return { type: "agent_started", pane_id: paneId };
-        } else if (left) throw new AdapterError("agent_start_failed", `${kind} did not start in pane ${paneId}`);
+          if (programs.flat().some((part) => part === command || part.startsWith(`${command}-`) || part.startsWith(`${command}.`))) return { type: "agent_started", pane_id: paneId };
+        } else if (programs && left) throw new AdapterError("agent_start_failed", `${kind} did not start in pane ${paneId}`);
         if (Date.now() > deadline) throw new AdapterError("agent_start_failed", `${kind} did not come up in pane ${paneId}`);
         await Bun.sleep(100);
       }
@@ -647,7 +858,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const label: Record<string, string> = typeof params["label"] === "string" && params["label"] ? { [TAB_NAME_LABEL]: params["label"] } : {};
       // "Other terminals" is no space of the app's: a tab there is a terminal of its own
       // with the workspace's name, which stays when the tab the name was given in closes (snapshot.ts `groups`)
-      const space: Record<string, string> = workspaceId === OTHER_WORKSPACE_ID ? {} : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label };
+      const space: Record<string, string> = workspaceId === OTHER_WORKSPACE_ID ? {} : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label, ...(await worktreeLabelOf(shown, workspaceId)) };
       const { tab, root_pane } = await startShell({ ...params, ...(cwd ? { cwd } : {}) }, { ...space, ...label });
       return { type: "tab_created", tab, root_pane };
     },
@@ -666,9 +877,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const workspaceId = paneIdOf(params, "workspace_id");
       // "Other terminals" is no workspace anyone made: its jobs and agents' workers close one by one
       if (workspaceId === OTHER_WORKSPACE_ID) throw new AdapterError("unsupported", "Other terminals holds terminals no workspace made: close them one by one");
-      const panes = (await snapshot()).panes.filter((pane) => pane.workspace_id === workspaceId);
+      const shown = await snapshot();
+      const panes = shown.panes.filter((pane) => pane.workspace_id === workspaceId);
       if (panes.length === 0) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
-      await end(panes.map((pane) => pane.pane_id));
+      // as herdr: a repository's workspace closes over its open worktrees only when the group is meant
+      const facts = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId)?.worktree;
+      const group = facts && !facts.is_linked_worktree ? shown.workspaces.filter((candidate) => candidate.worktree?.is_linked_worktree && candidate.worktree.repo_key === facts.repo_key).map((candidate) => candidate.workspace_id) : [];
+      if (group.length > 0 && params["close_group"] !== true) throw new AdapterError("workspace_group_close_required", `workspace ${workspaceId} has open worktree workspaces: close the group`);
+      await end([...panes, ...shown.panes.filter((pane) => group.includes(pane.workspace_id))].map((pane) => pane.pane_id));
       return { type: "ok" };
     },
     // A name Ovis gives is a label on each of the workspace's or tab's terminals, so it stays when
@@ -716,7 +932,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       if (foreignLayout((await hc.call("doc.get", { name: OVIS_LAYOUT_DOC })).value)) throw new AdapterError("unsupported", "a newer Ovis keeps this core's layout");
       // the workspace's name as shown, and the tab's own where it has one, stay when the split pane closes
       const workspaceName = shown.workspaces.find((candidate) => candidate.workspace_id === pane.workspace_id)?.label;
-      const names = { ...(workspaceName ? { [WORKSPACE_NAME_LABEL]: workspaceName } : {}), ...(labels[TAB_NAME_LABEL] ? { [TAB_NAME_LABEL]: labels[TAB_NAME_LABEL] } : {}) };
+      const names = { ...(workspaceName ? { [WORKSPACE_NAME_LABEL]: workspaceName } : {}), ...(labels[TAB_NAME_LABEL] ? { [TAB_NAME_LABEL]: labels[TAB_NAME_LABEL] } : {}), ...(labels[WORKTREE_LABEL] ? { [WORKTREE_LABEL]: labels[WORKTREE_LABEL] } : {}) };
       const { root_pane } = await startShell({ ...(pane.cwd ? { cwd: pane.cwd } : {}) }, { [SPACE_LABEL]: pane.workspace_id, [TAB_LABEL]: pane.tab_id, ...names });
       try {
         await editLayout((layout) => {
@@ -821,11 +1037,32 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     },
     // A pane goes to a new tab of another workspace by its labels alone: its terminal, its program and
     // its id stay. It takes that workspace's name with it, so it never renames the workspace by
-    // becoming its first terminal. Only `new_tab` is a destination Ovis asks for.
+    // becoming its first terminal. Beside another pane of its own tab it moves in one edit of the
+    // document, where herdr moves only into another tab (client.ts `paneMoveBeside`): its leaf leaves
+    // the tree and the target's becomes a split holding both, as a split makes it. `new_tab` and
+    // that are the destinations Ovis asks for.
     async "pane.move"(params) {
       const paneId = paneIdOf(params);
       const destination = params["destination"];
-      if (!isRecord(destination) || destination["type"] !== "new_tab") throw new AdapterError("unsupported", "herdr-core moves a pane only to a new tab");
+      if (isRecord(destination) && destination["type"] === "tab") {
+        const targetId = paneIdOf(destination, "target_pane_id");
+        const split = destination["split"];
+        if (split !== "right" && split !== "down") throw new AdapterError("invalid_params", "split must be right or down");
+        let reason: string | null = null;
+        const changed = await editLayout((layout) => {
+          const tab = tabHolding(layout, paneId);
+          if (tab.id !== destination["tab_id"]) throw new AdapterError("unsupported", "herdr-core moves a pane into a tab only beside a pane of its own tab");
+          if (!leaves(tab.root).includes(targetId)) throw new AdapterError("pane_not_found", `pane ${targetId} not found in tab ${tab.id}`);
+          if (targetId === paneId) { reason = "same_pane"; return null; }
+          const root = splitLeaf(tab.root, targetId, paneId, split);
+          // a zoomed tab shows every pane again, so the moved one is in view
+          return root && withTab(layout, tab.id, { root, zoomed: null });
+        });
+        const moved = (await snapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+        if (!moved) throw new AdapterError("pane_not_found", `pane ${paneId} not found`);
+        return { move_result: { changed, reason: changed ? null : reason, pane: moved, closed_tab_id: null, closed_workspace_id: null } };
+      }
+      if (!isRecord(destination) || destination["type"] !== "new_tab") throw new AdapterError("unsupported", "herdr-core moves a pane only to a new tab or beside a pane of its own tab");
       const workspaceId = paneIdOf(destination, "workspace_id");
       const before = await ownLayout();
       const pane = before.panes.find((candidate) => candidate.pane_id === paneId);
@@ -838,8 +1075,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const tabName = typeof destination["label"] === "string" ? destination["label"] : "";
       // `key: ""` takes a label off (hc terminal.label)
       const place = workspaceId === OTHER_WORKSPACE_ID
-        ? { [SPACE_LABEL]: "", [TAB_LABEL]: "", [WORKSPACE_NAME_LABEL]: "" }
-        : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label };
+        ? { [SPACE_LABEL]: "", [TAB_LABEL]: "", [WORKSPACE_NAME_LABEL]: "", [WORKTREE_LABEL]: "" }
+        : { [SPACE_LABEL]: workspaceId, [TAB_LABEL]: `ovis-${crypto.randomUUID()}`, [WORKSPACE_NAME_LABEL]: workspace!.label, [WORKTREE_LABEL]: "", ...(await worktreeLabelOf(before, workspaceId)) };
       await label([paneId], { ...place, [TAB_NAME_LABEL]: tabName });
       const after = await snapshot();
       const moved = after.panes.find((candidate) => candidate.pane_id === paneId);
@@ -852,13 +1089,96 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     },
   };
 
+  methods["worktree.list"] = async (params) => {
+    const { shown, repository } = await inRepository(paneIdOf(params, "workspace_id"));
+    const open = await openWorkspaces(shown, repository);
+    return {
+      source: { repo_key: repository.repo_key, repo_name: repository.repo_name, repo_root: repository.repo_root, source_checkout_path: repository.checkout, source_workspace_id: open.get(repository.repo_root) ?? null },
+      worktrees: repository.checkouts.map((checkout) => infoOf(repository, checkout, open)),
+    };
+  };
+  methods["worktree.create"] = (params) => oneAtATime(async () => {
+    const workspaceId = paneIdOf(params, "workspace_id");
+    const branch = textOf(params, "branch");
+    if (!branch) throw new AdapterError("invalid_params", "branch is required");
+    const base = textOf(params, "base");
+    const { shown, repository } = await inRepository(workspaceId);
+    // as herdr: a worktree starts from the repository's own checkout, which the caller can ask instead
+    if (repository.checkout !== repository.repo_root) throw new AdapterError("linked_worktree_source", `workspace ${workspaceId} is on a linked checkout of ${repository.repo_name}`);
+    const path = typeof params["path"] === "string" && params["path"] !== "" ? params["path"] : defaultCheckoutPath(repository.repo_name, branch);
+    // a repository with no commit has nothing to start from: newer git would make an orphan branch, herdr refuses in git's words
+    if (!base && !(await git(repository.repo_root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).ok) throw new AdapterError("worktree_create_failed", "fatal: invalid reference: HEAD");
+    // an existing branch is checked out as it is, whatever base was asked (as herdr and the dialog say); a new one starts from `base`, or from HEAD
+    const existing = (await git(repository.repo_root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
+    const added = await git(repository.repo_root, existing ? ["worktree", "add", "--", path, branch] : ["worktree", "add", "-b", branch, "--", path, ...(base ? [base] : [])]);
+    if (!added.ok) throw new AdapterError("worktree_create_failed", added.stderr || `git could not add a worktree at ${path}`);
+    const checkout = realPath(path);
+    // a checkout no workspace shows is undone, with the branch made for it, so the same name can be asked again
+    const opened = await openCheckout(shown, repository, checkout, textOf(params, "label") ?? worktreeFolder(branch)).catch(async (error: unknown) => {
+      await git(repository.repo_root, ["worktree", "remove", "--force", "--", checkout]);
+      if (!existing) await git(repository.repo_root, ["branch", "-D", "--", branch]);
+      throw error;
+    });
+    const made: Checkout = { path: checkout, branch, is_bare: false, is_detached: false, is_prunable: false };
+    return { type: "worktree_created", ...opened, worktree: infoOf(repository, made, new Map([[checkout, opened.workspace.workspace_id]])) };
+  });
+  methods["worktree.open"] = (params) => oneAtATime(async () => {
+    const workspaceId = paneIdOf(params, "workspace_id");
+    // a path is taken as git names it, spaces and all
+    const path = typeof params["path"] === "string" && params["path"] !== "" ? params["path"] : undefined;
+    const branch = textOf(params, "branch");
+    if (!path && !branch) throw new AdapterError("invalid_params", "path or branch is required");
+    const { shown, repository } = await inRepository(workspaceId);
+    const wanted = path ? realPath(path) : null;
+    const matches = repository.checkouts.filter((checkout) => (wanted ? checkout.path === wanted : checkout.branch === branch));
+    if (matches.length === 0) throw new AdapterError("worktree_not_found", `no checkout of ${repository.repo_name} at ${path ?? branch}`);
+    if (matches.length > 1) throw new AdapterError("ambiguous_worktree_branch", `more than one checkout of ${repository.repo_name} has ${branch}`);
+    const checkout = matches[0]!;
+    const open = await openWorkspaces(shown, repository);
+    const already = open.get(checkout.path);
+    if (already) {
+      const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === already)!;
+      const tab = shown.tabs.find((candidate) => candidate.tab_id === workspace.active_tab_id)!;
+      const root_pane = shown.panes.find((pane) => pane.tab_id === tab.tab_id)!;
+      return { type: "worktree_opened", workspace, tab, root_pane, worktree: infoOf(repository, checkout, open), already_open: true };
+    }
+    const opened = await openCheckout(shown, repository, checkout.path, textOf(params, "label") ?? (checkout.branch ? worktreeFolder(checkout.branch) : basename(checkout.path)));
+    return { type: "worktree_opened", ...opened, worktree: infoOf(repository, checkout, new Map([[checkout.path, opened.workspace.workspace_id]])), already_open: false };
+  });
+  methods["worktree.remove"] = (params) => oneAtATime(async () => {
+    const workspaceId = paneIdOf(params, "workspace_id");
+    const shown = await ownLayout();
+    const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
+    if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
+    const facts = workspace.worktree;
+    if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
+    // the folder the label names must still be a linked checkout of that repository, not one moved away or replaced by another
+    const now = await repositoryOf(facts.checkout_path).catch(() => null);
+    let gitId: string | null = null;
+    for (const pane of shown.panes.filter((candidate) => candidate.workspace_id === workspaceId)) {
+      gitId = labeledWorktree((await terminal(pane.pane_id)).labels)?.gitId ?? null;
+      if (gitId) break;
+    }
+    if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitId !== null && gitDirIdentity(now.git_dir) !== gitId)) {
+      throw new AdapterError("worktree_not_found", `${facts.checkout_path} is no longer a worktree of ${facts.repo_name}`);
+    }
+    const force = params["force"] === true;
+    // git refuses a checkout with changes before it deletes anything: the workspace stays open then
+    const removed = await git(facts.repo_root, ["worktree", "remove", ...(force ? ["--force"] : []), "--", facts.checkout_path]);
+    if (!removed.ok) throw new AdapterError(/contains modified or untracked files/u.test(removed.stderr) ? "dirty_worktree_requires_force" : "worktree_remove_failed", removed.stderr || `git could not remove ${facts.checkout_path}`);
+    await end(shown.panes.filter((pane) => pane.workspace_id === workspaceId).map((pane) => pane.pane_id));
+    return { type: "worktree_removed", workspace_id: workspaceId, path: facts.checkout_path, forced: force };
+  });
+
   return async (request) => {
     const method = methods[request.method];
+    // git runs here, and another machine's checkouts are there
+    if (options.otherMachine && request.method.startsWith("worktree.")) return { error: { code: "unsupported", message: "worktrees open only on the PC that runs Ovis" } };
     if (!method) return { error: { code: "unsupported", message: `${request.method} is not available on herdr-core` } };
     try {
       return { result: await method(request.params) };
     } catch (error) {
-      if (error instanceof AdapterError) return { error: { code: error.code, message: error.message } };
+      if (error instanceof AdapterError || error instanceof WorktreeError) return { error: { code: error.code, message: error.message } };
       if (error instanceof HcError) return { error: { code: herdrCode(error, "pane_not_found"), message: error.message } };
       // what failed is the server's own business: its log has it, the caller a plain reason
       console.error(`herdr-core adapter: ${request.method} failed:`, error);
@@ -908,7 +1228,10 @@ function labelsOf(labels: unknown): Record<string, string> {
  * subscriber that fell behind on hc (`missed`), or a line to hc that ended, ends this connection:
  * the status collector reopens it and reads what it missed from a fresh snapshot.
  */
-async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, observeSeen?: SeenObserver): Promise<void> {
+/** What an event says of a terminal's OpenCode session (startHerdrCoreAdapter `noteSession`), so a turn too short for any read is still remembered. */
+type SessionNote = (address: string, status: HcStatus | null | undefined, records: unknown) => unknown;
+
+async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, observeSeen?: SeenObserver, noteSession?: SessionNote): Promise<void> {
   const subscriptions = Array.isArray(request.params["subscriptions"]) ? request.params["subscriptions"].filter(isRecord) : [];
   const statusPanes = new Set(subscriptions.flatMap((entry) => entry["type"] === STATUS_EVENT && typeof entry["pane_id"] === "string" ? [entry["pane_id"]] : []));
   const structure = subscriptions.some((entry) => typeof entry["type"] === "string" && !NOT_STRUCTURE.has(entry["type"]));
@@ -953,6 +1276,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     const turn = typeof record["turn"] === "number" ? record["turn"] : 0;
     const labels = labelsOf(record["labels"]);
     const first = firstTurn({ address: record["address"], turn });
+    noteSession?.(record["address"], status, record["records"]);
     known.set(record["address"], { status, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
     observeSeen?.(record["address"], turn, labels);
   };
@@ -985,6 +1309,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         reported.set(paneId, facts);
         if (facts !== before) lifecycle("pane.updated", "pane_updated", paneId);
         const status = statusOf(report);
+        noteSession?.(paneId, status, event.data?.["records"]);
         const entry = known.get(paneId);
         if (!entry) {
           if (statusPanes.has(paneId)) tell(paneId, status, agentStatusOf(status));

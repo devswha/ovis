@@ -1,7 +1,9 @@
-import type { AgentInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
+import type { AgentInfo, AgentSessionInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
+import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
+import { worktreeOfLabels } from "./worktrees.ts";
 
 /**
  * How herdr-core's terminals look to the rest of the server: herdr's session snapshot, built from
@@ -20,7 +22,7 @@ import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayou
 
 /** The protocol these answers keep to: herdr's, as `shared/herdr-api.generated.ts` was made from. */
 export const HERDR_PROTOCOL = 22;
-export const OTHER_WORKSPACE_ID = "hc-other";
+export const OTHER_WORKSPACE_ID = HC_OTHER_WORKSPACE_ID;
 export const LAYOUT_DOC = "herdr-app";
 /** The labels the Herdr app groups its terminals by (herdr-app src/window.rs): a terminal it has not placed is adopted there. */
 export const SPACE_LABEL = "herdr.space";
@@ -47,13 +49,13 @@ export type HcForeground = Pick<Foreground, "pid" | "name"> & Partial<Pick<Foreg
 
 /** The fields of hc's `Terminal` record this side reads, by hc's own schema; `parent` is the terminal that started it (`t3`), set once at its start. */
 export type HcTerminal = Pick<Terminal, "address" | "cols" | "rows" | "cwd" | "state"> &
-  Partial<Pick<Terminal, "argv" | "pid" | "name" | "title" | "labels" | "turn" | "parent">> &
+  Partial<Pick<Terminal, "argv" | "pid" | "name" | "title" | "labels" | "turn" | "parent" | "records">> &
   { status?: HcStatus | null; foreground?: HcForeground | null };
 
 /**
  * A terminal on another machine the core reaches (`hc machine add vps`): hc lists and reports it
- * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Until those machines
- * show as PCs of their own, none of their terminals is this PC's: no workspace, tab, pane or event.
+ * under that machine's name (`vps/t14`), where this PC's own are bare (`t7`). Each such machine is
+ * a PC of its own (machine-scope.ts), so none of their terminals is this PC's: no workspace, tab, pane or event.
  */
 export function onOtherMachine(address: string): boolean {
   return address.includes("/");
@@ -82,7 +84,7 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
 }
 
 /** herdr-core's names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
-const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy" };
+const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi" };
 
 /** The agent a status names, by herdr's name; a program that never reported one runs none herdr would see. */
 /** The turn a terminal's `herdr.seen` names; null when it has none, or none a client wrote as a turn. */
@@ -116,6 +118,24 @@ export function agentOfStatus(status: HcStatus | null | undefined): string | nul
 export function agentOf(terminal: HcTerminal): string | null {
   return agentOfStatus(terminal.status);
 }
+
+/**
+ * The sessions an OpenCode TUI reports as pending (its `program-status.ts`): one OSC 7501 record per
+ * open tab's session that works or waits, under the session's id, cleared once it rests. A record
+ * says nothing of which tab is on screen, and hc names a resting session nowhere: the sessions a
+ * terminal ever named are only candidates for the one it shows (adapter.ts `sessionOf`).
+ */
+export function opencodeRecords(records: unknown): string[] {
+  if (!isRecord(records)) return [];
+  return Object.keys(records).filter((id) => {
+    const record = records[id];
+    return isRecord(record) && record["app"] === "opencode";
+  });
+}
+
+
+/** The agent session a terminal shows, as herdr's OpenCode integration reports it (adapter.ts `sessionOf`). */
+export type SessionOf = (terminal: HcTerminal) => AgentSessionInfo | null;
 
 const STATUS_RANK: Record<string, number> = { blocked: 4, working: 3, done: 2, idle: 1 };
 
@@ -164,8 +184,15 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   return parts.length === 0 ? null : chain(parts, node["type"] === "column" ? "down" : "right");
 }
 
+/**
+ * A folder's last name. A Windows path (a drive letter or a UNC prefix) splits at either slash and
+ * any other at `/` only, by the path's shape and not this host's platform: a server can show
+ * another machine's terminals (machine-scope.ts). A drive root has no folder: it stays as written,
+ * as the client's `folderName` keeps it, so it still reads as a place.
+ */
 function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean);
+  if (/^(?:\\\\[?.]\\)?[A-Za-z]:[\\/]+$/.test(path)) return path;
+  const parts = path.split(/^(?:[A-Za-z]:[\\/]|\\\\)/.test(path) ? /[\\/]/ : "/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 
@@ -341,10 +368,14 @@ export function reportedFacts(status: HcStatus | null | undefined): Pick<HerdrPa
   };
 }
 
-function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown: ReadonlySet<string>, firstTurn?: FirstTurn): HerdrPane {
+function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown: ReadonlySet<string>, firstTurn?: FirstTurn, sessionOf?: SessionOf): HerdrPane {
   const cwd = terminal.foreground?.cwd ?? terminal.cwd;
+  const session = sessionOf?.(terminal) ?? null;
   return {
+    ...(session ? { agent_session: session } : {}),
     ...(terminal.parent && terminal.parent !== terminal.address && shown.has(terminal.parent) ? { parent_pane_id: terminal.parent } : {}),
+    // only a tab its labels make takes a split (adapter.ts `pane.split`)
+    ...(terminal.labels?.[SPACE_LABEL] === workspaceId && terminal.labels?.[TAB_LABEL] === tabId ? {} : { own_tab: true as const }),
     ...reportedFacts(terminal.status),
     pane_id: terminal.address,
     terminal_id: terminal.address,
@@ -370,6 +401,7 @@ export function agentInfoOf(pane: PaneInfo): AgentInfo {
     workspace_id: pane.workspace_id,
     tab_id: pane.tab_id,
     agent: pane.agent ?? null,
+    ...(pane.agent_session ? { agent_session: pane.agent_session } : {}),
     agent_status: pane.agent_status,
     cwd: pane.cwd ?? null,
     foreground_cwd: pane.foreground_cwd ?? null,
@@ -434,7 +466,7 @@ function arranged(placed: Group[], ovisDoc: unknown): { groups: Group[]; zoomed:
  * app arranges the core), never by its terminals' grids: a viewer sizes a terminal to its pane's
  * cell, and a grid read back as the pane made panes shrink each other (#2812).
  */
-export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string, firstTurn?: FirstTurn, ovisDoc?: unknown): SessionSnapshot {
+export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string, firstTurn?: FirstTurn, ovisDoc?: unknown, sessionOf?: SessionOf): SessionSnapshot {
   const workspaces: WorkspaceInfo[] = [];
   const tabs: TabInfo[] = [];
   const panes: PaneInfo[] = [];
@@ -448,7 +480,7 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
     for (const [tabIndex, tab] of group.tabs.entries()) {
       const byAddress = new Map(tab.terminals.map((terminal) => [terminal.address, terminal]));
       const cut = place(tab.root ?? sideBySide(tab.terminals.map((terminal) => terminal.address)));
-      const tabPanes = cut.panes.map(({ pane_id }) => paneOf(byAddress.get(pane_id)!, group.id, tab.id, shown, firstTurn));
+      const tabPanes = cut.panes.map(({ pane_id }) => paneOf(byAddress.get(pane_id)!, group.id, tab.id, shown, firstTurn, sessionOf));
       groupPanes.push(...tabPanes);
       const alone = zoomed.get(tab.id);
       const focused = alone ?? tabPanes[0]!.pane_id;
@@ -464,7 +496,11 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
       });
     }
     panes.push(...groupPanes);
+    // a checkout Ovis opened as a worktree, or the repository's own it was opened from (worktrees.ts);
+    // only where Ovis places workspaces: the app may put a labeled terminal beside others
+    const worktree = !own || group.id === OTHER_WORKSPACE_ID ? null : group.tabs.flatMap((tab) => tab.terminals).map((terminal) => worktreeOfLabels(terminal.labels)).find((facts) => facts !== null) ?? null;
     workspaces.push({
+      ...(worktree ? { worktree } : {}),
       workspace_id: group.id,
       label: group.label,
       number: index + 1,

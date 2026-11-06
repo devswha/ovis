@@ -16,9 +16,11 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useAgentSkills } from "../lib/useAgentSkills.ts";
 import { useT } from "../lib/i18n.ts";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil } from "../lib/latestRead.ts";
-import { useSettings } from "../lib/settings.ts";
+import { loadSettings, useSettings } from "../lib/settings.ts";
+import { assignAgentGroup, folderAgentGroup, rememberFolderAgentGroup } from "../lib/namedAgentGroups.ts";
+import { sidebarPinKey } from "../lib/sidebarPins.ts";
 import { learnTabLabel } from "../lib/tabLabels.ts";
-import { launchCapabilities, modelSuggestions } from "../lib/agentLaunchMode.ts";
+import { launchCapabilities, launchDefaults, modelSuggestions } from "../lib/agentLaunchMode.ts";
 import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
 import { createRequest, dialogLaunch, firstMessageOutcome, startNewSession } from "../lib/newSession.ts";
 import { useMachineSessions } from "../lib/machineSessionContext.tsx";
@@ -26,7 +28,8 @@ import { composerDrafts } from "../lib/composerDraft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { inFlightGuard } from "../lib/sessionHistory.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
-import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { focusInOtherModal, nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { catchTypeAhead } from "../lib/typeAhead.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { passingFolder, recentDirectories } from "../lib/recent-directories.ts";
 
@@ -61,6 +64,8 @@ export interface NewSessionDialogProps {
   onOpenPane?: (paneId: string) => void;
   /** this device only watches: a setup types into the PC's terminal, so Add another agent is not offered */
   watching?: boolean;
+  /** Settings -> Named agent groups: which grouped keys may stay as the new pane's group is saved (lib/namedAgentGroups.ts liveGroupKeys) */
+  groupKept?: (groupOf: Readonly<Record<string, string>>) => ReadonlySet<string>;
 }
 
 export interface DialogFields {
@@ -92,9 +97,9 @@ export function insertToken(text: string, at: number, token: string): { text: st
   return { text: `${head}${after}`.slice(0, MAX_COMPOSER_CHARS), caret: Math.min(head.length, MAX_COMPOSER_CHARS) };
 }
 
-export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
   const t = useT();
-  const { settings } = useSettings();
+  const { settings, update: updateSettings } = useSettings();
   const machineId = useMachineId();
   const { createTab, createWorkspace, fetchAgentKinds, fetchAgentCommands } = useMachineApi();
   const machineSessions = useMachineSessions();
@@ -104,8 +109,16 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const [name, setName] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  // whether the model and the effort shown are the reader's own: one that is not follows Settings > Agents, and
+  // never goes on to another agent
+  const modelEdited = useRef(false);
+  const effortEdited = useRef(false);
   const [ultracode, setUltracode] = useState(false);
   const [prompt, setPrompt] = useState("");
+  // Settings -> Named agent groups: the group the new pane goes in ("": none), the folder's last one until one is picked
+  const groupNames = settings.agentNamedGroups ? settings.agentGroupNames : [];
+  const [group, setGroup] = useState("");
+  const [groupPicked, setGroupPicked] = useState(false);
   // the skills the picked agent would offer in the folder, before any process exists (GET /api/agent/commands)
   const skillFolder = tab ? tab.cwd : cwd.trim() || null;
   const [skills, setSkills] = useAgentSkills(open, agentKind, skillFolder, fetchAgentCommands, t);
@@ -143,7 +156,10 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   useLayoutEffect(() => {
     if (open && document.activeElement !== cwdField.current) showPathEnd();
   }, [open, cwd]);
-  const surface = useFocusTrap<HTMLFormElement>(open, { initialFocus: firstFieldRef });
+  // once the tab is made the keyboard is the new tab's: never handed back to the tab the dialog was opened over
+  const made = useRef(false);
+  useEffect(() => { if (open) made.current = false; }, [open]);
+  const surface = useFocusTrap<HTMLFormElement>(open, { initialFocus: firstFieldRef, shouldRestore: () => !made.current });
   useSheetSwipe(surface, pending ? null : onClose);
   const defaultCwdRef = useRef(defaultCwd);
   defaultCwdRef.current = defaultCwd;
@@ -156,10 +172,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const filled = prefillRef.current;
     setCwd(filled?.cwd ?? defaultCwdRef.current ?? "");
     setName(filled?.name ?? "");
-    setModel("");
-    setEffort("");
     setUltracode(false);
     setPrompt("");
+    setGroupPicked(false);
     setSkills(null);
     setError(null);
     setPending(false);
@@ -173,6 +188,12 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const remembered = rememberedAgent();
     const stored = filled?.agent ?? remembered;
     setAgentKind(stored);
+    // the model and effort Settings > Agents sets for the agent, each still the reader's to change; none set is the agent's own
+    const preset = launchDefaults(stored, settings);
+    setModel(preset.model);
+    setEffort(preset.effort);
+    modelEdited.current = false;
+    effortEdited.current = false;
     let cancelled = false;
     const latest = agentReads.current();
     void fetchAgentKinds()
@@ -185,8 +206,12 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
           setAgentKind(kind);
           // what was chosen meanwhile for the agent that gave way goes as pickAgent's choices go
           const can = launchCapabilities(kind);
-          setModel("");
-          setEffort((current) => can.efforts.includes(current) ? current : "");
+          const fallback = launchDefaults(kind, settings);
+          modelEdited.current = false;
+          setModel(fallback.model);
+          const picked = effortEdited.current && fallback.effort === "";
+          effortEdited.current = picked;
+          setEffort((current) => fallback.effort !== "" ? fallback.effort : picked && can.efforts.includes(current) ? current : "");
           if (!can.ultracode) setUltracode(false);
         }
       })
@@ -197,6 +222,13 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       cancelled = true;
     };
   }, [open]);
+
+  // the folder's last group, as the folder changes, until the reader picks one
+  const groupFolder = tab ? tab.cwd : cwd;
+  const groupKey = groupNames.join("\n");
+  useEffect(() => {
+    if (open && !groupPicked) setGroup(folderAgentGroup(machineId, groupFolder, groupNames) ?? "");
+  }, [open, groupPicked, machineId, groupFolder, groupKey]);
 
   useEffect(() => {
     if (!open || !onDraft) return;
@@ -210,6 +242,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     const onKeyDown = (event: KeyboardEvent): void => {
       // a native modal over it (Add PC, from the palette) takes its own Escape
       if (event.key !== "Escape" || nativeModalOver(surface.current)) return;
+      // Settings opened over it with its shortcut holds the focus: its Escape, though this listener runs first
+      if (focusInOtherModal(surface.current)) return;
       event.preventDefault();
       if (!pending) onClose();
     };
@@ -232,6 +266,15 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const readingAgain = useRef<() => void>(() => undefined);
   useEffect(() => () => readingAgain.current(), []);
   useEffect(() => { readingAgain.current(); }, [open]);
+
+  // Settings > Agents changed while the dialog is open (the shared settings arriving, or Settings opened over it):
+  // a field the reader left follows it
+  const defaults = launchDefaults(agentKind, settings);
+  useEffect(() => {
+    if (!open) return;
+    if (!modelEdited.current) setModel(defaults.model);
+    if (!effortEdited.current) setEffort(defaults.effort);
+  }, [open, agentKind, defaults.model, defaults.effort]);
   if (!open) return null;
 
   const selectedAgent = agents.find((agent) => agent.kind === agentKind);
@@ -254,8 +297,17 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     setSkills(null);
     // a choice the next agent's launch does not take goes back to the agent's own; a model names one agent's models
     const next = launchCapabilities(kind);
-    if (!next.model || kind !== agentKind) setModel("");
-    if (!next.efforts.includes(effort)) setEffort("");
+    let nextEffort = next.efforts.includes(effort) ? effort : "";
+    if (kind !== agentKind) {
+      // the next agent's model and effort from Settings > Agents; with no effort set there, a level the reader
+      // picked stays where the agent names it, and the one set for the last agent does not
+      const after = launchDefaults(kind, settings);
+      modelEdited.current = false;
+      setModel(after.model);
+      if (after.effort !== "" || !effortEdited.current) { nextEffort = after.effort; effortEdited.current = false; }
+    } else if (!next.model) setModel("");
+    if (nextEffort === "") effortEdited.current = false;
+    setEffort(nextEffort);
     if (!next.ultracode) setUltracode(false);
   };
 
@@ -319,9 +371,23 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       return tab ? await createTab({ ...body, workspace_id: tab.workspaceId }) : await createWorkspace(body);
     });
     if (started === null) { setPending(false); return; }
+    // a plain terminal takes what is typed while it starts (lib/typeAhead.ts); an agent's first words go in its message
+    const ahead = agentKind === "" ? catchTypeAhead() : null;
     try {
       const result = await started;
+      // the pane is made, whatever came of its agent: it goes in the group picked, from the groups as last saved
+      // (only while the field is offered: with the setting off, the folder's last group is kept for later)
+      if (groupNames.length > 0) {
+        const picked = groupNames.includes(group) ? group : null;
+        rememberFolderAgentGroup(machineId, tab ? tab.cwd : directory, picked);
+        // No group clears a group the pane's id still had from a pane gone before it (herdr reuses ids)
+        const held = loadSettings().agentGroupOf;
+        const kept = groupKept?.(held);
+        const next = assignAgentGroup(held, sidebarPinKey(machineId, result.pane_id), picked, kept === undefined ? undefined : (key) => kept.has(key));
+        if (next !== null && JSON.stringify(next) !== JSON.stringify(held)) updateSettings({ agentGroupOf: next });
+      }
       if (agentKind && !result.agent_started && result.error?.message) {
+        ahead?.drop();
         setPending(false);
         // the workspace exists: say so plainly, keep the PC's own words beneath, and Open it rather than make another
         setError({ message: t("The workspace opened, but {agent} did not start. Check that it is installed on the PC, then open it again.", { agent: agentLabel }), detail: result.error.message });
@@ -353,8 +419,11 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
       // the dialog closes on this: left pending, its next opening would start a frame with the
       // fields disabled and Escape ignored, until the open effect's reset has rendered
       setPending(false);
+      ahead?.handTo(machineId, result.pane_id);
+      made.current = true;
       onCreated(result.pane_id, agentKind !== "" && result.agent_started !== false, messageWaits);
     } catch (reason: unknown) {
+      ahead?.drop();
       setPending(false);
       if (reason instanceof ApiError && reason.code === "invalid_cwd") setError({ message: t("Directory not found"), detail: null });
       else setError(userErrorMessage(reason));
@@ -429,6 +498,14 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             />
             <span className="field-hint">{t(tab ? "Tab name (optional)" : "Optional workspace label")}</span>
           </label>
+          {groupNames.length > 0 && <div className="field">
+            <label className="field-label" htmlFor="new-session-group">{t("Group")}</label>
+            <select id="new-session-group" className="select" value={group} disabled={fieldsDisabled} onChange={(event) => { setGroup(event.target.value); setGroupPicked(true); }}>
+              <option value="">{t("No group")}</option>
+              {groupNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <span className="field-hint">{t("Where the Agents list shows it")}</span>
+          </div>}
           {/* the launch's own choices, only where the agent's command line takes them (lib/agentLaunchMode.ts) */}
           {(can.model || can.efforts.length > 0) && <div className="new-session-launch">
             {can.model && <div className="field">
@@ -445,7 +522,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
                 placeholder={t("Agent default")}
                 aria-invalid={fault === "model" || undefined}
                 aria-describedby="new-session-model-hint"
-                onChange={(event) => setModel(event.target.value)}
+                onChange={(event) => { modelEdited.current = true; setModel(event.target.value); }}
               />
               {suggestions.length > 0 && <datalist id="new-session-models">{suggestions.map((alias) => <option key={alias} value={alias} />)}</datalist>}
               <span id="new-session-model-hint" className={`field-hint${fault === "model" ? " new-session-error" : ""}`} role={fault === "model" ? "alert" : undefined}>
@@ -454,7 +531,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
             </div>}
             {can.efforts.length > 0 && <div className="field">
               <label className="field-label" htmlFor="new-session-effort">{t("Effort")}</label>
-              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => setEffort(event.target.value)}>
+              <select id="new-session-effort" className="select" value={effort} disabled={fieldsDisabled} aria-describedby="new-session-effort-hint" onChange={(event) => { effortEdited.current = true; setEffort(event.target.value); }}>
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>
