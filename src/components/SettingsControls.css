@@ -451,10 +451,14 @@
   max-width: 54ch;
 }
 
-/* a condition that applies right now, on its own line under the sentence, at the sentence's size */
+/* a condition that applies right now, on its own line under the sentence */
 .settings-condition {
   display: block;
   color: var(--text);
+}
+
+/* under a row's name it takes the sentence's size; elsewhere (a dialog's warning) it keeps its own */
+.settings-row-text > .settings-condition {
   font-size: var(--fs-xs);
 }
 
