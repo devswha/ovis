@@ -121,6 +121,17 @@ describe.skipIf(!posix)("startCore", () => {
     expect(realpathSync(readFileSync(join(root, "cwd"), "utf8").trim())).toBe(realpathSync(homedir()));
     await new Promise<void>((resolve) => log.end(resolve));
   });
+
+  it("still starts the core when the home folder is not there", async () => {
+    const root = tempDir();
+    const hc = join(root, "herdr-core");
+    writeFileSync(hc, `#!/bin/sh\npwd > "$(dirname "$0")/cwd"\n`);
+    chmodSync(hc, 0o755);
+    const log = openLog(join(root, "ovis.log"));
+    await startCore(hc, process.env, log, 30_000, join(root, "gone"));
+    expect(realpathSync(readFileSync(join(root, "cwd"), "utf8").trim())).toBe(realpathSync(process.cwd()));
+    await new Promise<void>((resolve) => log.end(resolve));
+  });
 });
 
 describe.skipIf(!posix)("startServer", () => {

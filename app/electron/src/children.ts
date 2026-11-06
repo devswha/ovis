@@ -157,10 +157,11 @@ function sameBytes(a: string, b: string): boolean {
  * already does). The core runs apart from the app, as hc runs it for every client: its terminals
  * outlive the window, and the next start finds them. It starts in the home folder: a workspace
  * made without a folder opens in the core's, and the app's own (where the installer and the Start
- * menu start it on Windows) is replaced by an update and removed with the app.
+ * menu start it on Windows) is replaced by an update and removed with the app. A home folder that
+ * is not there leaves it in the app's: a missing folder would keep the core from starting at all.
  */
-export async function startCore(hc: string, env: Env, log: WriteStream, timeoutMs = 30_000): Promise<void> {
-  const { code, output } = await run(hc, ["server", "start"], env, log, timeoutMs, homedir());
+export async function startCore(hc: string, env: Env, log: WriteStream, timeoutMs = 30_000, home = homedir()): Promise<void> {
+  const { code, output } = await run(hc, ["server", "start"], env, log, timeoutMs, isDirectory(home) ? home : undefined);
   if (code !== 0) throw new Error(`herdr-core did not start (${code === null ? "timed out" : `exit code ${code}`})\n${tail(output)}`);
 }
 
@@ -369,4 +370,8 @@ async function run(command: string, args: string[], env: Env, log: WriteStream |
 
 export function isFile(path: string): boolean {
   try { return statSync(path).isFile(); } catch { return false; }
+}
+
+function isDirectory(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
 }
