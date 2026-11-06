@@ -436,7 +436,9 @@ function readSnapshot(machine: Machine): SessionSnapshot | null {
 function readRoster(): Machine[] {
   return machines.map((machine) => {
     const order = orderOf(machine.id);
-    const { source_boot_id: _proof, ...rest } = machine;
+    const { source_boot_id: _proof, ...withoutId } = machine;
+    // with the device routes on, the Host carries the fictional relay ID My devices shows at its top
+    const rest = DEVICE_STATE !== null && machine.kind === "local" ? { ...withoutId, server_id: demoRelayServerId() } : withoutId;
     if (order.legacy) return { ...rest, snapshot: readSnapshot(machine) };
     // a restart its manager has not proved yet: the cache keeps the last accepted server's read
     if (order.epoch !== order.accepted) return { ...rest, snapshot: structuredClone(order.cached), source_boot_id: order.accepted };
@@ -1150,6 +1152,7 @@ function usageReport(): UsageReport {
  * it, the phone enters the code a moment later, as a visitor to the demo expects.
  */
 const DEVICE_STATE = new URLSearchParams(location.search).get("demo_devices");
+const ACCOUNT_MEMBER = new URLSearchParams(location.search).get("demo_account") === "member";
 const CONNECTION_DROPS = new URLSearchParams(location.search).get("demo_connection") === "drops";
 let connectionLost = false;
 /** `?demo_connection=switch`: the page loses the bridge connection with `herdrDemoLoseConnection()` and lets it
@@ -1238,7 +1241,10 @@ const DEMO_RELAY_PUBLIC_KEY = btoa(String.fromCharCode(...Array.from({ length: 3
 let demoRelayOnline = new URLSearchParams(location.search).get("demo_relay") === "on";
 let demoRelayIdentities = 1;
 const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padStart(4, "0")}5e1f1d0ff3ab1e0ff3ab1e5e1f1d`;
-const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null });
+/** direct connections on the PC's network: on by default; the demo listens nowhere, so it names no carrier */
+let demoRelayDirect = true;
+const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null,
+  direct: { on: demoRelayDirect, carriers: [] } });
 /** POST /api/relay/offer: the pending code inside an offer for the fictional identity, as the server reuses it */
 function demoRelayOffer(): Response {
   if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
@@ -1292,6 +1298,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     }
     return json(startDemoPairing(), 200, { "cache-control": "no-store" });
   }
+  // `?demo_account=member`: this PC belongs to an account, so a signed-in Settings offers joining by signing in
+  if (path === "/api/account/status" && ACCOUNT_MEMBER) return json({ account: "demo-account", unlinked: [], removals: [], adds: [], blocked: [] }, 200, { "cache-control": "no-store" });
   // without `?demo_devices=` the demo answers no other device route: its /api/devices stays a 404, as before
   if (DEVICE_STATE !== null) {
     if (path === "/api/devices") {
@@ -1354,7 +1362,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
-    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel") {
+    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
@@ -1371,6 +1379,13 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
     // no phone ever compares digits with the demo, so none is waiting to be approved
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
+    if (path === "/api/relay/direct") {
+      const body = await layoutBodyOf(method, init, input);
+      if (body instanceof Response) return body;
+      if (typeof body.on !== "boolean") return error("invalid_relay_direct", "Send { on: true } or { on: false }.", 400);
+      demoRelayDirect = body.on;
+      return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
+    }
     if (path === "/api/relay/start") demoRelayOnline = true;
     else if (path === "/api/relay/stop") demoRelayOnline = false;
     // a new identity: the offers made so far name a PC that no longer exists; the link stays as it was

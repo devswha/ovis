@@ -607,9 +607,8 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
  * the terminal alone; each choice is kept through a reload.
  */
 /**
- * Signed in on a PC's own page, Settings > Devices and PCs lists the account's PCs as the relay
- * shell does: one row each with a hairline under it, though the relay shell's own styles are not
- * loaded there. The sign-in is a fixture in this page's IndexedDB and the account service a route
+ * Signed in on a PC's own page, Settings > Devices and PCs lists the account's PCs in My devices, one
+ * row each with a hairline under it and a PC pill, after this PC; the Account group lists none of its own. The sign-in is a fixture in this page's IndexedDB and the account service a route
  * of this context: nothing reaches GitHub or account.ovis.sh.
  */
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
@@ -650,13 +649,16 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       }), service);
       await openSettings(page);
       await openSettingsPage(page, "Devices and PCs");
-      const list = page.locator("[data-section='account'] .relay-shell-pcs");
-      await list.locator(".relay-shell-pc").nth(1).waitFor();
+      const list = page.locator("[data-section='devices'] .my-pcs");
+      const accountRows = list.locator(".devices-row").filter({ hasText: /home-server|office-mac/ });
+      await accountRows.nth(1).waitFor();
+      assert.deepEqual(await accountRows.locator(".devices-kind").allTextContents(), ["PC", "PC"], `each account PC is marked PC (${width}px, ${theme})`);
       const style = await list.evaluate((node) => {
-        const row = node.querySelector(".relay-shell-pc")!;
+        const row = node.querySelector(".devices-row:not([data-testid='this-pc'])")!;
         return { listStyle: getComputedStyle(node).listStyleType, display: getComputedStyle(row).display, border: getComputedStyle(row).borderBottomStyle };
       });
-      assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in Settings (${width}px, ${theme})`);
+      assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in My devices (${width}px, ${theme})`);
+      assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
       if (process.env.UI_EVIDENCE_DIR) {
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
@@ -666,7 +668,95 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       await context.close();
     }
   }
-  console.log("PASS the account's PCs in Settings are styled rows at 390 and 1280px, light and dark");
+  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark");
+}
+
+/**
+ * Continue with Google on a PC's own page: the button shows under GitHub's only while the account
+ * service lists Google for a PC's page (`GET /v1/providers`), and once signed in the Account group
+ * lists the account's ways to sign in, with Remove on every one but the one this page signed in
+ * with. The account service is a route of this context: nothing reaches Google, GitHub or account.ovis.sh.
+ */
+async function accountGoogle(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const service = "https://account.ovis.sh";
+  for (const width of [390, 1280] as const) {
+    for (const offered of [["github", "google"], ["github"]] as const) {
+      for (const signedIn of [false, true]) {
+        if (signedIn && offered.length === 1) continue;
+        const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+        try {
+          await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme: "light" }));
+          await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
+            const response = await route.fetch();
+            await route.fulfill({ response, body: (await response.text()).replace("</head>", `<meta name="ovis-pc-account-service" content="${service}" />\n</head>`) });
+          });
+          await context.route(`${service}/**`, (route) => {
+            const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
+            if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+            switch (new URL(route.request().url()).pathname) {
+              case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
+              case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
+              case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [
+                { provider: "github", added_at: "2026-11-01T00:00:00Z" },
+                { provider: "google", added_at: "2026-11-06T00:00:00Z" },
+              ] } });
+              default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
+            }
+          });
+          const page = await context.newPage();
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(url);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (signedIn) {
+            await page.evaluate((service) => new Promise<void>((resolve, reject) => {
+              const request = indexedDB.open("ovis-account", 1);
+              request.onupgradeneeded = () => { request.result.createObjectStore("account"); };
+              request.onerror = () => reject(request.error);
+              request.onsuccess = () => {
+                const tx = request.result.transaction("account", "readwrite");
+                tx.objectStore("account").put({ service, account: "fixture", provider: "google", access_token: "fixture-access", refresh_token: "fixture-refresh", expires_at: Date.now() + 3_600_000 }, "session");
+                tx.oncomplete = () => { request.result.close(); resolve(); };
+                tx.onabort = () => reject(tx.error);
+              };
+            }), service);
+          }
+          await openSettings(page);
+          await openSettingsPage(page, "Devices and PCs");
+          const account = page.locator("[data-section='account']");
+          const shot = async (name: string) => {
+            if (!process.env.UI_EVIDENCE_DIR) return;
+            await account.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
+          };
+          if (!signedIn) {
+            const buttons = account.locator(".account-provider");
+            if (offered.length === 2) {
+              await buttons.nth(1).waitFor();
+              assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub", "Continue with Google"], `Google sits under GitHub (${width}px)`);
+              assert.equal(await account.locator("[data-provider='google'] svg path").count(), 4, "Google's G keeps its four colours");
+              await shot("account-google-signin");
+            } else {
+              // once the service's answer is on screen, GitHub stays alone
+              await account.locator("[data-offer='service'] .account-provider").first().waitFor();
+              assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub"], `no Google button while the service offers none (${width}px)`);
+            }
+          } else {
+            const methods = account.locator(".account-method");
+            await methods.nth(1).waitFor();
+            assert.equal(await account.getByText("Signed in with Google").count(), 1, "the account row names Google");
+            assert.deepEqual(await methods.evaluateAll((rows) => rows.map((row) => [row.getAttribute("data-provider"), row.querySelector("button") !== null])), [["github", true], ["google", false]],
+              "every way to sign in can be removed but the one this page signed in with");
+            await shot("account-google-methods");
+          }
+          assert.deepEqual(errors, []);
+        } finally {
+          await context.close();
+        }
+      }
+    }
+  }
+  console.log("PASS Continue with Google shows under GitHub only while the service offers it, and the account lists its ways to sign in, at 390 and 1280px");
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {
@@ -1319,6 +1409,7 @@ try {
       await foldedGroups(browser, url);
       await mergedRows(browser, url);
       await accountPcList(browser, url);
+      await accountGoogle(browser, url);
       await heldGroupLanding(browser, devUrl);
     } finally {
       await browser.close();
