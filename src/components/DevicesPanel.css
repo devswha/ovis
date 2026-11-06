@@ -187,3 +187,9 @@
 .my-devices .devices-panel > .devices-revoke-all {
   order: 2;
 }
+
+/* Add a connection: the page's one way to connect anything, under the list it adds to */
+.devices-add .btn {
+  width: 100%;
+  justify-content: center;
+}
