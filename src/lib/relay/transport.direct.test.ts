@@ -195,6 +195,53 @@ describe("probing again", () => {
   });
 });
 
+describe("a planned switch", () => {
+  it("is not reported as a lost carrier, a real loss is", async () => {
+    const pc = await pcFixture();
+    const losses: Error[] = [];
+    const moved = pc.opened().then(() => pc.opened());
+    await transportFor(pc, new MemoryStore(), pc.offer, { onClose: (error) => losses.push(error) });
+    const direct = await moved;
+    expect(direct.direct).toBeDefined();
+    expect(losses).toEqual([]);
+    const back = pc.opened();
+    direct.close();
+    await back;
+    expect(losses).toHaveLength(1);
+  });
+
+  it("waits until no WebSocket sent anything for three seconds", async () => {
+    // Given a phone on the relay, its PC's direct carrier not answering yet, and a terminal socket open
+    const pc = await pcFixture();
+    const clock = new TestClock();
+    let reachable = false;
+    let probed = deferred<void>();
+    const socketFor = (url: string): WebSocket => {
+      const socket = new WebSocket(reachable ? url.replace(`ws://${LAN}:`, "ws://127.0.0.1:") : "ws://127.0.0.1:1/v1/ws?v=1");
+      socket.addEventListener("close", () => probed.resolve());
+      return socket;
+    };
+    const transport = await transportFor(pc, new MemoryStore(), pc.offer, { directSocket: socketFor, clock });
+    await probed.promise;
+    const terminal = transport.openSocket("/ws");
+    cleanup.push(() => terminal.close());
+    await bounded(new Promise<void>((resolve, reject) => { terminal.onopen = () => resolve(); terminal.onclose = () => reject(new Error("closed")); }));
+    // When the carrier answers and the next probe comes right after someone typed
+    reachable = true;
+    probed = deferred<void>();
+    terminal.send(JSON.stringify({ type: "ping" }));
+    const before = pc.channels.length;
+    const moved = pc.opened();
+    globalThis.dispatchEvent(new Event("online"));
+    await bounded(probed.promise);
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    // Then it does not switch yet, and does once the socket has been quiet past the next check
+    expect(pc.channels.length).toBe(before);
+    clock.advance(5_000);
+    expect((await moved).direct).toBeDefined();
+  });
+});
+
 describe("what holds a switch back", () => {
   it("counts a request that only mentions event streams in its Accept header", async () => {
     const pc = await pcFixture();
