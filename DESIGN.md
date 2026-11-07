@@ -3721,7 +3721,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   About links the repository.
 - In the hosted relay shell (app.ovis.sh, `<meta name="ovis-shell">`, lib/shellMode.ts) the page
   opens with a **This app** group of two rows the native build never shows: **Change PC** (a neutral button to the
-  shell's front page, which lists every paired PC, the same row the iOS app gets for its own list)
+  shell's front page: the paired-PC list, or, signed out where the account service runs, the sign-in
+  screen with that list behind **Continue without an account**; the same row the iOS app gets for
+  its own list)
   and **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
