@@ -55,7 +55,14 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
   // the keyboard step and snap distance: a head's row, Agents' since the PCs have no head
   const row = Math.round(above.row || under.row) || 1;
   const rowHeight = (section: HTMLElement, side: SplitSide) => {
-    const agent = sectionAt(side, order) === "agents" ? section.querySelector(".agent-row") : null;
+    if (sectionAt(side, order) === "pcs") {
+      // no heading: the minimum is the section's top padding and its first row whole, a two-line row too
+      const list = section.querySelector(".machine-list");
+      const first = list?.querySelector(":is(.machine-header, .workspace-header, .machine-new-row)");
+      if (!list || !first) return row;
+      return Math.ceil(list.getBoundingClientRect().top - section.getBoundingClientRect().top + first.getBoundingClientRect().height);
+    }
+    const agent = section.querySelector(".agent-row");
     return agent ? parseFloat(getComputedStyle(agent).minHeight) || row : row;
   };
   return {

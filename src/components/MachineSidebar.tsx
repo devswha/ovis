@@ -204,12 +204,19 @@ export function MachineSidebar(props: Props) {
   };
   // Manage PC's Hide on this device is Settings → Devices and PCs → Show in sidebar turned off, with its rules: the last
   // PC shown is not offered, and App moves a selection off the PC. The PC's header goes with it, so the focus goes
-  // to the list's first row that takes it rather than falling to the page
+  // to the list's first row that takes it (one a filter or an offline PC's inert roster leaves out is skipped), else
+  // the Settings gear, rather than falling to the page
   const focusListAfterHide = useRef(false);
   useEffect(() => {
     if (!focusListAfterHide.current) return;
     focusListAfterHide.current = false;
-    machineList.current?.querySelector<HTMLElement>(':is(button:not([disabled]), [role="button"][tabindex="0"])')?.focus({ preventScroll: true });
+    const rows = machineList.current?.querySelectorAll<HTMLElement>(':is(button:not([disabled]), [role="button"][tabindex="0"])') ?? [];
+    const gear = shell.current?.querySelector<HTMLElement>(".sidebar-footer-settings") ?? null;
+    for (const target of [...rows, gear]) {
+      if (target === null || target.closest("[inert], [hidden]") !== null || target.getClientRects().length === 0) continue;
+      target.focus({ preventScroll: true });
+      if (document.activeElement === target) return;
+    }
   });
   const hideMachine = (id: string) => {
     focusListAfterHide.current = true;

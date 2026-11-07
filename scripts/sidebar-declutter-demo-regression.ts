@@ -215,7 +215,23 @@ async function twoPcs(browser: Browser, scene: Scene): Promise<void> {
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  console.log(`PASS ${sceneName(scene)}: two PCs keep both headers; the Host shown alone of two has none; a lone remote PC keeps its own`);
+  {
+    // Hide on this device for Work PC while the Host is offline: the lone Host left has no row that takes the focus,
+    // and the focus still lands in the sidebar (the Settings gear), not the page
+    const { context, page, errors } = await newPage(browser, scene, "pcs=2&offline=1");
+    try {
+      const work = page.locator('section.machine-group[aria-label="PC Work PC"] .machine-header');
+      await work.waitFor();
+      if (!scene.phone) await work.hover();
+      await work.locator(".machine-manage").click();
+      await page.locator(".row-menu, .row-sheet").getByText("Hide on this device", { exact: true }).click();
+      await work.waitFor({ state: "detached" });
+      await page.waitForFunction(() => document.activeElement !== null && document.activeElement !== document.body && document.activeElement.closest(".sidebar") !== null, undefined, { timeout: 5000 })
+        .catch(async () => assert.fail(`the focus fell to ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80) ?? "nothing")}`));
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+  }
+  console.log(`PASS ${sceneName(scene)}: two PCs keep both headers; the Host shown alone of two has none; a lone remote PC keeps its own; hiding one keeps the focus in the sidebar`);
 }
 
 async function paletteFilter(page: Page): Promise<void> {
