@@ -443,10 +443,17 @@ export class Room<S extends object> {
     for (const peer of this.peers(true)) if (peer.info.role === "warm") this.end(peer.socket, CLOSE.GOING_AWAY, reason);
   }
 
-  /** this room's server_id, from any of its sockets */
+  /** this room's server_id, from any of its sockets (a room is one server_id's, so it is kept once found) */
+  private roomServerId: string | undefined;
   private serverId(): string | undefined {
-    for (const peer of this.peers(true)) if (peer.info.server_id !== undefined) return peer.info.server_id;
-    return undefined;
+    if (this.roomServerId === undefined) for (const peer of this.peers(true)) if (peer.info.server_id !== undefined) { this.roomServerId = peer.info.server_id; break; }
+    return this.roomServerId;
+  }
+
+  /** whether passes are enforced now and none authorizes the room: then nothing more passes until the sweep closed its PC sockets */
+  private lapsed(now: number): boolean {
+    const pass = this.host.pass;
+    return pass !== undefined && pass.policy.mode !== "off" && passMode(pass.policy, now) === "enforce" && !this.authorized(now);
   }
 
   /**
@@ -559,6 +566,11 @@ export class Room<S extends object> {
     const size = byteLength(frame);
     if (size > MAX_MESSAGE_BYTES) return this.end(socket, CLOSE.TOO_BIG, "message too big");
     const now = this.host.now();
+    // the pass ran out (or enforcement began) since the last sweep: the room's PC sockets close before this frame goes anywhere
+    if (this.lapsed(now)) {
+      this.sweepPass(now);
+      if (this.ended.has(socket)) return;
+    }
     this.lastSeen.set(socket, now);
     if (now - info.seen >= SEEN_WRITE_MS) this.host.setInfo(socket, { ...info, seen: now });
     if (frame === KEEPALIVE_PING) return this.host.send(socket, KEEPALIVE_PONG);
@@ -685,7 +697,9 @@ export class Room<S extends object> {
     const auth = pass.until();
     const serverId = this.serverId();
     const reason = auth === null ? RELAY_PASS_REQUIRED : now < auth.until + PASS_SKEW_MS || (serverId !== undefined && pass.policy.revoked.has(serverId)) ? RELAY_PASS_INVALID : RELAY_PASS_EXPIRED;
-    for (const peer of this.peers(true)) {
+    // warm sockets first: closing the control socket first would end them 1001 instead of saying why
+    const peers = this.peers(true).sort((a, b) => Number(b.info.role === "warm") - Number(a.info.role === "warm"));
+    for (const peer of peers) {
       if (peer.info.role === "client" || (peer.info.proof && peer.info.pass_exp !== undefined && now < peer.info.pass_exp + PASS_SKEW_MS)) continue;
       this.end(peer.socket, CLOSE.RELAY_PASS, reason);
     }

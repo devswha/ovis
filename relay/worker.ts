@@ -13,7 +13,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, passRefusal, type Frame, type RateLimiter, type RoomAuthorization, type RoomHost, type SocketInfo, type UsageReport } from "./core.ts";
-import { passPolicy, type PassPolicy, type PassResult, type PassSettings } from "./pass.ts";
+import { PASS_OFF, passPolicy, type PassPolicy, type PassResult, type PassSettings } from "./pass.ts";
 import { PairRoom, isPairInfo, parsePairRequest, type PairInfo } from "./pair-room.ts";
 
 /** the part of a Cloudflare server-side WebSocket the relay uses */
@@ -63,7 +63,11 @@ let policyCache: { key: string; policy: Promise<PassPolicy> } | undefined;
 /** The pass policy of these settings, read once per isolate. */
 export function policyOf(env: PassSettings): Promise<PassPolicy> {
   const key = JSON.stringify([env.RELAY_PASS_MODE, env.RELAY_PASS_ENFORCE_AT, env.RELAY_PASS_KEYS, env.RELAY_PASS_REVOKED]);
-  if (policyCache?.key !== key) policyCache = { key, policy: passPolicy(env) };
+  // settings that do not parse turn passes off rather than stop the relay routing anything
+  if (policyCache?.key !== key) policyCache = { key, policy: passPolicy(env).catch((error: unknown) => {
+    console.error(JSON.stringify({ event: "relay.pass.settings_invalid", error: error instanceof Error ? error.message : String(error) }));
+    return PASS_OFF;
+  }) };
   return policyCache.policy;
 }
 
@@ -129,14 +133,22 @@ export class RelayRoom {
   /** the pass policy and this room's authorization, read before the first event reaches the object */
   private policy: PassPolicy | undefined;
   private passUntil: RoomAuthorization | null = null;
+  /** the saved authorization, read once and only for a PC's room while passes are on: off, and pairing rooms, never touch storage */
+  private passLoad: Promise<void> | undefined;
+  private passLoaded = false;
 
-  constructor(private readonly state: RelayState, env?: Pick<Env, "USAGE"> & PassSettings) {
-    void state.blockConcurrencyWhile(async () => {
-      this.policy = env ? await policyOf(env) : undefined;
-      const saved = await state.storage.get<unknown>(PASS_UNTIL);
+  private loadPass(): Promise<void> | undefined {
+    if (this.passLoaded || !this.policy || this.policy.mode === "off") return undefined;
+    this.passLoad ??= this.state.storage.get<unknown>(PASS_UNTIL).then((saved) => {
       const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
       this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid } : null;
+      this.passLoaded = true;
     });
+    return this.passLoad;
+  }
+
+  constructor(private readonly state: RelayState, env?: Pick<Env, "USAGE"> & PassSettings) {
+    void state.blockConcurrencyWhile(async () => { this.policy = env ? await policyOf(env) : undefined; });
     const room = this;
     state.setWebSocketAutoResponse(new (runtime().WebSocketRequestResponsePair)(KEEPALIVE_PING, KEEPALIVE_PONG));
     const infos = new WeakMap<HibernatableSocket, SocketInfo>();
@@ -221,6 +233,7 @@ export class RelayRoom {
     this.state.acceptWebSocket(pair[1]);
     if ("kind" in socket) this.pairRoom.open(pair[1], socket);
     else {
+      await this.loadPass();
       let pass: unknown;
       try { pass = JSON.parse(request.headers.get(PASS_CHECKED) ?? "null"); } catch { pass = null; }
       this.room.open(pair[1], isPassResult(pass) ? { ...socket, pass } : socket);
@@ -245,8 +258,9 @@ export class RelayRoom {
   }
 
   webSocketMessage(socket: HibernatableSocket, message: string | ArrayBuffer): void | Promise<void> {
-    if (this.pairRoom.owns(socket)) this.pairRoom.message(socket, message);
-    else return this.room.message(socket, message);
+    if (this.pairRoom.owns(socket)) return this.pairRoom.message(socket, message);
+    const loading = this.loadPass();
+    return loading ? loading.then(() => this.room.message(socket, message)) : this.room.message(socket, message);
   }
 
   webSocketClose(socket: HibernatableSocket, code?: number, reason?: string, _wasClean?: boolean): void {
@@ -265,6 +279,7 @@ export class RelayRoom {
   }
 
   async alarm(): Promise<void> {
+    if (!this.room.empty) await this.loadPass();
     const roomNext = this.room.sweep();
     const pairNext = this.pairRoom.sweep();
     const next = roomNext === null ? pairNext : pairNext === null ? roomNext : Math.min(roomNext, pairNext);

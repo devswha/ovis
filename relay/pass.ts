@@ -40,14 +40,28 @@ export function passMode(policy: PassPolicy, now: number): PassMode {
   return policy.mode === "grace" && policy.enforceAt !== null && now >= policy.enforceAt ? "enforce" : policy.mode;
 }
 
-/** The policy the settings name; anything malformed throws, so a relay never runs with a policy it did not mean. */
+/** An ISO 8601 UTC instant (`2027-01-01T00:00:00Z`, seconds and milliseconds optional) in ms, or undefined for anything else, an impossible day included. */
+function isoUtc(text: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z$/.test(text)) return undefined;
+  const at = Date.parse(text);
+  return Number.isFinite(at) && new Date(at).toISOString().slice(0, 16) === text.slice(0, 16) ? at : undefined;
+}
+
+/**
+ * The policy the settings name. An unknown mode is off, with a log line; other settings that do not
+ * parse throw (the Bun relay then does not start; the Worker logs it and runs with passes off, so it
+ * never stops routing).
+ */
 export async function passPolicy(settings: PassSettings): Promise<PassPolicy> {
   const mode = settings.RELAY_PASS_MODE?.trim() || "off";
-  if (mode !== "off" && mode !== "grace" && mode !== "enforce") throw new Error("RELAY_PASS_MODE must be off, grace or enforce");
+  if (mode !== "off" && mode !== "grace" && mode !== "enforce") {
+    console.error(JSON.stringify({ event: "relay.pass.mode_unknown", mode: mode.slice(0, 32), using: "off" }));
+    return PASS_OFF;
+  }
   if (mode === "off") return PASS_OFF;
   const at = settings.RELAY_PASS_ENFORCE_AT?.trim();
-  const enforceAt = at ? Date.parse(at) : null;
-  if (enforceAt !== null && !Number.isFinite(enforceAt)) throw new Error("RELAY_PASS_ENFORCE_AT must be an ISO date");
+  const enforceAt = at ? isoUtc(at) : null;
+  if (enforceAt !== null && enforceAt === undefined) throw new Error("RELAY_PASS_ENFORCE_AT must be an ISO 8601 UTC date such as 2027-01-01T00:00:00Z");
   const keys = new Map<string, CryptoKey>();
   for (const entry of (settings.RELAY_PASS_KEYS ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
     const [kid, hex, extra] = entry.split(":");

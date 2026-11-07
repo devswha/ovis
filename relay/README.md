@@ -99,9 +99,14 @@ signed-in account lists. Phones and browsers never need one, and the frames stay
 whatever the pass says. The setting is off unless the relay's operator turns it on; a relay you run
 yourself stays open.
 
+**Keep it off on Ovis's relays for now.** Nothing issues passes yet and no PC sends one: turning on
+`grace` would only add a notice, but `enforce` would refuse every PC. It stays `off` until the
+account service issues passes, PCs fetch and renew them in a release most PCs run, and typed-code
+pairing hosts (`/v1/pair`, which take no pass yet: see below) are bound to the PC's key.
+
 - **The pass.** `ovp1.<payload>.<signature>`, base64url. The payload is JSON with exactly `v` (1),
   `kid`, `aud` (`ovis-relay`), `sid` (the PC's `server_id`), `iat` and `exp` (seconds; 48 hours
-  apart); the signature is Ed25519 over `ovis-relay-pass/1.` followed by the payload's text. It names
+  apart, and a relay refuses one good for longer); the signature is Ed25519 over `ovis-relay-pass/1.` followed by the payload's text. It names
   no account.
 - **Sending it.** The PC puts it in the `x-ovis-relay-pass` header of every PC socket's upgrade
   (control, data, warm), never in the URL. A pass alone opens nothing: the socket still answers the
@@ -120,10 +125,19 @@ yourself stays open.
   that holds, to a client's `assigned` (`missing`), so the app can say so; older PCs read neither.
   `enforce` closes a PC socket without a pass that holds `4402` (on Cloudflare in the Worker, before
   any Durable Object), and a room whose pass ran out closes its PC sockets `4402` (its clients with
-  them). `grace` turns into `enforce` at `RELAY_PASS_ENFORCE_AT` (`--pass-enforce-at`, an ISO
-  date). `RELAY_PASS_KEYS` (`--pass-keys`) is `kid:hex[,kid:hex]`, the Ed25519 public keys;
-  `RELAY_PASS_REVOKED` (`--pass-revoked`) lists `server_id`s refused whatever their pass. Settings
-  that do not parse stop the relay from starting.
+  them), warm sockets first, so each hears why. A frame that arrives after the room's pass ran out goes
+  nowhere: the room's PC sockets close first, without waiting for the sweep. `grace` turns into
+  `enforce` at `RELAY_PASS_ENFORCE_AT` (`--pass-enforce-at`, an ISO 8601 UTC instant such as
+  `2027-01-01T00:00:00Z`), and the room wakes then. `RELAY_PASS_KEYS` (`--pass-keys`) is `kid:hex[,kid:hex]`, the Ed25519 public keys;
+  `RELAY_PASS_REVOKED` (`--pass-revoked`) lists `server_id`s refused whatever their pass. An unknown
+  mode is `off`, with a log line. Other settings that do not parse stop the Bun relay from starting;
+  the Worker logs them and runs with passes off, so it never stops routing.
+- **Not covered yet: typed-code pairing hosts.** A `/v1/pair` host takes no pass and proves no PC
+  key, so even `enforce` leaves the typed-code rendezvous open (it carries only the pairing exchange,
+  at most 11 minutes a nameplate). Binding the host to a proven PC key with a pass comes before any
+  Ovis relay enforces passes.
+- **Storage.** With passes off, and for pairing rooms always, the Durable Object never reads its
+  storage.
 
 ## Limits and close codes
 

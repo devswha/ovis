@@ -325,8 +325,14 @@ describe("relay pass on the Bun relay", () => {
     } finally { await enforced.stop(); }
   });
 
-  test("malformed pass settings stop the relay from starting", async () => {
-    await expect(passPolicy(relayPassFromArgs(["--pass-mode", "strict"], {}))).rejects.toThrow();
+  test("an unknown mode is off; other pass settings that do not parse stop the Bun relay from starting", async () => {
+    expect((await passPolicy(relayPassFromArgs(["--pass-mode", "strict"], {}))).mode).toBe("off");
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const hex = Array.from(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    for (const at of ["04 Dec 2027 00:12:00 GMT", "2027-02-30T00:00:00Z", "2027-01-01", "2027-01-01T00:00:00+09:00"]) {
+      await expect(passPolicy({ RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: `0badc0de:${hex}`, RELAY_PASS_ENFORCE_AT: at })).rejects.toThrow();
+    }
+    expect((await passPolicy({ RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: `0badc0de:${hex}`, RELAY_PASS_ENFORCE_AT: "2027-01-01T00:00:00Z" })).enforceAt).toBe(Date.parse("2027-01-01T00:00:00Z"));
     await expect(passPolicy(relayPassFromArgs(["--pass-mode", "enforce"], {}))).rejects.toThrow();
     await expect(passPolicy(relayPassFromArgs([], { RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: "0badc0de:00", RELAY_PASS_ENFORCE_AT: "soon" }))).rejects.toThrow();
     expect((await passPolicy(relayPassFromArgs([], {}))).mode).toBe("off");

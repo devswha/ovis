@@ -26,6 +26,15 @@ test("a pass the service signed holds for its PC until it expires, with the skew
   expect(await checkRelayPass(pass, keys, SID, NOW + RELAY_PASS_LIFETIME_S + RELAY_PASS_SKEW_S)).toEqual({ ok: false, reason: RELAY_PASS_EXPIRED });
 });
 
+test("a pass good for longer than the service issues them is refused", async () => {
+  const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const keys = new Map([["a1b2c3d4", await importRelayPassKey(Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join(""))]]);
+  const long = await signRelayPass(pair.privateKey, "a1b2c3d4", SID, NOW, RELAY_PASS_LIFETIME_S + 1);
+  expect(await checkRelayPass(long, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_INVALID });
+  expect((await checkRelayPass(await signRelayPass(pair.privateKey, "a1b2c3d4", SID, NOW, RELAY_PASS_LIFETIME_S), keys, SID, NOW)).ok).toBe(true);
+});
+
 test("no pass is required, not invalid", async () => {
   const { keys } = await issuer();
   for (const missing of [null, undefined, ""]) expect(await checkRelayPass(missing, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_REQUIRED });

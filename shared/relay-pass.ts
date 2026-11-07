@@ -114,6 +114,8 @@ export async function checkRelayPass(text: string | null | undefined, keys: Read
   const pass = parseRelayPass(text);
   const key = pass ? keys.get(pass.payload.kid) : undefined;
   if (!pass || !key || pass.payload.sid !== serverId || pass.payload.iat > now + RELAY_PASS_SKEW_S) return { ok: false, reason: RELAY_PASS_INVALID };
+  // no pass is good for longer than the account service issues them
+  if (pass.payload.exp - pass.payload.iat > RELAY_PASS_LIFETIME_S) return { ok: false, reason: RELAY_PASS_INVALID };
   if (pass.payload.exp + RELAY_PASS_SKEW_S <= now) return { ok: false, reason: RELAY_PASS_EXPIRED };
   try {
     if (!(await crypto.subtle.verify({ name: "Ed25519" }, key, pass.signature, pass.signed))) return { ok: false, reason: RELAY_PASS_INVALID };
