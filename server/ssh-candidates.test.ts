@@ -56,6 +56,16 @@ it("lists the hosts a config names with their first HostName and User, leaving o
   ]);
 });
 
+it("leaves out an alias a negated pattern on its own Host line matches, as ssh does", async () => {
+  expect(await sshConfigHosts("Host web01 !web*\n  User skipped\nHost db01 !web*\n  User kept\n")).toEqual([{ alias: "db01", hostname: null, user: "kept" }]);
+});
+
+it("starts each file one Include names in the Host block of the Include", async () => {
+  const dir = sshDir({ config: "Host lab\n  Include a b\n", a: "Host other\n", b: "User alice\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => null });
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail])).toEqual([["lab", "alice@lab"], ["other", null]]);
+});
+
 it("stops a line at a word that starts a comment", async () => {
   expect(await sshConfigHosts("Host lab # work machine\n  HostName lab.example # the desk\n")).toEqual([{ alias: "lab", hostname: "lab.example", user: null }]);
 });

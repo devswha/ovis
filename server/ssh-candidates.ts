@@ -41,6 +41,9 @@ export interface SshCandidatesOptions {
   readStatus?: () => Promise<string | null>;
 }
 
+/** an ssh Host pattern (`*` any run, `?` one character) as a regular expression; ssh compares host names in lowercase */
+const globPattern = (pattern: string): RegExp => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
+
 /** a Host pattern that names one host, not a set of them */
 const plainAlias = (pattern: string): boolean => pattern !== "" && !/[*?!]/.test(pattern);
 
@@ -78,8 +81,10 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
       if (parsed === null) continue;
       if (parsed.key === "host") {
         inMatch = false;
-        // `Host valid server-*` still names `valid`; `Host a !a` names nothing
-        current = { aliases: parsed.values.filter((value) => plainAlias(value) && !parsed.values.includes(`!${value}`)) };
+        // `Host valid server-*` still names `valid`; a negated pattern on the line leaves out each alias it matches
+        // (`Host web01 !web*` names nothing), as ssh never applies the block to that host
+        const negated = parsed.values.filter((value) => value.startsWith("!")).map((value) => globPattern(value.slice(1)));
+        current = { aliases: parsed.values.filter((value) => plainAlias(value) && !negated.some((pattern) => pattern.test(value))) };
         blocks.push(current);
       } else if (parsed.key === "match") {
         inMatch = true;
@@ -89,7 +94,11 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
         // before a Host line of its own are that block's), and the including file's block goes on after it
         const [outer, outerMatch] = [current, inMatch];
         for (const pattern of parsed.values) {
-          for (const included of await include(pattern)) await walk(included, depth + 1);
+          // each file starts in the Include's own block: a Host line in one file does not carry into the next
+          for (const included of await include(pattern)) {
+            [current, inMatch] = [outer, outerMatch];
+            await walk(included, depth + 1);
+          }
         }
         [current, inMatch] = [outer, outerMatch];
       } else if (current !== null && !inMatch) {

@@ -1592,6 +1592,10 @@ export async function machineRequest<T>(path: string, method = "GET", body?: unk
 export interface SshCandidate { readonly name: string; readonly destination: string; readonly detail: string | null; readonly source: "ssh_config" | "tailscale" }
 /** GET /api/machines/ssh-candidates: Add a connection → SSH's list, each added through the Add PC dialog. */
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
+/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
+/** GET /api/machines/tailnet: those PCs, each asked over Tailscale which Ovis it runs. */
+export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);

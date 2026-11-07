@@ -90,6 +90,24 @@ function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch 
   );
 }
 
+/**
+ * A fetch for the account service's first request that reports whether the service can be reached: an answer
+ * other than a server error says it can (offeredProviders falls back quietly on any).
+ */
+export function reachabilityProbe(report: (reachable: boolean) => void, fetchImpl: typeof fetch = fetch): (input: Request | string | URL, init?: RequestInit) => Promise<Response> {
+  return async (input, init) => {
+    try {
+      const response = await fetchImpl(input, init);
+      // a server error (a 503 while it is down or restarting) is no service to sign in to
+      report(response.status < 500);
+      return response;
+    } catch (error) {
+      report(false);
+      throw error;
+    }
+  };
+}
+
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
 export interface AccountState {
   signedIn: boolean; account: string | null; pcs: MyPc[] | null;
@@ -129,17 +147,7 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
   useEffect(() => {
     if (service === null) return;
     let live = true;
-    // the service answering at all, whatever it answers, is what tells it can be reached (offeredProviders falls back quietly)
-    const probe = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
-      try {
-        const response = await fetch(input, init);
-        if (live) setUnreachable(false);
-        return response;
-      } catch (error) {
-        if (live) setUnreachable(true);
-        throw error;
-      }
-    };
+    const probe = reachabilityProbe((reachable) => { if (live) setUnreachable(!reachable); });
     offeredProviders(service, fallbackKey.split(",") as AccountProvider[], { fetch: probe }).then((offered) => { if (live) setOffer(offered); }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
     return () => { live = false; };
   }, [service, fallbackKey]);
