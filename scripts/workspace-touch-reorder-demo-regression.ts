@@ -697,7 +697,12 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+      // the demo's timeline raises a finish droplet over the top of the screen at its own moment, where the first
+      // pinned row now sits (the PCs list has no head above it); the checks are of the rows, not the droplet
+      await context.addInitScript(() => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+        document.addEventListener("DOMContentLoaded", () => { const style = document.createElement("style"); style.textContent = ".droplet { display: none !important; }"; document.head.append(style); });
+      });
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
