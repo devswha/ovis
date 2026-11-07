@@ -226,8 +226,10 @@ interface PinMenu { key: string; anchor: HTMLElement; point?: { x: number; y: nu
  */
 export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stateWord, watching = false, foldRequest = null, listId: givenListId, onSelect }: AgentSidebarProps) {
   const t = useT();
-  // a waiting row says how long it has waited: from the change this page saw, or from when it first saw the row waiting
-  const waitingSince = useRef(new Map<string, number>());
+  // a waiting row says how long it has waited, only when this page saw the wait begin: herdr reports no time of change,
+  // so a row already waiting when the page opened (a reload, another device) says nothing rather than a wrong "<1m"
+  const [waitStarts, setWaitStarts] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const lastStatus = useRef<Map<string, AgentStatus | undefined> | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [ticking, setTicking] = useState(false);
   useEffect(() => {
@@ -300,15 +302,28 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     return [...families.filter(waits), ...families.filter((family) => !waits(family))].flat();
   }, [settings.agentOrder, groups, named, parts, rowStatus]);
   // read from every row, the filtered-out ones too, so a wait that ended out of sight starts again when it returns
-  const waiting = new Set<string>();
-  for (const row of allRows) if (rowStatus(row) === "blocked") waiting.add(sidebarPinKey(row.machine.id, row.entry.pane.pane_id));
-  for (const key of [...waitingSince.current.keys()]) if (!waiting.has(key)) waitingSince.current.delete(key);
-  for (const key of waiting) if (!waitingSince.current.has(key)) waitingSince.current.set(key, Date.now());
+  const statuses = allRows.map((row) => [sidebarPinKey(row.machine.id, row.entry.pane.pane_id), rowStatus(row)] as const);
+  const statusSignature = statuses.map(([key, status]) => `${key}=${status ?? ""}`).join("\n");
+  useEffect(() => {
+    const seen = lastStatus.current;
+    const at = Date.now();
+    setWaitStarts((starts) => {
+      const next = new Map<string, number>();
+      for (const [key, status] of statuses) {
+        if (status !== "blocked") continue;
+        const start = starts.get(key) ?? (seen !== null && seen.has(key) && seen.get(key) !== "blocked" ? at : undefined);
+        if (start !== undefined) next.set(key, start);
+      }
+      return next.size === starts.size && [...next].every(([key, start]) => starts.get(key) === start) ? starts : next;
+    });
+    setNow(at);
+    lastStatus.current = new Map(statuses);
+  }, [statusSignature]);
   // the wait times tick only while one is drawn
-  const shouldTick = compact && waiting.size > 0;
-  useEffect(() => { setTicking(shouldTick); if (shouldTick) setNow(Date.now()); }, [shouldTick]);
+  const shouldTick = compact && waitStarts.size > 0;
+  useEffect(() => { setTicking(shouldTick); }, [shouldTick]);
   const waitedFor = (key: string, status: AgentStatus | undefined): string | null => {
-    const since = waitingSince.current.get(key);
+    const since = waitStarts.get(key);
     return compact && status === "blocked" && since !== undefined ? stateAge(Math.max(0, now - since)) : null;
   };
   // the named groups this device folds; the ungrouped rows fold under ""
