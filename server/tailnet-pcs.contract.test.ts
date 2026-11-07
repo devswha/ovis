@@ -224,17 +224,19 @@ it("lists the current Ovis of a PC that also runs an older one on another port",
   expect(await pcs.list(new Set())).toEqual([{ name: "pc-b", url: current.url, relay: "online", outdated: false }]);
 });
 
-it("lists an older Ovis whose relay is online over another older one whose relay is off", async () => {
-  const online = olderOvis();
-  const off = olderOvis({ phase: "off" });
-  const pcs = new TailnetPcs({ readStatus: onePeer, ports: [443, 8443], origin: (_dnsName, port) => port === 443 ? online.url : off.url });
-  expect(await pcs.list(new Set())).toEqual([{ name: "pc-b", url: online.url, relay: "online", outdated: true }]);
+it("lists an Ovis whose relay is off, which may be a current one, over an older one", async () => {
+  const older = olderOvis();
+  // a current Ovis that never started its relay names no relay ID either
+  const relayOff = olderOvis({ phase: "off" });
+  const pcs = new TailnetPcs({ readStatus: onePeer, ports: [443, 8443], origin: (_dnsName, port) => port === 443 ? older.url : relayOff.url });
+  expect(await pcs.list(new Set())).toEqual([{ name: "pc-b", url: relayOff.url, relay: "off", outdated: false }]);
 });
 
 it("tells each refusal of the code request in its own failure, never with that PC's own words", async () => {
   const cases: [{ status: number; code: string }, string][] = [
-    [{ status: 405, code: "method_not_allowed" }, "outdated"],
-    [{ status: 404, code: "not_found" }, "outdated"],
+    // its health named its relay ID: a current Ovis, so a missing route is something in between, not its version
+    [{ status: 405, code: "method_not_allowed" }, "no_code"],
+    [{ status: 404, code: "not_found" }, "no_code"],
     [{ status: 409, code: "relay_off" }, "relay_off"],
     [{ status: 409, code: "relay_offline" }, "relay_offline"],
     [{ status: 409, code: "code_unavailable" }, "code_unavailable"],

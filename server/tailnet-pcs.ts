@@ -144,10 +144,11 @@ export class TailnetPcs {
           ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: health.web_ui?.server_id ?? null } : null;
       }));
       // a PC may run an older Ovis on one port and a current one on another: a current one (it names its relay ID)
-      // is the one to add, one whose relay is online first; then an older one known by its online relay
+      // is the one to add, one whose relay is online first; then one whose relay is off, which may be a current one
+      // that never started its relay; an Ovis known to be older last
       const found = answers.filter((answer) => answer !== null);
       return found.find((answer) => answer.server_id !== null && answer.relay === "online") ?? found.find((answer) => answer.server_id !== null)
-        ?? found.find((answer) => answer.outdated) ?? found[0] ?? null;
+        ?? found.find((answer) => !answer.outdated) ?? found[0] ?? null;
     }));
     const listed = pcs.filter((pc) => pc !== null);
     // a fresh list replaces the last: a PC gone from it is no longer addable
@@ -183,8 +184,8 @@ export class TailnetPcs {
     }
     const body = await boundedJson(response) as { code?: unknown; server_id?: unknown; error?: { code?: unknown } } | null;
     if (!response.ok || typeof body?.code !== "string" || typeof body.server_id !== "string") {
-      // that PC's own words never reach the person: an Ovis without the route refuses it as an unknown action
-      if (response.status === 404 || response.status === 405) throw new TailnetPcError("outdated", OUTDATED);
+      // that PC's own words never reach the person. Its health named its relay ID, so it is a current Ovis: a 404 or
+      // 405 here comes from something in between, not from its version
       const refusal = body?.error?.code;
       if (refusal === "relay_off") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Add a connection.");
       if (refusal === "relay_offline") throw new TailnetPcError("relay_offline", "That PC's relay cannot be reached right now. Try again in a moment.");
