@@ -49,6 +49,8 @@ export const SETTINGS_ACCESS_KO: Record<string, string> = {
   "That PC no longer lets this PC in as its owner. Add it with its code instead.": "그 PC가 이제 이 PC를 주인으로 들이지 않습니다. 대신 그 PC의 코드로 추가하세요.",
   "That PC is already added.": "그 PC는 이미 추가되어 있습니다.",
   "Update Ovis on that PC to 0.5 to add it in one tap.": "그 PC의 Ovis를 0.5로 업데이트하면 바로 추가할 수 있어요.",
+  "That PC's relay cannot be reached right now. Try again in a moment.": "그 PC의 릴레이에 지금 연결할 수 없습니다. 잠시 뒤 다시 시도하세요.",
+  "That PC uses its own relay, which cannot give a code. Add it with its QR code instead.": "그 PC는 자체 릴레이를 써서 코드를 줄 수 없습니다. 대신 그 PC의 QR 코드로 추가하세요.",
   "That PC did not answer. Check that it is on, then try again.": "그 PC가 응답하지 않습니다. 켜져 있는지 확인한 뒤 다시 시도하세요.",
   "That PC could not give a code just now. Try again in a moment.": "그 PC가 지금 코드를 주지 못했습니다. 잠시 뒤 다시 시도하세요.",
   "The relay found a different PC than the one asked. Nothing was added.": "릴레이가 요청한 PC와 다른 PC를 찾았습니다. 아무것도 추가하지 않았습니다.",

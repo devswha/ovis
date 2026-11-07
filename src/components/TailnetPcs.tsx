@@ -11,6 +11,8 @@ function tailnetFailureText(t: Translate, code: string | null): string | null {
     case "tailnet_not_owner": return t("That PC no longer lets this PC in as its owner. Add it with its code instead.");
     case "tailnet_already_added": return t("That PC is already added.");
     case "tailnet_relay_off": return t("Turn the relay on on that PC first.");
+    case "tailnet_relay_offline": return t("That PC's relay cannot be reached right now. Try again in a moment.");
+    case "tailnet_code_unavailable": return t("That PC uses its own relay, which cannot give a code. Add it with its QR code instead.");
     case "tailnet_outdated": return t("Update Ovis on that PC to 0.5 to add it in one tap.");
     case "tailnet_unreachable": return t("That PC did not answer. Check that it is on, then try again.");
     case "tailnet_no_code": return t("That PC could not give a code just now. Try again in a moment.");

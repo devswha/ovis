@@ -49,6 +49,8 @@ export const SETTINGS_ACCESS_JA: Record<string, string> = {
   "That PC no longer lets this PC in as its owner. Add it with its code instead.": "その PC はもうこの PC を所有者として受け入れていません。代わりにその PC のコードで追加してください。",
   "That PC is already added.": "その PC はすでに追加されています。",
   "Update Ovis on that PC to 0.5 to add it in one tap.": "その PC の Ovis を 0.5 に更新すると、ワンタップで追加できます。",
+  "That PC's relay cannot be reached right now. Try again in a moment.": "その PC のリレーに今つながりません。少し待ってからもう一度お試しください。",
+  "That PC uses its own relay, which cannot give a code. Add it with its QR code instead.": "その PC は独自のリレーを使っているため、コードを出せません。代わりにその PC の QR コードで追加してください。",
   "That PC did not answer. Check that it is on, then try again.": "その PC が応答しません。電源が入っているか確認して、もう一度お試しください。",
   "That PC could not give a code just now. Try again in a moment.": "その PC は今コードを出せませんでした。少し待ってからもう一度お試しください。",
   "The relay found a different PC than the one asked. Nothing was added.": "リレーが見つけた PC は、依頼した PC と違いました。何も追加していません。",

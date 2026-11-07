@@ -143,8 +143,11 @@ export class TailnetPcs {
         return health !== null && TailnetPcs.drivable(health)
           ? { name, dnsName, url, relay: health.relay?.phase ?? null, outdated: TailnetPcs.outdated(health), server_id: health.web_ui?.server_id ?? null } : null;
       }));
-      // a PC may run an older Ovis on one port and a current one on another: the current one is the one to add
-      return answers.find((answer) => answer !== null && !answer.outdated) ?? answers.find((answer) => answer !== null) ?? null;
+      // a PC may run an older Ovis on one port and a current one on another: a current one (it names its relay ID)
+      // is the one to add, one whose relay is online first; then an older one known by its online relay
+      const found = answers.filter((answer) => answer !== null);
+      return found.find((answer) => answer.server_id !== null && answer.relay === "online") ?? found.find((answer) => answer.server_id !== null)
+        ?? found.find((answer) => answer.outdated) ?? found[0] ?? null;
     }));
     const listed = pcs.filter((pc) => pc !== null);
     // a fresh list replaces the last: a PC gone from it is no longer addable
@@ -183,7 +186,10 @@ export class TailnetPcs {
       // that PC's own words never reach the person: an Ovis without the route refuses it as an unknown action
       if (response.status === 404 || response.status === 405) throw new TailnetPcError("outdated", OUTDATED);
       const refusal = body?.error?.code;
-      if (refusal === "relay_off" || refusal === "relay_offline") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Add a connection.");
+      if (refusal === "relay_off") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Add a connection.");
+      if (refusal === "relay_offline") throw new TailnetPcError("relay_offline", "That PC's relay cannot be reached right now. Try again in a moment.");
+      // that PC uses a relay of its own, where typed codes do not work: asking again never changes that
+      if (refusal === "code_unavailable") throw new TailnetPcError("code_unavailable", "That PC uses its own relay, which cannot give a code. Add it with its QR code instead.");
       throw new TailnetPcError("no_code", "That PC could not give a code just now. Try again in a moment.");
     }
     return { code: body.code, server_id: body.server_id };
@@ -193,5 +199,5 @@ export class TailnetPcs {
 const OUTDATED = "That PC runs an older Ovis. Update it to 0.5 to add it here in one tap.";
 
 export class TailnetPcError extends Error {
-  constructor(readonly failure: "not_found" | "not_owner" | "already_added" | "relay_off" | "outdated" | "unreachable" | "no_code" | "mismatch", message: string) { super(message); }
+  constructor(readonly failure: "not_found" | "not_owner" | "already_added" | "relay_off" | "relay_offline" | "code_unavailable" | "outdated" | "unreachable" | "no_code" | "mismatch", message: string) { super(message); }
 }

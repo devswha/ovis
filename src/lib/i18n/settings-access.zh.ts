@@ -49,6 +49,8 @@ export const SETTINGS_ACCESS_ZH: Record<string, string> = {
   "That PC no longer lets this PC in as its owner. Add it with its code instead.": "那台 PC 不再允许这台 PC 以所有者身份进入。请改用它的代码添加。",
   "That PC is already added.": "那台 PC 已经添加过了。",
   "Update Ovis on that PC to 0.5 to add it in one tap.": "把那台 PC 上的 Ovis 更新到 0.5，即可一键添加。",
+  "That PC's relay cannot be reached right now. Try again in a moment.": "现在连不上那台 PC 的中继。请稍后重试。",
+  "That PC uses its own relay, which cannot give a code. Add it with its QR code instead.": "那台 PC 使用自己的中继，无法给出代码。请改用它的二维码添加。",
   "That PC did not answer. Check that it is on, then try again.": "那台 PC 没有响应。请确认它已开机，然后重试。",
   "That PC could not give a code just now. Try again in a moment.": "那台 PC 现在无法给出代码。请稍后重试。",
   "The relay found a different PC than the one asked. Nothing was added.": "中继找到的 PC 与请求的不同。没有添加任何内容。",
