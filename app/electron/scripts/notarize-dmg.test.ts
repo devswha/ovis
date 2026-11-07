@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { basename } from "node:path";
 import { notarizeApp, notarizeDmg } from "./notarize-dmg.mjs";
 
 const key = { APPLE_API_KEY: "/keys/AuthKey.p8", APPLE_API_KEY_ID: "KEYID", APPLE_API_ISSUER: "issuer" };
@@ -123,7 +124,7 @@ describe("notarizeApp", () => {
     const { waits, sleep } = sleeper();
     expect(await notarizeApp("dist/mac/Ovis.app", { env: key, run, log: quiet, sleep })).toBe("notarized");
     const zip = calls[0]![6]!;
-    expect(zip).toEndWith("/Ovis.zip");
+    expect(basename(zip)).toBe("Ovis.zip");
     expect(calls).toEqual([
       ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", "dist/mac/Ovis.app", zip],
       ["xcrun", "notarytool", "submit", zip, "--key", "/keys/AuthKey.p8", "--key-id", "KEYID", "--issuer", "issuer", "--wait", "--output-format", "json"],
