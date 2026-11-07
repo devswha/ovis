@@ -415,7 +415,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     if (settings.sidebarRows === "one") {
       // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
       const place = tabs.findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
-      const lead = pane.label?.trim() || (tab ? customTabLabel(tab, place) : null) || title;
+      const named = pane.label?.trim() || (tab ? customTabLabel(tab, place) : null) || title;
+      // a row titled by its worktree's own name, as herdr made it, says that name as the workspace row does
+      const lead = workspace.worktree?.is_linked_worktree && named === workspace.label ? compactWorktreeName(named) : named;
       // a named tab that leads keeps the agent's own title after it, so two agents of one tab never read the same
       const own = title !== lead && title !== workspace.label ? title : null;
       const leadParts = [...new Set([own, ...agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: workspace.worktree?.is_linked_worktree ? compactWorktreeName(workspace.label) : workspace.label })])].filter((part): part is string => part !== null && part !== lead);
