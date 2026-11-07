@@ -1,10 +1,7 @@
-/**
- * A pane is known by its project, not by where it sits on disk. A shell's terminal title is
- * usually its working directory written out ("/home/me/dev/api", "~/dev/api", "C:\\work\\api"):
- * shown whole, it is cut off long before the part that tells panes apart. Such a title shows as
- * its last folder; the full path stays in the row's tooltip. Any other title is left alone.
- */
-const PATH_TITLE = /^(?:~(?=$|[\\/])|\/|[A-Za-z]:[\\/])/;
+import { folderName, shortPathTitle } from "../../shared/path-title.ts";
+
+// shared with the server's push titles, which name a pane as the client's alerts do
+export { folderName, shortPathTitle };
 
 /**
  * Codex titles its terminal "<thread> | <project folder>" (0.162: "Respond to greeting |
@@ -42,19 +39,6 @@ export function tabTitle(title: string, agent: string | null | undefined): strin
   const rest = shortPathTitle(stripPaneChrome(title, agent));
   const mark = agent ? title.replace(SHELL_PREFIX, "").match(AGENT_CHROME)?.[0] ?? "" : "";
   return rest ? `${mark}${rest}` : "";
-}
-
-export function shortPathTitle(title: string): string {
-  const trimmed = title.trim();
-  return PATH_TITLE.test(trimmed) ? folderName(trimmed) : title;
-}
-
-/** A path's last folder, split on either platform's separator: "C:\\work\\api" is "api" as "/work/api" is. */
-export function folderName(path: string): string {
-  const last = path.split(/[\\/]+/).filter((part) => part !== "").at(-1);
-  if (last === undefined) return path; // "/" itself
-  // a drive root keeps the separator it was written with, so it still reads as a place
-  return /^[A-Za-z]:$/.test(last) ? `${last}${path[2] ?? "\\"}` : last;
 }
 
 /**

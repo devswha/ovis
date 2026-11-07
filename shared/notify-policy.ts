@@ -1,5 +1,6 @@
 import type { AgentStatus, PaneInfo } from "./herdr-api.generated.ts";
 import { paneStorageId } from "./machines.ts";
+import { shortPathTitle } from "./path-title.ts";
 
 /**
  * When a pane is worth interrupting the user for, and what the interruption says.
@@ -28,6 +29,11 @@ export function paneTitle(pane: Pick<PaneInfo, "pane_id" | "cwd" | "terminal_tit
   const title = pane.terminal_title_stripped ?? pane.terminal_title;
   // herdr-core reports a title no program set as "": that is none, and the folder names the pane (#3231)
   return title?.trim() ? title : pane.cwd || pane.pane_id;
+}
+
+/** A pane's name in a web push: a path title is its folder, as the browser's own alerts show it (#3235). */
+export function pushPaneTitle(pane: Parameters<typeof paneTitle>[0]): string {
+  return shortPathTitle(paneTitle(pane));
 }
 
 const STATUS_BODY: Readonly<Record<string, string>> = {
