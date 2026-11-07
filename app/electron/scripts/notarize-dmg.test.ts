@@ -118,7 +118,7 @@ describe("notarizeDmg", () => {
 });
 
 describe("notarizeApp", () => {
-  it("submits the app zipped, then staples the app, again after a dropped connection", async () => {
+  it("submits the app zipped, staples it, and checks it again after a dropped connection without stapling again", async () => {
     const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler validate": [connectionLost(), ""] });
     const { waits, sleep } = sleeper();
     expect(await notarizeApp("dist/mac/Ovis.app", { env: key, run, log: quiet, sleep })).toBe("notarized");
@@ -129,7 +129,6 @@ describe("notarizeApp", () => {
       ["xcrun", "notarytool", "submit", zip, "--key", "/keys/AuthKey.p8", "--key-id", "KEYID", "--issuer", "issuer", "--wait", "--output-format", "json"],
       ["xcrun", "stapler", "staple", "dist/mac/Ovis.app"],
       ["xcrun", "stapler", "validate", "dist/mac/Ovis.app"],
-      ["xcrun", "stapler", "staple", "dist/mac/Ovis.app"],
       ["xcrun", "stapler", "validate", "dist/mac/Ovis.app"],
     ]);
     expect(waits).toEqual([20_000]);

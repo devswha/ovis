@@ -99,20 +99,22 @@ export function isNetworkFailure(error) {
 }
 
 /**
- * Staples Apple's ticket to `file` and checks it, trying again while the connection drops.
+ * Staples Apple's ticket to `file`, then checks it, each tried again while the connection drops:
+ * a staple that worked is not repeated, as stapling again can fail where the first did not.
  * @param {string} file @param {ReturnType<typeof defaults>} tools
  */
-async function staple(file, { exec, log, sleep }) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await exec("xcrun", ["stapler", "staple", file]);
-      await exec("xcrun", ["stapler", "validate", file]);
-      return;
-    } catch (error) {
-      const wait = STAPLE_WAITS[attempt];
-      if (wait === undefined || !isNetworkFailure(error)) throw error;
-      log(`stapling ${file} lost the connection to Apple; trying again in ${wait / 1000} s (try ${attempt + 2} of ${STAPLE_WAITS.length + 1})`);
-      await sleep(wait);
+async function staple(file, tools) {
+  for (const action of ["staple", "validate"]) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await tools.exec("xcrun", ["stapler", action, file]);
+        break;
+      } catch (error) {
+        const wait = STAPLE_WAITS[attempt];
+        if (wait === undefined || !isNetworkFailure(error)) throw error;
+        tools.log(`stapler ${action} ${file} lost the connection to Apple; trying again in ${wait / 1000} s (try ${attempt + 2} of ${STAPLE_WAITS.length + 1})`);
+        await tools.sleep(wait);
+      }
     }
   }
 }
