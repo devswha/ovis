@@ -86,7 +86,7 @@ try {
   writeFileSync(portalBin, [
     "#!/bin/sh",
     'case "$1" in',
-    "  version) printf '%s\\n' 'v2.6.1' ;;",
+    "  version) printf '%s\\n' 'v2.7.3' ;;",
     "  expose)",
     // the status asks which sign-ins this Portal offers: that is a question, not a service
     "    [ \"$2\" = --help ] && exit 0",

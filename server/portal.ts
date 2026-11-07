@@ -43,6 +43,8 @@ import { windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
 /** the first release with `--strip-request-header` and an address tied to the identity */
 const PORTAL_VERSION = "v2.6.1";
+/** the first release whose sign-in holds a session only to the hosts the tunnel holds; the sign-in runs in this PC's Portal, so the relay can be older */
+const PORTAL_SIGN_IN_VERSION = "v2.7.3";
 /** a relay that answers but will not take the tunnel is only ever retried, never refused */
 const READY_TIMEOUT_MS = 60_000;
 /** Portal unregisters from the relay on SIGTERM; one still running after this is killed, within the 6 s the supervisor gives this server to stop */
@@ -668,6 +670,7 @@ export class PortalService {
     if (bin === null || version === null) throw new Error("Portal is not installed on this PC.");
     if (!atLeast(version, PORTAL_VERSION)) throw new Error(`This PC has Portal ${version}; the app needs ${PORTAL_VERSION} or later.`);
     if (auth.method !== "none") {
+      if (!atLeast(version, PORTAL_SIGN_IN_VERSION)) throw new Error(`This PC has Portal ${version}; a sign-in needs ${PORTAL_SIGN_IN_VERSION} or later. Update it, or start without a sign-in.`);
       const offered = await this.signIns(true);
       if (!this.isCurrentStart(operation)) return;
       if (!offered.includes(auth.method)) throw new Error(`The Portal on this PC does not support --auth ${auth.method} yet. Update it, or choose another sign-in.`);

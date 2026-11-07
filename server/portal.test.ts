@@ -61,7 +61,7 @@ function standIn(options: { version?: string; ready?: boolean; says?: string; ig
   writeFileSync(path, [
     "#!/bin/sh",
     'case "$1" in',
-    `  version) echo '${options.version ?? "v2.6.1"}' ;;`,
+    `  version) echo '${options.version ?? "v2.7.3"}' ;;`,
     "  expose)",
     // a question about its flags, not a service
     `    [ "$2" = --help ] && { printf '%s\\n' 'Flags:' ${(options.flags ?? [...SIGN_IN_FLAGS, ...OIDC_FLAGS]).map((flag) => `'  -${flag}' '    \t'`).join(" ")}; exit 0; }`,
@@ -965,6 +965,24 @@ describe("the proof of a Portal with a sign-in", () => {
     expect(proofOf(portal.seen())).toBeNull();
     for (const given of [null, "", earlier]) expect(service.vouches(given)).toBe(false);
     await bounded(service.shutdown(), "Portal shutdown settled");
+  });
+
+  it("needs a current Portal on this PC, but not a current relay or a current Portal without a sign-in", async () => {
+    const old = standIn({ version: "v2.7.2" });
+    const refused = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: old.path, fetch: relay() });
+    refused.start({ relay: RELAY, port: 7317, auth: credential(), ...open });
+    const status = await until(refused, (s) => s.phase !== "starting", "the start ended");
+    expect(status).toMatchObject({ phase: "error", url: null });
+    expect(status.error).toContain("a sign-in needs v2.7.3");
+    expect(old.pids()).toEqual([]);
+
+    const plain = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn({ version: "v2.6.1" }).path, fetch: relay() });
+    await started(plain, undefined);
+    await bounded(plain.shutdown(), "Portal shutdown settled");
+
+    const current = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn().path, fetch: relay("v2.6.1") });
+    await started(current, credential());
+    await bounded(current.shutdown(), "Portal shutdown settled");
   });
 
   it("is a new one for each launch, and the one before stops counting", async () => {
