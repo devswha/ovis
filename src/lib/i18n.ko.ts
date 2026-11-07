@@ -500,7 +500,7 @@ const BASE: Record<string, string> = {
   "Pair with {name}?": "{name}와(과) 페어링할까요?",
   "Pair": "페어링",
   "Connecting to {name}…": "{name}에 연결하는 중…",
-  "The numbers match": "숫자가 같아요",
+  "The numbers match": "숫자가 같습니다",
   "That is not the number {name} shows": "{name}에 나온 숫자가 아닙니다",
   "Nothing was added. Tap the PC again to compare a new number, and type the one its own screen shows.": "아무것도 추가되지 않았습니다. PC를 다시 눌러 새 숫자를 비교하고, 그 PC 화면에 나온 숫자를 입력하세요.",
   "Approve this phone on {name} to finish.": "{name}에서 이 휴대폰을 승인하면 끝납니다.",
