@@ -55,24 +55,26 @@ const remoteAccess = {
 const portalFetchPage = async (context: BrowserContext): Promise<void> => {
   await context.route("**/api/access", (route) => route.fulfill({ json: remoteAccess }));
 };
-/** Portal is one of Connect a device's other ways: Settings → Devices and PCs → Connect → Other ways to connect → Portal. */
-const openPhoneSettings = async (page: Page, { portal = true } = {}): Promise<void> => {
+/** Portal is on Add a connection's Phones and devices tab: Settings → Devices and PCs → Add a connection → Phones and devices. */
+const openPhoneSettings = async (page: Page): Promise<void> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await page.locator(".settings-dialog").waitFor({ timeout: 10_000 });
   await openSettingsPage(page, "Devices and PCs");
   await page.locator('.settings-dialog [data-section="devices"]').getByRole("button", { name: "Add a connection", exact: true }).click();
   const connect = settingsOf(page);
   await connect.waitFor({ timeout: 10_000 });
-  await connect.locator(".connect-other > summary").click();
-  if (portal) await connect.getByRole("button", { name: "Portal", exact: true }).click();
+  // an owner's PC window opens on SSH; a window with one way only (a watching device without the relay) has no tabs
+  const devicesTab = connect.locator('.connect-tabs [data-tab="devices"]');
+  if (await devicesTab.count() > 0) await devicesTab.click();
+  await connect.locator('[data-tab-panel="devices"]').waitFor({ timeout: 10_000 });
 };
 const settingsOf = (page: Page) => page.getByRole("dialog", { name: "Add a connection", exact: true });
-const reopenPhoneSettings = async (page: Page, options: { portal?: boolean } = {}): Promise<void> => {
+const reopenPhoneSettings = async (page: Page): Promise<void> => {
   await settingsOf(page).getByRole("button", { name: "Close", exact: true }).click();
   await settingsOf(page).waitFor({ state: "detached", timeout: 10_000 });
   await page.locator(".settings-dialog").getByRole("button", { name: "Close settings", exact: true }).click();
   await page.locator(".settings-dialog").waitFor({ state: "detached", timeout: 10_000 });
-  await openPhoneSettings(page, options);
+  await openPhoneSettings(page);
 };
 
 const servers: ServerInstance[] = [];
@@ -306,11 +308,11 @@ try {
   answer = "older";
   for (const page of [ownerPage, watchPage]) {
     const asked = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/portal" && response.status() === 404, { timeout: 10_000 });
-    await reopenPhoneSettings(page, { portal: false });
+    await reopenPhoneSettings(page);
     await asked;
     const settings = settingsOf(page);
-    await settings.getByRole("button", { name: "Tailscale", exact: true }).waitFor({ timeout: 10_000 });
-    assert.equal(await settings.getByRole("button", { name: "Portal", exact: true }).count(), 0, "an older server offers no Portal among the other ways");
+    await settings.locator('[data-tab-panel="devices"] section[aria-label="Tailscale"]').waitFor({ timeout: 10_000 });
+    assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal on Phones and devices");
     assert.equal(await settings.locator("#portal-relay").count(), 0, "an older server's page offers no relay");
   }
   assert.deepEqual(portalPosts, [], "the browser sent no Portal start or stop of its own");

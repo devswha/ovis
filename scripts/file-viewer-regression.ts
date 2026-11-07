@@ -463,11 +463,12 @@ try {
   const settingsOverPreview = page.getByRole("dialog", { name: "Settings", exact: true });
   await settingsOverPreview.waitFor();
   await openSettingsPage(page, "Devices and PCs");
-  // Add PC over SSH is one of Connect a device's other ways
+  // Add PC opens from Add a connection's SSH tab, with the address typed there
   await settingsOverPreview.getByRole("button", { name: "Add a connection", exact: true }).click();
   const connectDevice = page.getByRole("dialog", { name: "Add a connection", exact: true });
-  await connectDevice.locator(".connect-other > summary").click();
-  await connectDevice.getByRole("button", { name: "Add a PC over SSH", exact: true }).click();
+  await connectDevice.locator('.connect-tabs [data-tab="ssh"]').click();
+  await connectDevice.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
+  await connectDevice.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true }).click();
   const addPc = page.locator("dialog.machine-dialog");
   await addPc.waitFor();
   await settingsOverPreview.waitFor({ state: "hidden" });
