@@ -12,7 +12,8 @@
  */
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, type Frame, type RateLimiter, type RoomHost, type SocketInfo, type UsageReport } from "./core.ts";
+import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, passRefusal, type Frame, type RateLimiter, type RoomHost, type SocketInfo, type UsageReport } from "./core.ts";
+import { passPolicy, type PassPolicy, type PassResult, type PassSettings } from "./pass.ts";
 import { PairRoom, isPairInfo, parsePairRequest, type PairInfo } from "./pair-room.ts";
 
 /** the part of a Cloudflare server-side WebSocket the relay uses */
@@ -29,11 +30,17 @@ export interface RelayState {
   getWebSockets(tag?: string): HibernatableSocket[];
   setWebSocketAutoResponse(pair?: unknown): void;
   getWebSocketAutoResponseTimestamp(socket: HibernatableSocket): Date | null;
-  storage: { getAlarm(): Promise<number | null>; setAlarm(time: number): Promise<void> };
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+  storage: {
+    getAlarm(): Promise<number | null>;
+    setAlarm(time: number): Promise<void>;
+    get<T>(key: string): Promise<T | undefined>;
+    put<T>(key: string, value: T): Promise<void>;
+  };
 }
 
 interface DurableObjectStub { fetch(request: Request): Promise<Response> }
-export interface Env {
+export interface Env extends PassSettings {
   RELAY: { idFromName(name: string): unknown; get(id: unknown): DurableObjectStub };
   /** Cloudflare's Rate Limiting binding (wrangler.toml), keyed by the connecting address */
   RELAY_LIMITER: RateLimiter;
@@ -41,6 +48,31 @@ export interface Env {
   RELAY_GLOBAL_LIMITER: RateLimiter;
   /** Workers Analytics Engine dataset for usage counters (wrangler.toml); without it nothing is counted */
   USAGE?: { writeDataPoint(point: { indexes: string[]; blobs: string[]; doubles: number[] }): void };
+}
+
+/**
+ * The pass check's result, from the Worker to the Durable Object it hands the socket to. The Worker
+ * sets it after checking the pass and drops any copy the request came with; the Durable Object is
+ * reached only through the Worker, so it trusts it and checks no signature again.
+ */
+const PASS_CHECKED = "x-ovis-relay-pass-checked";
+/** the key the room's pass authorization is kept under in Durable Object storage */
+const PASS_UNTIL = "pass_until";
+
+let policyCache: { key: string; policy: Promise<PassPolicy> } | undefined;
+/** The pass policy of these settings, read once per isolate. */
+export function policyOf(env: PassSettings): Promise<PassPolicy> {
+  const key = JSON.stringify([env.RELAY_PASS_MODE, env.RELAY_PASS_ENFORCE_AT, env.RELAY_PASS_KEYS, env.RELAY_PASS_REVOKED]);
+  if (policyCache?.key !== key) policyCache = { key, policy: passPolicy(env) };
+  return policyCache.policy;
+}
+
+function isPassResult(value: unknown): value is PassResult {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Record<string, unknown>;
+  return ["ok", "missing", "invalid", "expired"].includes(result["state"] as string)
+    && (result["reason"] === undefined || typeof result["reason"] === "string")
+    && (result["exp"] === undefined || typeof result["exp"] === "number");
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -81,6 +113,8 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["server_id"] === undefined || typeof info["server_id"] === "string")
     && (info["generation"] === undefined || typeof info["generation"] === "string")
     && (info["usage"] === undefined || isUsage(info["usage"]))
+    && (info["pass_exp"] === undefined || typeof info["pass_exp"] === "number")
+    && (info["pass_state"] === undefined || ["ok", "missing", "invalid", "expired"].includes(info["pass_state"] as string))
     && (info["ended"] === undefined || info["ended"] === true);
 }
 
@@ -90,8 +124,16 @@ export class RelayRoom {
   private readonly pairRoom: PairRoom<HibernatableSocket>;
   /** alarm reads and writes, one after another, so a later one never undoes an earlier one */
   private alarmWrites: Promise<void> = Promise.resolve();
+  /** the pass policy and this room's authorization, read before the first event reaches the object */
+  private policy: PassPolicy | undefined;
+  private passUntil: number | null = null;
 
-  constructor(private readonly state: RelayState, env?: Pick<Env, "USAGE">) {
+  constructor(private readonly state: RelayState, env?: Pick<Env, "USAGE"> & PassSettings) {
+    void state.blockConcurrencyWhile(async () => {
+      this.policy = env ? await policyOf(env) : undefined;
+      this.passUntil = (await state.storage.get<number>(PASS_UNTIL)) ?? null;
+    });
+    const room = this;
     state.setWebSocketAutoResponse(new (runtime().WebSocketRequestResponsePair)(KEEPALIVE_PING, KEEPALIVE_PONG));
     const infos = new WeakMap<HibernatableSocket, SocketInfo>();
     const host: RoomHost<HibernatableSocket> = {
@@ -126,6 +168,18 @@ export class RelayRoom {
       usage: (report) => env?.USAGE?.writeDataPoint(usagePoint(report)),
       wake: (at) => { void this.armBy(at); },
       now: () => Date.now(),
+      get pass() {
+        const policy = room.policy;
+        if (!policy || policy.mode === "off") return undefined;
+        return {
+          policy,
+          until: () => room.passUntil,
+          setUntil: (until: number) => {
+            room.passUntil = until;
+            void state.storage.put(PASS_UNTIL, until);
+          },
+        };
+      },
     };
     this.room = new Room(host);
     const pairInfos = new WeakMap<HibernatableSocket, PairInfo>();
@@ -162,7 +216,11 @@ export class RelayRoom {
     const pair = new (runtime().WebSocketPair)();
     this.state.acceptWebSocket(pair[1]);
     if ("kind" in socket) this.pairRoom.open(pair[1], socket);
-    else this.room.open(pair[1], socket);
+    else {
+      let pass: unknown;
+      try { pass = JSON.parse(request.headers.get(PASS_CHECKED) ?? "null"); } catch { pass = null; }
+      this.room.open(pair[1], isPassResult(pass) ? { ...socket, pass } : socket);
+    }
     await this.armBy(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
   }
@@ -182,9 +240,9 @@ export class RelayRoom {
     return this.alarmWrites;
   }
 
-  webSocketMessage(socket: HibernatableSocket, message: string | ArrayBuffer): void {
+  webSocketMessage(socket: HibernatableSocket, message: string | ArrayBuffer): void | Promise<void> {
     if (this.pairRoom.owns(socket)) this.pairRoom.message(socket, message);
-    else this.room.message(socket, message);
+    else return this.room.message(socket, message);
   }
 
   webSocketClose(socket: HibernatableSocket, code?: number, reason?: string, _wasClean?: boolean): void {
@@ -212,10 +270,22 @@ export class RelayRoom {
 }
 
 export async function handle(request: Request, env: Env): Promise<Response> {
-  const admitted = await admit(request, request.headers.get("cf-connecting-ip") ?? "", { perAddress: env.RELAY_LIMITER, global: env.RELAY_GLOBAL_LIMITER });
+  const policy = await policyOf(env);
+  const admitted = await admit(request, request.headers.get("cf-connecting-ip") ?? "", { perAddress: env.RELAY_LIMITER, global: env.RELAY_GLOBAL_LIMITER }, policy);
   if (admitted instanceof Response) return admitted;
+  // a PC socket refused for its pass closes here, so it wakes no Durable Object (an HTTP refusal would reach the PC as a bare 1006)
+  const refused = passRefusal(admitted, policy, Date.now());
+  if (refused !== null) {
+    const pair = new (runtime().WebSocketPair)();
+    (pair[1] as HibernatableSocket & { accept?(): void }).accept?.();
+    pair[1].close(CLOSE.RELAY_PASS, refused);
+    return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
+  }
+  const headers = new Headers(request.headers);
+  headers.delete(PASS_CHECKED);
+  if (!("kind" in admitted) && admitted.pass) headers.set(PASS_CHECKED, JSON.stringify(admitted.pass));
   // a pairing room's name cannot be a server_id, which is 32 hex digits
-  return env.RELAY.get(env.RELAY.idFromName("kind" in admitted ? `pair:${admitted.nameplate}` : admitted.server_id)).fetch(request);
+  return env.RELAY.get(env.RELAY.idFromName("kind" in admitted ? `pair:${admitted.nameplate}` : admitted.server_id)).fetch(new Request(request, { headers }));
 }
 
 export default {

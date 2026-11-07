@@ -55,7 +55,7 @@ function toBase64url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function fromBase64url(text: string): Uint8Array | null {
+function fromBase64url(text: string): Uint8Array<ArrayBuffer> | null {
   if (!B64URL.test(text)) return null;
   try {
     const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
@@ -74,7 +74,7 @@ function isPayload(value: unknown): value is RelayPassPayload {
 }
 
 /** The pass's parts, or null when it is not shaped like one. Checks no signature and no time. */
-export function parseRelayPass(text: unknown): { payload: RelayPassPayload; signed: Uint8Array; signature: Uint8Array } | null {
+export function parseRelayPass(text: unknown): { payload: RelayPassPayload; signed: Uint8Array<ArrayBuffer>; signature: Uint8Array<ArrayBuffer> } | null {
   if (typeof text !== "string" || text.length > MAX_LENGTH || !text.startsWith(PREFIX)) return null;
   const parts = text.slice(PREFIX.length).split(".");
   if (parts.length !== 2) return null;

@@ -35,7 +35,7 @@ test("a pass is refused for another PC, from the future, under an unknown key or
   const { keys, sign } = await issuer();
   const other = await issuer();
   const stranger = await issuer("ffffffff");
-  const invalid = { ok: false, reason: RELAY_PASS_INVALID };
+  const invalid = { ok: false, reason: RELAY_PASS_INVALID } as const;
   expect(await checkRelayPass(await sign(), keys, "f".repeat(32), NOW)).toEqual(invalid);
   expect(await checkRelayPass(await sign(SID, NOW + RELAY_PASS_SKEW_S + 1), keys, SID, NOW)).toEqual(invalid);
   expect(await checkRelayPass(await stranger.sign(), keys, SID, NOW)).toEqual(invalid);

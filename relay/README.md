@@ -91,6 +91,40 @@ the PC with `4000` and retried. Refusing a data socket does not stop the control
   30 s without an answer. On Cloudflare the runtime answers it (`setWebSocketAutoResponse`)
   without waking the Durable Object, so an idle PC costs nothing.
 
+## Relay pass
+
+A relay may let in only PCs that hold a relay pass (`relay/pass.ts`, `shared/relay-pass.ts`): a
+short-lived token the Ovis account service signs for a PC that proved its relay key to it and that a
+signed-in account lists. Phones and browsers never need one, and the frames stay end-to-end encrypted
+whatever the pass says. The setting is off unless the relay's operator turns it on; a relay you run
+yourself stays open.
+
+- **The pass.** `ovp1.<payload>.<signature>`, base64url. The payload is JSON with exactly `v` (1),
+  `kid`, `aud` (`ovis-relay`), `sid` (the PC's `server_id`), `iat` and `exp` (seconds; 48 hours
+  apart); the signature is Ed25519 over `ovis-relay-pass/1.` followed by the payload's text. It names
+  no account.
+- **Sending it.** The PC puts it in the `x-ovis-relay-pass` header of every PC socket's upgrade
+  (control, data, warm), never in the URL. A pass alone opens nothing: the socket still answers the
+  server challenge for that `server_id`'s key, so a copied pass is no use without the PC's secret key.
+- **Checking it.** Once per socket, after the rate limits and before any room: its shape, a known
+  `kid`, `sid` equal to the socket's `server_id`, `iat` at most 5 minutes ahead and `exp` at most
+  5 minutes behind, then the signature. Never per frame. On Cloudflare the Worker checks it and hands
+  only the result to the Durable Object.
+- **The room.** A proven PC socket's pass authorizes its room until the pass expires; the expiry is
+  kept in the Durable Object's storage, so it outlives an eviction. The PC renews it on its proven
+  control socket with `{"type":"relay_pass","pass":"..."}`, which only ever moves the expiry later; a
+  relay without passes drops that frame like any other.
+- **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
+  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
+  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
+  that holds, to a client's `assigned` (`missing`), so the app can say so; older PCs read neither.
+  `enforce` closes a PC socket without a pass that holds `4402` (on Cloudflare in the Worker, before
+  any Durable Object), and a room whose pass ran out closes its PC sockets `4402` (its clients with
+  them). `grace` turns into `enforce` at `RELAY_PASS_ENFORCE_AT` (`--pass-enforce-at`, an ISO
+  date). `RELAY_PASS_KEYS` (`--pass-keys`) is `kid:hex[,kid:hex]`, the Ed25519 public keys;
+  `RELAY_PASS_REVOKED` (`--pass-revoked`) lists `server_id`s refused whatever their pass. Settings
+  that do not parse stop the relay from starting.
+
 ## Limits and close codes
 
 | Limit | Value | Past it |
@@ -118,6 +152,7 @@ the PC with `4000` and retried. Refusing a data socket does not stop the control
 | `1012` | to a client: its data socket (the PC's side) went away, or the relay lost the frames it held (a Durable Object evicted mid-wait, noticed when the data socket attaches or the client sends again; each such close is counted in the room's `heldFramesLost`); reconnect |
 | `1013` | a limit above; try again later |
 | `4401` | to a PC socket: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
+| `4402` | to a PC socket: no relay pass that holds while the relay asks for one (`relay pass required`, `relay pass expired`, `relay pass invalid`) |
 
 A socket that closes itself has its close answered at once, with its own code when that is `1000`
 or `3000`-`4999` (`1000` otherwise, such as for `1001` or `1005`), and its partner is closed as above. On Cloudflare the
