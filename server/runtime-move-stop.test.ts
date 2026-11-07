@@ -193,3 +193,23 @@ describe("End all after its confirm", () => {
     expect(offer.panes.map((pane) => pane.pane_id)).toEqual(["p1", "p2"]);
   });
 });
+
+describe("the merge pass's two cases", () => {
+  it("sends no Ctrl+C when the command in front became another one in the same group by the last look", async () => {
+    const { service, fronts, sent, wait, onInfo } = world();
+    await wait();
+    // the shell's job exec'd another program: same shell, same group, another name
+    onInfo((paneId, inLane) => { if (paneId === "p1" && inLane) fronts["p1"] = { shell: 101, group: 201, name: "vim" }; });
+    expect(await service.stopPane("p1", false, "sleep")).toBe("changed");
+    expect(sent).toEqual([]);
+  });
+
+  it("ends nothing asked for after the server stopped", async () => {
+    const { service, sent, wait } = world();
+    await wait();
+    service.stop();
+    expect(await service.stopPane("p1", false)).toBe("not_waiting");
+    expect(await service.prepareStopAll()).toBe("not_waiting");
+    expect(sent).toEqual([]);
+  });
+});

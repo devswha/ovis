@@ -286,6 +286,8 @@ export function moveService(options: MoveServiceOptions): MoveService {
   let running = false;
   /** a start between its first check and its plan: a second one, or a runtime switch, waits for none */
   let starting = false;
+  /** the server stopped: no stop asked for from now on sends or signals anything */
+  let stopped = false;
   /** each wait's own: a look a cancelled wait left behind does nothing */
   let generation = 0;
   /** what the person was shown when they asked to wait */
@@ -340,9 +342,9 @@ export function moveService(options: MoveServiceOptions): MoveService {
     if (wait === generation && status.state === "waiting") timer = setTimeout(() => void look(wait), WAIT_LOOK_MS);
   };
   /** the wait this stop belongs to is still the one waiting */
-  const stillWaiting = (wait: number): boolean => wait === generation && status.state === "waiting";
+  const stillWaiting = (wait: number): boolean => !stopped && wait === generation && status.state === "waiting";
   const stopPane: MoveService["stopPane"] = async (paneId, force, command, expected) => {
-    if (status.state !== "waiting") return "not_waiting";
+    if (stopped || status.state !== "waiting") return "not_waiting";
     const wait = generation;
     // fail closed: without this server's own group, a signal could reach the server or its launcher
     const own = await deps.ownGroup();
@@ -360,13 +362,16 @@ export function moveService(options: MoveServiceOptions): MoveService {
     if (!stillWaiting(wait)) return "not_waiting";
     if (!force) {
       // behind anything typed or sent before it, checked again there: the same command still in front
-      const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | null> => {
+      const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | "changed" | null> => {
         // keys typed into the pty just before still on their way: Ctrl+C must not overtake them
         await options.settleAfterTyping(paneId);
-        const now = commandGroup(await facts.processInfo(paneId));
+        const last = await facts.processInfo(paneId);
+        const now = commandGroup(last);
         // after the last await: a cancel that came while herdr answered sends nothing
         if (!stillWaiting(wait)) return "not_waiting";
         if (now === null || now.group !== front.group || now.shell !== front.shell) return "not_running";
+        // the same group may run another program by now (exec): only the command shown is interrupted
+        if (command !== undefined && commandName(last, now) !== command) return "changed";
         // and herdr asks again right before it writes the keys
         try { await deps.sendKeys(paneId, ["ctrl+c"], () => stillWaiting(wait)); } catch (error) {
           if (error instanceof HerdrError && error.code === "cancelled") return "not_waiting";
@@ -411,7 +416,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
   /** the list End all and move now was confirmed for: one offer at a time, used once */
   let offer: { token: string; wait: number; panes: StopAllPane[] } | null = null;
   const prepareStopAll: MoveService["prepareStopAll"] = async () => {
-    if (status.state !== "waiting") return "not_waiting";
+    if (stopped || status.state !== "waiting") return "not_waiting";
     const wait = generation;
     const panes = await untriedCommands();
     if (!stillWaiting(wait)) return "not_waiting";
@@ -512,7 +517,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
     },
     busy: () => starting || running || status.state === "waiting" || status.state === "moving",
     // the server stops: a stop still on its way is no longer for a wait anyone sees
-    stop: () => { if (timer) clearTimeout(timer); timer = null; generation++; offer = null; },
+    stop: () => { if (timer) clearTimeout(timer); timer = null; stopped = true; generation++; offer = null; },
   };
 }
 
