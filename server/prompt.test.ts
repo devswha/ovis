@@ -3598,6 +3598,12 @@ Claude: 5h 12% (4h 4m) · 7d 12% (6d 8h) | Codex: 5h 0% (4h 55m) ·...
     // a narrow pane cuts the stats line before its meter, as pi cuts that line at 48 columns
     const narrow = status.replace("$0.461 (sub) 3.7%/1.0M (auto)  claude-o", "$0.461 (sub) 3.7...");
     expect(labels(parseInteractivePrompt("pi", narrow))).toEqual(labels(parseInteractivePrompt("pi", status)));
+    for (const stats of ["$0.000 (sub) 0.0%/1.0M (auto)", "$0.000 0.0%/200k", "$0.000 (sub) ?/200k"]) {
+      expect(labels(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, `\n${stats}\n`)))).toEqual(labels(prompt));
+    }
+    for (const stats of ["$0.000 total", "$0.000 (sub) progress 50%/100 done"]) {
+      expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, `\n${stats}\n`))).toBeNull();
+    }
     expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n0.0%/200k (auto)\n"))).not.toBeNull();
     expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n?/200k\n"))).not.toBeNull();
   });

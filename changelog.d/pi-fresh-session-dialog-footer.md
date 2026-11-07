@@ -1,0 +1,3 @@
+### Fixed
+- Pi's model picker and other dialog cards appear in fresh sessions with an extension's footer
+  status line, even when the usage line starts with `$0.000` before any tokens have been used.
