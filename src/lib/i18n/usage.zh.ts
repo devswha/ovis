@@ -74,7 +74,6 @@ export const USAGE_ZH: Record<string, string> = {
   "Open the sign-in page and sign in.": "打开登录页面并登录。",
   "Paste the code the page shows": "粘贴页面显示的代码",
   "Send code": "发送代码",
-  "Signed in as {account}.": "已登录为 {account}。",
   "Signed in.": "已登录。",
   "Starting the sign-in on this PC…": "正在这台电脑上开始登录…",
   "The sign-in ended without signing in. Try again, or sign in from a terminal.": "登录结束但未登录成功。请重试，或在终端中登录。",

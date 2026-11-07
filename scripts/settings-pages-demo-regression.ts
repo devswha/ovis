@@ -887,6 +887,99 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
 }
 
 /**
+ * Sign-in on the first-run welcome (components/SetupGuide.tsx): Continue with each provider the account
+ * service lists for this page (`GET /v1/providers`), none without an account service, Not now folds it
+ * away and leaves the two choices, and a sign-in this page already holds is the one Settings shows.
+ * The account service is a route of this context: nothing reaches GitHub, Google or account.ovis.sh.
+ */
+async function welcomeSignIn(browser: import("playwright-core").Browser, url: string): Promise<void> {
+  const service = "https://account.ovis.sh";
+  const cases = [
+    { offered: ["github", "google"], signedIn: false },
+    { offered: ["github"], signedIn: false },
+    { offered: null, signedIn: false },
+    { offered: ["github", "google"], signedIn: true },
+  ] as const;
+  for (const width of [390, 1280] as const) {
+    for (const { offered, signedIn } of cases) {
+      const at = `(${width}px, ${offered === null ? "no account service" : offered.join("+")}${signedIn ? ", signed in" : ""})`;
+      const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+      try {
+        await context.addInitScript((settings) => {
+          localStorage.setItem("ovis:settings", settings);
+          localStorage.setItem("ovis:setup-guide", JSON.stringify({ status: "open", state: { step: "welcome" } }));
+        }, JSON.stringify({ ...SETTINGS, theme: "light" }));
+        if (offered !== null) {
+          await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
+            const response = await route.fetch();
+            await route.fulfill({ response, body: (await response.text()).replace("</head>", `<meta name="ovis-pc-account-service" content="${service}" />\n</head>`) });
+          });
+          await context.route(`${service}/**`, (route) => {
+            const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
+            if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+            switch (new URL(route.request().url()).pathname) {
+              case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
+              case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
+              case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [{ provider: "google", added_at: "2026-11-06T00:00:00Z" }] } });
+              default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
+            }
+          });
+        }
+        if (signedIn) {
+          await context.addInitScript((service) => {
+            const request = indexedDB.open("ovis-account", 1);
+            request.onupgradeneeded = () => { request.result.createObjectStore("account"); };
+            request.onsuccess = () => {
+              const tx = request.result.transaction("account", "readwrite");
+              tx.objectStore("account").put({ service, account: "fixture", provider: "google", access_token: "fixture-access", refresh_token: "fixture-refresh", expires_at: Date.now() + 3_600_000 }, "session");
+              tx.oncomplete = () => request.result.close();
+            };
+          }, service);
+        }
+        const page = await context.newPage();
+        const errors: string[] = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await page.goto(url);
+        const guide = page.getByRole("region", { name: "Setup guide", exact: true });
+        await guide.getByRole("button", { name: /I've used Ovis before/ }).waitFor();
+        const signIn = guide.locator(".setup-signin");
+        const shot = async (name: string) => {
+          if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
+        };
+        if (offered === null) {
+          // whether this page has an account service is known on first render (its meta tag), with the welcome
+          assert.equal(await signIn.count(), 0, `no sign-in without an account service ${at}`);
+          assert.equal(await guide.locator(".account-provider").count(), 0, `no provider button without an account service ${at}`);
+        } else if (!signedIn) {
+          await signIn.locator("[data-offer='service'] .account-provider").first().waitFor();
+          const expected = offered.map((provider) => provider === "github" ? "Continue with GitHub" : "Continue with Google");
+          assert.deepEqual(await signIn.locator(".account-provider").allTextContents(), expected, `one button for each provider the service lists ${at}`);
+          await shot(`welcome-signin-${offered.join("-")}`);
+          await signIn.getByRole("button", { name: "Not now", exact: true }).click();
+          await signIn.waitFor({ state: "detached" });
+          assert.equal(await guide.getByRole("button", { name: /I'm new to Ovis/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
+          assert.equal(await guide.getByRole("button", { name: /I've used Ovis before/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
+        } else {
+          await signIn.getByText("Signed in as fixture.", { exact: true }).waitFor();
+          assert.equal(await signIn.locator(".account-provider").count(), 0, `no provider buttons once signed in ${at}`);
+          await shot("welcome-signin-signed-in");
+          await guide.getByRole("button", { name: /I've used Ovis before/ }).click();
+          await guide.waitFor({ state: "detached" });
+          await openSettings(page);
+          await openSettingsPage(page, "Devices and PCs");
+          await openSettingsFolds(page);
+          await page.locator("[data-section='account']").getByText("Signed in with Google", { exact: true }).waitFor();
+        }
+        assert.deepEqual(errors, [], `no page errors ${at}`);
+      } finally {
+        await context.close();
+      }
+    }
+  }
+  console.log("PASS the welcome offers Continue with each provider the account service lists, none without one, Not now keeps the choices, and its sign-in is the one Settings shows, at 390 and 1280px");
+}
+
+/**
  * Appearance's ↺ beside a changed row, and its theme cards by keyboard: ↺ shows only off the default,
  * puts back every key of its row (a font and its size; a theme and the palette it draws) and goes; the
  * arrows pick along the row as a radio group's do; the cards follow the Theme mode until a side is chosen.
@@ -1617,6 +1710,7 @@ try {
       await rowResets(browser, url);
       await accountPcList(browser, url);
       await accountGoogle(browser, url);
+      await welcomeSignIn(browser, url);
       await runtimeInUse(browser, url);
       await alertChipsReset(browser, url);
       await installedNotes(browser, url);

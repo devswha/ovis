@@ -31,6 +31,7 @@ import { agentRows, checkList, foundAgents, installedHere, phoneBoxMode, phoneBo
 import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
 import { useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { userErrorMessage } from "../lib/userError.ts";
+import { AccountSection } from "./AccountSection.tsx";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentTile } from "./AgentTile.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -155,6 +156,8 @@ export function SetupGuide(props: SetupGuideProps) {
 
 function Welcome({ dispatch, onClose, hidden }: Pick<SetupGuideProps, "dispatch" | "onClose" | "hidden">) {
   const t = useT();
+  // Not now folds the sign-in away for this welcome; Settings → Devices and PCs keeps it
+  const [later, setLater] = useState(false);
   return (
     <div className="setup-guide" role="region" aria-label={t("Setup guide")} hidden={hidden}>
       <div className="setup-guide-inner setup-welcome">
@@ -173,6 +176,11 @@ function Welcome({ dispatch, onClose, hidden }: Pick<SetupGuideProps, "dispatch"
             <ChevronRight aria-hidden="true" />
           </button>
         </div>
+        {/* the account's sign-in, as Settings → Devices and PCs has it; none where this page has no account service */}
+        {!later && <AccountSection welcome={{
+          lead: <p className="setup-muted">{t("Sign in to use this PC from your phone and your other PCs.")}</p>,
+          later: <button type="button" className="setup-link" onClick={() => setLater(true)}>{t("Not now")}</button>,
+        }} />}
         <p className="setup-note"><Info aria-hidden="true" />{t("You can open this again any time from Settings → Agents.")}</p>
       </div>
     </div>

@@ -7,7 +7,7 @@
  * the providers the service says it offers get a button. Elsewhere, and with the account off, none
  * of this.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
@@ -98,8 +98,14 @@ const pcServiceHere = (): string | null => desktopAccount() === null && !inNativ
 /** whether this page can sign in to the account: the desktop app's bridge, or the account service a PC's page names */
 export const accountOffered = (): boolean => desktopAccount() !== null || pcServiceHere() !== null;
 
+/**
+ * The first-run welcome's sign-in (components/SetupGuide.tsx): the same sign-in in a box of its own,
+ * with the guide's own line above it and its Not now below; once signed in, Add this PC.
+ */
+export interface WelcomeAccount { lead: ReactNode; later: ReactNode }
+
 /** `onAccount`: the page lists the account's PCs itself (My devices), so this group does not */
-export function AccountSection({ onAccount }: { onAccount?: (state: AccountState) => void } = {}) {
+export function AccountSection({ onAccount, welcome }: { onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount } = {}) {
   const t = useT();
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
@@ -286,8 +292,8 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
       .finally(() => setView({ kind: "signed-out", error: null }));
   };
 
-  return (
-    <SettingsGroup title={t("Account")} section="account">
+  const signInParts = (
+    <>
       {view.kind === "signed-out" && (
         <div className="settings-item" data-offer={offer === null ? "build" : "service"}>
           {linkPage
@@ -331,6 +337,24 @@ export function AccountSection({ onAccount }: { onAccount?: (state: AccountState
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (welcome !== undefined) {
+    if (view.kind === "loading") return null;
+    return (
+      <div className="setup-signin">
+        {view.kind === "signed-in"
+          ? <><p className="setup-signin-done" role="status">{t("Signed in as {account}.", { account: view.account })}</p><AddThisPc /></>
+          : <>{welcome.lead}{signInParts}</>}
+        {welcome.later}
+      </div>
+    );
+  }
+
+  return (
+    <SettingsGroup title={t("Account")} section="account">
+      {signInParts}
       {view.kind === "signed-in" && (
         <>
           <SettingsRow label={t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}>

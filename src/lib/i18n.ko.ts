@@ -482,6 +482,8 @@ const BASE: Record<string, string> = {
   "Paste and send": "붙여넣고 보내기",
   "Conversation": "대화",
   "Off": "끄기",
+  "Not now": "나중에",
+  "Signed in as {account}.": "{account}(으)로 로그인했습니다.",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

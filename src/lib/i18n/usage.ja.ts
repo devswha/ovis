@@ -74,7 +74,6 @@ export const USAGE_JA: Record<string, string> = {
   "Open the sign-in page and sign in.": "ログインページを開いてログインします。",
   "Paste the code the page shows": "ページに表示されたコードを貼り付けてください",
   "Send code": "コードを送信",
-  "Signed in as {account}.": "{account} でログインしました。",
   "Signed in.": "ログインしました。",
   "Starting the sign-in on this PC…": "この PC でログインを開始しています…",
   "The sign-in ended without signing in. Try again, or sign in from a terminal.": "ログインせずに終了しました。もう一度試すか、ターミナルからログインしてください。",
