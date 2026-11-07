@@ -127,7 +127,7 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
       {locked && <span className="agent-muted" title={t("Locked")} data-testid="agent-locked"><Lock aria-hidden="true" /><span className="visually-hidden">{t("Locked")}</span></span>}
       {muted && <span className="agent-muted" title={t("Alerts muted")} data-testid="alerts-muted"><BellOff aria-hidden="true" /><span className="visually-hidden">{t("Alerts muted")}</span></span>}
     </span>
-    {since !== null && <span className="agent-since" aria-hidden="true">{since}</span>}
+    {since !== null && <span className="agent-since">{since}</span>}
     {/* drawn at the row's right edge, after its ⋯, as a workspace row's state is (AgentSidebar.css) */}
     <span className="agent-row-state"><StatusBadge status={status} compact detail={status === "blocked" ? blocked : null} /></span>
   </>;
@@ -295,11 +295,14 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const waits = (family: AgentRow[]) => family.some((row) => rowStatus(row) === "blocked");
     return [...families.filter(waits), ...families.filter((family) => !waits(family))].flat();
   }, [compact, groups, named, parts, rowStatus]);
+  // read from every row, the filtered-out ones too, so a wait that ended out of sight starts again when it returns
+  const waiting = new Set<string>();
+  for (const row of allRows) if (rowStatus(row) === "blocked") waiting.add(sidebarPinKey(row.machine.id, row.entry.pane.pane_id));
+  for (const key of [...waitingSince.current.keys()]) if (!waiting.has(key)) waitingSince.current.delete(key);
+  for (const key of waiting) if (!waitingSince.current.has(key)) waitingSince.current.set(key, Date.now());
   const waitedFor = (key: string, status: AgentStatus | undefined): string | null => {
-    if (!compact || status !== "blocked") { waitingSince.current.delete(key); return null; }
-    const since = waitingSince.current.get(key) ?? Date.now();
-    waitingSince.current.set(key, since);
-    return stateAge(Math.max(0, now - since));
+    const since = waitingSince.current.get(key);
+    return compact && status === "blocked" && since !== undefined ? stateAge(Math.max(0, now - since)) : null;
   };
   // the named groups this device folds; the ungrouped rows fold under ""
   const [groupFolds, setGroupFolds] = useState(loadFoldedAgentGroups);
@@ -515,7 +518,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const startedBy = parentRow ? t("Started by {name}", { name: describe(parentRow).title }) : null;
     const status = online ? activity.status(machine.id, pane) : undefined;
     const progress = online && pane.agent_progress !== undefined && (status === "working" || status === "blocked") ? t("Progress {percent}%", { percent: pane.agent_progress }) : null;
-    const tooltip = [...new Set([pane.pane_id, title, context, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
+    const tooltip = [...new Set([pane.pane_id, title, agent?.title?.trim(), context, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
     const pinKey = sidebarPinKey(machine.id, pane.pane_id);
     const menuOpen = menu?.key === pinKey;
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was

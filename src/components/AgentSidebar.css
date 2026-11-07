@@ -499,8 +499,16 @@
   .agents-sidebar.is-compact { --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2); }
 }
 
-@media (hover: hover) {
-  .agents-sidebar.is-compact .agent-item:not(:hover, :focus-within) :is(.agent-row-status > :not(.sidebar-filter-note, .context-count), .agent-blocked, .agent-progress) { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  .agents-sidebar.is-compact .agent-item:not(:hover, :focus-within) :is(.agent-row-status > :not(.sidebar-filter-note, .context-count), .agent-blocked, .agent-progress) {
+    /* out of sight, still read by a screen reader */
+    position: absolute;
+    width: var(--hairline);
+    height: var(--hairline);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 .agent-since {

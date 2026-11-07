@@ -4,11 +4,12 @@ import { stateAge } from "./AgentSidebar.tsx";
 import { compactBranch, compactWorktreeName } from "./Sidebar.tsx";
 
 describe("compact sidebar rows", () => {
-  test("a worktree's name drops herdr's prefix and the hash after it, and only a name that has the prefix", () => {
+  test("a worktree's name drops herdr's prefix and four-digit hash only when it has both", () => {
     expect(compactWorktreeName("worktree-brave-valley-7fc6")).toBe("brave-valley");
     expect(compactWorktreeName("worktree-devices-ui-live-7fc6")).toBe("devices-ui-live");
-    expect(compactWorktreeName("worktree-rapid-harbor")).toBe("rapid-harbor");
+    expect(compactWorktreeName("worktree-rapid-harbor")).toBe("worktree-rapid-harbor");
     expect(compactWorktreeName("release-cafe")).toBe("release-cafe");
+    expect(compactWorktreeName("worktree-release-coffee")).toBe("worktree-release-coffee");
     expect(compactWorktreeName("dori")).toBe("dori");
   });
 

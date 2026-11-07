@@ -187,16 +187,18 @@ export function ContextBadge({ context }: { context?: PaneContext | undefined })
   );
 }
 
-/** A worktree workspace's name without what herdr adds to it: the `worktree-` prefix and the short hash after it. */
+/**
+ * A worktree workspace's name without what herdr adds to it: the `worktree-` prefix and the four-digit hash after
+ * it, only when both are there (`worktree-brave-valley-7fc6`); any other name is kept whole.
+ */
 export function compactWorktreeName(label: string): string {
-  const bare = label.replace(/^worktree-/, "");
-  return bare === label ? label : bare.replace(/-[0-9a-f]{4,10}$/, "") || bare;
+  const generated = /^worktree-(.+)-[0-9a-f]{4}$/.exec(label);
+  return generated ? generated[1]! : label;
 }
 
-/** whether a branch only repeats a workspace's name: the same once herdr's prefix and hash are off either */
+/** whether a branch only repeats a workspace's name, herdr's prefix and hash aside */
 function sameName(branch: string, name: string): boolean {
-  const bare = (value: string) => compactWorktreeName(value).replace(/-[0-9a-f]{4,10}$/, "");
-  return bare(branch) === bare(name);
+  return compactWorktreeName(branch) === compactWorktreeName(name);
 }
 
 /** The branch a compact row says at its end: none for the default branch, and without a `feat/`-style prefix. */
