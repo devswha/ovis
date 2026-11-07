@@ -11,7 +11,7 @@
       ],
       "fixed": [
         "The terminal cursor moves again with arrow keys and after a space.",
-        "Claude and Codex panes no longer say \"Conversation unavailable\".",
+        "A Claude pane whose hook ran claude -p shows its own chat again.",
         "Safari shows the sidebar's workspace list at full height again.",
         "On a phone, a swipe on a table or code block scrolls the file.",
         "On Android, key-bar keys no longer reopen a hidden keyboard."
@@ -28,7 +28,7 @@
       ],
       "fixed": [
         "터미널 커서가 방향키와 띄어쓰기 뒤에 다시 제대로 움직여요.",
-        "Claude와 Codex 창에 \"대화를 읽을 수 없습니다\"가 뜨지 않아요.",
+        "훅이 claude -p를 실행한 Claude 창도 자기 대화를 다시 보여 줘요.",
         "Safari에서 사이드바 워크스페이스 목록이 다시 다 보여요.",
         "휴대폰에서 표나 코드 블록 위를 밀어도 파일이 스크롤돼요.",
         "Android에서 키 바를 눌러도 내려 둔 키보드가 다시 뜨지 않아요."
@@ -45,7 +45,7 @@
       ],
       "fixed": [
         "ターミナルのカーソルが矢印キーとスペースの後に再び動きます。",
-        "Claude と Codex のペインで「会話を読み取れません」が出なくなりました。",
+        "フックが claude -p を実行した Claude ペインも自分の会話を表示します。",
         "Safari でサイドバーのワークスペース一覧が再び全部見えます。",
         "スマホで表やコードブロックの上をスワイプしてもファイルが動きます。",
         "Android でキーバーを押しても、閉じたキーボードが再び開きません。"
@@ -62,7 +62,7 @@
       ],
       "fixed": [
         "终端光标在方向键和空格之后又能正确移动。",
-        "Claude 和 Codex 窗格不再显示“对话不可用”。",
+        "钩子运行过 claude -p 的 Claude 窗格会重新显示自己的对话。",
         "Safari 中侧边栏的工作区列表重新完整显示。",
         "在手机上滑动表格或代码块时文件会正常滚动。",
         "在 Android 上点按键栏不会再弹出已收起的键盘。"
