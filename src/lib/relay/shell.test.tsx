@@ -204,6 +204,30 @@ describe("the hosted shell's front page", () => {
     expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
   });
 
+  it("keeps a code being typed when the first read lands under it", async () => {
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let reads = 0;
+    const accountFetch = async (): Promise<Response> => {
+      reads += 1;
+      await held;
+      return { status: 200, ok: true, json: async () => ({ pcs: [] }) } as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+
+    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => reads === 1 && rendered.length > 0 && account().pcs === null, "the loading dashboard with its first read out");
+    // Add a PC, Pair with a QR or code, Pair with a code
+    last().onCodeStart();
+    await until(() => last().state.kind === "code-entry", "the code entry");
+
+    answer();
+    await mounted;
+    await drain();
+    expect(last().state.kind).toBe("code-entry");
+  });
+
   it("signs the page out when a read again finds the sign-in gone, rather than keeping the account's rows", async () => {
     const desk = keyFor();
     const now = Date.now();

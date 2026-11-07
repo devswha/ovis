@@ -359,7 +359,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         accountView = { ...signedIn, pcs: await pcsOf(session, []), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
       }
     }
-    await showFront();
+    // a pairing screen opened while the read was out (Add a PC, then a code) stays, with what was typed
+    if (dashboardUp() || accountView?.kind === "signed-out") await showFront();
   };
 
   /** Whether the dashboard is up: the front page, signed in, with no PC's app over it. */

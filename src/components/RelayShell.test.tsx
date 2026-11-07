@@ -111,6 +111,14 @@ describe("the front page's account part", () => {
     expect(signedIn).toContain("Check now");
   });
 
+  it("never says a PC paired by QR before the sign-in is in the account: leaving the account does not reach that pairing", () => {
+    const unlinked = { ...pc("f".repeat(32), "qrbox", "paired"), linked: false };
+    const html = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unlinked] } }), scoped: false, onSignIn: none });
+    const row = rowOf(html, "qrbox").replace(/<[^>]+>/g, "");
+    expect(row).toContain("not in the account yet");
+    expect(row).not.toContain("in your account");
+  });
+
   it("offers Add for a PC new in the account, Join for an older one that has not approved this device, and nothing for one with no way to join", () => {
     const fresh = { ...pc("b".repeat(32), "desk2", "needs-approval"), added_at: new Date().toISOString(), join: { server_public_key: "k", relay: "wss://relay.example" } };
     const old = { ...fresh, server_id: "c".repeat(32), name: "nuc", added_at: new Date(Date.now() - 3_600_000).toISOString() };

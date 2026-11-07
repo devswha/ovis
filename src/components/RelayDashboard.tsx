@@ -139,7 +139,8 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
   const subtitle = pcs === null ? null : account
     ? inAccount === 1 ? t("1 PC in your account") : t("{count} PCs in your account", { count: inAccount })
     : pcs.length === 1 ? t("1 PC paired with this device") : t("{count} PCs paired with this device", { count: pcs.length });
-  const under = (pc: DashboardPc): string => pc.listed ? (fresh.has(pc.server_id) ? t("new in your account") : t("in your account"))
+  // a QR pairing from before the sign-in is not linked: leaving the account does not reach it, so the row never says it is in the account
+  const under = (pc: DashboardPc): string => pc.listed && !(pc.paired && !pc.linked) ? (fresh.has(pc.server_id) ? t("new in your account") : t("in your account"))
     : account ? t("paired by QR · not in the account yet") : t("paired with this device");
   /** Where the sidebar leads, and the four of them a phone's tab bar keeps (Relay, the strip's cell, is a sidebar row alone); no settings on this screen yet, so that row says it is not a link. */
   const places: Place[] = [
@@ -259,7 +260,7 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                         {/* offline is the directory's word, as the strip and the map say it; this device's own check only adds that the PC still answered it */}
                         {!offline && status
                           ? <PcStatusLine status={status} lastSeenAt={pc.last_seen_at} />
-                          : <span className="relay-dash-state"><StateDot state={pc.state} />{offline ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
+                          : <span className="relay-dash-state"><StateDot state={pc.state} />{offline || (pc.paired && !pc.linked && account) ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
                         {offline && status?.kind === "answered" && <small className="relay-dash-state-note">{t("Answered this device's latest check")}</small>}
                       </td>
                       <td className="relay-dash-relay">{relayHost(pc.relay ?? defaultRelay)}</td>
