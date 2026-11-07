@@ -201,10 +201,13 @@ function sameName(branch: string, name: string): boolean {
   return compactWorktreeName(branch) === compactWorktreeName(name);
 }
 
+/** the kind-of-change prefixes a branch drops on a compact row; any other prefix (`team-a/`) says something and stays */
+const BRANCH_KIND = /^(?:feat|feature|fix|bugfix|hotfix|chore|docs|refactor|perf|test|tests|ci|build|style|release)\//;
+
 /** The branch a compact row says at its end: none for the default branch, and without a `feat/`-style prefix. */
 export function compactBranch(branch: string | null): string | null {
   if (branch === null || branch === "main" || branch === "master") return null;
-  return branch.includes("/") ? branch.slice(branch.indexOf("/") + 1) : branch;
+  return branch.replace(BRANCH_KIND, "") || branch;
 }
 
 function cwdBasename(cwd: string | null | undefined): string {
@@ -856,7 +859,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // the compact rows (the default), as herdr-app's Spaces list: one line, the name without herdr's worktree prefix and
     // hash, and a branch other than the default one dim at its end, unless it only repeats the name
     const compact = !twoLine;
-    const shownTitle = compact ? compactWorktreeName(rowTitle) : rowTitle;
+    // only a worktree herdr opened has a name it made: a name the user chose is drawn whole
+    const shownTitle = compact && linked ? compactWorktreeName(rowTitle) : rowTitle;
     const tailBranch = compact ? compactBranch(branchTitle) : null;
     const branchTail = tailBranch !== null && !sameName(tailBranch, rowTitle) && tailBranch !== worktreeLabel(shownTitle) ? tailBranch : null;
     // the tooltip and the menu keep the exact branch (its slashes) even where the row does not repeat it
