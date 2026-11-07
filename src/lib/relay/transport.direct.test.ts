@@ -344,10 +344,20 @@ describe("racing the relay at the start", () => {
     store.saved = { ...store.saved!, direct: ["ws://10.0.0.8:9", "ws://10.0.0.9:9", reachable] };
     const openChannel = (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> =>
       options?.direct === undefined ? Promise.reject(new RelayUnreachableError(null, true)) : pc.openChannel(channelOffer, options);
-    const socketFor = (url: string): WebSocket => url.startsWith(reachable) ? pc.directSocket(url) : new WebSocket(`ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+    // the plugin's count, as iOS keeps it: a socket holds its place until its close event, and a third at once is refused
+    let open = 0;
+    const refused: string[] = [];
+    const socketFor = (url: string): WebSocket => {
+      if (open >= 2) { refused.push(url); return new WebSocket("ws://127.0.0.1:1/v1/ws?v=1"); }
+      open++;
+      const socket = url.startsWith(reachable) ? pc.directSocket(url) : new WebSocket(`ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+      socket.addEventListener("close", () => { open--; }, { once: true });
+      return socket;
+    };
     // When it opens the PC
     const transport = await transportFor(pc, store, saved, { openChannel, directSocket: socketFor });
-    // Then the third carrier got its turn and carries the channel
+    // Then the third carrier got its turn, never refused, and carries the channel
+    expect(refused).toEqual([]);
     expect(transport.route).toBe("direct");
     expect(pc.channels.at(-1)!.direct).toBe(reachable);
   });

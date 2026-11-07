@@ -435,6 +435,7 @@ export class RelaySession {
     });
   }
 
+  /** HTTP and WebSocket are every stream a signed-in client opens (SSE rides HTTP): the first of either marks this carrier as the one kept. */
   private choose(): void {
     if (this.chosen || this.state !== "ready") return;
     this.chosen = true;

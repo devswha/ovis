@@ -40,6 +40,26 @@ const DIRECT_IDLE_CHECKS = 12;
 const SOCKET_QUIET_MS = 3_000;
 
 
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+/** `inner`, telling `closed` once its close event came, before whoever listens to it. */
+function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
+  let listener: RelaySocket["onclose"] = null;
+  inner.onclose = (event) => { closed(); listener?.(event); };
+  return {
+    get binaryType() { return inner.binaryType; }, set binaryType(value) { inner.binaryType = value; },
+    get readyState() { return inner.readyState; },
+    send: (data) => inner.send(data), close: (code, reason) => inner.close(code, reason),
+    get onmessage() { return inner.onmessage; }, set onmessage(value) { inner.onmessage = value; },
+    get onclose() { return listener; }, set onclose(value) { listener = value; },
+    get onerror() { return inner.onerror; }, set onerror(value) { inner.onerror = value; },
+  };
+}
+
 /** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
   if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
@@ -364,7 +384,11 @@ export class RelayTransport implements Transport {
           // closing the transport ends an admitted channel too; the budget only an attempt under way
           const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
-          (this.options.openChannel ?? openRelayChannel)(offer, { ...options, onClose, signal, direct, socket, offerDirect: true, offerTailnet }).then((channel) => {
+          // the plugin counts a socket until its close is done (iOS: up to 5 s after asking): the lane's place frees only then
+          const freed = deferred();
+          let opened = false;
+          const counted = (url: string): RelaySocket => { opened = true; return untilClosed(socket(url), freed.resolve); };
+          (this.options.openChannel ?? openRelayChannel)(offer, { ...options, onClose, signal, direct, socket: counted, offerDirect: true, offerTailnet }).then((channel) => {
             if (settled || ended.aborted) { channel.close(); return; }
             settled = true;
             kept = direct;
@@ -373,8 +397,10 @@ export class RelayTransport implements Transport {
           }, (error: unknown) => {
             // only a refusal by the PC itself, after Noise proved it is the PC, is final
             if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { settled = true; endOthers(); reject(error); }
-          }).finally(() => {
+          }).finally(async () => {
             clearTimeout(timer);
+            // a close that never comes holds the place no longer than the budget
+            if (opened && !settled) await Promise.race([freed.promise, new Promise<void>((done) => setTimeout(done, Math.max(0, ends - performance.now())))]);
             lane.running--;
             next();
             if (running() === 0) resolve(undefined);
