@@ -548,9 +548,12 @@ const CONTINUED_TAIL_BYTES = 64 * 1024;
  */
 async function transcriptTail(path: string): Promise<string | null> {
   try {
-    const file = await open(path, constants.O_RDONLY);
+    // no links and no blocking: a FIFO in its place must not hold the lookup (as branchedFrom)
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     try {
-      const size = (await file.stat()).size;
+      const info = await file.stat();
+      if (!info.isFile()) return null;
+      const size = info.size;
       const start = Math.max(0, size - CONTINUED_TAIL_BYTES);
       const buffer = Buffer.alloc(size - start);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
@@ -1244,7 +1247,11 @@ export async function claudeTranscriptFile(
   const path = await follow(session, seen);
   // a Claude started inside the pane inherits HERDR_PANE_ID and can take Herdr's report of the pane: a session
   // with no transcript, or one print mode wrote, is no conversation of the pane's own Claude (#3260)
-  const own = await ownSessionInstead(path, live, seen, follow);
+  // the live session is looked for only where the pane's conversation can be: beside the report, or with no
+  // report in the folders of the pane's own cwds, never in another project
+  const folders = path !== null ? [dirname(path)]
+    : cwds.flatMap((cwd) => cwd ? [join(projects, claudeProjectDir(cwd))] : []);
+  const own = await ownSessionInstead(path, live, seen, folders, follow);
   if (own !== null) return own;
   if (path === null || live === null || !SESSION_ID.test(live) || seen.has(live)) return path;
   // a branch stays in its project: only that folder is looked in, and what cannot be read there is no evidence of one
@@ -1318,12 +1325,19 @@ async function printModeTranscript(path: string): Promise<boolean> {
  * as after a /resume back (#2020).
  */
 async function ownSessionInstead(
-  reported: string | null, live: string | null, seen: ReadonlySet<string>,
-  follow: (start: string, seen: Set<string>) => Promise<string | null>,
+  reported: string | null, live: string | null, seen: ReadonlySet<string>, folders: readonly string[],
+  follow: (start: string, seen: Set<string>, from?: string) => Promise<string | null>,
 ): Promise<string | null> {
   if (live === null || !SESSION_ID.test(live) || seen.has(live)) return null;
   if (reported !== null && !await printModeTranscript(reported)) return null;
-  const path = await follow(live, new Set<string>());
+  let found: string | null = null;
+  for (const folder of folders) {
+    const candidate = join(folder, `${live}.jsonl`);
+    // a regular file of its own, not a link to something else
+    try { if ((await lstat(candidate)).isFile()) { found = candidate; break; } } catch { /* not there */ }
+  }
+  if (found === null) return null;
+  const path = await follow(live, new Set<string>(), found);
   if (path === null || reported === null) return path;
   // beside a print-mode report, a live session print mode wrote too tells neither apart
   return await printModeTranscript(path) ? null : path;

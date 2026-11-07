@@ -913,6 +913,25 @@ describe("claudeTranscriptFile", () => {
       expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(join(folder, `${CHILD}.jsonl`));
     });
 
+    it("never takes the live session from another project", async () => {
+      const { home: dir, projects } = home();
+      // the pane's project holds no transcript of the live id; another project does
+      written(join(projects, claudeProjectDir("/w/other")), OWN, "cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
+      // beside a print-mode report too: only the report's own folder is looked in
+      const reported = written(join(projects, claudeProjectDir("/w/project")), CHILD, "sdk-cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(reported);
+    });
+
+    it.skipIf(process.platform === "win32")("never follows a link in place of the live transcript", async () => {
+      const { home: dir, projects } = home();
+      const folder = join(projects, claudeProjectDir("/w/project"));
+      const outside = written(join(dir, "elsewhere"), OWN, "cli");
+      mkdirSync(folder, { recursive: true });
+      symlinkSync(outside, join(folder, `${OWN}.jsonl`));
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
+    });
+
     it("keeps the answer it gave when the PID record tells nothing better (control)", async () => {
       const { home: dir, projects } = home();
       const folder = join(projects, claudeProjectDir("/w/project"));
