@@ -1266,7 +1266,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   field's Escape is the drawer's. Nothing focuses the field by itself, and nothing typed elsewhere reaches it, so a
   terminal keeps every keystroke; the command palette's **Filter workspaces and agents** opens the drawer or the
   sidebar and focuses it. Settings → Appearance → **Sidebar filter** (off by default, this device's choice, kept in its own
-  `ovis:sidebar-filter` key as the PC fold is) leaves the row out, so the lists start at the top, as the Codex and
+  `ovis:sidebar-filter-shown` key, a new one: the earlier `ovis:sidebar-filter` held the old default on every device that saved any setting, so it is not read) leaves the row out, so the lists start at the top, as the Codex and
   Claude apps keep search in the palette alone; that palette entry then draws the row, focused, for the filter's time.
   It stays while it holds words, and goes on its **Close filter** (its X while it is empty), Escape in it empty (that
   Escape goes no further), leaving the sidebar while it is empty: a press outside it, or the keyboard's focus going

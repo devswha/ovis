@@ -793,8 +793,10 @@ function readMirrorWrap(): boolean | null {
   }
 }
 
-/** Settings → Appearance → Sidebar filter, kept in a key of its own for the same reason: shown until chosen off. */
-export const SIDEBAR_FILTER_STORAGE_KEY = "ovis:sidebar-filter";
+/** Settings → Appearance → Sidebar filter, kept in a key of its own for the same reason: out until chosen on. A new key:
+ *  the earlier `ovis:sidebar-filter` held the old default (on) on every device that saved any setting, which no
+ *  choice can be told from, so it is not read. */
+export const SIDEBAR_FILTER_STORAGE_KEY = "ovis:sidebar-filter-shown";
 
 function readSidebarFilter(): boolean {
   try {

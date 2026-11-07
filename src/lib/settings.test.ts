@@ -123,7 +123,11 @@ describe("saved theme migration", () => {
     saveSettings({ ...loadSettings(), sidebarFilter: false });
     expect(loadSettings().sidebarFilter).toBe(false);
     expect(sanitizeSettings({ sidebarFilter: "on" }).sidebarFilter).toBe(false);
-    records.set("ovis:sidebar-filter", "not json");
+    records.set("ovis:sidebar-filter-shown", "not json");
+    expect(loadSettings().sidebarFilter).toBe(false);
+    // the earlier key held the old default (on) on every device that saved any setting: it is not read
+    records.delete("ovis:sidebar-filter-shown");
+    records.set("ovis:sidebar-filter", "true");
     expect(loadSettings().sidebarFilter).toBe(false);
   });
 

@@ -56,7 +56,7 @@ try {
         } finally { await context.close(); }
       };
 
-      await check("a no-match filter reveals selection context", { storage: { "ovis:sidebar-filter": "true" } }, async (page) => {
+      await check("a no-match filter reveals selection context", { storage: { "ovis:sidebar-filter-shown": "true" } }, async (page) => {
         await page.locator(".sidebar-filter-input").fill("zzzz-unmatched-review");
         await page.locator(".machine-list .workspace-group").first().waitFor({ state: "attached" });
         assert.ok(await page.locator(".machine-list .workspace-group").first().isVisible());
@@ -95,7 +95,7 @@ try {
           assert.ok(fits, "folded headings share the available room rather than pushing the footer out");
         });
       }
-      await check("a click focuses the divider so the next arrow key resizes it", { storage: { "ovis:sidebar-filter": "true" } }, async (page) => {
+      await check("a click focuses the divider so the next arrow key resizes it", { storage: { "ovis:sidebar-filter-shown": "true" } }, async (page) => {
         await page.locator(".sidebar-filter-input").focus();
         const line = page.getByRole("separator", { name: "Resize PCs and Agents", exact: true });
         await line.click();

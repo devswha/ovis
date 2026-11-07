@@ -81,7 +81,7 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
  * it (or Enter) to restore the default allocation. Dragged to within about a row of a section's head,
  * that section snaps to its head and dims, and folds when let go, as VS Code's views and a macOS split
  * view's panes do, with no words of their own to say so; ↑/↓ move it a
- * row, Home and End fold a section. A finger gets a grip and a target of its own size, and only the line
+ * row, Home and End fold Agents on its side and take the PCs (no heading to fold to) to their minimum on theirs. A finger gets a grip and a target of its own size, and only the line
  * keeps the browser from scrolling under it, so a swipe on either list still scrolls it.
  */
 export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }: SidebarSplitProps) {

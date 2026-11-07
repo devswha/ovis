@@ -125,7 +125,7 @@ const shownWorkspaces = (page: Page) => page.evaluate(() => [...document.querySe
 /** The demo's one PC, the Host: no header, nothing lost. */
 async function loneHost(browser: Browser, scene: Scene): Promise<void> {
   // a fold stored while the Host had a header must not hide its workspaces now that nothing can open them
-  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:pc-collapsed:local": "1", "ovis:sidebar-filter": "true" });
+  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:pc-collapsed:local": "1", "ovis:sidebar-filter-shown": "true" });
   try {
     // the group is drawn (newPage waited for it), and its header, were there one, with it
     assert.equal(await headers(page).count(), 0, `${sceneName(scene)}: a lone Host is drawn without its header`);
@@ -247,7 +247,7 @@ async function paletteFilter(page: Page): Promise<void> {
 /** Settings → Appearance → Sidebar filter off: the field is out, and the palette brings it back for a filter's time. */
 async function filterHidden(browser: Browser, scene: Scene): Promise<void> {
   // the drawer stays closed: the palette's action opens it
-  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:sidebar-filter": "false" }, false);
+  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:sidebar-filter-shown": "false" }, false);
   try {
     if (scene.phone) {
       await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
@@ -306,7 +306,7 @@ async function filterHidden(browser: Browser, scene: Scene): Promise<void> {
       await page.locator(".sidebar.is-open").waitFor({ state: "detached" });
       assert.equal(await filterRow(page).count(), 0);
     }
-    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:sidebar-filter")), "false", "using it never turns the setting back on");
+    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:sidebar-filter-shown")), "false", "using it never turns the setting back on");
     assert.deepEqual(errors, []);
     console.log(`PASS ${sceneName(scene)}: Sidebar filter off leaves the field out, and the palette's Filter workspaces and agents opens and focuses it`);
   } finally { await context.close(); }
@@ -317,14 +317,14 @@ async function filterEdges(browser: Browser, scene: Scene): Promise<void> {
   {
     // the setting turned off while the field holds words: what had the focus then (Settings' switch) is gone when the
     // field closes, and the desktop draws no row's ⋯, so the focus goes to a row that can take it
-    const { context, page, errors } = await newPage(browser, scene, "flat=1", { "ovis:sidebar-filter": "true" });
+    const { context, page, errors } = await newPage(browser, scene, "flat=1", { "ovis:sidebar-filter-shown": "true" });
     try {
       await filterRow(page).waitFor();
       await page.locator(".sidebar-filter-input").fill("zz");
       await page.locator(".sidebar-footer-settings").click();
       await openSettingsPage(page, "Appearance");
       await page.locator(".settings-dialog").getByRole("switch", { name: "Sidebar filter", exact: true }).click();
-      await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter") === "false");
+      await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter-shown") === "false");
       await page.keyboard.press("Escape");
       await page.locator(".settings-dialog").waitFor({ state: "detached" });
       assert.equal(await page.locator(".sidebar-filter-input").inputValue(), "zz", "the field keeps its words");
@@ -335,7 +335,7 @@ async function filterEdges(browser: Browser, scene: Scene): Promise<void> {
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:sidebar-filter": "false" });
+  const { context, page, errors } = await newPage(browser, scene, "", { "ovis:sidebar-filter-shown": "false" });
   try {
     await newRow(page).waitFor();
     // a row's menu opened from the keyboard is drawn outside the sidebar, and is still the sidebar's
@@ -400,13 +400,13 @@ async function filterSetting(browser: Browser, scene: Scene): Promise<void> {
     }
     await newRow(page).waitFor();
     assert.equal(await filterRow(page).count(), 0, "out by default");
-    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:sidebar-filter")), null, "with nothing stored");
+    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:sidebar-filter-shown")), null, "with nothing stored");
     await page.locator(".sidebar-footer-settings").click();
     await openSettingsPage(page, "Appearance");
     const toggle = page.locator(".settings-dialog").getByRole("switch", { name: "Sidebar filter", exact: true });
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
     await toggle.click();
-    await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter") === "true");
+    await page.waitForFunction(() => localStorage.getItem("ovis:sidebar-filter-shown") === "true");
     assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem("ovis:settings") ?? "{}")).sidebarFilter, undefined, "kept out of ovis:settings");
     await capture(page, scene, "settings-appearance", true);
     await page.keyboard.press("Escape");

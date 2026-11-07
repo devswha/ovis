@@ -123,7 +123,9 @@ export function MachineSidebar(props: Props) {
       const active = document.activeElement;
       if (active !== null && active !== document.body) return;
       const rows = sidebar?.querySelectorAll<HTMLElement>('.machine-list :is(button:not([disabled]), [role="button"][tabindex="0"])') ?? [];
-      for (const back of [opener, ...rows]) {
+      // no row may take it (a lone offline Host's roster is inert): the Settings gear, still the sidebar's
+      const gear = sidebar?.querySelector<HTMLElement>(".sidebar-footer-settings") ?? null;
+      for (const back of [opener, ...rows, gear]) {
         if (back === null || !back.isConnected || back.closest(".sidebar-filter, [inert]") !== null || back.getClientRects().length === 0) continue;
         back.focus({ preventScroll: true });
         if (document.activeElement === back) return;

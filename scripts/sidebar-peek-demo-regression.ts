@@ -62,7 +62,7 @@ try {
             page.on("pageerror", (error) => errors.push(error.message));
             await page.clock.install();
             // the sidebar's Filter field is off until chosen (Settings → Sidebar filter); the focus check below uses it
-            await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })); localStorage.setItem("ovis:sidebar-filter", "true"); } }, theme);
+            await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })); localStorage.setItem("ovis:sidebar-filter-shown", "true"); } }, theme);
 
             // never chosen: resting on the toggle shows nothing
             await page.goto(url("&sidebar=hidden"));
