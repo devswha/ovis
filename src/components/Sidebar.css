@@ -645,12 +645,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
    on the height and in the type of an agent's row. */
 .machine-workspaces.is-two-line .workspace-header { min-height: var(--side-row-2); }
 
-/* One line: as in herdr's sidebar, a top-level git workspace says its branch under its name, on
-   the same height as a two-line row; worktrees and folders outside git stay one line. */
-.workspace-header:has(.workspace-copy.is-branch-line) { min-height: var(--side-row-2); }
-
-.workspace-copy.is-two-line,
-.workspace-copy.is-branch-line {
+.workspace-copy.is-two-line {
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
@@ -1097,4 +1092,25 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .context-count.is-low {
   color: var(--status-blocked);
+}
+
+/* Compact rows, the default (Settings → Sidebar rows → Two lines keeps the tall ones), as herdr-app's list: one line
+   a little lower than a control under a pointer (a finger keeps its touch target), the name, and a branch other than the default dim at the row's end */
+@media (pointer: fine) {
+  .machine-workspaces:not(.is-two-line) {
+    --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2);
+  }
+}
+
+.workspace-branch-tail {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

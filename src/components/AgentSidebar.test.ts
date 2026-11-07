@@ -97,6 +97,53 @@ describe("AgentSidebar plugin tokens", () => {
   });
 });
 
+describe("AgentSidebar one-line row titles", () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }) } });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  });
+  afterEach(() => {
+    if (saved) Object.defineProperty(globalThis, "window", saved); else Reflect.deleteProperty(globalThis, "window");
+    if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages); else Reflect.deleteProperty(navigator, "languages");
+  });
+
+  test("a tab herdr only numbers never replaces what the agent is on; a tab the user named leads", () => {
+    const base = machine([
+      pane("w1:p1", { tab_id: "w1:t1", label: "", title: "Idempotent payments" }),
+      pane("w1:p2", { tab_id: "w1:t2", label: "", title: "Guard the export button" }),
+    ]);
+    base.snapshot!.tabs = [
+      { tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1, focused: false, pane_count: 1, agent_status: "idle" },
+      { tab_id: "w1:t2", workspace_id: "w1", label: "release", number: 2, focused: false, pane_count: 1, agent_status: "idle" },
+    ];
+    expect(texts(render([base]), "agent-title")).toEqual(["Idempotent payments", "release"]);
+  });
+
+  test("two agents in one named tab keep their own titles after it, so their rows never read the same", () => {
+    const base = machine([
+      pane("w1:p1", { tab_id: "w1:t1", label: "", title: "Idempotent payments" }),
+      pane("w1:p2", { tab_id: "w1:t1", label: "", title: "Guard the export button" }),
+    ]);
+    base.snapshot!.tabs = [{ tab_id: "w1:t1", workspace_id: "w1", label: "release", number: 1, focused: false, pane_count: 2, agent_status: "idle" }];
+    const html = render([base]);
+    expect(texts(html, "agent-title")).toEqual(["release", "release"]);
+    const places = [...html.matchAll(/<span class="agent-context">(.*?)<\/span>/g)].map((match) => decode(match[1]!));
+    expect(places[0]).toStartWith("Idempotent payments");
+    expect(places[1]).toStartWith("Guard the export button");
+  });
+
+  test("Agents order: a saved Workspaces order keeps herdr's order; only Waiting first, the default, lifts a waiting agent", () => {
+    const rows = [pane("w1:p1"), pane("w1:p2", { agent_status: "blocked" })];
+    const order = (html: string) => [...html.matchAll(/data-pane="([^"]+)"/g)].map((match) => match[1]);
+    expect(order(render([machine(rows)]))).toEqual(["w1:p2", "w1:p1"]);
+    const plain = (globalThis as { window: object }).window;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "workspace" }) : null, setItem() {}, removeItem() {} } } });
+    expect(order(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
+  });
+});
+
 describe("AgentSidebar, what herdr-core reports", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
@@ -240,8 +287,9 @@ describe("AgentSidebar background agents", () => {
       pane("w1:p3", { agent_status: "blocked", tokens: { role: "background" } }),
       pane("w1:p4", { agent_status: "working", tokens: { role: "background" } }),
     ])]);
-    expect(lists(html)).toEqual([["w1:p1", "w1:p3", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
-    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>Background agents<\/span><span class="agent-section-count">2<\/span><\/button>/);
+    // on one line (the default) a waiting row leads the list, the blocked background agent with it
+    expect(lists(html)).toEqual([["w1:p3", "w1:p1", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
+    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+2 background<\/span><\/button>/);
   });
 
   test("a list with no tagged pane has no background part", () => {

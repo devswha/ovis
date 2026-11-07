@@ -91,6 +91,32 @@ describe("AgentSidebar phone sheet live row", () => {
     <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={paneId} stateWord={(machine) => machine.state} onSelect={() => {}} />
   </SettingsProvider>;
 
+  it("says how long an agent has waited only for a wait this page saw begin, never a reload's guess", async () => {
+    const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    // already waiting when the page opened: herdr says nothing of when it began, so the row says no time
+    await act(async () => { renderer = create(view(at("blocked"))); });
+    expect(since()).toEqual([]);
+    // a wait this page sees begin says how long it has lasted
+    await act(async () => { renderer!.update(view(at("working"))); });
+    expect(since()).toEqual([]);
+    await act(async () => { renderer!.update(view(at("blocked"))); });
+    expect(since()).toEqual(["<1m"]);
+  });
+
+  it("makes no wait time from a PC's return: a wait it finds there began out of sight", async () => {
+    const at = (status: AgentStatus, state: Machine["state"] = "connected") => roster().map((machine) => ({ ...machine, ...(machine.id === "local" ? { state } : {}), snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    await act(async () => { renderer = create(view(at("working"))); });
+    await act(async () => { renderer!.update(view(at("working", "disconnected"))); });
+    await act(async () => { renderer!.update(view(at("blocked"))); });
+    expect(since()).toEqual([]);
+  });
+
   async function open() {
     await act(async () => {
       renderer = create(view(roster()), { createNodeMock: () => anchor });

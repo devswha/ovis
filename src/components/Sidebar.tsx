@@ -187,6 +187,29 @@ export function ContextBadge({ context }: { context?: PaneContext | undefined })
   );
 }
 
+/**
+ * A worktree workspace's name without what herdr adds to it: the `worktree-` prefix and the four-digit hash after
+ * it, only when both are there (`worktree-brave-valley-7fc6`); any other name is kept whole.
+ */
+export function compactWorktreeName(label: string): string {
+  const generated = /^worktree-(.+)-[0-9a-f]{4}$/.exec(label);
+  return generated ? generated[1]! : label;
+}
+
+/** whether a branch only repeats a workspace's name, herdr's prefix and hash aside */
+function sameName(branch: string, name: string): boolean {
+  return compactWorktreeName(branch) === compactWorktreeName(name);
+}
+
+/** the kind-of-change prefixes a branch drops on a compact row; any other prefix (`team-a/`) says something and stays */
+const BRANCH_KIND = /^(?:feat|feature|fix|bugfix|hotfix|chore|docs|refactor|perf|test|tests|ci|build|style|release)\//;
+
+/** The branch a compact row says at its end: none for the default branch, and without a `feat/`-style prefix. */
+export function compactBranch(branch: string | null): string | null {
+  if (branch === null || branch === "main" || branch === "master") return null;
+  return branch.replace(BRANCH_KIND, "") || branch;
+}
+
 function cwdBasename(cwd: string | null | undefined): string {
   return cwd ? folderName(cwd) : "unknown directory";
 }
@@ -833,10 +856,13 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // branch itself is the tooltip's and the menu's, where the name does not already say it
     const rowTitle = workspace.label;
     const secondaryBranch = linked && branchTitle && workspace.label !== branchTitle && workspace.label !== worktreeLabel(branchTitle) ? branchTitle : null;
-    // as herdr's own sidebar: a top-level git workspace says its branch on a second line, while an
-    // indented worktree (its name already the branch's), a pinned row (the card stays compact; the
-    // branch is in its tooltip and menu) and a folder outside git keep one line
-    const branchLine = !twoLine && !nested && !pinnedIds.includes(workspace.workspace_id) && branchTitle ? branchTitle : null;
+    // the compact rows (the default), as herdr-app's Spaces list: one line, the name without herdr's worktree prefix and
+    // hash, and a branch other than the default one dim at its end, unless it only repeats the name
+    const compact = !twoLine;
+    // only a worktree herdr opened has a name it made: a name the user chose is drawn whole
+    const shownTitle = compact && linked ? compactWorktreeName(rowTitle) : rowTitle;
+    const tailBranch = compact ? compactBranch(branchTitle) : null;
+    const branchTail = tailBranch !== null && !sameName(tailBranch, rowTitle) && tailBranch !== worktreeLabel(shownTitle) ? tailBranch : null;
     // the tooltip and the menu keep the exact branch (its slashes) even where the row does not repeat it
     const branchNote = branchTitle && branchTitle !== workspace.label ? branchTitle : null;
     const paths = [...new Set([workspace.worktree?.checkout_path, pane.cwd].filter((path): path is string => Boolean(path)))];
@@ -907,7 +933,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
             actions.selectPane(pane.pane_id);
           }}
         >
-          {rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
+          {/* a compact top-level row keeps its face alone; a worktree, which has none, keeps its mark */}
+          {(!compact || nested) && rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
           {editingWorkspace ? <input
             className="input workspace-rename-input"
             aria-label={t("Workspace name")}
@@ -930,16 +957,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
               {filterNote}
             </span>
             {lines.place && <span className="workspace-place">{lines.place}</span>}
-          </span> : branchLine ? <span className="workspace-copy is-branch-line">
-            <span className="workspace-line">
-              <span className="workspace-name">{rowTitle}</span>
-              {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
-              {filterNote}
-            </span>
-            <span className="workspace-place workspace-branch">{branchLine}</span>
           </span> : <span className="workspace-copy">
-            <span className="workspace-name">{rowTitle}</span>
-            {secondaryBranch && <span className="worktree-workspace-label">{secondaryBranch}</span>}
+            <span className="workspace-name">{shownTitle}</span>
+            {!compact && secondaryBranch && <span className="worktree-workspace-label">{secondaryBranch}</span>}
+            {branchTail && <span className="workspace-branch-tail">{branchTail}</span>}
             {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
             {filterNote}
           </span>}
