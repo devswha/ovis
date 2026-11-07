@@ -27,6 +27,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Seen lately": "최근 접속",
   "Paired · status unknown": "페어링됨 · 상태 알 수 없음",
   "sees sizes, not content": "크기만 보고 내용은 보지 못함",
+  "Connection map": "연결 지도",
   "Connection map: {me}. Relays: {relays}. PCs: {pcs}. Seen lately: {lately}. Ready: {ready}. Needs you: {needsYou}. Offline: {offline}.": "연결 지도: {me}. 릴레이: {relays}. PC: {pcs}. 최근 접속: {lately}. 연결됨: {ready}. 내 응답 필요: {needsYou}. 오프라인: {offline}.",
   "Overview": "개요",
   "Devices": "기기",

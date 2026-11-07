@@ -162,6 +162,13 @@
   display: grid;
 }
 
+/* each is a grid item of the one above it: at min-width: auto a long name's row would widen the page instead of cutting the name (below) */
+.relay-map-route,
+.relay-map-fan,
+.relay-map-hop {
+  min-width: 0;
+}
+
 .relay-map-fan {
   display: grid;
   gap: var(--space-1);
@@ -201,9 +208,15 @@
   white-space: nowrap;
 }
 
+/* the relay's row: its host stays whole, and on a narrow phone the note drops under it instead */
+.relay-map-hop-hub {
+  flex-wrap: wrap;
+}
+
 .relay-map-host {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
+  white-space: nowrap;
 }
 
 .relay-map-hop-note {

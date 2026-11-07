@@ -2,7 +2,8 @@
  * The relay dashboard (RelayDashboard.tsx): the app's sidebar grid (DESIGN.md, sidebar roster row:
  * one grid, neutral hover fill, the selected row's fill and no stroke) beside one column of panels
  * on --bg. Tokens only; every count in tabular numerals; every control a finger can reach grows to
- * --touch-target through the .btn, .segmented and .account-link rules it reuses.
+ * --touch-target through the .btn, .segmented and .account-link rules it reuses. A phone (760px and
+ * under, the block at the end) gets one column: a top bar, a tab bar at the bottom, the table as rows.
  */
 
 /* the <main> the shell gives the dashboard: the whole viewport, no card */
@@ -345,9 +346,13 @@
 .relay-dash-dot[data-pc-state="needs-update"] { background: var(--status-blocked); }
 .relay-dash-dot[data-pc-state="offline"] { background: transparent; border: var(--hairline) solid var(--status-idle); }
 
-/* the connection map's slot: nothing is drawn until RelayMap mounts in it */
+/* the connection map (RelayMap.tsx) in the strip's frame: the heading, then the map's own legend and drawing, or its route list on a phone */
 .relay-dash-map {
-  display: block;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
 /* ---- the PC table ---- */
@@ -518,5 +523,177 @@
 
   .relay-dash-cell + .relay-dash-cell-attention {
     border-left: 0;
+  }
+}
+
+/* ---- a phone (760px and under, where RelayMap.css shows the route list in place of the drawing) ---- */
+
+/* the tab bar is a phone's alone */
+.relay-dash-tabs {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  /*
+   * One column. The sidebar's box goes (display: contents): its brand is the top bar, stuck to the
+   * top; its foot, where the Devices tab leads, is the last section; its nav gives way to the tab bar
+   * fixed at the bottom, over the safe area. The page ends above the tab bar, and what a tab leads to
+   * stops under the top bar, not behind it.
+   */
+  .relay-dash {
+    --dash-top-h: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+    --dash-tabs-h: calc(var(--touch-target) + 2 * var(--space-1) + var(--hairline) + env(safe-area-inset-bottom, 0px));
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: var(--dash-tabs-h);
+  }
+
+  .relay-dash-side {
+    display: contents;
+  }
+
+  .relay-dash-brand {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-header);
+    order: -1;
+    min-height: var(--dash-top-h);
+    margin: 0;
+    padding: env(safe-area-inset-top, 0px) calc(var(--space-4) + env(safe-area-inset-right, 0px)) 0 calc(var(--space-4) + env(safe-area-inset-left, 0px));
+    background: var(--bg-panel);
+    border-bottom: var(--hairline) solid var(--divider);
+  }
+
+  .relay-dash-nav {
+    display: none;
+  }
+
+  .relay-dash-main {
+    padding: var(--space-4) calc(var(--space-4) + env(safe-area-inset-right, 0px)) var(--space-4) calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  }
+
+  .relay-dash-foot {
+    order: 1;
+    margin-top: 0;
+    padding: var(--space-4) calc(var(--space-4) + env(safe-area-inset-right, 0px)) 0 calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  }
+
+  .relay-dash-main,
+  .relay-dash-pcs,
+  .relay-dash-foot {
+    scroll-margin-top: var(--dash-top-h);
+  }
+
+  .relay-dash-tabs {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-header);
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    padding: var(--space-1) env(safe-area-inset-right, 0px) calc(var(--space-1) + env(safe-area-inset-bottom, 0px)) env(safe-area-inset-left, 0px);
+    background: var(--bg-panel);
+    border-top: var(--hairline) solid var(--divider);
+  }
+
+  /* a tab: the glyph over its word, the whole cell the target; the current one strong with the accent's glyph, as the sidebar's row; the row with no page dimmed as a disabled button is */
+  .relay-dash-tab {
+    display: grid;
+    gap: calc(var(--space-1) / 2);
+    align-content: center;
+    justify-items: center;
+    min-width: 0;
+    min-height: var(--touch-target);
+    border-radius: var(--radius-md);
+    color: var(--text-dim);
+    font-size: var(--fs-2xs);
+    font-weight: var(--fw-medium);
+    text-decoration: none;
+  }
+
+  .relay-dash-tab svg {
+    width: calc(var(--icon-size) + var(--space-1));
+    height: calc(var(--icon-size) + var(--space-1));
+  }
+
+  .relay-dash-tab > span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .relay-dash-tab[aria-current="page"] {
+    color: var(--text-strong);
+  }
+
+  .relay-dash-tab[aria-current="page"] svg {
+    color: var(--accent);
+  }
+
+  .relay-dash-tab[aria-disabled="true"] {
+    opacity: 0.55;
+  }
+
+  .relay-dash-tab:focus-visible {
+    outline: var(--ring);
+    outline-offset: calc(-1 * var(--ring-offset));
+  }
+
+  /* the strip stacks; the notice already names what waits, so the attention list goes */
+  .relay-dash-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relay-dash-cell + .relay-dash-cell {
+    border-top: var(--hairline) solid var(--border);
+    border-left: 0;
+  }
+
+  .relay-dash-cell-attention {
+    display: none;
+  }
+
+  .relay-dash-pcs-head {
+    flex-wrap: wrap;
+  }
+
+  /* the table as rows: the name and the action on one line, the state under the name past its icon; relay and last seen go (the strip and the route list name the relays) */
+  .relay-dash-table,
+  .relay-dash-table tbody,
+  .relay-dash-table td {
+    display: block;
+  }
+
+  .relay-dash-table colgroup,
+  .relay-dash-table thead,
+  .relay-dash-table .relay-dash-relay,
+  .relay-dash-table .relay-dash-seen {
+    display: none;
+  }
+
+  .relay-dash-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-1) var(--space-3);
+    align-items: center;
+    padding: var(--space-3) 0;
+    border-bottom: var(--hairline) solid var(--border);
+  }
+
+  .relay-dash-table td {
+    padding: 0;
+    border: 0;
+  }
+
+  .relay-dash-table .relay-dash-state-cell {
+    grid-column: 1;
+    padding-left: calc(var(--avatar-size) + var(--space-3));
+  }
+
+  .relay-dash-table .relay-dash-act {
+    grid-row: 1;
+    grid-column: 2;
   }
 }

@@ -1,7 +1,7 @@
 import "./RelayDashboard.css";
 
 import { useState } from "react";
-import { LayoutGrid, Monitor, Plus, Settings, Smartphone, Waypoints } from "lucide-react";
+import { LayoutGrid, Monitor, Plus, Settings, Smartphone, Waypoints, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
@@ -12,6 +12,7 @@ import { dashboardModel, relayHost, type DashboardPc } from "../lib/relay/dashbo
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { accountPcStateText, CheckPcsButton, pcStateWord, PcStatusLine, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
+import { RelayMap } from "./RelayMap.tsx";
 
 /** Which of the two join flows the Add-a-PC sheet opens in: a PC new in the account types its digits; another PC of the account asks its members. */
 export type SheetMode = "new" | "join";
@@ -47,6 +48,22 @@ export interface RelayDashboardProps {
 /** A state's dot: the colour helps the eye, the words beside it carry the state (AccountPcs.css draws the same four). */
 function StateDot({ state }: { state: MyPc["state"] }) {
   return <span className="relay-dash-dot" data-pc-state={state} aria-hidden="true" />;
+}
+
+/** A place the sidebar leads to; `tab` keeps it in a phone's tab bar; no href is a row with no page behind it yet. */
+type Place = { href: string | null; Icon: LucideIcon; label: string; current?: boolean; count?: number; tab: boolean };
+
+/** One row of the sidebar (`relay-dash-nav-item`, its count after the words) or one tab of a phone's bar (`relay-dash-tab`, the word under the glyph): a link, or a plain row that says it is not one. */
+function PlaceLink({ place, as }: { place: Place; as: "relay-dash-nav-item" | "relay-dash-tab" }) {
+  const inner = (
+    <>
+      <place.Icon aria-hidden="true" />
+      {as === "relay-dash-tab" ? <span>{place.label}</span> : place.label}
+      {as === "relay-dash-nav-item" && place.count !== undefined && <span className="relay-dash-nav-count">{place.count}</span>}
+    </>
+  );
+  if (place.href === null) return <span className={as} aria-disabled="true">{inner}</span>;
+  return <a className={as} href={place.href} aria-current={place.current ? "page" : undefined}>{inner}</a>;
 }
 
 /** The sidebar's foot: who is signed in, with Sign out and the way out of the account; or, without an account, the way in. */
@@ -117,18 +134,21 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
     : pcs.length === 1 ? t("1 PC paired with this device") : t("{count} PCs paired with this device", { count: pcs.length });
   const under = (pc: DashboardPc): string => pc.listed ? (fresh.has(pc.server_id) ? t("new in your account") : t("in your account"))
     : account ? t("paired by QR · not in the account yet") : t("paired with this device");
+  /** Where the sidebar leads, and the four of them a phone's tab bar keeps (Relay, the strip's cell, is a sidebar row alone); no settings on this screen yet, so that row says it is not a link. */
+  const places: Place[] = [
+    { href: "#relay-dash-overview", Icon: LayoutGrid, label: t("Overview"), current: true, tab: true },
+    { href: "#relay-dash-pcs", Icon: Monitor, label: t("PCs"), ...(pcs !== null && pcs.length > 0 ? { count: pcs.length } : {}), tab: true },
+    { href: "#relay-dash-device", Icon: Smartphone, label: t("Devices"), tab: true },
+    { href: "#relay-dash-relays", Icon: Waypoints, label: t("Relay"), tab: false },
+    { href: null, Icon: Settings, label: t("Settings"), tab: true },
+  ];
 
   return (
     <div className="relay-dash" data-dashboard-mode={account ? "account" : "local"}>
       <aside className="relay-dash-side">
         <p className="relay-dash-brand"><img src="/icons/icon-192.png?v=sheep1" alt="" className="relay-dash-brand-mark" />Ovis</p>
         <nav className="relay-dash-nav">
-          <a className="relay-dash-nav-item" href="#relay-dash-overview" aria-current="page"><LayoutGrid aria-hidden="true" />{t("Overview")}</a>
-          <a className="relay-dash-nav-item" href="#relay-dash-pcs"><Monitor aria-hidden="true" />{t("PCs")}{pcs !== null && pcs.length > 0 && <span className="relay-dash-nav-count">{pcs.length}</span>}</a>
-          <a className="relay-dash-nav-item" href="#relay-dash-device"><Smartphone aria-hidden="true" />{t("Devices")}</a>
-          <a className="relay-dash-nav-item" href="#relay-dash-relays"><Waypoints aria-hidden="true" />{t("Relay")}</a>
-          {/* no settings on this screen yet: the row keeps its place and says it is not a link */}
-          <span className="relay-dash-nav-item" aria-disabled="true"><Settings aria-hidden="true" />{t("Settings")}</span>
+          {places.map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-nav-item" />)}
         </nav>
         <Foot account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
       </aside>
@@ -191,8 +211,11 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                   </ul>}
               </div>
             </section>
-            {/* the connection map (RelayMap.tsx) mounts here from model.map; nothing is drawn until it does */}
-            <div className="relay-dash-map" data-slot="relay-map" />
+            {/* the connection map: the drawing with its legend, or the route list on a phone (RelayMap.tsx); nothing without a PC, as here */}
+            <section className="relay-dash-map" data-slot="relay-map" aria-labelledby="relay-dash-map-title">
+              <h2 className="relay-dash-h" id="relay-dash-map-title">{t("Connection map")}</h2>
+              <RelayMap map={model.map} />
+            </section>
             <section className="relay-dash-pcs" id="relay-dash-pcs" aria-labelledby="relay-dash-pcs-title">
               <div className="relay-dash-pcs-head">
                 <h2 id="relay-dash-pcs-title">{t("PCs")}</h2>
@@ -217,7 +240,7 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                           <span className="relay-dash-name-text"><b>{pc.name}</b><small>{under(pc)}</small></span>
                         </div>
                       </td>
-                      <td>
+                      <td className="relay-dash-state-cell">
                         {pc.paired && pcStatus?.get(pc.server_id)
                           ? <PcStatusLine status={pcStatus.get(pc.server_id)!} lastSeenAt={pc.last_seen_at} />
                           : <span className="relay-dash-state"><StateDot state={pc.state} />{pcStateWord(pc.state, t)}</span>}
@@ -235,6 +258,10 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
         )}
         {error !== null && <p className="account-error" role="alert">{error}</p>}
       </div>
+      {/* a phone's tab bar (RelayDashboard.css, 760px and under): the sidebar's places but Relay, each a touch target, over the safe area */}
+      <nav className="relay-dash-tabs">
+        {places.filter((place) => place.tab).map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-tab" />)}
+      </nav>
     </div>
   );
 }

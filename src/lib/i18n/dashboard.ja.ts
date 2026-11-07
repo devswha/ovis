@@ -27,6 +27,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Seen lately": "最近接続あり",
   "Paired · status unknown": "ペアリング済み · 状態不明",
   "sees sizes, not content": "サイズは見えるが内容は見えない",
+  "Connection map": "接続マップ",
   "Connection map: {me}. Relays: {relays}. PCs: {pcs}. Seen lately: {lately}. Ready: {ready}. Needs you: {needsYou}. Offline: {offline}.": "接続マップ: {me}。リレー: {relays}。PC: {pcs}。最近接続あり: {lately}。接続可能: {ready}。応答が必要: {needsYou}。オフライン: {offline}。",
   "Overview": "概要",
   "Devices": "デバイス",

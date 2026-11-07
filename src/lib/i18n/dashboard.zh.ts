@@ -27,6 +27,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Seen lately": "最近出现过",
   "Paired · status unknown": "已配对 · 状态未知",
   "sees sizes, not content": "只看到大小，看不到内容",
+  "Connection map": "连接图",
   "Connection map: {me}. Relays: {relays}. PCs: {pcs}. Seen lately: {lately}. Ready: {ready}. Needs you: {needsYou}. Offline: {offline}.": "连接图：{me}。中继：{relays}。PC：{pcs}。最近出现过：{lately}。可连接：{ready}。需要你回应：{needsYou}。离线：{offline}。",
   "Overview": "概览",
   "Devices": "设备",

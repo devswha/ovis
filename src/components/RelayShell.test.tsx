@@ -179,9 +179,22 @@ describe("the dashboard", () => {
     expect(html).toContain("Needs attention · 2");
     const attention = [...html.matchAll(/<span class="relay-dash-attention-name">([^<]+)<\/span><small>([^<]+)<\/small>/g)].map(([, name, why]) => [name, why]);
     expect(attention).toEqual([["Mac mini", "Needs approval"], ["Home server", "Offline · 20 h ago"]]);
-    // the map's slot waits for RelayMap; the nav counts the PCs
+    // the map has a case of its own below; the nav counts the PCs
     expect(html).toContain('data-slot="relay-map"');
     expect(html).toContain('<span class="relay-dash-nav-count">4</span>');
+  });
+
+  it("draws the connection map from the model between the strip and the table, and none for an empty account", () => {
+    const html = render(signedIn(four()));
+    const map = /<section class="relay-dash-map" data-slot="relay-map"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+    expect(text(map)).toContain("Connection map");
+    expect(map).toMatch(/<svg class="relay-map-svg" viewBox="[^"]+" role="img" aria-label="Connection map: This device\. Relays: relay-ap\.ovis\.sh, relay\.ovis\.sh\. PCs: 4\. Seen lately: 1\. Ready: 2\. Needs you: 1\. Offline: 1\."/);
+    expect(map).toContain('class="relay-map-routes"');
+    expect(html.indexOf('class="relay-dash-summary"')).toBeLessThan(html.indexOf(map));
+    expect(html.indexOf(map)).toBeLessThan(html.indexOf('id="relay-dash-pcs"'));
+    const empty = render(signedIn([]));
+    expect(empty).not.toContain('role="img"');
+    expect(empty).not.toContain("relay-map");
   });
 
   it("gives each row its state, relay, last seen and the one action its state allows", () => {
@@ -203,6 +216,27 @@ describe("the dashboard", () => {
     const unpaired = render(signedIn([pc(ids.home, "Home server", "offline")], { directoryRelays: [{ server_id: ids.home, relay: AP }] }));
     expect(actionsOf(rowOf(unpaired, "Home server"))).toEqual([]);
     expect(rowOf(unpaired, "Home server")).toContain("relay-ap.ovis.sh");
+  });
+
+  it("gives a phone's tab bar the sidebar's places: Overview, PCs and Devices as links to what is there, Settings a row with no page, Relay the sidebar's alone", () => {
+    const html = render(signedIn(four()));
+    const tabs = /<nav class="relay-dash-tabs">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    // the class is what RelayDashboard.css hangs the touch target on, so every tab carries it
+    const items = [...tabs.matchAll(/<(a|span) class="relay-dash-tab"([^>]*)><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/(?:a|span)>/g)].map(([, tag, attrs, label]) => [tag, label, attrs!.trim()]);
+    expect(items).toEqual([
+      ["a", "Overview", 'href="#relay-dash-overview" aria-current="page"'],
+      ["a", "PCs", 'href="#relay-dash-pcs"'],
+      ["a", "Devices", 'href="#relay-dash-device"'],
+      ["span", "Settings", 'aria-disabled="true"'],
+    ]);
+    expect(tabs).not.toContain("relay-dash-nav-count");
+    for (const target of ["relay-dash-overview", "relay-dash-pcs", "relay-dash-device"]) expect(html).toContain(`id="${target}"`);
+    const side = /<nav class="relay-dash-nav">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    expect([...side.matchAll(/<(a|span) class="relay-dash-nav-item"([^>]*)>/g)].map(([, tag, attrs]) => [tag, attrs!.trim()])).toEqual([
+      ["a", 'href="#relay-dash-overview" aria-current="page"'], ["a", 'href="#relay-dash-pcs"'], ["a", 'href="#relay-dash-device"'], ["a", 'href="#relay-dash-relays"'], ["span", 'aria-disabled="true"'],
+    ]);
+    // the cell the phone's row layout places under the name
+    expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell">');
   });
 
   it("says who is signed in at the sidebar's foot, with Sign out and the way out of the account", () => {
@@ -229,18 +263,21 @@ describe("the dashboard", () => {
   describe("in a browser", () => {
     const descriptors = new Map<string, PropertyDescriptor | undefined>();
     let renderer: ReactTestRenderer | undefined;
-    // the test renderer draws no DOM: a node stands in for every element, and the sheet portals into a body that holds them
-    const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} });
+    // the test renderer draws no DOM: a node stands in for every element (the map's svg pauses and resumes its animations on it), and the sheet portals into a body that holds them
+    const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {}, pauseAnimations() {}, unpauseAnimations() {} });
 
     beforeEach(() => {
-      for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IntersectionObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
       const events = new EventTarget();
       const store = new Map<string, string>();
       const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
       const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
       class HTMLElement { isConnected = true; focus(): void {} }
+      // the map watches whether its svg is on screen; nothing here scrolls, so the watch never reports
+      class IntersectionObserver { observe(): void {} disconnect(): void {} }
       Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
       Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
+      Object.defineProperty(globalThis, "IntersectionObserver", { configurable: true, value: IntersectionObserver });
       Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
       Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
       Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
