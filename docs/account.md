@@ -339,8 +339,8 @@ messages):
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
-A wrong number ends that comparison; the person starts again from the card. QR codes and pairing
-codes stay under **Other ways** for a device without an account.
+A wrong number ends that comparison; the person starts again from the card. A device without an account
+pairs with a QR code or pairing code behind **Pair with a QR or code** on the sign-in screen.
 
 ### Introductions
 

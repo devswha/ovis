@@ -4385,8 +4385,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   to; otherwise the front page is the saved-PC list above, unchanged. Signed out: **Continue with GitHub** and **Continue
   with Apple**, two equal neutral `.btn`s (App Review 4.8 wants Apple wherever another provider
   is, and neither is the one to pick), a `--fs-xs` dim line on what the account service learns,
-  then the QR route under a hairline (an `h2`, the page keeps one `h1`). With saved PCs the list
-  comes first and the sign-in follows it. Signed in: **Your PCs** with "Signed in with GitHub"
+  all under one **Sign in to Ovis** title (the page's one `h1`) and a line on what the relay is for.
+  Under them, quiet links: **Pair with a QR or code**, and only when this device holds pairings,
+  **Continue without an account (N PCs)**, which opens the saved-PC list. Signed in: **Your PCs** with "Signed in with GitHub"
   under it, one row per PC of the account merged with the PCs this device is paired with: the
   name, and under it a `--fs-sm` dim line in words (Paired; This device is not approved on it
   yet; Offline, last seen 3 h ago; Its Ovis needs an update to join the account), no badge. Only

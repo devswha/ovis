@@ -133,13 +133,6 @@
   color: var(--text-strong);
 }
 
-/* the sign-in under the saved PCs: a hairline from the list before it */
-.account-or {
-  margin-top: var(--space-5);
-  padding-top: var(--space-4);
-  border-top: var(--hairline) solid var(--border);
-}
-
 /* sign out and leave: quiet links under the list; leaving asks once more, in the card */
 .account-actions {
   display: flex;
