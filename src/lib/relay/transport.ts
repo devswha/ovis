@@ -269,7 +269,8 @@ export class RelayTransport implements Transport {
       { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay);
     if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(this.abort.signal);
     // a race the relay won by a hair would bring a switch the probe just earned back onto the relay, time after time
-    const headStartMs = this.switchingDirect ? undefined : DIRECT_HEAD_START_MS;
+    const proven = this.switchingDirect;
+    const headStartMs = proven ? undefined : DIRECT_HEAD_START_MS;
     this.switchingDirect = false;
     // only the channel kept may report its loss: one closed for losing the race is no lost carrier
     let winner: "direct" | "relay" | undefined;
@@ -307,7 +308,7 @@ export class RelayTransport implements Transport {
         });
       };
       if (headStartMs !== undefined) cancelHeadStart = (this.options.clock ?? clock).setTimeout(startRelay, headStartMs);
-      this.openDirect(offer, { ...options, onClose: lost("direct") }, directEnd.signal).then((channel) => {
+      this.openDirect(offer, { ...options, onClose: lost("direct") }, directEnd.signal, proven).then((channel) => {
         directDone = true;
         if (channel) win("direct", { channel, relay: this.relay });
         else if (relayFailure) fail(relayFailure.error);
@@ -321,7 +322,7 @@ export class RelayTransport implements Transport {
    * none answered (off this network, or the PC names none) or `ended` fired (the relay won), and the relay is used.
    * Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay.
    */
-  private async openDirect(offer: RelayOffer, options: RelayChannelOptions, ended: AbortSignal): Promise<RelayChannel | undefined> {
+  private async openDirect(offer: RelayOffer, options: RelayChannelOptions, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
     if (this.directCarriers === undefined) {
@@ -354,7 +355,8 @@ export class RelayTransport implements Transport {
           const left = ends - performance.now();
           if (!lane || left <= 0) return;
           const direct = lane.queue.shift()!;
-          const rounds = Math.ceil((lane.queue.length + lane.running + 1) / slots());
+          // the carrier a probe just proved (first in the list) keeps the whole budget: the switch it earned does not race the relay
+          const rounds = proven && direct === carriers[0] ? 1 : Math.ceil((lane.queue.length + lane.running + 1) / slots());
           lane.running++;
           const attempt = new AbortController();
           attempts.set(direct, attempt);

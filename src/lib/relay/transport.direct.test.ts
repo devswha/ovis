@@ -310,6 +310,30 @@ describe("racing the relay at the start", () => {
     expect(pc.channels.at(-1)!.direct).toBe(tailscale);
   });
 
+  it("gives the carrier a probe proved its whole budget on the switch, past two silent LAN addresses", async () => {
+    // Given a phone pairing through the relay with a PC that names two LAN addresses silent from here before its own
+    const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
+      websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
+    cleanup.push(() => silent.stop(true));
+    const pc = await pcFixture(["ws://10.0.0.8:9", "ws://10.0.0.9:9"]);
+    const lan = `ws://${LAN}:${pc.service.status().direct!.carriers.at(-1)!.split(":").at(-1)}`;
+    const socketFor = (url: string): WebSocket => url.startsWith(lan) ? pc.directSocket(url) : new WebSocket(`ws://127.0.0.1:${silent.port}/v1/ws?v=1`);
+    let paired = false;
+    const third = deferred<void>();
+    const openChannel = async (channelOffer: RelayOffer, options?: RelayChannelOptions): Promise<RelayChannel> => {
+      if (paired && options?.direct === "ws://10.0.0.9:9") third.resolve();
+      // the proven carrier answers only once the others used up their share: a PC slow to admit
+      if (paired && options?.direct === lan) await third.promise;
+      return pc.openChannel(channelOffer, options);
+    };
+    const transport = await transportFor(pc, new MemoryStore(), pc.offer, { openChannel, directSocket: socketFor });
+    paired = true;
+    // When the probe proves the PC's own carrier and the relay channel closes for the switch
+    // Then the switch lands on that carrier
+    await routeBecomes(transport, "direct");
+    expect(pc.channels.at(-1)!.direct).toBe(lan);
+  }, 20_000);
+
   it("still tries a third LAN carrier behind two silent ones within the budget", async () => {
     // Given a phone whose PC names two LAN addresses that assign and stay silent, then its reachable one, and no relay
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
