@@ -210,7 +210,7 @@ try {
       for (const width of [1280, 390]) for (const mode of ["light", "dark"] as const) {
         for (const grouped of [false, true]) {
           const scene: Scene = { width, mode, twoPcs: true, grouped };
-          await check("section heads count and show their carets", scene, async (page, label) => {
+          await check("section heads show their carets, with no count", scene, async (page, label) => {
             // the drawer starts Agents folded on a phone; open both for the first look
             const agentsToggle = page.locator(".agent-section-toggle");
             if (await agentsToggle.getAttribute("aria-expanded") !== "true") await agentsToggle.click();
@@ -218,14 +218,15 @@ try {
             assert.ok(open.agentRows > 0 && open.machines === 2, `${label}: the fixture shows two PCs and agents`);
             assert.equal(open.pcsHead, 0, `${label}: the PCs have no head, no caret and no count`);
             assert.equal(open.agentsCaret, true, `${label}: the open Agents head shows its caret at rest`);
-            assert.equal(open.agentsCount, String(open.agentRows), `${label}: the open Agents head counts its agents`);
+            // the compact list (the default) is herdr-app's: its head says no count, open or folded
+            assert.equal(open.agentsCount, null, `${label}: the open Agents head says no count`);
             if (!grouped) await shot(page, "open", scene);
             await agentsToggle.click();
             const folded = await heads(page);
             assert.ok(folded.agentsFolded, `${label}: the Agents head folds`);
             assert.equal(folded.machines, 2, `${label}: the PCs stay listed`);
             assert.equal(folded.agentsCaret, true, `${label}: the folded Agents head shows its caret`);
-            assert.equal(folded.agentsCount, String(open.agentRows), `${label}: the folded Agents head still counts`);
+            assert.equal(folded.agentsCount, null, `${label}: the folded Agents head says no count either`);
           });
         }
         await check("a PC header trades its agent count for its actions", { width, mode, twoPcs: true }, async (page, label) => {
