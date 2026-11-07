@@ -1099,40 +1099,12 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   color: var(--status-blocked);
 }
 
-/* Compact rows, the default (Settings → Sidebar rows → Two lines keeps the tall ones): herdr-app's Spaces list.
-   A row of 30px (a worktree's 28px), an 18px letter icon, the name, the branch dim at the row's end, and of the
-   states only a waiting agent's pill; every other state stays in the row's status cell for a screen reader. */
-.machine-workspaces:not(.is-two-line) {
-  --side-row: calc(var(--control-h) - var(--space-1));
-}
-
-.machine-workspaces:not(.is-two-line) .worktree-children {
-  --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2);
-}
-
-.workspace-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: calc(var(--space-4) + var(--hairline) * 2);
-  height: calc(var(--space-4) + var(--hairline) * 2);
-  border-radius: var(--radius-sm);
-  color: var(--bg);
-  font-size: calc(var(--fs-sm) - var(--hairline));
-  font-weight: var(--fw-bold);
-  line-height: 1;
-}
-
-.workspace-avatar[data-tone="0"] { background: var(--syntax-type); }
-.workspace-avatar[data-tone="1"] { background: var(--syntax-number); }
-.workspace-avatar[data-tone="2"] { background: var(--syntax-function); }
-.workspace-avatar[data-tone="3"] { background: var(--syntax-keyword); }
-.workspace-avatar[data-tone="4"] { background: var(--syntax-string); }
-.workspace-avatar[data-tone="5"] { background: var(--syntax-variable); }
-
-.workspace-branch-mark svg {
-  width: var(--space-3);
-  height: var(--space-3);
+/* Compact rows, the default (Settings → Sidebar rows → Two lines keeps the tall ones), as herdr-app's list: one line
+   a little lower than a control under a pointer (a finger keeps its touch target), the name, and a branch other than the default dim at the row's end */
+@media (pointer: fine) {
+  .machine-workspaces:not(.is-two-line) {
+    --side-row: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2);
+  }
 }
 
 .workspace-branch-tail {
@@ -1146,62 +1118,3 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* the compact row's state cell: only the waiting pill shows; the badge stays for a screen reader */
-.machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta .sidebar-status:not(.badge-restore-error) {
-  position: absolute;
-  width: var(--hairline);
-  height: var(--hairline);
-  overflow: hidden;
-  clip-path: inset(50%);
-}
-
-.machine-workspaces:not(.is-two-line) .workspace-header:has(.workspace-wait-pill) {
-  padding-right: calc(var(--side-box) + var(--space-6));
-}
-
-.machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta:has(.workspace-wait-pill) {
-  width: auto;
-  padding-inline-end: var(--space-2);
-}
-
-.workspace-wait-pill {
-  display: inline-flex;
-  align-items: center;
-  height: var(--chip-h);
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--status-blocked-tint);
-  color: var(--status-blocked);
-  font-size: calc(var(--fs-sm) - var(--hairline));
-  font-weight: var(--fw-semibold);
-  white-space: nowrap;
-}
-
-/* the compact sidebar's head over the workspaces (MachineSidebar.tsx): quiet words and a + for a new workspace */
-.sidebar-spaces-head {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  min-height: var(--side-row);
-  padding: 0 var(--side-gutter) 0 calc(var(--side-gutter) + var(--space-2));
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-.sidebar-spaces-title { flex: 1 1 auto; }
-
-.sidebar-shell.is-compact .sidebar-footer-row > .sidebar-footer-settings {
-  flex: 1 1 auto;
-  width: auto;
-  gap: 0;
-  justify-content: flex-start;
-}
-
-.sidebar-shell.is-compact .sidebar-footer-settings svg { margin-inline: calc((var(--side-box) - var(--icon-size)) / 2); }
-
-.sidebar-footer-label { color: var(--text-dim); }
-
-.sidebar-shell.is-compact .sidebar-footer-action { min-height: calc(var(--control-h) - var(--space-1)); color: var(--text-dim); }
-
-.sidebar-shell.is-compact > .pcs-sidebar { flex: 1 1 auto; max-height: none; }

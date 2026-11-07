@@ -36,8 +36,7 @@ import { CommandPalette } from "./components/CommandPalette.tsx";
 import { AppLayoutContext, appLayoutOf, MachineContext } from "./lib/machineContext.tsx";
 import { MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
-import { type PanePresence, SidebarActivityProvider, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
-import { AgentsPanel, AgentsSheet, AgentsToggle, useAgentsPanel } from "./components/AgentsPanel.tsx";
+import { type PanePresence, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
 import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
 import { openPresentation } from "./lib/filePresentation.ts";
 import { MachineDialog } from "./components/MachineDialog.tsx";
@@ -229,10 +228,6 @@ export function App() {
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
   const { rosterIn, pendingFile, selectionHint, setHeaderNote, note, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink });
-  // the agents panel at the window's right, a phone's agents sheet (AgentsPanel.tsx); Settings → Sidebar rows → Two
-  // lines keeps the agents in the sidebar instead
-  const agentsApart = settings.sidebarRows !== "two";
-  const { open: agentsOpen, setOpen: setAgentsOpen, sheet: agentsSheet, setSheet: setAgentsSheet } = useAgentsPanel();
   // Settings → Show the sidebar on hover: the collapsed sidebar over the pane for a moment (lib/sidebarPeek.ts)
   const { peeking: sidebarPeeking, sidebarRef: peekSidebarRef, toggleRef: peekToggleRef, toggleHandlers: peekToggleHandlers, sidebarHandlers: peekSidebarHandlers } = useSidebarPeek(settings.sidebarPeek && wideScreen && sidebarCollapsed);
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });
@@ -907,7 +902,6 @@ export function App() {
             <FolderOpen aria-hidden="true" />
           </button>
         )}
-        {agentsApart && <SidebarActivityProvider value={activity}><AgentsToggle machines={sidebarMachines} open={wideScreen ? agentsOpen : agentsSheet} onToggle={() => { if (wideScreen) setAgentsOpen(!agentsOpen); else setAgentsSheet(true); }} /></SidebarActivityProvider>}
         <div className="header-meta">
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
           {!guideShown && <ConnectionChip
@@ -1194,9 +1188,6 @@ export function App() {
         {filesOpen && filesDocked && filesDialog(true)}
         {webPage !== null && !(viewing !== null && fileDocked) &&
           <WebPanel key={webPage} url={webPage} docked={filePanelAvailable} covered={webDialogCover} onClose={closeWebPage} panelStart={filePanelAvailable ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined} />}
-        {/* last in the row: the agents, a panel or its rail at the window's right; a phone's open as a sheet */}
-        {agentsApart && wideScreen && <SidebarActivityProvider value={activity}><AgentsPanel open={agentsOpen} onOpen={setAgentsOpen} machines={sidebarMachines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} watching={auth?.role === "watch"} onSelect={selectTarget} /></SidebarActivityProvider>}
-        {agentsApart && !wideScreen && agentsSheet && <SidebarActivityProvider value={activity}><AgentsSheet machines={sidebarMachines} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} watching={auth?.role === "watch"} onSelect={selectTarget} onClose={() => setAgentsSheet(false)} /></SidebarActivityProvider>}
       </div>
       </PanePressContext.Provider>
 

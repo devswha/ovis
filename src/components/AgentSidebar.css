@@ -492,3 +492,20 @@
   .agent-row:enabled:active { opacity: 1; }
   .agent-item:has(> .agent-row:enabled:active) { background: var(--side-hover); }
 }
+
+/* Settings → Sidebar rows → One line (the default), as herdr-app's list: a row's counts, marks and the agent's own
+   words show under the pointer or the focus; a waiting row says how long it has waited, dim before its state */
+@media (pointer: fine) {
+  .agents-sidebar.is-compact .agent-row { min-height: calc(var(--control-h) - var(--space-1) - var(--hairline) * 2); }
+}
+
+.agents-sidebar.is-compact .agent-item:not(:hover, :focus-within) :is(.agent-row-status, .agent-blocked, .agent-progress, .agent-tokens) { display: none; }
+
+.agent-since {
+  flex: 0 0 auto;
+  padding-inline: var(--space-1);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

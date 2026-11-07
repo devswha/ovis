@@ -187,17 +187,6 @@ export function ContextBadge({ context }: { context?: PaneContext | undefined })
   );
 }
 
-/**
- * A workspace's face in the compact rows: its first letter on one of six colors its name picks, as herdr-app's
- * Spaces list draws it; the colors are the theme's own (Sidebar.css `data-tone`).
- */
-export function WorkspaceAvatar({ name }: { name: string }) {
-  let hash = 0;
-  for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;
-  const letter = [...name.trim()][0]?.toUpperCase() ?? "?";
-  return <span className="sidebar-mark workspace-avatar-cell" aria-hidden="true"><span className="workspace-avatar" data-tone={hash % 6}>{letter}</span></span>;
-}
-
 /** A worktree workspace's name without what herdr adds to it: the `worktree-` prefix and the short hash after it. */
 export function compactWorktreeName(label: string): string {
   const bare = label.replace(/^worktree-/, "");
@@ -891,8 +880,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const contentsId = `${rosterId}-worktrees-${encodeURIComponent(workspace.workspace_id)}`;
     // without a project icon the folder itself says the fold's state: open while the worktrees show
     const unfolded = children.length > 0 && repoKey !== undefined && !collapsed;
-    const face = compact ? <WorkspaceAvatar name={rowTitle} /> : <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
-    const rowStatus = online ? rollupStatus(statusPanes.map((candidate) => activity.status(machineId, candidate))) : undefined;
+    const face = <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void => setMenu(menuOpen ? null : { anchor, point, previousFocus, workspace, title: rowTitle, place: [branchNote, ...paths].filter(Boolean).join(" · ") || workspace.label });
     return <li
       className={`workspace workspace-group pane-item${selected ? " is-selected" : ""}${workerSelected ? " has-selected-agent" : ""}${collapsed ? " is-collapsed" : ""}${context ? " is-filter-context" : ""}${dragWorkspaceId === workspace.workspace_id ? " is-dragging" : ""}${touchDrag?.source === workspace.workspace_id ? " is-lifted" : ""}`}
@@ -908,7 +896,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
         {/* a workspace leads with its own face, the project's icon or else a folder; when linked
             worktrees sit under it, that face is also the fold, and turns to an open or closed folder under a pointer */}
-        {nested ? compact ? <span className="sidebar-mark workspace-branch-mark" aria-hidden="true"><GitBranch /></span> : null : children.length > 0 && repoKey !== undefined ? <button
+        {nested ? null : children.length > 0 && repoKey !== undefined ? <button
           type="button"
           className="sidebar-row-action workspace-toggle"
           aria-label={collapsed ? t("Expand worktrees of {name}", { name: workspace.label }) : t("Collapse worktrees of {name}", { name: workspace.label })}
@@ -939,7 +927,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
             actions.selectPane(pane.pane_id);
           }}
         >
-          {!compact && rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
+          {rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
           {editingWorkspace ? <input
             className="input workspace-rename-input"
             aria-label={t("Workspace name")}
@@ -971,8 +959,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
           </span>}
           <span className="sidebar-pane-meta">
             <span className="visually-hidden">{markName(pane)}</span>
-            {compact && rowStatus === "blocked" && !(online && pane.restore_error) && <span className="workspace-wait-pill" aria-hidden="true">{t("Waiting")}</span>}
-            {online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={rowStatus} />}
+            {online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={online ? rollupStatus(statusPanes.map((candidate) => activity.status(machineId, candidate))) : undefined} />}
           </span>
         </div>
         <div className="workspace-actions">

@@ -5,8 +5,6 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const MACHINES_KO: Record<string, string> = {
-  "Add device": "기기 추가",
-  "Spaces": "워크스페이스",
   "PCs": "PC",
   "1 agent running": "실행 중인 에이전트 1개",
   "{n} agents running": "실행 중인 에이전트 {n}개",

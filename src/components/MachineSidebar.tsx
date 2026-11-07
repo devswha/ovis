@@ -236,12 +236,8 @@ export function MachineSidebar(props: Props) {
   // no top bar: a workspace starts from its PC's header (the lone Host's New workspace row), and Add PC lives in
   // Settings → Devices and PCs. The filter above the lists is a row of the same grid, one field and its clear, never
   // taller than a row.
-  // the agents have a panel of their own at the window's right (AgentsPanel.tsx); Settings → Sidebar rows → Two lines
-  // keeps them here under the workspaces, as before
-  const agentsHere = settings.sidebarRows === "two";
-  const agentList = agentsHere ? <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} /> : null;
-  const onlineHost = props.machines.find((machine) => machine.id === props.selectedMachineId && machine.state === "connected") ?? props.machines.find((machine) => machine.state === "connected");
-  return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div ref={shell} className={`sidebar-shell${order === "agents" && agentsHere ? " is-agents-first" : ""}${agentsHere ? "" : " is-compact"}`} onBlur={onSidebarBlur}>
+  const agentList = <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} />;
+  return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div ref={shell} className={`sidebar-shell${order === "agents" ? " is-agents-first" : ""}`} onBlur={onSidebarBlur}>
     {filterShown && <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       {/* a glass in the field says what it is, as VS Code's and macOS's search fields do: no word beside it */}
       <Search className="sidebar-filter-glass" aria-hidden="true" />
@@ -250,14 +246,9 @@ export function MachineSidebar(props: Props) {
       {query !== "" ? <button type="button" className="sidebar-filter-clear" aria-label={t("Clear filter")} title={t("Clear filter")} onClick={clearFilter}><X aria-hidden="true" /></button>
         : closable && <button type="button" className="sidebar-filter-clear" aria-label={t("Close filter")} title={t("Close filter")} onClick={closeFilter}><X aria-hidden="true" /></button>}
     </div>}
-    {/* the compact sidebar's head: its name and a + for a new workspace on the selected PC, as herdr-app's Spaces head */}
-    {!agentsHere && <div className="sidebar-spaces-head">
-      <span className="sidebar-spaces-title">{t("Spaces")}</span>
-      {onlineHost && <button type="button" className="sidebar-row-action sidebar-spaces-new" aria-label={t("New workspace")} title={t("New workspace")} onClick={() => props.onNew(onlineHost.id)}><Plus aria-hidden="true" /></button>}
-    </div>}
     {/* Settings → Group agents by state: the agents come first on this device, the PCs under them */}
     {settings.agentGroups && agentList}
-    {settings.agentGroups && agentsHere && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
+    {settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
     {/* the PCs' list has no head: it starts right under the logo, and with several PCs each PC's own header
         names it (MachineGroup); a lone Host is drawn without one */}
     <section className="pcs-sidebar" aria-label={t("PCs")}>
@@ -267,7 +258,7 @@ export function MachineSidebar(props: Props) {
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
       </div>
     </section>
-    {!settings.agentGroups && agentsHere && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
+    {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
     <footer className="sidebar-footer">
       {/* one PC of the phone's several: which one, and back to the list in one tap, as a team switcher at a
@@ -283,10 +274,10 @@ export function MachineSidebar(props: Props) {
       {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
           showing in every tab. Settings → Phone & devices → Install offers it (SettingsDialog). */}
       <div className="sidebar-footer-row">
-        <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={props.actions.openSettings}><Settings aria-hidden="true" />{!agentsHere && <span className="sidebar-footer-label" aria-hidden="true">{t("Settings")}</span>}</button>
-        <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
+        <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={props.actions.openSettings}><Settings aria-hidden="true" /></button>
+        {/* the compact sidebar (Settings → Sidebar rows → One line, the default) keeps its foot to the gear */}
+        {settings.sidebarRows === "two" && <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />}
       </div>
-      {!agentsHere && !props.watching && <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-add" onClick={props.actions.openAddPc}><Plus aria-hidden="true" /><span>{t("Add device")}</span></button>}
     </footer>
   </div></SidebarFilterProvider></SidebarActivityProvider>;
 }
@@ -330,8 +321,8 @@ export function manageActions(machine: Pick<Machine, "kind" | "herdr_profile_id"
  *  `canHide`/`onHide`: the menu's Hide on this device, under MachineSidebar's rules. */
 function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }: Props & { machine: Machine; headerless?: boolean; canHide: boolean; onHide(): void }) {
   const t = useT();
-  // the compact sidebar starts a workspace from its Workspaces head's +, so the lone Host draws no New workspace row
-  const twoLine = useSettings().settings.sidebarRows === "two";
+  // the compact rows (Settings → Sidebar rows → One line, the default) draw New workspace as its + alone
+  const compact = useSettings().settings.sidebarRows === "one";
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(`ovis:pc-collapsed:${machine.id}`) === "1"; } catch { return false; } });
   // Manage PC is a row menu (RowMenu: a popover, a sheet on a phone), as a workspace's ⋯ is. Rename… swaps the
   // name for a field in the header; Remove PC… asks in the dialog a workspace's Close asks in
@@ -482,7 +473,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     </div>}
     {/* the header's +, as the list's last row, also while the roster loads: an empty roster has its own New
         workspace, and a filtered list shows only what was looked for */}
-    {headerless && twoLine && online && machine.snapshot?.workspaces.length !== 0 && !filter.active && <button type="button" className="machine-new-row" onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span><span className="machine-new-row-label">{t("New workspace")}</span></button>}
+    {headerless && online && machine.snapshot?.workspaces.length !== 0 && !filter.active && <button type="button" className={`machine-new-row${compact ? " is-compact" : ""}`} aria-label={compact ? t("New workspace") : undefined} title={compact ? t("New workspace") : undefined} onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span>{!compact && <span className="machine-new-row-label">{t("New workspace")}</span>}</button>}
   </section>;
 }
 

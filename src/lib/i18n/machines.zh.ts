@@ -5,8 +5,6 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const MACHINES_ZH: Record<string, string> = {
-  "Add device": "添加设备",
-  "Spaces": "工作区",
   "PCs": "PC",
   "1 agent running": "1 个代理运行中",
   "{n} agents running": "{n} 个代理运行中",
