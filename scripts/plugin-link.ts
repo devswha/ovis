@@ -318,9 +318,11 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   try {
     const first = await listThisPc(api, service, now, pending);
     if (pending.listing !== null) out(unlisted);
+    // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
+    if (pending.listing !== null && await putListing(service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
     try { await relayOnline(options, api); } catch (error) {
       if (!(error instanceof LocalError)) throw error;
-      throw new LocalError(`This PC is listed in your account, but its Ovis relay is not online yet (${error.message}) Run this again once it is.`);
+      throw new LocalError(`This PC stays listed in your account, but its Ovis relay is not online yet (${error.message}) Run this again once it is.`);
     }
     const name = first.entry.label;
     let listedAt = now();

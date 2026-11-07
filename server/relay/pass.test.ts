@@ -188,6 +188,33 @@ test("a refusal held back by the keeper's own limit never delays the ask a newly
   made.stop();
 });
 
+test("neither a local limit nor a queued refresh shortens the service's Retry-After", async () => {
+  let asked = 0;
+  const entered = deferred<void>();
+  const gate = deferred<void>();
+  const k = await keeper(async () => {
+    asked++;
+    entered.resolve();
+    await gate.promise;
+    return new Response("busy", { status: 429, headers: { "retry-after": "600" } });
+  });
+  k.made.start();
+  const first = k.made.refresh();
+  await entered.promise;
+  // the account changes while the request is out: queued
+  void k.made.refresh();
+  gate.resolve();
+  await first;
+  await Promise.resolve();
+  expect(asked).toBe(1);
+  // the global and the regional relay refuse within the minute
+  await k.made.rejected();
+  await k.made.rejected();
+  expect(asked).toBe(1);
+  expect([...k.clock.tasks.values()].map((task) => task.at)).toEqual([600_000]);
+  k.made.stop();
+});
+
 test("a pass for another PC is not kept", async () => {
   const other = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));
   const k = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));

@@ -150,16 +150,21 @@ export class RelayPassKeeper {
   /** Asks now (the account or the relay changed its mind), unless the service asked to wait: then when it may. */
   refresh(): Promise<void> {
     if (this.stopped) return Promise.resolve();
-    const wait = this.notBefore - this.clock.now();
-    if (wait > 0) { this.schedule(wait); return Promise.resolve(); }
     this.cancel?.();
     this.cancel = undefined;
+    return this.askWhenAllowed();
+  }
+
+  /** Asks now, or once the service's backoff or Retry-After allows it: every ask goes through here. */
+  private askWhenAllowed(): Promise<void> {
+    const wait = this.notBefore - this.clock.now();
+    if (wait > 0) { this.schedule(wait); return Promise.resolve(); }
     return this.ask();
   }
 
   private schedule(ms: number): void {
     this.cancel?.();
-    this.cancel = this.clock.setTimeout(() => { void this.ask(); }, ms);
+    this.cancel = this.clock.setTimeout(() => { void this.askWhenAllowed(); }, ms);
   }
 
   private ask(): Promise<void> {
@@ -168,7 +173,7 @@ export class RelayPassKeeper {
       this.asking = undefined;
       // whichever way the request ended (an early return included), the replacement it was for is settled
       this.replacing = false;
-      if (this.again && !this.stopped) { this.again = false; void this.ask(); }
+      if (this.again && !this.stopped) { this.again = false; void this.askWhenAllowed(); }
     });
     return this.asking;
   }
@@ -247,6 +252,7 @@ export class RelayPassKeeper {
     const backoff = Math.min(RETRY_CAP_MS, RETRY_MS * 2 ** this.failures++);
     const delay = Math.max(retryAfterMs(response?.headers.get("retry-after") ?? null), backoff);
     if (gate) this.notBefore = this.clock.now() + delay;
-    this.schedule(delay);
+    // a local limit never shortens a wait the service asked for
+    this.schedule(Math.max(delay, this.notBefore - this.clock.now()));
   }
 }

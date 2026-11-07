@@ -195,14 +195,6 @@ export class RelayService {
 
   private relayAccountPath(): string { return join(this.options.stateDir, "relay", "account.json"); }
 
-  /** The account a signed-in owner named (`relay/account.json`), or null. */
-  private savedRelayAccount(): string | null {
-    try {
-      const saved: unknown = JSON.parse(readFileSync(this.relayAccountPath(), "utf8"));
-      return isJsonObject(saved) && typeof saved.account === "string" && ACCOUNT_ID.test(saved.account) ? saved.account : null;
-    } catch { return null; }
-  }
-
   /** The account a relay pass is asked for under: this PC's members' account, else the one its signed-in owner named. */
   private passAccount(): string | null {
     const members = this.services?.devices.account() ?? null;
@@ -218,9 +210,10 @@ export class RelayService {
     if (!ACCOUNT_ID.test(account)) return false;
     // the same account named again (the add-me screen repeats it) asks nothing while this PC holds a pass:
     // the keeper renews on its own time. Without one (not listed a moment ago, say) it asks, within the service's backoff
-    const changed = this.savedRelayAccount() !== account;
+    // asked again only when the account a pass is asked under changed (a PC's members' account wins), or none is held
+    const before = this.passAccount();
     writePrivateState(this.relayAccountPath(), { account });
-    if (changed || this.passKeeper?.current() === null) void this.passKeeper?.refresh();
+    if (before !== this.passAccount() || this.passKeeper?.current() === null) void this.passKeeper?.refresh();
     return true;
   }
 
