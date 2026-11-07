@@ -125,6 +125,7 @@ export class RelayService {
   /** This PC's relay pass, kept while the relay is on and is one of Ovis's. */
   private passKeeper: RelayPassKeeper | undefined;
   private passNotice: RelayPassNotice | null = null;
+  private passRefused = false;
   private directCarrier: DirectCarrier | undefined;
   /** the current direct carrier's first bind */
   private directStarting: Promise<void> = Promise.resolve();
@@ -189,7 +190,7 @@ export class RelayService {
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
       blocked: this.blocked, error: this.error,
       ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
-      ...(this.passKeeper ? { pass: { state: this.passKeeper.state, relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null } } : {}) };
+      ...(this.passKeeper ? { pass: { state: this.passKeeper.state, relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused } } : {}) };
   }
 
   private relayAccountPath(): string { return join(this.options.stateDir, "relay", "account.json"); }
@@ -230,10 +231,11 @@ export class RelayService {
       pass: () => this.passKeeper?.current() ?? null,
       onPassNotice: (notice) => {
         this.passNotice = notice;
+        this.passRefused = false;
         // the relay does not take the pass this PC sent (in grace it still lets the PC in): ask for a new one
         if (notice.state === "invalid" || notice.state === "expired") void this.passKeeper?.rejected();
       },
-      onPassRefused: () => { void this.passKeeper?.rejected(); },
+      onPassRefused: () => { this.passRefused = true; void this.passKeeper?.rejected(); },
     };
   }
 
@@ -401,6 +403,7 @@ export class RelayService {
     this.passKeeper?.stop();
     this.passKeeper = undefined;
     this.passNotice = null;
+    this.passRefused = false;
     // a code names this PC's key: it goes with the link
     this.pairCodes?.cancel();
     this.ending = Promise.all([this.ending, link?.stop(), regional?.stop(), this.stopDirect()]).then(() => undefined);

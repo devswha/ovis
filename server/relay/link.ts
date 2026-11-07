@@ -20,6 +20,8 @@ const MAX_PENDING = 4;
 const CONTROL_MESSAGE_BYTES = 4096;
 /** A client whose sign-in or pairing is being verified at its deadline gets this long to finish. */
 const SIGN_IN_GRACE_MS = 5_000;
+/** How long a PC the relay refused for its pass waits before trying again with no new pass. */
+const PASS_REFUSED_RETRY_MS = 30 * 60_000;
 
 export interface RelayLinkOptions {
   readonly relay: string;
@@ -211,6 +213,8 @@ export class RelayLink {
       if (event.code === RELAY_PASS_CLOSE) {
         this.passRefused = true;
         this.options.onPassRefused?.();
+        // a relay moved back to grace or off lets the PC in without a pass: look again now and then
+        this.cancelRetry = this.clock.setTimeout(() => { if (this.passRefused && !this.control) { this.passRefused = false; this.openControl(); } }, PASS_REFUSED_RETRY_MS);
         this.options.onState("error", `The Ovis relay needs a signed-in account (${event.reason || "relay pass required"}).`);
         return;
       }

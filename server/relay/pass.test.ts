@@ -53,6 +53,22 @@ test("a service that cannot answer keeps the pass that holds, and waits as long 
   k.made.stop();
 });
 
+test("a fresh pass the relay refuses too is kept, and the keeper backs off instead of asking again", async () => {
+  let asked = 0;
+  const k = await keeper(async () => { asked++; return Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 }); });
+  k.made.start();
+  await k.made.refresh();
+  expect(asked).toBe(1);
+  await k.made.rejected();
+  expect(asked).toBe(2);
+  const replacement = k.made.current();
+  k.clock.advance(120_000);
+  await k.made.rejected();
+  expect(asked).toBe(2);
+  expect(k.made.current()).toBe(replacement);
+  k.made.stop();
+});
+
 test("a pass for another PC is not kept", async () => {
   const other = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));
   const k = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));

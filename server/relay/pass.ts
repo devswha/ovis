@@ -101,6 +101,9 @@ export class RelayPassKeeper {
   }
 
   private lastRejected = Number.NEGATIVE_INFINITY;
+  /** a pass fetched because the relay refused the one before: if the relay refuses it too, the fault is not the pass */
+  private replacement: string | null = null;
+  private replacing = false;
 
   /**
    * The relay refused the pass this PC holds (its key changed, the PC was revoked, a clock is off):
@@ -108,13 +111,16 @@ export class RelayPassKeeper {
    * waits for the usual backoff, so the PC never loops between the two services).
    */
   rejected(): Promise<void> {
+    // a fresh pass refused as well (the relay does not trust the service's key yet, say): keep it and back off
+    if (this.saved !== null && this.saved.pass === this.replacement) { if (!this.stopped) this.failed(null); return Promise.resolve(); }
     this.saved = null;
     try { rmSync(this.path, { force: true }); } catch { /* gone from memory either way */ }
     if (this.stopped) return Promise.resolve();
     const now = this.clock.now();
     if (now - this.lastRejected < RETRY_MS) { this.failed(null); return Promise.resolve(); }
     this.lastRejected = now;
-    return this.refresh();
+    this.replacing = true;
+    return this.refresh().finally(() => { this.replacing = false; });
   }
 
   /** Asks now (the account or the relay changed its mind): a pass may come at once. */
@@ -177,6 +183,7 @@ export class RelayPassKeeper {
       this.saved = saved;
       try { writePrivateState(this.path, saved); } catch { /* kept in memory; asked again after a restart */ }
       this.failures = 0;
+      this.replacement = this.replacing ? saved.pass : null;
       this.state = "ok";
       this.options.onPass(saved.pass);
       this.schedule(body.refresh_in * 1000);

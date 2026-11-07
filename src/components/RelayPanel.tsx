@@ -24,7 +24,8 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
   if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it under More settings in Devices and PCs to use the relay again.");
   const pass = status.pass;
   // Ovis's relay asks for an account (docs/relay.md, "Relay pass"): refused, or soon
-  if (pass && status.phase === "error" && pass.state !== "ok" && pass.relay !== "ok") return pass.state === "limit"
+  // only once the relay actually refused this PC for its pass: any other relay error keeps its own text
+  if (pass?.refused && status.phase === "error") return pass.state === "limit"
     ? t("This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.")
     : pass.state === "unavailable"
       ? t("Cannot reach the Ovis account service for a relay pass. Retrying.")

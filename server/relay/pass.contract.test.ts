@@ -106,7 +106,7 @@ test("an enforcing relay refuses a PC with no account to name; once its owner na
   expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass required" });
   const refused = f.service.status();
   expect(refused.phase).toBe("error");
-  expect(refused.pass).toEqual({ state: "no_account", relay: null, enforce_at: null });
+  expect(refused.pass).toEqual({ state: "no_account", relay: null, enforce_at: null, refused: true });
   expect(f.asked).toEqual([]);
   // an account that does not list this PC gets no pass
   expect((await f.nameAccount("acct_2")).status).toBe(204);
@@ -115,7 +115,7 @@ test("an enforcing relay refuses a PC with no account to name; once its owner na
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
   const online: RelayStatus = f.service.status();
   expect(online.phase).toBe("online");
-  expect(online.pass).toEqual({ state: "ok", relay: "ok", enforce_at: null });
+  expect(online.pass).toEqual({ state: "ok", relay: "ok", enforce_at: null, refused: false });
   // sent in a header on every PC socket, never in the address
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
   expect(existsSync(join(f.stateDir, "relay", "pass.json"))).toBe(true);

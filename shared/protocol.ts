@@ -571,6 +571,8 @@ export interface RelayStatus {
     readonly state: "ok" | "no_account" | "not_listed" | "limit" | "unavailable";
     readonly relay: "ok" | "missing" | "invalid" | "expired" | null;
     readonly enforce_at: string | null;
+    /** the relay refused this PC for its pass (4402) and it has not been let in since */
+    readonly refused: boolean;
   };
 }
 
