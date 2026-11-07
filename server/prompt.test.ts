@@ -3322,11 +3322,17 @@ describe("pi's dialogs", () => {
   });
 
   test("reads a select, confirm and input over an extension's status line in pi's footer", () => {
-    const withStatus = (screen: string) => `${screen}worktree: main · usage 12%\n`;
-    expect(labels(parseInteractivePrompt("pi", withStatus(select)))).toEqual(["Allow once", "Always allow", "Block"]);
-    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Clear session?\n All messages will be lost.\n\n → Yes\n   No\n" + MENU_HINT)))?.kind).toBe("approval");
-    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Branch name?\n\n>\n enter submit  escape/ctrl+c cancel")))?.custom_option_index).toBe(0);
-    expect(parseInteractivePrompt("pi", `${withStatus(select)}Some later output\nand more\n`)).toBeNull();
+    for (const stats of ["0.0%/215k (auto)", "$0.000 (sub) 0.0%/215k (auto)", "$0.000 0.0%/215k (auto)"]) {
+      const withStatus = (screen: string) => `${screen.replace("0.0%/215k (auto)", stats)}worktree: main · usage 12%\n`;
+      expect(labels(parseInteractivePrompt("pi", withStatus(select)))).toEqual(["Allow once", "Always allow", "Block"]);
+      const confirm = parseInteractivePrompt("pi", withStatus(piScreen(" Clear session?\n All messages will be lost.\n\n → Yes\n   No\n" + MENU_HINT)));
+      expect(confirm?.kind).toBe("approval");
+      expect(labels(confirm)).toEqual(["Yes", "No"]);
+      const input = parseInteractivePrompt("pi", withStatus(piScreen(" Branch name?\n\n>\n enter submit  escape/ctrl+c cancel")));
+      expect(input?.custom_option_index).toBe(0);
+      expect(labels(input)).toEqual(["Type your answer"]);
+      expect(parseInteractivePrompt("pi", `${withStatus(select)}Some later output\nand more\n`)).toBeNull();
+    }
   });
 });
 
@@ -3375,9 +3381,11 @@ describe("pi's thinking selector", () => {
 
   test("reads the selector over an extension's status line in pi's footer", () => {
     for (const narrow of [false, true]) {
-      const screen = `${piThinking(1, narrow)}\nworktree: main · usage 12%`;
-      expect(labels(parseInteractivePrompt("pi", screen))).toEqual(["off", "medium", "max"]);
-      expect(parseInteractivePrompt("pi", `${screen}\nAnswer output\nMore output`)).toBeNull();
+      for (const stats of ["0.0%/215k (auto)", "$0.000 (sub) 0.0%/215k (auto)", "$0.000 0.0%/215k (auto)"]) {
+        const screen = `${piThinking(1, narrow).replace("0.0%/215k (auto)", stats)}\nworktree: main · usage 12%`;
+        expect(labels(parseInteractivePrompt("pi", screen))).toEqual(["off", "medium", "max"]);
+        expect(parseInteractivePrompt("pi", `${screen}\nAnswer output\nMore output`)).toBeNull();
+      }
     }
   });
 });
