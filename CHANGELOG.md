@@ -59,7 +59,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#3279](https://github.com/devswha/ovis/pull/3279))
 - On Android, a tap on a terminal key-bar key (arrows, Esc, Tab, Ctrl) no longer brings back a
   keyboard that Back put away.
-  ([#3297](https://github.com/devswha/ovis/pull/3297))
+  ([#3297](https://github.com/devswha/ovis/pull/3297) reported by @Shunamxiao)
 - A Claude pane's chat no longer shows "Conversation unavailable", or an empty new chat, when a
   Claude started inside the pane (`claude -p` from a hook or a script) took herdr's report of the
   pane's session: the chat reads the session the pane's own Claude names in its PID record.
@@ -78,10 +78,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#3278](https://github.com/devswha/ovis/pull/3278))
 - In Safari, the sidebar's workspace list shows its workspaces again instead of a single row with a
   scrollbar beside it.
-  ([#3295](https://github.com/devswha/ovis/pull/3295))
+  ([#3295](https://github.com/devswha/ovis/pull/3295) reported by @mxst4 and @odfalik, following [#3255](https://github.com/devswha/ovis/pull/3255) by @Haeminway1 and [#3218](https://github.com/devswha/ovis/pull/3218) by @odfalik)
 - On a phone, a swipe begun on a table, a code block or a formula in an opened file scrolls the
   file again, instead of doing nothing.
-  ([#3294](https://github.com/devswha/ovis/pull/3294))
+  ([#3294](https://github.com/devswha/ovis/pull/3294) reported by @obriedan)
 - On ovis.sh in Safari or Firefox, which cannot tell the computer's CPU, the download button now
   names the build it gives ("Download for Mac (Apple silicon)", "Download for Linux (x64)"), so an
   Intel Mac or arm64 Linux visitor picks the right build from the line below it.
@@ -94,7 +94,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - The terminal's cursor moves again with the arrow keys and after a typed space: since 0.5.0 it
   stayed where the last typed letter left it until the next letter, although the program's cursor
   had moved.
-  ([#3293](https://github.com/devswha/ovis/pull/3293))
+  ([#3293](https://github.com/devswha/ovis/pull/3293) reported by @sommio and @mxst4)
 
 ### Maintenance
 - A Mac desktop release build no longer fails when Apple's ticket service drops the connection
