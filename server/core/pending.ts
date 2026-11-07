@@ -29,7 +29,7 @@ import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaude
 import { registry } from "../dialogs/registry.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
-import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 import { processStartedAtAsync } from "../process-start.ts";
 import { agentProcessInFront } from "../agent-process.ts";
 import { agentProcesses } from "../conversation.ts";
@@ -179,8 +179,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
-  /** a follow-up's sent or discarded receipt, kept for its browser's return (#2421): the same bounds and binding as Pi's */
-  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded"; at: number }> = [];
+  /** a follow-up's sent, discarded or held receipt, kept for its browser's return (#2421): the same bounds and binding as Pi's */
+  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held"; at: number }> = [];
   /** the resume key each follow-up's browser had when the bridge took it, by connection and message id */
   const receiptKeys = new WeakMap<Client, Map<string, string>>();
   const resumeKey = (client: Client, paneId: string): string | undefined => {
@@ -966,13 +966,21 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /** A connection's end: its own messages are held, and so are the first messages its page sent that have not gone yet. */
   function closeConnection(client: Client): void {
-    pending.close(client);
-    holdRequested(client);
-    requested.delete(client);
     // Keep bounded presentation-only receipts across transient loss, not input authority.
     // Revocation/read-only transitions do not retain a resumable presentation.
     let resumable = true;
     try { authorizeSocket(client); } catch { resumable = false; }
+    if (!resumable) {
+      const keys = receiptKeys.get(client);
+      if (keys) for (const id of keys.keys()) {
+        const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held");
+        if (at >= 0) completed.splice(at, 1);
+      }
+      receiptKeys.delete(client);
+    }
+    pending.close(client);
+    holdRequested(client);
+    requested.delete(client);
     for (const [paneId, items] of piTyped) {
       const drop = (item: PiTypedReceipt): boolean => item.owner === client && (!resumable || !item.resumeKey);
       for (const item of items) if (drop(item)) releasePiSlot(item);
@@ -1005,38 +1013,64 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           item.owner = client;
           rebound = true;
         }
+        const mine = completed.filter((item) => item.paneId === paneId && item.key === key);
         const removed = [
           ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
-          ...completed.filter((item) => item.paneId === paneId && item.key === key).map(({ id, outcome }) => ({ id, outcome, resumed: true as const })),
+          ...mine.flatMap(({ id, outcome }) => outcome === "held" ? [] : [{ id, outcome, resumed: true as const }]),
         ];
-        if (removed.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], removed });
+        const held = mine.flatMap(({ id, outcome }) => outcome === "held" ? [id] : []);
+        if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? { held } : {}) });
       } catch { /* failed authorization cannot resume even presentation */ }
     }
     return rebound;
   }
+  /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
+  function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | { held: string[] }): void {
+    for (const successor of clients) {
+      if (successor === owner || !livePiOwner(successor) || !successor.data.attached.has(paneId)
+        || resumeKey(successor, paneId) !== kept || connectionOf(successor).mode === "observe") continue;
+      try {
+        authorizeSocket(successor);
+        send(successor, { type: "pending-messages", pane_id: paneId, messages: [], ...part });
+      } catch { /* failed authorization cannot resume even presentation */ }
+    }
+  }
   /**
-   * Keeps a follow-up's sent or discarded receipt for its browser's return: a socket that drops before the
+   * Keeps a follow-up's sent, discarded or held receipt for its browser's return: a socket that drops before the
    * receipt reaches it leaves the browser's copy unconfirmed. Only an exact outcome is kept (never a dismissed
    * uncertain copy), bound to the device and browser that sent it, and it is presentation only: nothing is typed.
    */
   function keepReceipts(owner: Client, paneId: string, messages: PendingMessage[], removed: readonly PendingRemoval[] | undefined): void {
-    const key = resumeKey(owner, paneId);
+    let resumable = true;
+    try { authorizeSocket(owner); } catch { resumable = false; }
+    const key = resumable ? resumeKey(owner, paneId) : undefined;
     const keys = receiptKeys.get(owner) ?? new Map<string, string>();
     if (key) for (const message of messages) if (!keys.has(message.id)) keys.set(message.id, key);
+    for (const message of messages) {
+      const kept = resumable ? keys.get(message.id) : undefined;
+      if (!kept) continue;
+      const existing = completed.findIndex((entry) => entry.id === message.id);
+      if (message.state !== "held") {
+        if (existing >= 0 && completed[existing]!.outcome === "held") completed.splice(existing, 1);
+        continue;
+      }
+      if (existing >= 0 && completed[existing]!.outcome === "held" && completed[existing]!.paneId === paneId) continue;
+      // only once its connection is gone: while it lives, it alone may send the held copy, and another
+      // tab told it is held could offer it again after that send's outcome became uncertain
+      if (livePiOwner(owner)) continue;
+      if (existing >= 0) completed.splice(existing, 1);
+      completed.push({ paneId, key: kept, id: message.id, outcome: "held", at: Date.now() });
+      pushResumed(owner, paneId, kept, { held: [message.id] });
+    }
     for (const item of removed ?? []) {
       const kept = keys.get(item.id);
       keys.delete(item.id);
+      const existing = completed.findIndex((entry) => entry.id === item.id);
+      if (existing >= 0) completed.splice(existing, 1);
       if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded")) continue;
       completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: Date.now() });
       // a reload can attach its successor before the Enter's reply settles the send
-      for (const successor of clients) {
-        if (successor === owner || !livePiOwner(successor) || !successor.data.attached.has(paneId)
-          || resumeKey(successor, paneId) !== kept || connectionOf(successor).mode === "observe") continue;
-        try {
-          authorizeSocket(successor);
-          send(successor, { type: "pending-messages", pane_id: paneId, messages: [], removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
-        } catch { /* failed authorization cannot resume even presentation */ }
-      }
+      pushResumed(owner, paneId, kept, { removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
     }
     if (keys.size) receiptKeys.set(owner, keys); else receiptKeys.delete(owner);
     prunePi();
@@ -1209,6 +1243,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               try { await dispatch(); typedNow = true; return { ok: true }; }
               catch (error) { return { ok: false, ...pendingFault(error) }; }
             }, message.resend_generation));
+          const heldAt = completed.findIndex((entry) => entry.id === message.resend_id && entry.outcome === "held");
+          if (heldAt >= 0) {
+            if (answer.ok) {
+              const [held] = completed.splice(heldAt, 1);
+              // its sent receipt only for the pane and browser the held one was kept for
+              if (held!.paneId === message.pane_id && held!.key === resumeKey(client, message.pane_id)) {
+                completed.push({ ...held!, outcome: "sent", at: Date.now() });
+                pushResumed(client, message.pane_id, held!.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
+              }
+            } else if (!submitNotTyped(answer.code ?? "")) completed.splice(heldAt, 1);
+            prunePi();
+          }
           result(answer.ok, answer.code, answer.message, undefined, undefined, undefined, answer.ok && typedNow, typedNow ? sendingAt : undefined);
           return;
         }

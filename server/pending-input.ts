@@ -369,7 +369,13 @@ export class PendingInputs<Owner, Lease> {
     for (const owner of owners) { this.publish(owner, from); this.publish(owner, to); }
   }
 
-  close(owner: Owner): void { this.hold(owner); this.closed.set(owner, this.now()); }
+  close(owner: Owner): void {
+    // a message held already is told again as its connection ends, so the close keeps its held receipt too
+    const held = new Set([...this.records.values()].filter((item) => item.owner === owner && item.message.state === "held" && !item.inFlight).map((item) => item.paneId));
+    this.hold(owner);
+    for (const pane of held) this.publish(owner, pane);
+    this.closed.set(owner, this.now());
+  }
 
   expire(): void {
     this.expireResends();
