@@ -122,10 +122,15 @@
       shipped.replaceChildren(svg, label);
     }
   }
-  // the shipped Mac button and the Linux one above, named for their CPU where it is a guess; the
-  // page's language script, which runs next, translates the new label
+  // the shipped Mac button and the Linux one above, named for their CPU where it is a guess, on
+  // screen and for screen readers (its aria-label is its accessible name); the page's language
+  // script, which runs next, translates both
   if (guessed) {
-    for (const label of document.querySelectorAll(".dl-primary span")) label.textContent = guessed;
+    for (const shipped of document.querySelectorAll(".dl-primary")) {
+      shipped.setAttribute("aria-label", guessed);
+      const label = shipped.querySelector("span");
+      if (label) label.textContent = guessed;
+    }
   }
 
   // Chromium's architecture hint comes later, and only over https; until then the guess above
