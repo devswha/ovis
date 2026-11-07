@@ -140,8 +140,9 @@ describe("ending busy panes from the move's wait", () => {
     await press(button("End all and move now"));
     expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop-all", body: {} }]);
     expect(text(renderer!.root)).toContain("Ends 2 running commands. Unsaved work may be lost.");
-    // the confirm names what the token covers, not what the last poll showed
-    expect(text(renderer!.root.find((node) => node.props.className === "runtime-move-confirm-list"))).toBe("top, python3");
+    // the confirm names each pane the token covers (its command and folder), not what the last poll showed
+    const covered = renderer!.root.find((node) => node.props.className === "runtime-move-confirm-list").findAll((node) => node.type === "li").map(text);
+    expect(covered).toEqual(["top · /demo", "python3 · /demo/site"]);
 
     await press(button("Back"));
     expect(posts()).toHaveLength(1);

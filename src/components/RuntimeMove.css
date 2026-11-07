@@ -117,8 +117,9 @@
 }
 
 .runtime-move-confirm-list {
-  display: block;
-  margin-top: var(--space-1);
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;

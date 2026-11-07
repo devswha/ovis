@@ -87,11 +87,17 @@ export function WaitingView({ t, plan, leadId, confirming, ...actions }: WaitAct
       </ul>
       {confirming === null
         ? <p className="runtime-move-note">{t("End an agent marked above yourself; the move goes on by itself once nothing runs.")}</p>
-        : <p className="runtime-move-confirm" role="alert">
+        : <div className="runtime-move-confirm" role="alert">
             {confirming.length === 1 ? t("Ends 1 running command. Unsaved work may be lost.") : t("Ends {n} running commands. Unsaved work may be lost.", { n: confirming.length })}
-            {/* the commands the server's token covers, which may differ from the last poll's rows */}
-            <span className="runtime-move-confirm-list">{confirming.map((pane) => pane.command).join(", ")}</span>
-          </p>}
+            {/* each pane the server's token covers, which may differ from the last poll's rows: its command and where */}
+            <ul className="runtime-move-confirm-list">
+              {confirming.map((covered) => {
+                const pane = plan.panes.find((entry) => entry.pane_id === covered.pane_id);
+                const where = pane?.name ?? pane?.cwd ?? null;
+                return <li key={covered.pane_id}>{where === null ? covered.command : `${covered.command} · ${where}`}</li>;
+              })}
+            </ul>
+          </div>}
     </>
   );
 }
