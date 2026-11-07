@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { LanExposureNotice } from "../components/LanExposureNotice.tsx";
-import { useDirectNotice } from "./directNotice.ts";
+import { directHostOf, useDirectNotice } from "./directNotice.ts";
 import { SettingsProvider } from "./settings.ts";
 
 interface ProbeProps { scope: string; host: string | null | undefined; seen: { dismissed: boolean; dismiss: () => void }[] }
@@ -18,6 +18,7 @@ describe("the same-Wi-Fi direct notice", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let records: Map<string, string>;
   let renderer: ReactTestRenderer | undefined;
+  const tabs: ReactTestRenderer[] = [];
 
   beforeEach(() => {
     for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -29,7 +30,7 @@ describe("the same-Wi-Fi direct notice", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
+    await act(async () => { renderer?.unmount(); for (const tab of tabs.splice(0)) tab.unmount(); });
     renderer = undefined;
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -72,6 +73,43 @@ describe("the same-Wi-Fi direct notice", () => {
     await again.answer(null);
     await again.answer("192.168.0.10");
     expect(again.latest().dismissed).toBe(false);
+  });
+
+  /** a tab of its own, open beside the others */
+  async function tab(scope: string, host: string) {
+    const seen: ProbeProps["seen"] = [];
+    let own: ReactTestRenderer;
+    await act(async () => { own = create(createElement(Probe, { scope, host, seen })); });
+    tabs.push(own!);
+    return { answer: async (next: string | null) => { await act(async () => { own.update(createElement(Probe, { scope, host: next, seen })); }); } };
+  }
+
+  it("keeps a dismissal another tab made or forgot while this one was open", async () => {
+    const pcA = await load("pc-a", "192.168.0.10");
+    await act(async () => { pcA.latest().dismiss(); });
+    const pcB = await load("pc-b", "192.168.0.20");
+    await act(async () => { pcB.latest().dismiss(); });
+    // pc-a's tab, still holding both records, sees direct go off on its PC
+    const tabA = await tab("pc-a", "192.168.0.10");
+    const tabB = await tab("pc-b", "192.168.0.20");
+    await tabA.answer(null);
+    await tabB.answer(null);
+    await tabB.answer("192.168.0.20");
+    expect((await load("pc-a", "192.168.0.10")).latest().dismissed).toBe(false);
+  });
+});
+
+describe("what a health answer says about direct", () => {
+  it("reads the direct address only from an answer that got in", () => {
+    const signedIn = { required: false, authenticated: true };
+    expect(directHostOf(null)).toBeUndefined();
+    expect(directHostOf({ auth: signedIn, direct_exposure: { host: "192.168.0.10" } })).toBe("192.168.0.10");
+    expect(directHostOf({ auth: signedIn })).toBeNull();
+    // a signed-out answer never names exposure, so it says nothing about direct
+    expect(directHostOf({ auth: { required: true, authenticated: false } })).toBeUndefined();
+    // the open-server warning is not the direct line
+    expect(directHostOf({ auth: signedIn, lan_exposure: { host: "0.0.0.0" } })).toBeNull();
+    expect(directHostOf({ auth: signedIn, lan_exposure: { host: "10.0.0.7", direct: true } })).toBe("10.0.0.7");
   });
 });
 
