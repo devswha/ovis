@@ -274,14 +274,12 @@ const BASE: Record<string, string> = {
   "Submit": "제출",
   "Recommended": "추천",
   "Agents": "에이전트",
-  "Check again": "다시 확인",
   "Setup guide": "설정 안내",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
   "New code": "새 코드",
   "Paired: {name}.": "페어링됨: {name}.",
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
   "Pairing code": "페어링 코드",
-  "Open this address on your phone": "폰에서 이 주소를 여세요",
   "{agent} is ready": "{agent} 준비 완료",
 
 

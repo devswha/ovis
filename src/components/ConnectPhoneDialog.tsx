@@ -48,19 +48,16 @@ export const relayOffered = (relay: RelayState): boolean => !relay.unsupported &
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
 
 /**
- * The tabs this window gets, in their order. SSH is the owner's, on a page of this PC (not the hosted shell, not a
- * device that only watches); the relay's tab is there wherever the relay is (on the hosted shell, the card that says
- * this device already is on it). Phones and devices is always there.
+ * The tabs this window gets, in their order: only the ways it can use. SSH is the owner's, on a page of this PC (not
+ * the hosted shell, not a device that only watches); the relay's tab is the owner's on a direct page of a PC that has
+ * the relay. Phones and devices is always there.
  */
-export function connectTabs({ sshOffered, relay }: { sshOffered: boolean; relay: RelayState }): ConnectTab[] {
-  const onRelay = inRelayShell() && !relay.unsupported && relay.status !== null;
-  return [...(sshOffered ? ["ssh" as const] : []), "devices", ...(relayOffered(relay) || onRelay ? ["relay" as const] : [])];
+export function connectTabs({ sshOffered, relay, readOnly }: { sshOffered: boolean; relay: RelayState; readOnly: boolean }): ConnectTab[] {
+  return [...(sshOffered ? ["ssh" as const] : []), "devices", ...(relayOffered(relay) && !readOnly ? ["relay" as const] : [])];
 }
 
 export interface ConnectPhoneDialogProps {
   plan: PhonePlan;
-  loading: boolean;
-  onRefresh: () => void;
   /** an address a phone can open now, for the pairing code's QR code; null shows the code alone */
   pairUrl: string | null;
   relay: RelayState;
@@ -97,7 +94,7 @@ export interface ConnectPhoneDialogProps {
  * The Ovis relay is used through the Ovis account, so its tab is the sign-in, or once signed in how a new device
  * joins. The relay and Tailscale stay apart: nothing on the SSH tab goes through the relay.
  */
-export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, readOnly, closesGate, canPair, signedIn, joinBySignIn, onAccount, onAddPc, machines, onConnectMachine, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, joinBySignIn, onAccount, onAddPc, machines, onConnectMachine, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -120,7 +117,7 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
   }, [onClose, surface]);
 
   const phone = useMediaQuery(PHONE_QUERY);
-  const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay });
+  const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   // a phone mostly connects itself; a PC's window opens on the PCs
   const [chosen, setChosen] = useState<ConnectTab>(() => (phone && tabs.includes("devices") ? "devices" : tabs[0]!));
   const tab = tabs.includes(chosen) ? chosen : tabs[0]!;
@@ -151,12 +148,12 @@ export function ConnectPhoneDialog({ plan, loading, onRefresh, pairUrl, relay, r
           )}
           {opened.current.has("devices") && (
             <div className="connect-tab" data-tab-panel="devices" hidden={tab !== "devices"}>
-              <DevicesTab plan={plan} loading={loading} onRefresh={onRefresh} pairUrl={pairUrl} readOnly={readOnly} canPair={canPair} phone={phone} />
+              <DevicesTab plan={plan} pairUrl={pairUrl} readOnly={readOnly} canPair={canPair} phone={phone} />
             </div>
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
             <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
-              <RelayTab relay={relay} readOnly={readOnly} closesGate={closesGate} signedIn={signedIn} joinBySignIn={joinBySignIn} onAccount={onAccount} phone={phone} canPair={canPair} onUseCode={() => setChosen("devices")} />
+              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} joinBySignIn={joinBySignIn} onAccount={onAccount} phone={phone} />
             </div>
           )}
         </div>
@@ -213,10 +210,9 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
   );
   return (
     <>
-      <p className="settings-description">{t("Add another PC over SSH. Its agents keep running while this device sleeps.")}</p>
+      <p className="settings-description">{t("Add another PC over SSH.")}</p>
       {found === null ? <p className="settings-hint" role="status">{t("Looking for PCs…")}</p> : (saved.length > 0 || found.length > 0) && (
         <div className="connect-found">
-          <p className="settings-label">{t("PCs found")}</p>
           <ul className="connect-found-list">
             {saved.map((machine) => row(`herdr:${machine.id}`, machine.name, machine.target?.destination ?? null, "herdr",
               <button type="button" className="btn" onClick={() => onConnectMachine(machine)}>{t("Connect")}</button>))}
@@ -243,23 +239,28 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
   );
 }
 
-/** Phones and devices: this PC's Tailscale address, a pairing code, and Portal's public address where Portal is installed. */
-function DevicesTab({ plan, loading, onRefresh, pairUrl, readOnly, canPair, phone }: { plan: PhonePlan; loading: boolean; onRefresh: () => void; pairUrl: string | null; readOnly: boolean; canPair: boolean; phone: boolean }) {
+/**
+ * Phones and devices: this PC's Tailscale address once it has one, a pairing code, and Portal where it can run. A way
+ * this PC or window cannot use is left out, not explained.
+ */
+function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; canPair: boolean; phone: boolean }) {
   const t = useT();
   const { status: portal } = usePortal();
   return (
     <>
-      <section className="connect-section" aria-label="Tailscale">
-        <p className="settings-label">{t("Your phone on Tailscale")}</p>
-        <PhonePanel plan={plan} loading={loading} onRefresh={onRefresh} phone={phone} />
-      </section>
+      {(plan.kind === "here" || plan.kind === "served") && (
+        <section className="connect-section" aria-label="Tailscale">
+          <p className="settings-label">Tailscale</p>
+          <PhonePanel url={plan.url} phone={phone} />
+        </section>
+      )}
       {canPair && !readOnly && (
         <section className="connect-section" aria-label={t("Pairing code")}>
-          <p className="settings-label">{t("On the same Wi-Fi, or a device not on your Tailscale")}</p>
+          <p className="settings-label">{t("Pairing code")}</p>
           <CodeRoute pairUrl={inRelayShell() ? null : pairUrl} startAtOnce phone={phone} compact />
         </section>
       )}
-      {portal?.supported === true && (
+      {portal?.supported === true && (portal.phase !== "idle" || (portal.usable && portal.blocked === null)) && (
         <section className="connect-section" aria-label="Portal">
           <PortalPanel readOnly={readOnly} />
         </section>
@@ -269,69 +270,55 @@ function DevicesTab({ plan, loading, onRefresh, pairUrl, readOnly, canPair, phon
 }
 
 /**
- * The Ovis relay, used through the Ovis account: signed out, the sign-in alone; signed in, how a new device joins
- * (it signs in to the same account and is approved here once), with the relay's switch while it is off. Where the
- * page has no account (none offered, or its service cannot be reached), the relay's own pairing as before the
- * account: its switch, then its QR code and code to type. On the hosted shell, the card that says this device
- * already reaches the PC through the relay.
+ * The Ovis relay, the owner's on a direct page. Signed out of the Ovis account, the sign-in; signed in, how a new
+ * device joins, or the relay's switch while that cannot happen yet. Where the page has no account (none offered, or
+ * its service cannot be reached), the relay's own pairing as before the account: its switch, its QR code and code to
+ * type. One short line at most: what a blocked relay or the device gate means stays in More settings, or in the
+ * switch's tooltip.
  */
-export function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, onAccount, phone, canPair, onUseCode }: {
-  relay: RelayState; readOnly: boolean; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; onAccount: (() => void) | null; phone: boolean; canPair: boolean; onUseCode: () => void;
+export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, onAccount, phone }: {
+  relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; onAccount: (() => void) | null; phone: boolean;
 }) {
   const t = useT();
-  const id = useId();
   const [switchError, setSwitchError] = useState<string | null>(null);
   const on = relayOn(relay);
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
-  if (inRelayShell()) return <RelayRoute relay={relay} readOnly={readOnly} phone={phone} onUseCode={canPair && !readOnly ? onUseCode : undefined} compact />;
-  const switchable = !readOnly && relay.status?.blocked === null;
+  const switchable = relay.status?.blocked === null;
   const startError = relay.status !== null && relay.status.blocked === null && relay.status.phase === "off" ? relay.status.error : null;
   const switchRelay = async (next: boolean) => {
     setSwitchError(null);
     try { await relay.request(next ? "start" : "stop"); } catch (reason) { setSwitchError(failureText(reason)); }
   };
   const relaySwitch = switchable && (
-    <>
-      <div className="connect-relay-switch">
-        <span className="settings-label">{t("Ovis relay")}</span>
-        <Toggle label={t("Ovis relay")} checked={on} describedBy={closesGate && !on ? `${id}-gate` : undefined} onChange={(next) => { if (!relay.pending) void switchRelay(next); }} />
-      </div>
-      {closesGate && !on && <p className="settings-condition connect-phone-gate" id={`${id}-gate`}>{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
-    </>
+    <div className="connect-relay-switch" title={closesGate && !on ? t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.") : undefined}>
+      <span className="settings-label">{t("Ovis relay")}</span>
+      <Toggle label={t("Ovis relay")} checked={on} onChange={(next) => { if (!relay.pending) void switchRelay(next); }} />
+    </div>
   );
+  const switchFailure = switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>;
   if (onAccount === null) return (
     <>
       {relaySwitch}
-      {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
-      <RelayRoute relay={relay} readOnly={readOnly} phone={phone} onUseCode={canPair && !readOnly ? onUseCode : undefined} compact />
+      {switchFailure}
+      <RelayRoute relay={relay} readOnly={false} phone={phone} compact />
     </>
   );
   if (!signedIn) return (
     <div className="connect-signin" data-testid="connect-signin">
-      <p className="settings-description">{t("Sign in to Ovis to connect from anywhere, with no SSH and no open port. Your PCs and devices are kept in your account.")}</p>
-      {!readOnly
-        ? <button type="button" className="btn btn-primary connect-signin-button" onClick={onAccount}>{t("Sign in to Ovis")}</button>
-        : <p className="settings-hint">{t("Sign in to Ovis on this PC itself, or from a device paired with it directly.")}</p>}
+      <p className="settings-description">{t("Connect from anywhere through your Ovis account.")}</p>
+      <button type="button" className="btn btn-primary connect-signin-button" onClick={onAccount}>{t("Sign in to Ovis")}</button>
     </div>
   );
   return (
     <div className="connect-signin" data-testid="connect-signin">
-      {joinBySignIn ? (
+      {joinBySignIn ? <p className="connect-signin-lead">{t("On the new device, sign in to the same Ovis account.")}</p> : (
         <>
-          <p className="connect-signin-lead">{t("On the new device, open Ovis and sign in to the same account.")}</p>
-          <p className="settings-hint">{t("Then approve it once on a device already in your account.")}</p>
-        </>
-      ) : (
-        <>
-          {/* a blocked relay (serve-only, an unreadable identity) has no switch: its state says why, and what to do */}
-          {relay.status !== null && relay.status.blocked !== null
-            ? <p className="relay-status" role="status">{statusText(t, relay.status)}</p>
-            : <p className="settings-description">{t("Turn the relay on and add this PC to your account. Then a new device joins by signing in to the same account.")}</p>}
+          {switchable && <p className="settings-description">{t("Turn on the relay, then add this PC to your account.")}</p>}
           {relaySwitch}
-          {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
+          {switchFailure}
           {/* a start that failed before the link existed: the server answers phase off with its reason, and nothing retries it */}
           {switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>}
-          {!readOnly && <button type="button" className="btn connect-signin-button" onClick={onAccount}>{t("Open the account")}</button>}
+          <button type="button" className="btn connect-signin-button" onClick={onAccount}>{t("Open the account")}</button>
         </>
       )}
     </div>
@@ -342,13 +329,11 @@ export function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, 
  * The relay's way: its state (Blocked says why), a start that failed with Try again, the pairing QR
  * code once it is online, and the identity reset as a quiet last action. The switch is on its card.
  * On a phone, online, the phone pairs itself through its own offer in one tap, and the offer for
- * another device is a link to send, its QR code behind Show QR code. A device on the relay is told
- * that relay links come from the PC or a direct connection (the server refuses them over the relay)
- * and pointed to the pairing code.
+ * another device is a link to send, its QR code behind Show QR code.
  */
-export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, onUseCode, compact = false }: {
+export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, compact = false }: {
   relay: RelayState;
-  /** Connect a device: the state only while it is not online, the QR code beside the code to type, no reset (More settings has it) */
+  /** Add a connection: no state line (the switch above says it), the QR code beside the code to type, no reset (More settings has it) */
   compact?: boolean;
   readOnly: boolean;
   phone?: boolean;
@@ -356,7 +341,6 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   pairHere?: boolean;
   /** a relay device under this phone's name: a hint, never proof that this phone is paired */
   sameName?: string | null;
-  onUseCode?: () => void;
 }) {
   const t = useT();
   const { status, pending, request } = relay;
@@ -365,17 +349,6 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   const [opening, setOpening] = useState(false);
   const resetButton = useRef<HTMLButtonElement>(null);
   if (status === null) return null;
-  if (inRelayShell()) return (
-    <div className="connect-phone-relay">
-      <p className="relay-status" role="status">{t("This device reaches the PC through the relay now. Relay links are made on the PC or from a direct connection to it.")}</p>
-      {onUseCode !== undefined && (
-        <>
-          <p className="settings-description">{t("To connect another device from here, give it a pairing code.")}</p>
-          <div className="phone-actions"><button type="button" className="btn btn-primary" onClick={onUseCode}>{t("Use a pairing code")}</button></div>
-        </>
-      )}
-    </div>
-  );
   const pairThisPhone = async () => {
     setError(null);
     setOpening(true);
@@ -389,7 +362,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   };
   return (
     <div className="connect-phone-relay">
-      {!(compact && status.phase === "online") && <p className="relay-status" role="status">{statusText(t, status)}</p>}
+      {!compact && <p className="relay-status" role="status">{statusText(t, status)}</p>}
       {readOnly && <p className="settings-condition" data-testid="relay-owner-help">{t("Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.")}</p>}
       {notStarted && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: status.error })}</p>}
       {notStarted && !readOnly && (

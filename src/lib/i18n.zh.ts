@@ -278,14 +278,12 @@ const BASE: Record<string, string> = {
   "Submit": "提交",
   "Recommended": "推荐",
   "Agents": "代理",
-  "Check again": "重新检查",
   "Setup guide": "设置向导",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
   "New code": "新代码",
   "Paired: {name}.": "已配对：{name}。",
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
   "Pairing code": "配对码",
-  "Open this address on your phone": "在手机上打开此地址",
   "{agent} is ready": "{agent} 已就绪",
 
 

@@ -156,7 +156,8 @@ function relayUi(page: Page) {
     relayTab,
     devicesTab,
     toggle: relayTab.getByRole("switch", { name: "Ovis relay", exact: true }),
-    gateNote: relayTab.locator(".connect-phone-gate"),
+    /** the switch's tooltip that turning the relay on closes the device gate */
+    gateNote: relayTab.locator(".connect-relay-switch[title]"),
     wifiCode: devicesTab.locator(".connect-phone-code .compact-pair-code"),
     async closeSheet(): Promise<void> { await page.keyboard.press("Escape"); await sheet.waitFor({ state: "detached" }); },
   };
@@ -165,6 +166,7 @@ function relayUi(page: Page) {
 const isPost = (request: Request, path: string): boolean => request.method() === "POST" && new URL(request.url()).pathname === path;
 const answered = (page: Page, path: string): Promise<Response> => page.waitForResponse((response) => isPost(response.request(), path));
 
+const GATE_NOTE = "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.";
 const exactly = (text: string): RegExp => new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
 const spaced = (code: string): string => `${code.slice(0, 3)} ${code.slice(3)}`;
 
@@ -231,9 +233,8 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "signed in, no sign-in");
     await relayTab.getByRole("button", { name: "Open the account", exact: true }).waitFor();
     assert.equal(await sheet.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
-    const closesGate = relayTab.getByText("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true });
-    assert.equal(await closesGate.isVisible(), true, "with no token and nothing paired, the switch says turning the relay on closes the gate");
-    assert.equal(await gateNote.count(), 1, "the gate note is the switch's own");
+    assert.equal(await gateNote.getAttribute("title"), GATE_NOTE, "with no token and nothing paired, the switch's tooltip says turning the relay on closes the gate");
+    assert.equal(await relayTab.getByText(GATE_NOTE, { exact: true }).count(), 0, "and the sheet carries no warning paragraph for it");
     assert.equal(await page.getByText("A paired device gets in on its own until you revoke it here.").count(), 1, "the paired-device line is said once, in Devices");
     assert.equal(await sheet.getByRole("button", { name: /^Reset/ }).count(), 0, "the identity reset is in More settings, not in the sheet");
 
@@ -242,7 +243,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await moreState.filter({ hasText: "Online. No phone connected." }).waitFor({ state: "attached" });
     assert.equal((await relayState()).phase, "online", "the server's relay link is online");
     assert.equal(await toggle.getAttribute("aria-checked"), "true", "the sheet's switch shows the relay on");
-    await closesGate.waitFor({ state: "detached" });
+    await gateNote.waitFor({ state: "detached" });
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "online, the sheet still offers no relay pairing QR code");
 
     // Phones and devices starts a six-digit code at once; its panel stays while another tab is open, with the same code
@@ -314,20 +315,17 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     });
     await openPhoneSettings(visitor, fixture.origin);
     const seen = relayUi(visitor);
-    // the visitor's sheet: no SSH tab, no pairing code, and a relay tab with no switch, no sign-in, no reset and no
-    // offer; More settings has no relay group for it
+    // the visitor's sheet holds only what it can use: Phones and devices, with no pairing code, no SSH and no relay
+    // tab; More settings has no relay group for it
     await seen.connect.click();
     await seen.devicesTab.waitFor();
-    assert.deepEqual(await seen.tabs.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-tab"))), ["devices", "relay"], "a Portal visitor gets no SSH tab");
+    assert.equal(await seen.sheet.locator(".connect-tabs").count(), 0, "a Portal visitor gets one way, so no tabs");
+    assert.equal(await seen.relayTab.count(), 0, "nor the relay's tab");
     assert.equal(await seen.sheet.locator(".connect-phone-code").count(), 0, "a Portal visitor is offered no pairing code");
     assert.equal(await seen.sheet.locator(".compact-pair").count(), 0, "nor a code to type");
-    // no Ovis account on this page: the relay's own state, with who may control it
-    await seen.openTab("relay");
-    await seen.relayTab.getByTestId("relay-owner-help").waitFor();
     assert.equal(await seen.sheet.getByRole("switch").count(), 0, "a Portal visitor gets no relay switch");
     assert.equal(await seen.sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "nor the sign-in");
-    assert.equal(await seen.sheet.getByRole("button", { name: /^Reset/ }).count(), 0, "nor the reset");
-    assert.equal(await seen.relayTab.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
+    assert.equal(await seen.sheet.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
     assert.equal(await seen.relayGroup.count(), 0, "a Portal visitor's More settings has no relay group");
     assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
     await visitorContext.close();
@@ -363,8 +361,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await net.openTab("relay");
     await net.toggle.waitFor();
     assert.equal(await net.toggle.getAttribute("aria-checked"), "false", "the relay's tab keeps its switch, off");
-    assert.equal(await net.relayTab.getByText("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.", { exact: true }).isVisible(), true,
-      "the switch keeps the gate note beside it");
+    assert.equal(await net.gateNote.getAttribute("title"), GATE_NOTE, "the switch keeps the gate note as its tooltip");
     await net.openTab("devices");
     await net.devicesTab.getByText("https://pc.tail0000.ts.net").first().waitFor();
     assert.equal((await tailnetRelay()).phase, "off", "opening the sheet turns nothing on");
@@ -427,7 +424,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await blocked.connect.click();
     await blocked.openTab("relay");
     await blocked.relayTab.getByTestId("connect-signin").waitFor();
-    await blocked.relayTab.getByRole("status").filter({ hasText: "Blocked: OVIS_TAILSCALE_SERVE_ONLY" }).waitFor();
+    assert.equal(await blocked.relayTab.getByText("Turn on the relay, then add this PC to your account.", { exact: true }).count(), 0, "a relay that cannot be turned on is not asked to be (More settings says why)");
     assert.equal(await blocked.sheet.getByRole("switch").count(), 0, "nor in the sheet");
     assert.equal(await blocked.relayTab.getByRole("img").count(), 0, "no offer on a blocked install");
     assert.equal(await blocked.sheet.getByRole("button", { name: /^Reset/ }).count(), 0, "nor a reset in the sheet");

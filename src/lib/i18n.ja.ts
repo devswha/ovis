@@ -276,14 +276,12 @@ const BASE: Record<string, string> = {
   "Submit": "送信",
   "Recommended": "推奨",
   "Agents": "エージェント",
-  "Check again": "再確認",
   "Setup guide": "セットアップガイド",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
   "New code": "新しいコード",
   "Paired: {name}.": "ペアリングしました: {name}。",
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
   "Pairing code": "ペアリングコード",
-  "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
   "{agent} is ready": "{agent} の準備ができました",
 
 

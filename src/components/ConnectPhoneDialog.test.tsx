@@ -89,7 +89,7 @@ describe("Connect a phone on a phone", () => {
   const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
 
   it("shows the Tailscale address with Copy address and no QR code until Show QR code", async () => {
-    await mount(<PhonePanel plan={{ kind: "served", url: "https://workstation.example.ts.net" }} loading={false} onRefresh={() => undefined} phone />);
+    await mount(<PhonePanel url="https://workstation.example.ts.net" phone />);
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toContain("Copy address");
     await act(async () => { button("Show QR code").props.onClick(); });
@@ -97,7 +97,7 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("keeps the desktop's Tailscale QR code up front", async () => {
-    await mount(<PhonePanel plan={{ kind: "served", url: "https://workstation.example.ts.net" }} loading={false} onRefresh={() => undefined} />);
+    await mount(<PhonePanel url="https://workstation.example.ts.net" />);
     expect(qrCodes()).toHaveLength(1);
     expect(buttons()).not.toContain("Show QR code");
   });
@@ -176,25 +176,15 @@ describe("Connect a phone on a phone", () => {
     expect(qrCodes()).toHaveLength(0);
   });
 
-  it("on a phone already on the relay, says where relay links come from and offers the pairing code", async () => {
-    shellMeta = true;
-    let used = 0;
-    await mount(<RelayRoute relay={relayState()} readOnly={false} phone pairHere onUseCode={() => { used += 1; }} />);
-    expect(qrCodes()).toHaveLength(0);
-    expect(buttons()).not.toContain("Use the relay on this phone");
-    expect(requests).not.toContain("/api/relay/offer");
-    await act(async () => { button("Use a pairing code").props.onClick(); });
-    expect(used).toBe(1);
-  });
-
-  it("offers SSH only where PCs are added from, and the relay's tab wherever the relay is", () => {
+  it("offers only the ways this window can use: SSH where PCs are added from, the relay to its owner on a direct page", () => {
     const off = relayState({ ...ONLINE, phase: "off" });
-    expect(connectTabs({ sshOffered: true, relay: off })).toEqual(["ssh", "devices", "relay"]);
-    expect(connectTabs({ sshOffered: false, relay: relayState() })).toEqual(["devices", "relay"]);
-    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true } })).toEqual(["ssh", "devices"]);
-    // the hosted shell: no SSH from there, and the relay's card says this device already is on it
+    expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["ssh", "devices", "relay"]);
+    expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["devices", "relay"]);
+    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false })).toEqual(["ssh", "devices"]);
+    // a watching device or a Portal visitor cannot use the relay, and the hosted shell already is on it
+    expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: true })).toEqual(["devices"]);
     shellMeta = true;
-    expect(connectTabs({ sshOffered: false, relay: relayState() })).toEqual(["devices", "relay"]);
+    expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["devices"]);
   });
 
   it("lists the PCs found over SSH: Add opens Add PC with that address, an added one says so, a herdr PC connects", async () => {
@@ -213,7 +203,7 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("without the Ovis account here, the relay tab keeps the relay's own pairing: its switch, QR code and code to type", async () => {
-    const tab = (relay: RelayState) => <RelayTab relay={relay} readOnly={false} closesGate={false} signedIn={false} joinBySignIn={false} onAccount={null} phone={false} canPair onUseCode={() => undefined} />;
+    const tab = (relay: RelayState) => <RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} onAccount={null} phone={false} />;
     await mount(tab(relayState()));
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: true })).toHaveLength(1);
