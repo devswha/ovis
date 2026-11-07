@@ -18,10 +18,10 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const KID = "0badc0de";
 
 /** An enforcing Bun relay, an account service that lists this PC under `acct_1` only, and a PC that may use them. */
-async function fixture() {
+async function fixture(mode: "grace" | "enforce" = "enforce") {
   const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  const pass = await passPolicy({ RELAY_PASS_MODE: "enforce", RELAY_PASS_KEYS: `${KID}:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}` });
+  const pass = await passPolicy({ RELAY_PASS_MODE: mode, RELAY_PASS_ENFORCE_AT: "2099-01-01T00:00:00Z", RELAY_PASS_KEYS: `${KID}:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}` });
   const allow = { async limit() { return { success: true }; } };
   const relay = startBunRelay({ port: 0, pass, limiters: { perAddress: allow, global: allow } });
   cleanup.push(() => relay.stop());
@@ -112,10 +112,10 @@ test("an enforcing relay refuses a PC with no account to name; once its owner na
   expect((await f.nameAccount("acct_2")).status).toBe(204);
   expect((await f.nameAccount("not an id")).status).toBe(400);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   const online: RelayStatus = f.service.status();
   expect(online.phase).toBe("online");
-  expect(online.pass).toEqual({ state: "ok", relay: "ok", enforce_at: null, refused: false });
+  expect(online.pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false });
   // sent in a header on every PC socket, never in the address
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
   expect(existsSync(join(f.stateDir, "relay", "pass.json"))).toBe(true);
@@ -130,7 +130,7 @@ test("a restarted PC goes online on the pass it saved, without asking the accoun
   expect(asked).toBeGreaterThan(0);
   await f.restart();
   await f.start();
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.asked).toHaveLength(asked);
 });
 
@@ -155,7 +155,7 @@ test("a pass the relay refuses is dropped and a new one asked for at once", asyn
   writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
   await f.start();
   expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass invalid" });
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.service.status().phase).toBe("online");
 });
 
@@ -166,4 +166,14 @@ test("a pass renewed while online goes to the relay on the open control socket",
   await bounded(f.synced);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   expect(JSON.parse(await bounded(f.renewal))).toEqual({ type: "relay_pass", pass: expect.stringMatching(/^ovp1\./) });
+});
+
+test("in grace, a PC that signs in sends its pass on the open control socket and the sign-in notice is over", async () => {
+  const f = await fixture("grace");
+  await f.start();
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "missing", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect(f.service.status().pass).toMatchObject({ relay: "missing", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await bounded(f.renewal);
+  expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false });
 });

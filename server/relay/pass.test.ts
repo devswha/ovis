@@ -69,20 +69,28 @@ test("a fresh pass the relay refuses too is kept, and the keeper backs off inste
   k.made.stop();
 });
 
-test("Retry-After in seconds or as an HTTP date, never past six hours", () => {
+test("Retry-After in seconds or as an HTTP date, never past 24 hours", () => {
   const now = Date.parse("2026-12-01T00:00:00Z");
   expect(retryAfterMs("120", now)).toBe(120_000);
   expect(retryAfterMs("Tue, 01 Dec 2026 00:10:00 GMT", now)).toBe(600_000);
-  expect(retryAfterMs("99999999", now)).toBe(6 * 3600_000);
+  expect(retryAfterMs("99999999", now)).toBe(24 * 3600_000);
   for (const bad of [null, "", "-5", "soon", "Mon, 30 Nov 2026 00:00:00 GMT"]) expect(retryAfterMs(bad, now)).toBe(0);
 });
 
-test("a renewal time the relay would not honor is not taken", async () => {
-  for (const [expires, refresh] of [[172_800, -1], [172_800, 0], [172_800, 172_800], [172_800 * 2, 43_200], [Number.POSITIVE_INFINITY, 43_200]]) {
-    const k = await keeper(async () => new Response(JSON.stringify({ pass: await k.signed(), expires_in: expires, refresh_in: refresh }).replace("null", "1e999"), { headers: { "content-type": "application/json" } }));
+test("a renewal time is held to 60 s .. 24 h, and a lifetime the relay would not honor is not taken", async () => {
+  for (const [refresh, due] of [[-1, 60_000], [0, 60_000], [43_200, 43_200_000], [172_800, 86_400_000]]) {
+    const k = await keeper(async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: refresh }));
     k.made.start();
     await k.made.refresh();
-    expect([expires, refresh, k.made.current()]).toEqual([expires, refresh, null]);
+    expect(k.made.current()).not.toBeNull();
+    expect([...k.clock.tasks.values()].map((task) => task.at)).toEqual([due!]);
+    k.made.stop();
+  }
+  for (const expires of [172_800 * 2, 100]) {
+    const k = await keeper(async () => Response.json({ pass: await k.signed(), expires_in: expires, refresh_in: 43_200 }));
+    k.made.start();
+    await k.made.refresh();
+    expect([expires, k.made.current()]).toEqual([expires, null]);
     k.made.stop();
   }
 });

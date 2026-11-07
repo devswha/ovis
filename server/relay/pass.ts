@@ -28,10 +28,11 @@ const RETRY_CAP_MS = 30 * 60_000;
 /** How often to look again while no account names this PC, or it is not listed. */
 const WAIT_ACCOUNT_MS = 30 * 60_000;
 /** The longest a Retry-After is waited, and the most one request to the account service may take, body included. */
-const RETRY_AFTER_CAP_MS = 6 * 3600_000;
+const RETRY_AFTER_CAP_MS = 24 * 3600_000;
 const REQUEST_MS = 15_000;
-/** The shortest renewal time taken from the service. */
+/** Renewal times taken from the service are held between these. */
 const MIN_REFRESH_S = 60;
+const MAX_REFRESH_S = 24 * 3600;
 
 export interface RelayPassClock {
   now(): number;
@@ -203,11 +204,12 @@ export class RelayPassKeeper {
       const body = await response.json() as { pass?: unknown; expires_in?: unknown; refresh_in?: unknown };
       const parsed = parseRelayPass(body.pass);
       const expiresIn = body.expires_in;
-      const refreshIn = body.refresh_in;
-      // a lifetime and renewal time the relay would honor, renewed before it runs out
-      if (!parsed || parsed.payload.sid !== identity.server_id || typeof expiresIn !== "number" || typeof refreshIn !== "number"
-        || !Number.isFinite(expiresIn) || !Number.isFinite(refreshIn) || expiresIn > RELAY_PASS_LIFETIME_S
-        || refreshIn < MIN_REFRESH_S || refreshIn > expiresIn - RELAY_PASS_SKEW_S) return this.failed(null);
+      const refreshRaw = body.refresh_in;
+      // a lifetime the relay would honor; the renewal time held to 60 s .. 24 h and before the pass runs out
+      if (!parsed || parsed.payload.sid !== identity.server_id || typeof expiresIn !== "number" || typeof refreshRaw !== "number"
+        || !Number.isFinite(expiresIn) || !Number.isFinite(refreshRaw) || expiresIn > RELAY_PASS_LIFETIME_S
+        || expiresIn - RELAY_PASS_SKEW_S < MIN_REFRESH_S) return this.failed(null);
+      const refreshIn = Math.min(Math.max(refreshRaw, MIN_REFRESH_S), MAX_REFRESH_S, expiresIn - RELAY_PASS_SKEW_S);
       const now = this.clock.now();
       // timed from receipt, so this PC's own clock needs to be right only to within the relay's skew
       const saved: Saved = { pass: body.pass as string, server_id: identity.server_id,

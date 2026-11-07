@@ -225,7 +225,10 @@ export class RelayService {
     this.passKeeper = new RelayPassKeeper({
       stateDir: this.options.stateDir, identity: () => this.identity ?? identity, account: () => this.passAccount(), service,
       ...(this.options.accountFetch ? { fetch: this.options.accountFetch } : {}), ...(this.options.passClock ? { clock: this.options.passClock } : {}),
-      onPass: (pass) => { this.link?.renewPass(pass); if (this.isOvisRelay(this.regionalRelay)) this.regionalLink?.renewPass(pass); },
+      onPass: (pass) => {
+        // the relay takes a renewal on the open control socket without a word: a notice that the pass was missing is over
+        if (this.passNotice !== null && this.passNotice.state !== "ok") this.passNotice = { state: "ok", enforce_at: this.passNotice.enforce_at };
+        this.link?.renewPass(pass); if (this.isOvisRelay(this.regionalRelay)) this.regionalLink?.renewPass(pass); },
     });
     this.passKeeper.start();
   }
