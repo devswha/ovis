@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { basename } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { notarizeApp, notarizeDmg } from "./notarize-dmg.mjs";
 
 const key = { APPLE_API_KEY: "/keys/AuthKey.p8", APPLE_API_KEY_ID: "KEYID", APPLE_API_ISSUER: "issuer" };
@@ -31,7 +32,7 @@ const connectionLost = () =>
 
 function sleeper() {
   const waits: number[] = [];
-  return { waits, sleep: async (ms: number) => void waits.push(ms) };
+  return { waits, sleep: async (ms: number) => void waits.push(ms), budget: { waited: 0 } };
 }
 
 describe("notarizeDmg", () => {
@@ -86,24 +87,34 @@ describe("notarizeDmg", () => {
 
   it("staples again after a wait when Apple's ticket service drops the connection", async () => {
     const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler staple": [connectionLost(), ""] });
-    const { waits, sleep } = sleeper();
-    expect(await notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep })).toBe("notarized");
+    const { waits, sleep, budget } = sleeper();
+    expect(await notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep, budget })).toBe("notarized");
     expect(calls.filter((call) => call[2] === "staple")).toHaveLength(2);
     expect(waits).toEqual([20_000]);
   });
 
   it("gives up after six tries when the connection keeps dropping", async () => {
     const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler staple": connectionLost() });
-    const { waits, sleep } = sleeper();
-    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep })).rejects.toThrow(/Error 68/);
+    const { waits, sleep, budget } = sleeper();
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep, budget })).rejects.toThrow(/Error 68/);
     expect(calls.filter((call) => call[2] === "staple")).toHaveLength(6);
     expect(waits).toEqual([20_000, 40_000, 60_000, 90_000, 120_000]);
   });
 
+  it("stops trying once the build has waited its whole budget", async () => {
+    const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler staple": connectionLost() });
+    const { waits, sleep, budget } = sleeper();
+    budget.waited = 6 * 60_000;
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep, budget })).rejects.toThrow(/Error 68/);
+    // 6 min spent: 20 + 40 + 60 s fill the 8 min budget, so the 90 s wait is never taken
+    expect(waits).toEqual([20_000, 40_000, 60_000]);
+    expect(calls.filter((call) => call[2] === "staple")).toHaveLength(4);
+  });
+
   it("does not staple again when stapling fails for another reason", async () => {
     const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler staple": Object.assign(new Error("Record not found"), { code: 65 }) });
-    const { waits, sleep } = sleeper();
-    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep })).rejects.toThrow(/Record not found/);
+    const { waits, sleep, budget } = sleeper();
+    await expect(notarizeDmg("dist/Ovis.dmg", { env: key, run, log: quiet, sleep, budget })).rejects.toThrow(/Record not found/);
     expect(calls.filter((call) => call[2] === "staple")).toHaveLength(1);
     expect(waits).toEqual([]);
   });
@@ -121,8 +132,8 @@ describe("notarizeDmg", () => {
 describe("notarizeApp", () => {
   it("submits the app zipped, staples it, and checks it again after a dropped connection without stapling again", async () => {
     const { calls, run } = recorder({ "xcrun notarytool submit": accepted, "xcrun stapler validate": [connectionLost(), ""] });
-    const { waits, sleep } = sleeper();
-    expect(await notarizeApp("dist/mac/Ovis.app", { env: key, run, log: quiet, sleep })).toBe("notarized");
+    const { waits, sleep, budget } = sleeper();
+    expect(await notarizeApp("dist/mac/Ovis.app", { env: key, run, log: quiet, sleep, budget })).toBe("notarized");
     const zip = calls[0]![6]!;
     expect(basename(zip)).toBe("Ovis.zip");
     expect(calls).toEqual([
@@ -139,5 +150,14 @@ describe("notarizeApp", () => {
     const { calls, run } = recorder();
     await expect(notarizeApp("dist/mac/Ovis.app", { env: { OVIS_REQUIRE_NOTARIZATION: "1" }, run, log: quiet })).rejects.toThrow(/would ship unnotarized/);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("electron-builder.yml", () => {
+  it("leaves the app's notarization to the afterSign hook", () => {
+    const config = Bun.YAML.parse(readFileSync(join(import.meta.dir, "../electron-builder.yml"), "utf8")) as { afterSign?: string; artifactBuildCompleted?: string; mac?: { notarize?: boolean } };
+    expect(config.afterSign).toBe("./scripts/notarize-app.mjs");
+    expect(config.artifactBuildCompleted).toBe("./scripts/notarize-dmg.mjs");
+    expect(config.mac?.notarize).toBe(false);
   });
 });

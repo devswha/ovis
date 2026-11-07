@@ -29,9 +29,18 @@ export const NOTARY_ENV = ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUE
 
 /** waits between staple tries: six tries over about five and a half minutes */
 export const STAPLE_WAITS = [20_000, 40_000, 60_000, 90_000, 120_000];
+/**
+ * All the waiting one build may do, app and dmg together: the build, two notarizations and this
+ * stay within the Mac build job's 30 minutes (.github/workflows/desktop.yml).
+ */
+export const WAIT_BUDGET = 8 * 60_000;
 
 /** @typedef {(file: string, args: string[]) => Promise<string>} Run */
-/** @typedef {{ env?: Record<string, string | undefined>, run?: Run, log?: (line: string) => void, sleep?: (ms: number) => Promise<void> }} Options */
+/** @typedef {{ waited: number }} Budget */
+/** @typedef {{ env?: Record<string, string | undefined>, run?: Run, log?: (line: string) => void, sleep?: (ms: number) => Promise<void>, budget?: Budget }} Options */
+
+/** the waits so far in this build (electron-builder loads the hooks once) @type {Budget} */
+const spent = { waited: 0 };
 
 /** @type {Run} */
 export function run(file, args) {
@@ -50,6 +59,7 @@ function defaults(options) {
     exec: options.run ?? run,
     log: options.log ?? ((line) => console.log(`  • ${line}`)),
     sleep: options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    budget: options.budget ?? spent,
   };
 }
 
@@ -95,7 +105,7 @@ async function submit(upload, file, key, exec) {
  */
 export function isNetworkFailure(error) {
   const failure = /** @type {{ code?: unknown, message?: unknown, stdout?: unknown }} */ (error ?? {});
-  return failure.code === 68 || /Error 68\b|NSURLErrorDomain Code=-10(?:01|05|09)\b|network connection was lost|timed out/i.test(`${failure.message ?? error} ${failure.stdout ?? ""}`);
+  return failure.code === 68 || /Error 68\b|NSURLErrorDomain Code=-10(?:01|05|09)\b|network connection was lost/i.test(`${failure.message ?? error} ${failure.stdout ?? ""}`);
 }
 
 /**
@@ -111,7 +121,8 @@ async function staple(file, tools) {
         break;
       } catch (error) {
         const wait = STAPLE_WAITS[attempt];
-        if (wait === undefined || !isNetworkFailure(error)) throw error;
+        if (wait === undefined || tools.budget.waited + wait > WAIT_BUDGET || !isNetworkFailure(error)) throw error;
+        tools.budget.waited += wait;
         tools.log(`stapler ${action} ${file} lost the connection to Apple; trying again in ${wait / 1000} s (try ${attempt + 2} of ${STAPLE_WAITS.length + 1})`);
         await tools.sleep(wait);
       }
