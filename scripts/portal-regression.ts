@@ -389,10 +389,12 @@ try {
   await blockedPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
   await openPhoneSettings(blockedPage);
   const blockedSettings = settingsOf(blockedPage);
-  await blockedSettings.getByText("Set OVIS_TOKEN on this PC and restart the app to start Portal.", { exact: true }).waitFor({ timeout: 10_000 });
+  // a Portal that cannot start here is left out of the sheet, not explained
+  await blockedSettings.locator('[data-tab-panel="devices"]').locator(":scope > .connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
+  assert.equal(await blockedSettings.locator('section[aria-label="Portal"]').count(), 0, "a Portal that needs a configured token is not offered");
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");
-  console.log("PASS Portal token-required UI: the relay cannot be started without a configured token");
+  console.log("PASS Portal token-required UI: a Portal that cannot start without a configured token is left out");
 } finally {
   releaseRelay?.();
   await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
