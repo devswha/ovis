@@ -147,9 +147,12 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
   const t = useT();
   const account: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
   const signIn = account?.kind === "signed-out" && onSignIn ? <AccountSignIn onSignIn={onSignIn} error={account.error} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
-  // signed out with no saved PC, the QR route waits behind a link under the sign-in
-  const [qr, setQr] = useState(false);
-  const signInFirst = account?.kind === "signed-out" && state.kind === "empty" && !qr;
+  // signed out, the front page is the sign-in alone: the QR route and this device's own pairings wait behind its links
+  const [signedOutView, setSignedOutView] = useState<"sign-in" | "pair" | "saved">("sign-in");
+  const saved = state.kind === "list" ? state.devices.length : 0;
+  const view = account?.kind !== "signed-out" ? null : signedOutView === "saved" && saved === 0 ? "sign-in" : signedOutView;
+  const signInFirst = view === "sign-in";
+  const signInInstead = <div className="relay-shell-actions"><button type="button" className="btn" onClick={() => setSignedOutView("sign-in")}>{t("Sign in instead")}</button></div>;
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");
@@ -172,13 +175,20 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
         {signInFirst && (
           <>
             <h1 className="relay-shell-title">{t("Sign in to Ovis")}</h1>
-            <p className="relay-shell-copy account-subtitle">{t("See every PC on your account.")}</p>
+            <p className="relay-shell-copy account-subtitle">{t("Your PCs and devices, through the Ovis relay.")}</p>
             {signIn}
-            <button type="button" className="account-link" onClick={() => setQr(true)}>{t("Other ways: QR code or pairing code")}</button>
             <AccountFinePrint />
+            <div className="relay-shell-sign-in-links">
+              <button type="button" className="account-link" onClick={() => setSignedOutView("pair")}>{t("Pair with a QR or code")}</button>
+              {saved > 0 && (
+                <button type="button" className="account-link" onClick={() => setSignedOutView("saved")}>
+                  {saved === 1 ? t("Continue without an account (1 PC)") : t("Continue without an account ({count} PCs)", { count: saved })}
+                </button>
+              )}
+            </div>
           </>
         )}
-        {state.kind === "list" && (account === null || account.kind === "signed-out") && (
+        {state.kind === "list" && (account === null || view === "saved") && (
           <>
             <h1 className="relay-shell-title">{t("Your PCs")}</h1>
             {onCheckPcs && <CheckPcsButton status={pcStatus ?? new Map()} onCheck={onCheckPcs} />}
@@ -195,29 +205,17 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
                 </li>
               ))}
             </ul>
-            {signIn ? (
-              <>
-                <div className="account-or"><p className="relay-shell-copy">{t("Sign in to see every PC on your account and add new ones with one approval.")}</p>{signIn}<AccountFinePrint /></div>
-                <details className="relay-shell-other-ways">
-                  <summary>{t("Other ways")}</summary>
-                  <p className="relay-shell-copy">{t("To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).")}</p>
-                  <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
-                </details>
-              </>
-            ) : (
-              <>
-                <p className="relay-shell-copy">{t("To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).")}</p>
-                <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
-              </>
-            )}
+            <p className="relay-shell-copy">{t("To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).")}</p>
+            <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
+            {account && signInInstead}
           </>
         )}
-        {state.kind === "empty" && (account === null || (account.kind === "signed-out" && qr)) && (
+        {(account === null ? state.kind === "empty" : view === "pair") && (
           <>
             <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
             <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
             <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button>{back}</div>
-            {account && <div className="relay-shell-actions"><button type="button" className="btn" onClick={() => setQr(false)}>{t("Sign in instead")}</button></div>}
+            {account && signInInstead}
           </>
         )}
         {state.kind === "code-entry" && <CodeEntry failure={state.failure} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>} />}

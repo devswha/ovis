@@ -29,23 +29,52 @@ describe("the front page's account part", () => {
     expect(html).not.toContain("Continue with Apple");
   });
 
-  it("offers GitHub and Apple alike, under one title, with the QR route behind a link", () => {
+  const saved = (server_id: string, name: string) => ({ server_id, server_public_key: "k", relay: "wss://relay.example", name, device_id: "0".repeat(16), label: "Phone" }) as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
+  const links = (html: string) => [...html.matchAll(/<button type="button" class="account-link">([^<]+)</g)].map(([, label]) => label);
+
+  it("opens on the sign-in alone: GitHub and Apple alike, under one title, with only the pairing link below", () => {
     const html = render({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, accountProviders: ["github", "apple"] });
     expect(html).toContain('data-account-state="signed-out"');
     const buttons = [...html.matchAll(/<button type="button" class="([^"]+)">(?:<svg[\s\S]*?<\/svg>)?(Continue with [^<]+)</g)].map(([, kind, label]) => [kind, label]);
     expect(buttons).toEqual([["btn account-provider", "Continue with GitHub"], ["btn account-provider", "Continue with Apple"]]);
     expect(html.match(/<h1/g)).toHaveLength(1);
-    expect(html.indexOf("Continue with Apple")).toBeLessThan(html.indexOf("Other ways: QR code or pairing code"));
+    expect(links(html)).toEqual(["Pair with a QR or code"]);
+    expect(html.indexOf("Continue with Apple")).toBeLessThan(html.indexOf("Pair with a QR or code"));
+    expect(html).not.toContain("relay-shell-pc");
+    expect(html).not.toContain("Scan the QR code on your PC");
   });
 
-  it("puts the sign-in first beside the saved PCs, with the QR code and pairing code folded under Other ways", () => {
-    const device = { server_id: "a".repeat(32), server_public_key: "k", relay: "wss://relay.example", name: "p620", device_id: "0".repeat(16), label: "Phone" } as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
-    const html = render({ ...props({ kind: "list", devices: [device], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-    const fold = html.indexOf("<details");
-    expect(html.indexOf("Continue with GitHub")).toBeLessThan(fold);
-    expect(html.indexOf("Pair with a code")).toBeGreaterThan(fold);
-    // without an account service the QR route is the page itself
-    expect(render({ ...props({ kind: "list", devices: [device] }), scoped: false })).not.toContain("<details");
+  it("keeps saved PCs off the sign-in, one link away, counted", () => {
+    const two = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+    expect(two).toContain("Continue with GitHub");
+    expect(links(two)).toEqual(["Pair with a QR or code", "Continue without an account (2 PCs)"]);
+    expect(two).not.toContain("relay-shell-pc");
+    expect(two).not.toContain("p620");
+    expect(two).not.toContain("<details");
+    const one = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620")], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+    expect(links(one)).toEqual(["Pair with a QR or code", "Continue without an account (1 PC)"]);
+    // without an account service there is no sign-in: the saved PCs are the page itself
+    expect(render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620")] }), scoped: false })).toContain(`href="/s/${"a".repeat(32)}/"`);
+  });
+
+  it("returns to the sign-in after sign-out, the pairings kept behind its link", () => {
+    const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
+    const signedIn = render({ ...props({ kind: "list", devices, account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "p620", "paired")] } }), scoped: false, onSignIn: none, onSignOut: none });
+    expect(signedIn).toContain("Sign out");
+    // what shell.tsx's signOut shows: the same saved PCs, the account signed out
+    const after = render({ ...props({ kind: "list", devices, account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onSignOut: none });
+    expect(after).toContain("Sign in to Ovis");
+    expect(after).not.toContain("Sign out");
+    expect(after).not.toContain("relay-shell-pc");
+    expect(links(after)).toEqual(["Pair with a QR or code", "Continue without an account (2 PCs)"]);
+  });
+
+  it("opens a pairing link straight into pairing, without the sign-in", () => {
+    const html = render({ ...props({ kind: "confirm", offer: { v: 1, server_id: EXPECTED, server_public_key: "k", relay: "wss://relay.example", name: "Desk" } }), scoped: false, onSignIn: none, accountProviders: ["github", "apple"] });
+    expect(html).toContain('data-relay-state="confirm"');
+    expect(html).toContain("Pair with Desk?");
+    expect(html).not.toContain("Continue with GitHub");
+    expect(html).not.toContain("Sign in to Ovis");
   });
 
   it("says how each saved PC answered the latest check, with Check now above the list", () => {
