@@ -312,7 +312,8 @@ try {
     await reopenPhoneSettings(page);
     await asked;
     const settings = settingsOf(page);
-    await settings.locator('[data-tab-panel="devices"] section[aria-label="Tailscale"]').waitFor({ timeout: 10_000 });
+    // drawn: its first section, or for a window that can use none of them, its one line
+    await settings.locator('[data-tab-panel="devices"]').locator(":scope > .connect-section, :scope > .settings-description").first().waitFor({ timeout: 10_000 });
     assert.equal(await settings.locator('section[aria-label="Portal"]').count(), 0, "an older server offers no Portal on Phones and devices");
     assert.equal(await settings.locator("#portal-relay").count(), 0, "an older server's page offers no relay");
   }

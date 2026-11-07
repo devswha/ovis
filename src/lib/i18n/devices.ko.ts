@@ -196,6 +196,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Add {name}": "{name} 추가",
   "How to connect": "연결 방법",
   "Looking for PCs…": "PC를 찾는 중…",
+  "Open Ovis on the PC itself to add a connection.": "연결을 추가하려면 그 PC에서 Ovis를 여세요.",
   "Add another PC over SSH.": "SSH로 다른 PC를 추가합니다.",
   "Connect from anywhere through your Ovis account.": "Ovis 계정으로 어디서든 연결하세요.",
   "On the new device, sign in to the same Ovis account.": "새 기기에서 같은 Ovis 계정으로 로그인하세요.",

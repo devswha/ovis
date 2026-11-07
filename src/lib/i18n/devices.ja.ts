@@ -196,6 +196,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Add {name}": "{name} を追加",
   "How to connect": "接続方法",
   "Looking for PCs…": "PC を探しています…",
+  "Open Ovis on the PC itself to add a connection.": "接続を追加するには、その PC で Ovis を開いてください。",
   "Add another PC over SSH.": "SSH で別の PC を追加します。",
   "Connect from anywhere through your Ovis account.": "Ovis アカウントでどこからでも接続できます。",
   "On the new device, sign in to the same Ovis account.": "新しいデバイスで同じ Ovis アカウントにサインインしてください。",

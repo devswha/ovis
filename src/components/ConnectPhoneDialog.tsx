@@ -246,21 +246,26 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
 function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePlan; pairUrl: string | null; readOnly: boolean; canPair: boolean; phone: boolean }) {
   const t = useT();
   const { status: portal } = usePortal();
+  const address = plan.kind === "here" || plan.kind === "served";
+  const pairs = canPair && !readOnly;
+  const portalShown = portal?.supported === true && (portal.phase !== "idle" || (portal.usable && portal.blocked === null));
+  // nothing this window can use: one line on where it can be done, never an empty sheet
+  if (!address && !pairs && !portalShown) return <p className="settings-description">{t("Open Ovis on the PC itself to add a connection.")}</p>;
   return (
     <>
-      {(plan.kind === "here" || plan.kind === "served") && (
+      {address && (
         <section className="connect-section" aria-label="Tailscale">
           <p className="settings-label">Tailscale</p>
           <PhonePanel url={plan.url} phone={phone} />
         </section>
       )}
-      {canPair && !readOnly && (
+      {pairs && (
         <section className="connect-section" aria-label={t("Pairing code")}>
           <p className="settings-label">{t("Pairing code")}</p>
           <CodeRoute pairUrl={inRelayShell() ? null : pairUrl} startAtOnce phone={phone} compact />
         </section>
       )}
-      {portal?.supported === true && (portal.phase !== "idle" || (portal.usable && portal.blocked === null)) && (
+      {portalShown && (
         <section className="connect-section" aria-label="Portal">
           <PortalPanel readOnly={readOnly} />
         </section>

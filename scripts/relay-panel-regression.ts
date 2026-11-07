@@ -318,7 +318,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     // the visitor's sheet holds only what it can use: Phones and devices, with no pairing code, no SSH and no relay
     // tab; More settings has no relay group for it
     await seen.connect.click();
-    await seen.devicesTab.waitFor();
+    await seen.devicesTab.getByText("Open Ovis on the PC itself to add a connection.", { exact: true }).waitFor();
     assert.equal(await seen.sheet.locator(".connect-tabs").count(), 0, "a Portal visitor gets one way, so no tabs");
     assert.equal(await seen.relayTab.count(), 0, "nor the relay's tab");
     assert.equal(await seen.sheet.locator(".connect-phone-code").count(), 0, "a Portal visitor is offered no pairing code");
