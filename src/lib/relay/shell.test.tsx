@@ -175,6 +175,52 @@ describe("the hosted shell's front page", () => {
     expect(rows()).toBe(3);
   });
 
+  it("reads nothing again while the first read is still out, so an older answer never lands over a newer one", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
+    let reads = 0;
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
+      reads += 1;
+      if (reads === 1) await held;
+      return { status: 200, ok: true, json: async () => ({ pcs: directory }) } as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
+
+    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => reads === 1 && rendered.length > 0 && account().pcs === null, "the loading dashboard with its first read out");
+    visible("visible");
+    await drain();
+    expect(reads).toBe(1);
+
+    answer();
+    await mounted;
+    await until(() => account().pcs !== null, "the first read drawn");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+  });
+
+  it("signs the page out when a read again finds the sign-in gone, rather than keeping the account's rows", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
+    const accountFetch = async (): Promise<Response> => ({ status: 200, ok: true, json: async () => ({ pcs: directory }) }) as unknown as Response;
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
+
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => rendered.length > 0 && account().pcs !== null, "the first read drawn");
+
+    // another tab signed out: the session is gone from the shared store
+    await accountStore.set("session", undefined);
+    visible("visible");
+    await until(() => { const { state } = last(); return (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-out"; }, "the signed-out front page");
+  });
+
   it("starts one read when two reasons to read again land in the same moment", async () => {
     jest.useFakeTimers();
     const desk = keyFor();

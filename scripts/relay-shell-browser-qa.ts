@@ -476,7 +476,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) ready.resolve(); });
         return socket;
       } });
-      const pc = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: pcRelay,
+      const pcHerdrConfig = join(dir, "config.toml");
+      writeFileSync(pcHerdrConfig, "[ui]\ncopy_on_select = true\n");
+      const pc = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: pcRelay, herdrConfigPath: pcHerdrConfig,
         accountService: { url: ACCOUNT_SERVICE, fetch: (request) => fake.fetch(request) } });
       const stop = async (): Promise<void> => { await pcRelay.shutdown(); pc.stop(); rmSync(dir, { recursive: true, force: true }); };
       pcs9.push({ stop });

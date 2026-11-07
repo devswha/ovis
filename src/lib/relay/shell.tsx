@@ -375,14 +375,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * moment start one read; a sign-out or leave meanwhile drops the read's rows and relays alike.
    */
   const refreshAccount = async (): Promise<void> => {
-    if (refreshing || !dashboardUp() || document.visibilityState !== "visible" || accountView?.kind !== "signed-in") return;
+    // rows still null: loadAccount's first read is out, and its answer must not land over a newer one
+    if (refreshing || !dashboardUp() || document.visibilityState !== "visible" || accountView?.kind !== "signed-in" || accountView.pcs === null) return;
     const current = accountView;
     const read: Promise<void> = (async () => {
       try {
         const session = await account.session();
-        if (session === undefined || accountView !== current) return;
+        if (accountView !== current) return;
+        // the sign-in ended elsewhere (another tab signed out): its rows go with it
+        if (session === undefined) throw new SignedOutError();
         const listed = await account.listPcs();
         if (accountView !== current) return;
+        sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
         const pcs = await pcsOf(session, listed);
         if (accountView !== current) return;
         directory = listed;
