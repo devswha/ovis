@@ -3,7 +3,7 @@ import "./RelayMap.css";
 import { Lock, Monitor, MonitorSmartphone, RadioTower } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { dashboardModel } from "../lib/relay/dashboard.ts";
+import { relayHost, type dashboardModel } from "../lib/relay/dashboard.ts";
 import { useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
 
@@ -139,11 +139,6 @@ export function clip(text: string, max = NAME_UNITS): string {
     end += ch.length;
   }
   return text;
-}
-
-/** The host of a relay origin (`wss://relay-ap.ovis.sh` is relay-ap.ovis.sh). */
-export function relayHost(origin: string): string {
-  return origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/.*$/, "");
 }
 
 function keyOf(node: RelayMapNode): "lately" | RelayMapNode["state"] {

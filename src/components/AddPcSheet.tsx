@@ -1,6 +1,6 @@
 /**
  * Adding a PC, step by step: a sheet with four segmented bars and the steps of the join it drives,
- * in the mode the front page picks today (AccountPcs.tsx; `addPcSheetMode`). A PC new in the
+ * in the mode the dashboard's row picked (Add or Join, RelayDashboard.tsx). A PC new in the
  * account (newPcs) has this device type the number that PC shows, then approve on the PC; any other
  * PC that waits for this device asks through the account, this device shows its own number, and an
  * account member approves on another device, never on the PC's own screen (docs/account.md,
@@ -18,33 +18,22 @@ import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react
 import { createPortal } from "react-dom";
 import { Check, X } from "lucide-react";
 
-import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import type { MyPc } from "../lib/account/myPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import type { RelayFailure, RelayShellState } from "../lib/relay/shellState.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
-import { serverScopePath } from "../lib/shellMode.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { relayFailureText } from "./relayFailureText.ts";
 import { TypedDigits } from "./RelayShell.tsx";
 
 /** `new`: the PC's card (typed number); `join`: the row of a PC waiting for approval (account join); `add`: no PC, how one is added. */
 export type AddPcSheetMode = "new" | "join" | "add";
 
-/**
- * The mode a PC opens the sheet in, by the front page's rule: a PC new in the account is its card
- * (this device types the number it shows), any other PC this device can join asks through the
- * account, and a PC already paired, or one with no key to compare, is nothing to join.
- */
-export function addPcSheetMode(pc: MyPc | null, now: number): AddPcSheetMode {
-  if (pc === null || pc.paired || pc.join === undefined) return "add";
-  return newPcs([pc], now).length > 0 ? "new" : "join";
-}
-
 /** Where the join is, read off the shell's state: the step list and the sheet's controls follow it. */
-export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "failed" | "ready";
+export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "failed";
 
 export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
-  if (pc.paired) return "ready";
   switch (state.kind) {
     case "confirm": return state.offer.server_id === pc.server_id ? "confirm" : "start";
     case "connecting": return "connecting";
@@ -63,32 +52,15 @@ export type AddPcStepStatus = "done" | "running" | "todo" | "failed";
  * the step that was connecting.
  */
 export function addPcSteps(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): AddPcStepStatus[] {
-  const at = phase === "ready" ? 4
-    : phase === "approving" || (phase === "failed" && failure === "pair-declined") ? 2
+  const at = phase === "approving" || (phase === "failed" && failure === "pair-declined") ? 2
     : mode === "new" ? 1
     : phase === "compare" || phase === "wrong" ? 1
     : 0;
   return [0, 1, 2, 3].map((step) => step < at ? "done" : step > at ? "todo" : phase === "failed" ? "failed" : "running");
 }
 
-function failureTitle(t: ReturnType<typeof useT>, failure: RelayFailure, name: string): string {
-  switch (failure) {
-    case "pair-declined": return t("{name} did not approve this phone", { name });
-    case "pair-unavailable": return t("{name} is not taking new phones right now", { name });
-    case "not-added-yet": return t("{name} has not added this device yet", { name });
-    case "pc-offline": return t("{name} is offline", { name });
-    case "pc-unresponsive": return t("{name} did not finish connecting", { name });
-    case "relay-unreachable": return t("The relay could not be reached");
-    case "needs-update": return t("Update needed");
-    case "revoked": return t("This phone was removed from {name}", { name });
-    case "identity-changed": return t("{name} has a new identity", { name });
-    case "code-expired": return t("That pairing code no longer works");
-    case "bad-offer": return t("This pairing link is damaged");
-  }
-}
-
 export interface AddPcSheetProps {
-  /** which flow the sheet walks; `addPcSheetMode(pc, now)` picks it as the front page does */
+  /** which flow the sheet walks: the dashboard row's Add (`new`) or Join (`join`), or Add a PC (`add`) */
   mode: AddPcSheetMode;
   /** the PC joined; null in the `add` mode, which only says how a PC is added */
   pc: MyPc | null;
@@ -100,6 +72,8 @@ export interface AddPcSheetProps {
   onPair: () => void;
   /** the shell's match (RelayShellProps.onMatch): the digits typed from the PC's screen, or nothing when this device shows them */
   onMatch: (typed?: string) => void;
+  /** the shell's Try again (RelayShellProps.onRetry), offered on a failure it can help with */
+  onRetry?: () => void;
   /** the shell's Cancel (RelayShellProps.onCancel): ends a connection or comparison in progress */
   onCancel: () => void;
   /** takes the sheet down; the focus goes back to what opened it */
@@ -108,23 +82,22 @@ export interface AddPcSheetProps {
   onPairByQr: () => void;
 }
 
-export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
+export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
   const t = useT();
   const id = useId();
   const name = pc?.name ?? "";
   const phase = pc === null || mode === "add" ? null : addPcPhase(pc, state);
   // the phase's own control: the one the focus starts on, and lands on again when a phase change took the last one away
   const primary = useRef<HTMLButtonElement>(null);
-  const open = useRef<HTMLAnchorElement>(null);
-  const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: phase === "ready" ? open : primary });
+  const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: primary });
   useLayoutEffect(() => {
     const node = surface.current;
     if (node === null || node.contains(document.activeElement)) return;
-    (primary.current ?? open.current ?? node).focus({ preventScroll: true });
+    (primary.current ?? node).focus({ preventScroll: true });
   }, [phase]);
-  // while the join runs, Cancel, Escape and the scrim end it in the shell too, as today's Cancel and Not now do
+  // while the join runs, Cancel, Escape and the scrim end it in the shell too, as today's Cancel and Not now do; a failed join has nothing left to end
   const close = (): void => {
-    if (phase !== null && phase !== "start" && phase !== "ready") onCancel();
+    if (phase !== null && phase !== "start" && phase !== "failed") onCancel();
     onClose();
   };
   const latestClose = useRef(close);
@@ -217,18 +190,21 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onCancel,
         );
         actions = cancel;
         break;
-      case "failed":
-        body = <p className="add-pc-problem" role="alert">{state.kind === "failed" ? failureTitle(t, state.failure, name) : null}</p>;
-        actions = done;
-        break;
-      case "ready":
-        actions = (
-          <>
-            <button type="button" className="btn" onClick={onClose}>{t("Close")}</button>
-            <a ref={open} className="btn btn-primary" href={serverScopePath(pc.server_id)}>{t("Open {name}", { name })}</a>
-          </>
+      case "failed": {
+        // the shell's own words for the failure (relayFailureText), and its Try again where that can help
+        const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name) : null;
+        body = failure && (
+          <div role="alert">
+            <p className="add-pc-problem">{failure.title}</p>
+            <p className="relay-shell-copy">{failure.copy}</p>
+            {state.kind === "failed" && state.detail !== null && <p className="relay-shell-detail"><code>{state.detail}</code></p>}
+          </div>
         );
+        actions = failure?.retry && onRetry
+          ? <><button type="button" className="btn" onClick={close}>{t("Close")}</button><button ref={primary} type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button></>
+          : done;
         break;
+      }
     }
   }
 

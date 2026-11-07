@@ -90,6 +90,8 @@ describe("dashboardModel", () => {
     expect(relayHost("wss://relay-ap.ovis.sh")).toBe("relay-ap.ovis.sh");
     expect(relayHost("wss://relay.example:8443/path")).toBe("relay.example:8443");
     expect(relayHost("not a url")).toBe("not a url");
+    // the map, the strip and the table name one origin alike: a default port is the same relay
+    expect(relayHost("wss://relay.example:443")).toBe("relay.example");
   });
 
   it("preserves myPcs order for every PC needing attention", () => {

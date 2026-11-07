@@ -14,9 +14,6 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { accountPcStateText, CheckPcsButton, pcStateWord, PcStatusLine, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RelayMap } from "./RelayMap.tsx";
 
-/** Which of the two join flows the Add-a-PC sheet opens in: a PC new in the account types its digits; another PC of the account asks its members. */
-export type SheetMode = "new" | "join";
-
 type Filter = "all" | "ready" | "needs";
 
 export interface RelayDashboardProps {
@@ -36,7 +33,7 @@ export interface RelayDashboardProps {
   /** Add a PC: the top bar's one primary action, and the empty state's */
   onAddPc: () => void;
   /** Add (a PC new in the account) or Join (another PC of the account that has not approved this device): the step sheet in that mode */
-  onOpenSheet: (pc: MyPc, mode: SheetMode) => void;
+  onOpenSheet: (pc: MyPc, mode: "new" | "join") => void;
   /** local mode: back to the sign-in */
   onSignIn?: () => void;
   /** ends the sign-in; every pairing stays */

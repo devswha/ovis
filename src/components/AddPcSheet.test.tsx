@@ -5,7 +5,7 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { AddPcSheet, addPcSheetMode, addPcSteps, type AddPcSheetProps } from "./AddPcSheet.tsx";
+import { AddPcSheet, addPcSteps, type AddPcSheetProps } from "./AddPcSheet.tsx";
 
 const SERVER_ID = "b".repeat(32);
 const pcOf = (over: Partial<MyPc> = {}): MyPc => ({ server_id: SERVER_ID, name: "desk2", state: "needs-approval", last_seen_at: null, added_at: new Date().toISOString(), listed: true, paired: false, linked: false, join: { server_public_key: "k", relay: "wss://relay.example" }, ...over });
@@ -20,10 +20,10 @@ describe("the Add-a-PC sheet", () => {
   let events: EventTarget;
   /** what had the focus when the sheet opened, and how often it got it back */
   let opener: { isConnected: boolean; focus: () => void; focused: number };
-  let calls: { joins: unknown[][]; matches: unknown[][]; cancels: number; closes: number; pairs: number; qr: number };
+  let calls: { joins: unknown[][]; matches: unknown[][]; cancels: number; closes: number; pairs: number; qr: number; retries: number };
 
   beforeEach(() => {
-    calls = { joins: [], matches: [], cancels: 0, closes: 0, pairs: 0, qr: 0 };
+    calls = { joins: [], matches: [], cancels: 0, closes: 0, pairs: 0, qr: 0, retries: 0 };
     for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     events = new EventTarget();
     const store = new Map<string, string>();
@@ -75,6 +75,7 @@ describe("the Add-a-PC sheet", () => {
     onJoin: (...args) => { calls.joins.push(args); },
     onPair: () => { calls.pairs += 1; },
     onMatch: (...args) => { calls.matches.push(args); },
+    onRetry: () => { calls.retries += 1; },
     onCancel: () => { calls.cancels += 1; },
     onClose: () => { calls.closes += 1; },
     onPairByQr: () => { calls.qr += 1; },
@@ -97,21 +98,10 @@ describe("the Add-a-PC sheet", () => {
     return event.defaultPrevented;
   };
 
-  it("picks the mode as the front page does: a PC's card types the number, any other PC to join asks through the account", () => {
-    const now = Date.now();
-    expect(addPcSheetMode(pcOf(), now)).toBe("new");
-    expect(addPcSheetMode(pcOf({ added_at: new Date(now - 3_600_000).toISOString() }), now)).toBe("join");
-    expect(addPcSheetMode(pcOf({ state: "offline", added_at: null }), now)).toBe("join");
-    expect(addPcSheetMode(pcOf({ state: "paired", paired: true }), now)).toBe("add");
-    expect(addPcSheetMode(pcOf({ join: undefined }), now)).toBe("add");
-    expect(addPcSheetMode(null, now)).toBe("add");
-  });
-
   it("marks the steps done in order, and a refusal after the digits on the approval", () => {
     expect(addPcSteps("new", "start", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "compare", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "approving", null)).toEqual(["done", "done", "running", "todo"]);
-    expect(addPcSteps("new", "ready", null)).toEqual(["done", "done", "done", "done"]);
     expect(addPcSteps("join", "start", null)).toEqual(["running", "todo", "todo", "todo"]);
     expect(addPcSteps("join", "connecting", null)).toEqual(["running", "todo", "todo", "todo"]);
     expect(addPcSteps("join", "compare", null)).toEqual(["done", "running", "todo", "todo"]);
@@ -138,9 +128,6 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: true }));
     expect(steps()).toEqual(["done", "done", "running", "todo"]);
     expect(all()).toContain("Approve this phone on desk2 to finish.");
-    await update(props("new", pcOf({ state: "paired", paired: true, linked: true }), LIST));
-    expect(steps()).toEqual(["done", "done", "done", "done"]);
-    expect(renderer!.root.findByType("a").props.href).toBe(`/s/${SERVER_ID}/`);
   });
 
   it("walks an account join: the plain join, this device's own digits, then an account member's approval", async () => {
@@ -166,6 +153,21 @@ describe("the Add-a-PC sheet", () => {
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
     expect(all()).toContain("desk2 did not approve this phone");
+    // a refusal is not one Try again helps with: Close alone, and closing ends nothing more
+    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close"]);
+    await click("Close");
+    expect(calls).toMatchObject({ closes: 1, cancels: 0, retries: 0 });
+  });
+
+  it("says why a join failed in the shell's own words, with its Try again where that can help", async () => {
+    await mount(props("new", pcOf(), { kind: "failed", failure: "pc-offline", name: "desk2", detail: "relay closed 4404", server_id: SERVER_ID }));
+    expect(renderer!.root.findByProps({ role: "dialog" }).props["data-add-pc-phase"]).toBe("failed");
+    expect(all()).toContain("desk2 is offline");
+    expect(all()).toContain("Start Ovis on the PC");
+    expect(all()).toContain("relay closed 4404");
+    expect(steps()).toEqual(["done", "failed", "todo", "todo"]);
+    await click("Try again");
+    expect(calls.retries).toBe(1);
   });
 
   it("shows the shell's own failure for a wrong typed number, with the typing step still running", async () => {

@@ -13,11 +13,12 @@ import type { AccountView, KeyMismatch } from "../lib/relay/shellState.ts";
 import { AccountFinePrint, AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { KeyId } from "./KeyId.tsx";
-import { AddPcSheet, addPcSheetMode, type AddPcSheetMode } from "./AddPcSheet.tsx";
+import { AddPcSheet, type AddPcSheetMode } from "./AddPcSheet.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
+import { relayFailureText } from "./relayFailureText.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 
 export interface RelayShellProps {
@@ -176,6 +177,7 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
   const back = scoped ? <button type="button" className="btn" onClick={onBack}>{t("Back")}</button> : null;
   const progress = state.kind === "outdated" && state.update.phase === "installing" ? describeUpdate({ phase: "building", step: state.update.step }) : null;
   const retry = <button type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button>;
+  const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc) : null;
   // the dashboard: the account's PCs once signed in, or, behind "Continue without an account", this device's own pairings (local mode)
   const devices = state.kind === "list" ? state.devices : [];
   const local = view === "saved" && state.kind === "list";
@@ -192,7 +194,7 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
           {...(pcStatus ? { pcStatus } : {})}
           {...(onCheckPcs ? { onCheckPcs } : {})}
           onAddPc={() => setSheet({ pc: null, mode: "add" })}
-          onOpenSheet={(pc) => setSheet({ pc, mode: addPcSheetMode(pc, Date.now()) })}
+          onOpenSheet={(pc, mode) => setSheet({ pc, mode })}
           {...(signedIn ? {} : { onSignIn: () => setSignedOutView("sign-in") })}
           {...(signedIn && onSignOut ? { onSignOut } : {})}
           {...(signedIn && onLeave ? { onLeave } : {})}
@@ -207,14 +209,17 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
       </main>
     );
   }
-  // on the PC's own page, the join the sheet started goes on in the sheet: the question a link asks, the wait, the digits
-  const continued = scoped && sheetJoin !== null && (state.kind === "confirm" ? state.offer.server_id === sheetJoin.server_id : state.kind === "connecting" || state.kind === "compare");
+  // on the PC's own page, the join the sheet started goes on in the sheet: the question a link asks, the wait, the digits, and
+  // how that PC's join failed; a PC with a new identity keeps the shell's own screen, whose ids and Forget the sheet does not carry
+  const continued = scoped && sheetJoin !== null && (state.kind === "confirm" ? state.offer.server_id === sheetJoin.server_id
+    : state.kind === "failed" ? state.server_id === sheetJoin.server_id && state.failure !== "identity-changed"
+    : state.kind === "connecting" || state.kind === "compare");
   if (continued) {
     const joining: MyPc = { server_id: sheetJoin.server_id, name: pc, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false };
     return (
       <main className="relay-shell-screen" data-relay-state={stateName}>
         <div className="relay-shell account-centered"><img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="relay-shell-mark" /></div>
-        <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={onBack} onPairByQr={onCodeStart} />
+        <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onRetry={onRetry} onCancel={onCancel} onClose={onBack} onPairByQr={onCodeStart} />
       </main>
     );
   }
@@ -338,53 +343,19 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
             </div>
           </>
         )}
-        {state.kind === "failed" && state.failure === "pair-declined" && (
+        {state.kind === "failed" && failure !== null && (
           <>
-            <h1 className="relay-shell-title">{t("{name} did not approve this phone", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("It was declined on the PC, or not approved in time. Open the link again to compare new numbers.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "pair-unavailable" && (
-          <>
-            <h1 className="relay-shell-title">{t("{name} is not taking new phones right now", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "not-added-yet" && (
-          <>
-            <h1 className="relay-shell-title">{t("{name} has not added this device yet", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("It adds the devices of your account a few minutes after they join. Try again in a moment.")}</p>
-            <div className="relay-shell-actions">{retry}{back}</div>
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "pc-offline" && (
-          <>
-            <h1 className="relay-shell-title">{t("{name} is offline", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.")}</p>
-            <div className="relay-shell-actions">{retry}{back}</div>
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "pc-unresponsive" && (
-          <>
-            <h1 className="relay-shell-title">{t("{name} did not finish connecting", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.")}</p>
-            <div className="relay-shell-actions">{retry}{back}</div>
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "relay-unreachable" && (
-          <>
-            <h1 className="relay-shell-title">{t("The relay could not be reached")}</h1>
-            <p className="relay-shell-copy">{t("Check this phone's connection, then try again.")}</p>
-            <div className="relay-shell-actions">{retry}{back}</div>
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "needs-update" && (
-          <>
-            <h1 className="relay-shell-title">{t("Update needed")}</h1>
-            <p className="relay-shell-copy">{t("{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.", { name: pc })}</p>
-            <div className="relay-shell-actions">{retry}{back}</div>
+            <h1 className="relay-shell-title">{failure.title}</h1>
+            <p className="relay-shell-copy">{failure.copy}</p>
+            {state.failure === "identity-changed" ? (
+              <>
+                {state.mismatch && <KeyIds mismatch={state.mismatch} named="paired" />}
+                <div className="relay-shell-actions">
+                  <button type="button" className="btn btn-danger" onClick={onForget}>{t("Forget this PC")}</button>
+                  {back}
+                </div>
+              </>
+            ) : (failure.retry || back) && <div className="relay-shell-actions">{failure.retry && retry}{back}</div>}
           </>
         )}
         {state.kind === "outdated" && (
@@ -434,24 +405,6 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
             )}
           </>
         )}
-        {state.kind === "failed" && state.failure === "revoked" && (
-          <>
-            <h1 className="relay-shell-title">{t("This phone was removed from {name}", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("Its pairing was revoked on the PC, so this phone's key for it is gone. To pair again, scan a new QR code on the PC.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "identity-changed" && (
-          <>
-            <h1 className="relay-shell-title">{t("{name} has a new identity", { name: pc })}</h1>
-            <p className="relay-shell-copy">{t("The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.")}</p>
-            {state.mismatch && <KeyIds mismatch={state.mismatch} named="paired" />}
-            <div className="relay-shell-actions">
-              <button type="button" className="btn btn-danger" onClick={onForget}>{t("Forget this PC")}</button>
-              {back}
-            </div>
-          </>
-        )}
         {state.kind === "forged" && (
           <>
             <h1 className="relay-shell-title">{t("This link is not {name}'s", { name: pc })}</h1>
@@ -464,20 +417,6 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
           <>
             <h1 className="relay-shell-title">{t("This phone forgot {name}", { name: pc })}</h1>
             <p className="relay-shell-copy">{t("The link you opened carried a different key, so it is not used to pair again. To pair, scan a new QR code on the PC itself.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "code-expired" && (
-          <>
-            <h1 className="relay-shell-title">{t("That pairing code no longer works")}</h1>
-            <p className="relay-shell-copy">{t("The code was wrong, used up or expired. Scan a new QR code on the PC.")}</p>
-            {back && <div className="relay-shell-actions">{back}</div>}
-          </>
-        )}
-        {state.kind === "failed" && state.failure === "bad-offer" && (
-          <>
-            <h1 className="relay-shell-title">{t("This pairing link is damaged")}</h1>
-            <p className="relay-shell-copy">{t("Part of the link is missing or changed. Scan the QR code on the PC again, or copy its link whole.")}</p>
             {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}

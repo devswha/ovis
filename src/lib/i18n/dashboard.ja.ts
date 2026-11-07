@@ -11,7 +11,6 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Ask to join": "参加を申請",
   "Another of your devices shows three numbers: pick this one there.": "別のデバイスに 3 つの番号が表示されます。そこでこの番号を選んでください。",
   "Waiting for an account member to approve this device…": "アカウントの別のデバイスがこのデバイスを承認するのを待っています…",
-  "Open {name}": "{name} を開く",
   "{name} signed in": "{name} がサインイン済み",
   "It asked to join your account": "アカウントへの参加を求めています",
   "Proves you are looking at that PC": "その PC を見ていることの証明です",

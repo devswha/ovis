@@ -371,17 +371,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * this device) changes while the page is open, so it is read once more when the page comes back
    * into view and every DIRECTORY_REFRESH_MS while it stays in view. A read that fails keeps the rows
    * shown and says so under them; one the service refuses signs the page out, as the first read does.
+   * The guard is taken before anything is awaited, so a visibility change and a timer tick in the same
+   * moment start one read; a sign-out or leave meanwhile drops the read's rows and relays alike.
    */
   const refreshAccount = async (): Promise<void> => {
-    if (refreshing || !dashboardUp() || document.visibilityState !== "visible") return;
-    const session = await account.session();
-    if (session === undefined || accountView?.kind !== "signed-in") return;
+    if (refreshing || !dashboardUp() || document.visibilityState !== "visible" || accountView?.kind !== "signed-in") return;
     const current = accountView;
-    refreshing = (async () => {
+    const read: Promise<void> = (async () => {
       try {
-        directory = await account.listPcs();
+        const session = await account.session();
+        if (session === undefined || accountView !== current) return;
+        const listed = await account.listPcs();
         if (accountView !== current) return;
-        accountView = { ...current, pcs: await pcsOf(session, directory), error: null };
+        const pcs = await pcsOf(session, listed);
+        if (accountView !== current) return;
+        directory = listed;
+        accountView = { ...current, pcs, error: null };
       } catch (error) {
         if (accountView !== current) return;
         if (error instanceof SignedOutError) accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
@@ -391,8 +396,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         }
       }
       if (dashboardUp() || accountView?.kind === "signed-out") await showFront();
-    })().finally(() => { refreshing = undefined; });
-    await refreshing;
+    })().finally(() => { if (refreshing === read) refreshing = undefined; });
+    refreshing = read;
+    await read;
   };
   /** The refresh timer runs only while the dashboard is up and the page in view; `show` and the app's mount call this. */
   const armRefresh = (): void => {
@@ -481,7 +487,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const detail = error instanceof RelayUnreachableError && error.closeCode !== null ? error.message : null;
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
       ? keyMismatch(attempt.offer.server_id, [{ key: error.saved, from: "saved" }, { key: error.offered, from: "link" }]) : null;
-    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail, ...(mismatch ? { mismatch } : {}) });
+    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {}) });
   };
 
   const connect = async (attempt: Attempt): Promise<void> => {

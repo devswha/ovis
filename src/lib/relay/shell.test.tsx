@@ -175,6 +175,46 @@ describe("the hosted shell's front page", () => {
     expect(rows()).toBe(3);
   });
 
+  it("starts one read when two reasons to read again land in the same moment", async () => {
+    jest.useFakeTimers();
+    const desk = keyFor();
+    const now = Date.now();
+    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
+    let reads = 0;
+    /** holds every read after the first open until the test lets it answer, so the triggers below overlap it */
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
+      reads += 1;
+      if (reads > 1) await held;
+      return { status: 200, ok: true, json: async () => ({ pcs: directory }) } as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
+
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => reads === 1 && rendered.length > 0 && account().pcs !== null, "the first read drawn");
+
+    // two visibility changes in one tick (a tab switched away and back), then the 60 s tick while that read is out
+    visible("visible");
+    visible("visible");
+    await until(() => reads >= 2, "the read on coming into view");
+    await drain();
+    expect(reads).toBe(2);
+    jest.advanceTimersByTime(60_000);
+    await drain();
+    expect(reads).toBe(2);
+
+    const drawn = rendered.length;
+    answer();
+    await until(() => rendered.length > drawn, "the read drawn");
+    await drain();
+    expect(reads).toBe(2);
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+  });
+
   it("takes up the dashboard's sheet on the PC's page only for the PC the join was for, once", async () => {
     const pc = keyFor();
     const other = keyFor();

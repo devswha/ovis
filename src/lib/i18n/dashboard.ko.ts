@@ -11,7 +11,6 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Ask to join": "참여 요청",
   "Another of your devices shows three numbers: pick this one there.": "다른 기기에 숫자 세 개가 나옵니다. 거기서 이 숫자를 고르세요.",
   "Waiting for an account member to approve this device…": "계정의 다른 기기가 이 기기를 승인하기를 기다리는 중…",
-  "Open {name}": "{name} 열기",
   "{name} signed in": "{name} 로그인됨",
   "It asked to join your account": "계정에 참여를 요청했습니다",
   "Proves you are looking at that PC": "그 PC를 보고 있다는 증명입니다",

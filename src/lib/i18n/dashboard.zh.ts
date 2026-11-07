@@ -11,7 +11,6 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Ask to join": "请求加入",
   "Another of your devices shows three numbers: pick this one there.": "你的另一台设备上会显示三个数字，请在那里选择这个数字。",
   "Waiting for an account member to approve this device…": "正在等待账户中的另一台设备批准此设备…",
-  "Open {name}": "打开 {name}",
   "{name} signed in": "{name} 已登录",
   "It asked to join your account": "它请求加入你的账户",
   "Proves you are looking at that PC": "证明你正看着那台电脑",

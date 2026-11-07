@@ -388,6 +388,27 @@ describe("the dashboard", () => {
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Pair with Mac mini?");
     });
 
+    it("shows how the sheet's join failed in the sheet, with Try again, only for that PC; a new identity keeps the shell's own screen", async () => {
+      let retried = 0;
+      const offline = { kind: "failed", failure: "pc-offline", name: "Mac mini", detail: null } as const;
+      await mount({ ...props({ ...offline, server_id: ids.mini }), onRetry: () => { retried += 1; }, sheetJoin: { mode: "join", server_id: ids.mini } });
+      expect(dialog().props["data-add-pc-phase"]).toBe("failed");
+      expect(textOf(dialog())).toContain("Mac mini is offline");
+      await act(async () => { button("Try again").props.onClick(); });
+      expect(retried).toBe(1);
+      await act(async () => { renderer!.unmount(); });
+      // another PC's failure, or one with no PC named: the shell's own screen
+      for (const state of [{ ...offline, server_id: ids.desk }, offline]) {
+        await mount({ ...props(state), sheetJoin: { mode: "join", server_id: ids.mini } });
+        expect(dialogs()).toHaveLength(0);
+        expect(textOf(renderer!.root.findByType("h1"))).toBe("Mac mini is offline");
+        await act(async () => { renderer!.unmount(); });
+      }
+      await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "Mac mini", detail: null, server_id: ids.mini }), sheetJoin: { mode: "join", server_id: ids.mini } });
+      expect(dialogs()).toHaveLength(0);
+      expect(button("Forget this PC")).toBeDefined();
+    });
+
     it("lists this device's own pairings behind Continue without an account, and offers the sign-in at the foot", async () => {
       await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP), device(ids.mac, "nuc", GLOBAL)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
       await act(async () => { button("Continue without an account (2 PCs)").props.onClick(); });

@@ -89,8 +89,8 @@ export type RelayShellState =
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
   | { kind: "forged"; name: string | null; mismatch: KeyMismatch | null }
-  /** `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it */
-  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null };
+  /** `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it; `server_id`: the PC a connection attempt failed for */
+  | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string };
 
 /** The page a shell load is: the PC its path names and the offer its fragment carried, if any. */
 export interface ShellEntry {
