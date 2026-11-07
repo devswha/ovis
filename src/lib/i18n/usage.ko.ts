@@ -74,6 +74,7 @@ export const USAGE_KO: Record<string, string> = {
   "Open the sign-in page and sign in.": "로그인 페이지를 열고 로그인하세요.",
   "Paste the code the page shows": "페이지에 표시된 코드를 붙여 넣으세요",
   "Send code": "코드 보내기",
+  "Signed in as {account}.": "{account}(으)로 로그인했습니다.",
   "Signed in.": "로그인했습니다.",
   "Starting the sign-in on this PC…": "이 PC에서 로그인을 시작하는 중…",
   "The sign-in ended without signing in. Try again, or sign in from a terminal.": "로그인하지 않은 채 끝났습니다. 다시 시도하거나 터미널에서 로그인하세요.",

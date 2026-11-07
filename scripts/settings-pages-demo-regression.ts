@@ -975,7 +975,9 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
           assert.equal(await guide.getByRole("button", { name: /I'm new to Ovis/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
           assert.equal(await guide.getByRole("button", { name: /I've used Ovis before/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
         } else {
-          await signIn.getByText("Signed in as fixture.", { exact: true }).waitFor();
+          // the account's id is the service's own, never shown: the line names the way in, as Settings does
+          await signIn.getByText("Signed in with Google", { exact: true }).waitFor();
+          assert.equal(await signIn.getByRole("button", { name: "Not now", exact: true }).count(), 0, `no Not now once signed in ${at}`);
           assert.equal(await signIn.locator(".account-provider").count(), 0, `no provider buttons once signed in ${at}`);
           await shot("welcome-signin-signed-in");
           await guide.getByRole("button", { name: /I've used Ovis before/ }).click();

@@ -347,10 +347,10 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
     return (
       <div className="setup-signin">
         {view.kind === "signed-in"
-          ? <><p className="setup-signin-done" role="status">{t("Signed in as {account}.", { account: view.account })}</p><AddThisPc relayAbove={false} /></>
+          ? <><p className="setup-signin-done" role="status">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p><AddThisPc relayAbove={false} /></>
           : <>{welcome.lead}{signInParts}</>}
-        {/* a sign-in under way is ended with its own Cancel, never folded away unnoticed by Not now */}
-        {view.kind !== "device-code" && view.kind !== "signing-in" && welcome.later}
+        {/* signed out only: a sign-in under way ends with its own Cancel, never folded away unnoticed by Not now */}
+        {view.kind === "signed-out" && welcome.later}
       </div>
     );
   }

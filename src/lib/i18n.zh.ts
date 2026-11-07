@@ -487,7 +487,6 @@ const BASE: Record<string, string> = {
   "Conversation": "对话",
   "Off": "关闭",
   "Not now": "暂不",
-  "Signed in as {account}.": "已登录为 {account}。",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

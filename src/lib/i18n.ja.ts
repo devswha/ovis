@@ -485,7 +485,6 @@ const BASE: Record<string, string> = {
   "Conversation": "会話",
   "Off": "オフ",
   "Not now": "今はしない",
-  "Signed in as {account}.": "{account} でログインしました。",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
