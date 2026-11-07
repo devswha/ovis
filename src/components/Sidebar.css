@@ -1108,8 +1108,9 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 }
 
 .workspace-branch-tail {
-  flex: 0 1000 auto;
-  min-width: var(--space-4);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
   margin-inline-start: auto;
   overflow: hidden;
   color: var(--text-dim);

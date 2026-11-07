@@ -229,8 +229,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const waitingSince = useRef(new Map<string, number>());
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
   }, []);
   const ownListId = useId();
   const listId = givenListId ?? ownListId;
@@ -282,8 +282,19 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // Settings → Sidebar rows → One line (the default), as herdr-app's list: no headings, the waiting rows first, each
   // with how long it has waited; the rest keep their order
   const compact = settings.sidebarRows === "one";
-  const people = useMemo(() => !compact || groups !== null || named !== null ? parts.people
-    : [...parts.people.filter((row) => rowStatus(row) === "blocked"), ...parts.people.filter((row) => rowStatus(row) !== "blocked")], [compact, groups, named, parts, rowStatus]);
+  const people = useMemo(() => {
+    if (!compact || groups !== null || named !== null) return parts.people;
+    // an agent moves with the helpers drawn under it (lib/agentRoster.ts nestHelpers): one waits when any of them does
+    const families: AgentRow[][] = [];
+    for (const row of parts.people) {
+      const family = families.at(-1);
+      const parent = row.entry.pane.parent_pane_id;
+      if (family && parent !== undefined && family.some((member) => member.machine.id === row.machine.id && member.entry.pane.pane_id === parent)) family.push(row);
+      else families.push([row]);
+    }
+    const waits = (family: AgentRow[]) => family.some((row) => rowStatus(row) === "blocked");
+    return [...families.filter(waits), ...families.filter((family) => !waits(family))].flat();
+  }, [compact, groups, named, parts, rowStatus]);
   const waitedFor = (key: string, status: AgentStatus | undefined): string | null => {
     if (!compact || status !== "blocked") { waitingSince.current.delete(key); return null; }
     const since = waitingSince.current.get(key) ?? Date.now();
@@ -375,8 +386,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // on one line a row leads with what the agent is on (its own label, else its tab's name) and says its workspace once
     if (settings.sidebarRows === "one") {
       const lead = compactWorktreeName(pane.label?.trim() || parts.tabName || title);
-      const place = [parts.machineName, compactWorktreeName(workspace.label)].filter((part): part is string => Boolean(part) && part !== lead).join(" · ");
-      return { online, title: lead, name: null, mark, context: place, markKind: kind && kind !== lead ? kind : null, tokens };
+      const leadParts = agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: compactWorktreeName(workspace.label) }).filter((part) => part !== lead);
+      return { online, title: lead, name, mark, context: leadParts.join(" · "), markKind: kind && kind !== lead && !leadParts.includes(kind) ? kind : null, tokens };
     }
     return { online, title, name, mark, context, markKind, tokens };
   };

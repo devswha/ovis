@@ -240,8 +240,9 @@ describe("AgentSidebar background agents", () => {
       pane("w1:p3", { agent_status: "blocked", tokens: { role: "background" } }),
       pane("w1:p4", { agent_status: "working", tokens: { role: "background" } }),
     ])]);
-    expect(lists(html)).toEqual([["w1:p1", "w1:p3", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
-    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>Background agents<\/span><span class="agent-section-count">2<\/span><\/button>/);
+    // on one line (the default) a waiting row leads the list, the blocked background agent with it
+    expect(lists(html)).toEqual([["w1:p3", "w1:p1", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
+    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+2 background<\/span><\/button>/);
   });
 
   test("a list with no tagged pane has no background part", () => {

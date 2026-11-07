@@ -509,3 +509,6 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* on one line only working and waiting agents draw a state: a finished one reads as idle, with no dot */
+.agents-sidebar.is-compact .sidebar-status[data-status="done"] .sidebar-status-dot { display: none; }

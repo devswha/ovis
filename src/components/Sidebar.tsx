@@ -927,7 +927,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
             actions.selectPane(pane.pane_id);
           }}
         >
-          {rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
+          {/* a compact top-level row keeps its face alone; a worktree, which has none, keeps its mark */}
+          {(!compact || nested) && rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
           {editingWorkspace ? <input
             className="input workspace-rename-input"
             aria-label={t("Workspace name")}
