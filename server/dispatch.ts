@@ -317,6 +317,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
   }
+  // the hosts this PC's own ssh config and Tailscale login know are the owner's to see, as above
+  if (pathname === "/api/machines/ssh-candidates" && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "See the PCs this PC knows on this PC itself, or from a device paired with it directly." } }, 403);
+  }
   // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
   const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
   if (access.level === "full" && access.via === "portal" && standingAccess) {

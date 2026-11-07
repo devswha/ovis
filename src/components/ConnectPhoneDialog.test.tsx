@@ -6,7 +6,9 @@ import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
-import { CodeRoute, defaultRoute, RelayRoute, sameNameRelayDevice } from "./ConnectPhoneDialog.tsx";
+import type { Machine } from "../../shared/machines.ts";
+import type { AddPcPreset } from "../lib/actions.ts";
+import { CodeRoute, connectTabs, RelayRoute, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -55,6 +57,10 @@ describe("Connect a phone on a phone", () => {
       const expires_at = new Date(Date.now() + 600_000).toISOString();
       if (path === "/api/relay/offer") return Response.json({ url: pending === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code: pending }, APP), expires_at });
       if (path === "/api/devices/pair/start") return Response.json({ code: pending, expires_at });
+      if (path === "/api/machines/ssh-candidates") return Response.json({ pcs: [
+        { name: "nuc12", destination: "nuc12", detail: "rise@100.127.218.1", source: "ssh_config" },
+        { name: "winvm", destination: "winvm.tail.ts.net", detail: "winvm.tail.ts.net", source: "tailscale" },
+      ] });
       if (path === "/api/relay/code") { pending = "777111"; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
@@ -181,13 +187,29 @@ describe("Connect a phone on a phone", () => {
     expect(used).toBe(1);
   });
 
-  it("opens on the relay's card in the hosted shell, where the phone already is on the relay", () => {
-    const served = { kind: "served" as const, url: "https://workstation.example.ts.net" };
+  it("offers SSH only where PCs are added from, and the relay's tab wherever the relay is", () => {
     const off = relayState({ ...ONLINE, phase: "off" });
-    expect(defaultRoute(served, off)).toBe("tailscale");
+    expect(connectTabs({ sshOffered: true, relay: off })).toEqual(["ssh", "devices", "relay"]);
+    expect(connectTabs({ sshOffered: false, relay: relayState() })).toEqual(["devices", "relay"]);
+    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true } })).toEqual(["ssh", "devices"]);
+    // the hosted shell: no SSH from there, and the relay's card says this device already is on it
     shellMeta = true;
-    expect(defaultRoute(served, off)).toBe("relay");
-    expect(defaultRoute(served, relayState())).toBe("relay");
+    expect(connectTabs({ sshOffered: false, relay: relayState() })).toEqual(["devices", "relay"]);
+  });
+
+  it("lists the PCs found over SSH: Add opens Add PC with that address, an added one says so, a herdr PC connects", async () => {
+    const added: (AddPcPreset | undefined)[] = [];
+    const connected: string[] = [];
+    const ssh = (destination: string, extra: Partial<Machine> = {}): Machine => ({ id: destination, name: destination, kind: "ssh", target: { destination }, enabled: true, state: "disconnected", error: null, snapshot: null, ...extra });
+    const machines = [ssh("winvm.tail.ts.net", { state: "connected" }), ssh("build-box", { herdr_profile_id: "p1", action_required: "connect" })];
+    await mount(<SshTab machines={machines} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={(machine) => { connected.push(machine.id); }} />);
+    expect(requests).toContain("/api/machines/ssh-candidates");
+    expect(buttons()).toEqual(["Connect", "Add", "Add"]);
+    expect(text(renderer!.root).includes("Added")).toBe(true);
+    await act(async () => { renderer!.root.findByProps({ "aria-label": "Add nuc12" }).props.onClick(); });
+    expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
+    await act(async () => { button("Connect").props.onClick(); });
+    expect(connected).toEqual(["build-box"]);
   });
 
   it("keeps the desktop's relay QR code up front, with no self-pairing", async () => {
