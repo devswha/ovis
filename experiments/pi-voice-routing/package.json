@@ -1,0 +1,17 @@
+{
+  "name": "ovis-pi-routing-experiment",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "fake": "node src/main.mjs --fake",
+    "local": "node src/main.mjs --local",
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node --test test/intercom.integration.mjs"
+  },
+  "dependencies": {
+    "pi-intercom": "https://raw.githubusercontent.com/Strand-AI/pi-voice/900801dc48323e0f10151af68e0e5071772b69eb/vendor/pi-intercom/pi-intercom-0.17.3.tgz"
+  }
+}
