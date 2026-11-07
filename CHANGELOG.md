@@ -508,7 +508,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - An agent without a logo of its own draws its initial in a color picked by its kind.
   ([#2869](https://github.com/devswha/ovis/pull/2869))
 - Following the latest output in the chat no longer glides; it keeps the end in view at once.
-  ([#2655](https://github.com/devswha/ovis/pull/2655))
+  ([#2655](https://github.com/devswha/ovis/pull/2655), re-landing [#2624](https://github.com/devswha/ovis/pull/2624) by @odfalik)
 - While a command sent from Chat is waiting for its result, a poll asks herdr for the pane's processes
   fewer times: once instead of twice on an omp or gjc pane, twice instead of four times on Codex.
   ([#2764](https://github.com/devswha/ovis/pull/2764))
@@ -848,7 +848,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#2750](https://github.com/devswha/ovis/pull/2750))
 - While an answer streams, the chat keeps its newest text in view in the same frame it is drawn,
   also on a slow device, where it used to fall behind each change and stay behind.
-  ([#2655](https://github.com/devswha/ovis/pull/2655))
+  ([#2655](https://github.com/devswha/ovis/pull/2655), re-landing [#2624](https://github.com/devswha/ovis/pull/2624) by @odfalik)
 - An empty chat's greeting goes, and the composer docks, in the frame Send is pressed again, also
   while another tab's send briefly holds the pane: it no longer waits for the send's cross-tab claim.
   ([#2766](https://github.com/devswha/ovis/pull/2766))
