@@ -1051,6 +1051,8 @@ try {
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER);
         console.log("PASS workspace right-click scope, pointer anchor and focus; the context-menu key opens the same menu; a workspace pins into a card and returns to herdr's order; an agent pins and unpins from its right-click menu and the key");
         await waitStatus(page, API, "done");
+        // the classic style's unread-finish dot stays drawn on the compact rows
+        assert.ok(await agent(page, API).locator('.sidebar-status[data-status="done"] .sidebar-status-dot').isVisible(), "an unread finish keeps its dot");
         assert.deepEqual(await agentTitles(page), AGENTS_LIST_ORDER, "a finish does not move an agent");
         await agentSelect.click();
         await page.waitForFunction((paneId) => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").pane_id === paneId, panes.api, { timeout: 5_000 });

@@ -286,7 +286,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // with how long it has waited; the rest keep their order
   const compact = settings.sidebarRows === "one";
   const people = useMemo(() => {
-    if (!compact || groups !== null || named !== null) return parts.people;
+    // Settings → Agents order → Waiting first (the default); a saved Workspaces or Activity order is kept as it is
+    if (settings.agentOrder !== "waiting" || groups !== null || named !== null) return parts.people;
     // an agent moves with the helpers drawn under it (lib/agentRoster.ts nestHelpers): one waits when any of them does
     const families: AgentRow[][] = [];
     for (const row of parts.people) {
@@ -297,7 +298,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     }
     const waits = (family: AgentRow[]) => family.some((row) => rowStatus(row) === "blocked");
     return [...families.filter(waits), ...families.filter((family) => !waits(family))].flat();
-  }, [compact, groups, named, parts, rowStatus]);
+  }, [settings.agentOrder, groups, named, parts, rowStatus]);
   // read from every row, the filtered-out ones too, so a wait that ended out of sight starts again when it returns
   const waiting = new Set<string>();
   for (const row of allRows) if (rowStatus(row) === "blocked") waiting.add(sidebarPinKey(row.machine.id, row.entry.pane.pane_id));
@@ -397,7 +398,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
       const place = tabs.findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
       const lead = compactWorktreeName(pane.label?.trim() || (tab ? customTabLabel(tab, place) : null) || title);
-      const leadParts = agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: compactWorktreeName(workspace.label) }).filter((part) => part !== lead);
+      // a named tab that leads keeps the agent's own title after it, so two agents of one tab never read the same
+      const own = title !== lead && title !== workspace.label ? title : null;
+      const leadParts = [...new Set([own, ...agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: compactWorktreeName(workspace.label) })])].filter((part): part is string => part !== null && part !== lead);
       return { online, title: lead, name, mark, context: leadParts.join(" · "), markKind: kind && kind !== lead && !leadParts.includes(kind) ? kind : null, tokens };
     }
     return { online, title, name, mark, context, markKind, tokens };
