@@ -4,9 +4,10 @@
  * the hosts named in its own account's ssh config, and the other PCs of its own Tailscale login (reached by
  * their MagicDNS name, over SSH like any other address, never through the relay).
  */
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import { readTailscaleStatus, tailnetPeers } from "./tailnet-pcs.ts";
 
@@ -14,8 +15,10 @@ import { readTailscaleStatus, tailnetPeers } from "./tailnet-pcs.ts";
 const MAX_FILE_BYTES = 256 * 1024;
 /** Include may nest; ssh itself stops at 16 */
 const MAX_INCLUDE_DEPTH = 4;
-/** files one Include pattern reads at most */
+/** files every Include of one config together reads at most */
 const MAX_INCLUDED_FILES = 64;
+/** bytes every Include of one config together reads at most */
+const MAX_INCLUDED_BYTES = 1024 * 1024;
 /** hosts listed at most, so a generated config costs a bounded list */
 const MAX_HOSTS = 200;
 
@@ -32,6 +35,8 @@ export interface SshCandidate {
 export interface SshCandidatesOptions {
   /** the folder holding `config`; `~/.ssh` of the server's own account by default */
   sshDir?: string;
+  /** the folder `~` stands for, and with `sshDir` the only one an Include may read in; the server account's own by default */
+  home?: string;
   /** `tailscale status --json`; null when Tailscale is not here */
   readStatus?: () => Promise<string | null>;
 }
@@ -65,7 +70,8 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
     if (parsed === null) continue;
     if (parsed.key === "host") {
       inMatch = false;
-      current = { aliases: parsed.values.every(plainAlias) ? parsed.values : [] };
+      // `Host valid server-*` still names `valid`; `Host a !a` names nothing
+      current = { aliases: parsed.values.filter((value) => plainAlias(value) && !parsed.values.includes(`!${value}`)) };
       blocks.push(current);
     } else if (parsed.key === "match") {
       inMatch = true;
@@ -94,27 +100,60 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
   return hosts.slice(0, MAX_HOSTS);
 }
 
-async function readCapped(path: string): Promise<string | null> {
+/**
+ * A regular file's text when it is at most `cap` bytes; null for anything else (a FIFO, a device, a folder, a larger
+ * file, an error). Opened without blocking and checked on the open handle, so a FIFO never holds the list and
+ * `/dev/zero` is never read.
+ */
+async function readCapped(path: string, cap: number): Promise<string | null> {
+  let handle: FileHandle | undefined;
   try {
-    const bytes = await readFile(path);
-    return bytes.subarray(0, MAX_FILE_BYTES).toString("utf8");
-  } catch { return null; }
+    handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > cap) return null;
+    const buffer = Buffer.alloc(stat.size);
+    const { bytesRead } = await handle.read(buffer, 0, stat.size, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch { return null; } finally { await handle?.close(); }
 }
 
-/** the files an Include pattern names: relative to `sshDir` as ssh reads the user config, `~` for the home folder */
-function includer(sshDir: string): (pattern: string) => Promise<string[]> {
+const inside = (path: string, root: string): boolean => {
+  const rest = relative(root, path);
+  return rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
+};
+
+/**
+ * The files an Include pattern names: relative to `sshDir` as ssh reads the user config, `~` for the home folder.
+ * Only files that really are inside the home or ssh folder are read (after links and `..`), since their hosts reach
+ * the response; and every Include of one config shares one budget of files and bytes.
+ */
+function includer(sshDir: string, home: string): (pattern: string) => Promise<string[]> {
+  const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
+  const budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES };
   return async (pattern) => {
-    const expanded = pattern.startsWith("~/") ? join(homedir(), pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern);
+    const allowed = (await roots).filter((root): root is string => root !== null);
+    // ssh's glob(3) has no `**`: it is one `*`, which also keeps a scan to the pattern's own depth
+    const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
     const paths: string[] = [];
     if (/[*?[]/.test(expanded)) {
       for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true })) {
         paths.push(path);
-        if (paths.length >= MAX_INCLUDED_FILES) break;
+        if (paths.length >= budget.files) break;
       }
       paths.sort();
     } else paths.push(expanded);
-    const texts = await Promise.all(paths.map(readCapped));
-    return texts.filter((text): text is string => text !== null);
+    const texts: string[] = [];
+    for (const path of paths) {
+      if (budget.files <= 0 || budget.bytes <= 0) break;
+      const real = await realpath(path).catch(() => null);
+      if (real === null || !allowed.some((root) => inside(real, root))) continue;
+      budget.files--;
+      const text = await readCapped(real, Math.min(MAX_FILE_BYTES, budget.bytes));
+      if (text === null) continue;
+      budget.bytes -= Buffer.byteLength(text);
+      texts.push(text);
+    }
+    return texts;
   };
 }
 
@@ -124,8 +163,8 @@ function includer(sshDir: string): (pattern: string) => Promise<string[]> {
  */
 export async function sshCandidates(options: SshCandidatesOptions = {}): Promise<SshCandidate[]> {
   const sshDir = options.sshDir ?? join(homedir(), ".ssh");
-  const [config, status] = await Promise.all([readCapped(join(sshDir, "config")), (options.readStatus ?? readTailscaleStatus)()]);
-  const hosts = config === null ? [] : await sshConfigHosts(config, includer(sshDir));
+  const [config, status] = await Promise.all([readCapped(join(sshDir, "config"), MAX_FILE_BYTES), (options.readStatus ?? readTailscaleStatus)()]);
+  const hosts = config === null ? [] : await sshConfigHosts(config, includer(sshDir, options.home ?? homedir()));
   const fromConfig: SshCandidate[] = hosts.map(({ alias, hostname, user }) => ({
     name: alias,
     destination: alias,
@@ -136,5 +175,5 @@ export async function sshCandidates(options: SshCandidatesOptions = {}): Promise
   const fromTailnet: SshCandidate[] = tailnetPeers(status)
     .filter(({ name, dnsName }) => !named.has(name.toLowerCase()) && !named.has(dnsName.toLowerCase()))
     .map(({ name, dnsName }) => ({ name, destination: dnsName, detail: dnsName, source: "tailscale" }));
-  return [...fromConfig, ...fromTailnet];
+  return [...fromConfig, ...fromTailnet].slice(0, MAX_HOSTS);
 }
