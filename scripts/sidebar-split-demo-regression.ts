@@ -2,19 +2,22 @@
  * The PCs/Agents height divider on the real demo, never a live herdr session: default, drag,
  * persistence, reset, keyboard, snap-fold (Agents only: the PCs have no head to fold to), scrolling, a short
  * window and both section orders.
- * UI_EVIDENCE_DIR saves synthetic screenshots at 390 and 1280 in light and dark.
+ * UI_EVIDENCE_DIR saves synthetic screenshots at 390 and 1280 in light and dark. OVIS_TEST_BROWSER=webkit
+ * selects Playwright WebKit; it is not an iOS simulator.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import { chromium, webkit, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 const app = mkdtempSync(join(tmpdir(), "ovis-sidebar-split-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
+const useWebKit = process.env["OVIS_TEST_BROWSER"] === "webkit";
+const browserLabel = useWebKit ? `${process.platform === "linux" ? "Linux " : ""}WebKit (not iOS)` : "Chromium";
 const metrics = (page: Page) => page.evaluate(() => {
   const box = (selector: string) => {
     const r = document.querySelector(selector)!.getBoundingClientRect();
@@ -22,12 +25,40 @@ const metrics = (page: Page) => page.evaluate(() => {
   };
   const pcs = box(".pcs-sidebar"), agents = box(".agents-sidebar");
   const grouped = document.querySelector(".sidebar-shell")!.classList.contains("is-agents-first");
+  const list = document.querySelector<HTMLElement>(".machine-list")!;
   return { pcs, agents, top: grouped ? agents : pcs, bottom: grouped ? pcs : agents,
     shell: box(".sidebar-shell"), footer: box(".sidebar-footer"), line: box(".sidebar-split"),
+    machineList: {
+      scrollHeight: list.scrollHeight, clientHeight: list.clientHeight, scrollTop: list.scrollTop,
+      devicePixelRatio: window.devicePixelRatio,
+    },
     // the PCs have no head: their side of the line stops at a row, and never folds
     topHead: grouped ? box(".agent-section-toggle").height + 8 : 0,
     bottomHead: grouped ? 0 : box(".agent-section-toggle").height + 8,
     agentsFolded: document.querySelector(".agent-section-toggle")!.getAttribute("aria-expanded") === "false",
+  };
+});
+const pcListLayout = (page: Page) => page.evaluate(() => {
+  const shell = document.querySelector<HTMLElement>(".sidebar-shell")!;
+  const pcs = document.querySelector<HTMLElement>(".pcs-sidebar")!;
+  const list = document.querySelector<HTMLElement>(".machine-list")!;
+  const grouped = shell.classList.contains("is-agents-first");
+  const end = document.querySelector<HTMLElement>(grouped ? ".sidebar-footer" : ".sidebar-split")!.getBoundingClientRect().top;
+  const section = pcs.getBoundingClientRect();
+  const style = getComputedStyle(pcs);
+  const room = Math.max(0, end - section.top - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom));
+  list.scrollTop = 0;
+  const viewport = list.getBoundingClientRect();
+  const rows = [...list.querySelectorAll<HTMLElement>(".workspace-group")];
+  const first = rows[0]?.getBoundingClientRect();
+  const last = rows.at(-1)?.getBoundingClientRect();
+  return {
+    scrollHeight: list.scrollHeight,
+    clientHeight: list.clientHeight,
+    expectedHeight: Math.min(list.scrollHeight, room),
+    firstVisible: first !== undefined && first.top >= viewport.top - 1 && first.bottom <= viewport.bottom + 1,
+    lastVisible: last !== undefined && last.top >= viewport.top - 1 && last.bottom <= viewport.bottom + 1,
+    rows: rows.length,
   };
 });
 
@@ -45,13 +76,15 @@ try {
     return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
   } });
   try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+    const browser = useWebKit
+      ? await webkit.launch({ headless: true })
+      : await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       for (const width of [1280, 390]) for (const mode of ["light", "dark"] as const) for (const grouped of [false, true]) {
         const phone = width === 390;
         const label = `${width}/${mode}/${grouped ? "agents-first" : "pcs-first"}`;
         const key = grouped ? "ovis:sidebar-split-agents-first" : "ovis:sidebar-split";
-        const context = await browser.newContext({ viewport: { width, height: 844 }, colorScheme: mode, hasTouch: phone, isMobile: phone, deviceScaleFactor: 1, locale: "en-US" });
+        const context = await browser.newContext({ viewport: { width, height: 844 }, colorScheme: mode, hasTouch: phone, isMobile: phone, deviceScaleFactor: phone ? 3 : 1, locale: "en-US" });
         try {
           await context.addInitScript(({ mode, grouped }) => {
             if (localStorage.getItem("split-fixture-initialized") !== "1") {
@@ -77,6 +110,12 @@ try {
           await open();
           const line = page.getByRole("separator", { name: "Resize PCs and Agents", exact: true });
           const original = await metrics(page);
+          const defaultPcs = await pcListLayout(page);
+          assert.ok(Math.abs(defaultPcs.clientHeight - defaultPcs.expectedHeight) <= 1, `${label} default PCs use their content height or available room`);
+          assert.ok(defaultPcs.firstVisible, `${label} the first PC row is visible in the default layout`);
+          // CI runs Chromium, which shows the rows with either layout; WebKit needs the grid, so pin it.
+          assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".pcs-sidebar")!).display), "grid", `${label} the PCs section stays a grid, or WebKit caps its list at one row`);
+          assert.equal(original.machineList.devicePixelRatio, phone ? 3 : 1, `${label} the phone uses DPR 3 and desktop DPR 1`);
           assert.equal(await page.evaluate((key) => localStorage.getItem(key), key), null, `${label} opening the sidebar does not save a split`);
           assert.ok(original.agents.height <= original.shell.height / 2 + 1, `${label} the default starts at no more than today's half-shell allocation`);
           const controls = await line.getAttribute("aria-controls");
@@ -95,7 +134,7 @@ try {
           const drag = async (to: number, beforeRelease?: () => Promise<void>) => {
             const box = (await line.boundingBox())!;
             const x = box.x + box.width / 2, y = box.y + box.height / 2;
-            if (phone) {
+            if (phone && !useWebKit) {
               const cdp = await context.newCDPSession(page);
               try {
                 await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
@@ -194,6 +233,52 @@ try {
           else assert.equal(await page.locator(".pcs-sidebar.is-collapsed, .agents-sidebar.is-collapsed").count(), 0, `${label} a drag to the PCs' foot folds nothing`);
           await line.focus(); await page.keyboard.press("Enter");
           await page.waitForFunction(() => !document.querySelector(".pcs-sidebar.is-collapsed, .agents-sidebar.is-collapsed"));
+          // Collapse Agents while the PC list has content beyond its current viewport. The PCs should
+          // reclaim the space through their intrinsic content height, keeping every fixture row visible.
+          await page.evaluate(() => {
+            const list = document.querySelector<HTMLElement>(".machine-list")!;
+            list.scrollTop = Math.min(64, list.scrollHeight - list.clientHeight);
+          });
+          const beforeAgentsFold = await metrics(page);
+          console.log(`BEFORE FOLD ${browserLabel} ${label}: PC list ${beforeAgentsFold.machineList.clientHeight}/${beforeAgentsFold.machineList.scrollHeight}px`);
+          await shot("before-agents-collapse");
+          await drag(grouped
+            ? beforeAgentsFold.top.top + beforeAgentsFold.topHead / 2
+            : beforeAgentsFold.footer.top - beforeAgentsFold.bottomHead / 2);
+          await page.waitForFunction(() => document.querySelector(".agents-sidebar")!.classList.contains("is-collapsed"));
+          await page.waitForFunction(() => getComputedStyle(document.querySelector(".agents-sidebar")!).opacity === "1");
+          const folded = await pcListLayout(page);
+          assert.ok(Math.abs(folded.clientHeight - folded.expectedHeight) <= 1, `${label} folding Agents gives the PC list its available content height (${folded.clientHeight}/${folded.expectedHeight}px)`);
+          assert.equal(folded.scrollHeight, phone ? 320 : 270, `${label} the fixture has its expected content height`);
+          assert.ok(folded.rows > 1, `${label} the fixture has multiple PC rows`);
+          assert.ok(Math.abs(folded.clientHeight - folded.scrollHeight) <= 1, `${label} the collapsed PC list shows all fixture rows`);
+          assert.ok(folded.firstVisible && folded.lastVisible, `${label} the first and last PC rows are visible after folding Agents`);
+          await footerVisible();
+          await shot("agents-collapsed");
+          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:agents-collapsed")), "1", `${label} dragging to the heading keeps Agents folded on this device`);
+          await page.reload(); await open();
+          await page.waitForFunction(() => document.querySelector(".agents-sidebar")!.classList.contains("is-collapsed"));
+          const foldedReload = await pcListLayout(page);
+          assert.ok(Math.abs(foldedReload.clientHeight - foldedReload.expectedHeight) <= 1, `${label} reload keeps the PC list at its available content height`);
+          assert.ok(Math.abs(foldedReload.clientHeight - foldedReload.scrollHeight) <= 1, `${label} reload keeps all fixture rows visible`);
+          assert.ok(foldedReload.firstVisible && foldedReload.lastVisible, `${label} reload shows the first and last PC rows`);
+          await footerVisible();
+          await shot("agents-collapsed-reload");
+          await page.locator(".agent-section-toggle").click();
+          await page.waitForFunction(() => document.querySelector(".agent-section-toggle")!.getAttribute("aria-expanded") === "true");
+          const reopened = await pcListLayout(page);
+          assert.ok(Math.abs(reopened.clientHeight - reopened.expectedHeight) <= 1, `${label} reopening Agents keeps the PC list matched to its available room`);
+          await footerVisible();
+          await shot("agents-reopened");
+          await page.setViewportSize({ width, height: 620 });
+          await footerVisible();
+          const short = await pcListLayout(page);
+          assert.ok(Math.abs(short.clientHeight - short.expectedHeight) <= 1, `${label} at 620px the PC list uses its available room (${short.clientHeight}/${short.expectedHeight}px)`);
+          assert.ok(short.firstVisible, `${label} at 620px the first PC row remains visible`);
+          await shot("agents-reopened-620");
+          await page.setViewportSize({ width, height: 844 });
+          await footerVisible();
+          console.log(`PASS ${browserLabel} ${label}: collapse, saved fold, reload, reopen and 620px viewport`);
           // A caret can override the divider's last fold request. Reordering must not replay that old request.
           await line.focus(); await page.keyboard.press(grouped ? "Home" : "End");
           await page.waitForFunction(() => document.querySelector(".agents-sidebar")!.classList.contains("is-collapsed"));

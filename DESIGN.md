@@ -1323,7 +1323,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`lib/useEdgeFades.ts` marks the edges, a `mask-image` fades them), so a list at its top fades its
   foot alone, one scrolled to its end its head alone, and one that holds all its rows neither; the
   mask fades whatever lies under it (a selected row, the pinned card) to the panel. Forced colors
-  draw no fade.
+  draw no fade. The PCs' inner list uses a zero-minimum grid row: WebKit collapsed the nested flex
+  column under the outer `max-height: max-content` cap when Agents folded. The outer flex allocation
+  and saved split stay unchanged, preserving the divider's VS Code-style fold and restore interaction.
   In the drawer (`max-width: 768px`) Agents starts folded. Its fold stays on this device
   (`ovis:agents-collapsed`) and wins over that default on the next launch; a filter's fold does
   not persist. Until the PCs are in and each connected PC's panes have come, an empty list says

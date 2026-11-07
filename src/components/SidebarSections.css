@@ -2,14 +2,13 @@
    starts right under the logo, Agents a head that stays put and a list that scrolls under it. */
 
 .pcs-sidebar {
-  display: flex;
-  flex-direction: column;
+  /* A grid preserves the list's intrinsic height under the outer max-content cap in WebKit.
+     Its zero minimum still lets the list scroll inside a smaller saved allocation. */
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   padding-top: var(--space-2);
 }
-
-/* The rows keep their own scroll viewport. */
-.pcs-sidebar > .machine-list { flex: 1 1 auto; }
 
 /* A list fades at an edge only while rows lie past it (lib/useEdgeFades.ts): at its top it fades its foot
    alone, scrolled to its end its head alone, and a list that holds all its rows fades neither. A mask,
