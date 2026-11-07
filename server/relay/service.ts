@@ -215,7 +215,7 @@ export class RelayService {
     writePrivateState(this.relayAccountPath(), { account });
     // the same account named again asks only when the last answer was that it does not list this PC, which the
     // add-me screen's relisting can change; a refusal for the account's limit keeps its scheduled retry
-    const unlisted = this.passKeeper?.current() === null && this.passKeeper.state === "not_listed";
+    const unlisted = this.passKeeper?.current() === null && this.passKeeper.refusal === "not_listed";
     if (before !== this.passAccount() || unlisted) void this.passKeeper?.refresh();
     return true;
   }
