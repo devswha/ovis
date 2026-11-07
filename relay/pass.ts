@@ -24,7 +24,7 @@ export interface PassPolicy {
 
 /** What the relay made of a PC socket's pass; `exp` (ms) only when it holds. */
 export type PassState = "ok" | "missing" | "invalid" | "expired";
-export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number }
+export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number; readonly kid?: string }
 
 export interface PassSettings {
   readonly RELAY_PASS_MODE?: string;
@@ -64,7 +64,7 @@ export async function passPolicy(settings: PassSettings): Promise<PassPolicy> {
 export async function checkPass(policy: PassPolicy, pass: string | null | undefined, serverId: string, now: number): Promise<PassResult> {
   if (policy.revoked.has(serverId)) return pass ? { state: "invalid", reason: "relay pass invalid" } : { state: "missing", reason: RELAY_PASS_REQUIRED };
   const check = await checkRelayPass(pass, policy.keys, serverId, Math.floor(now / 1000));
-  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000 };
+  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000, kid: check.payload.kid };
   return { state: check.reason === RELAY_PASS_REQUIRED ? "missing" : check.reason === "relay pass expired" ? "expired" : "invalid", reason: check.reason };
 }
 

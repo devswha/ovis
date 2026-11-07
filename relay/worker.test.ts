@@ -844,10 +844,9 @@ describe("relay pass", () => {
   const passFor = (sid = SERVER, at = T0) => signRelayPass(signer, KID, sid, Math.floor(at / 1000));
 
   /** A Worker whose Durable Object for SERVER is one RelayRoom over fake sockets, behind `handle`. */
-  async function world(mode: "grace" | "enforce", enforceAt?: string) {
+  async function world(mode: "grace" | "enforce", enforceAt?: string, fake = fakeState(), extra: Record<string, string> = {}) {
     setSystemTime(new Date(T0));
-    const fake = fakeState();
-    const settings = { RELAY_PASS_MODE: mode, RELAY_PASS_KEYS: keys, ...(enforceAt ? { RELAY_PASS_ENFORCE_AT: enforceAt } : {}) };
+    const settings = { RELAY_PASS_MODE: mode, RELAY_PASS_KEYS: keys, ...(enforceAt ? { RELAY_PASS_ENFORCE_AT: enforceAt } : {}), ...extra };
     const box = { room: new RelayRoom(fake.state, settings) };
     await fake.state.ready;
     const allow = { limit: async () => ({ success: true }) };
@@ -893,7 +892,7 @@ describe("relay pass", () => {
     await w.evict();
     const client = await w.open("role=client");
     expect(client.json(0)).not.toHaveProperty("relay_pass");
-    expect(w.fake.stored.get("pass_until")).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
+    expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
   });
 
   test("a pass whose proof fails authorizes nothing", async () => {
@@ -931,10 +930,13 @@ describe("relay pass", () => {
     setSystemTime(new Date(renewedAt));
     // a renewal for another PC, and one that would move the expiry back, change nothing
     await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passFor("f".repeat(32), renewedAt) }));
+    setSystemTime(new Date(renewedAt + 60_000));
     await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passFor(SERVER, T0 - 3_600_000) }));
-    expect(w.fake.stored.get("pass_until")).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
-    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passFor(SERVER, renewedAt) }));
-    expect(w.fake.stored.get("pass_until")).toBe(renewedAt + RELAY_PASS_LIFETIME_S * 1000);
+    setSystemTime(new Date(renewedAt + 120_000));
+    expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
+    // fields in any order
+    await w.box.room.webSocketMessage(control, JSON.stringify({ pass: await passFor(SERVER, renewedAt), type: "relay_pass" }));
+    expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(renewedAt + RELAY_PASS_LIFETIME_S * 1000);
     expect(control.sent).toHaveLength(1);
     setSystemTime(new Date(firstEnd + 1000));
     w.fake.keepalive.set(control, new Date(firstEnd + 1000));
@@ -946,4 +948,51 @@ describe("relay pass", () => {
     await w.box.room.alarm();
     expect(control.closedWith).toEqual({ code: 4402, reason: "relay pass expired" });
   });
+
+  test("a saved authorization does not outlive the PC's revocation or its key's removal", async () => {
+    const fake = fakeState();
+    const first = await world("enforce", undefined, fake);
+    await first.control(await passFor());
+    for (const extra of [{ RELAY_PASS_REVOKED: SERVER }, { RELAY_PASS_KEYS: `deadbeef:${keys.split(":")[1]}` }] as Record<string, string>[]) {
+      // a deploy with the new settings: the room comes back with what it saved, the PC reconnects in grace without a pass
+      const w = await world("grace", "2026-12-01T00:00:01.000Z", fake, extra);
+      const control = await w.control();
+      expect(control.json(0)).toMatchObject({ relay_pass: { state: "missing" } });
+      setSystemTime(new Date("2026-12-01T00:00:02Z"));
+      await w.box.room.alarm();
+      expect(control.closedWith?.code).toBe(4402);
+    }
+  });
+
+  test("grace wakes the room when enforcement begins", async () => {
+    const w = await world("grace", "2026-12-01T00:00:01.000Z");
+    await w.control();
+    expect(w.fake.state.alarm).toBe(Date.parse("2026-12-01T00:00:01.000Z"));
+  });
+
+  test("a pass that runs out while its socket proves does not let it in", async () => {
+    const w = await world("enforce");
+    const pass = await passFor(SERVER, T0 - (RELAY_PASS_LIFETIME_S + RELAY_PASS_SKEW_S) * 1000 + 1000);
+    const socket = await w.open(`role=server&${proof()}`, pass);
+    expect(socket.closedWith).toBeNull();
+    setSystemTime(new Date(T0 + 1500));
+    w.prove(socket);
+    expect(socket.closedWith).toEqual({ code: 4402, reason: "relay pass expired" });
+  });
+
+  test("a control socket has at most one renewal checked a minute", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passFor());
+    const later = T0 + 3_600_000;
+    setSystemTime(new Date(later));
+    const forged = await passFor("f".repeat(32), later);
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: forged }));
+    // within the minute even a good renewal waits
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passFor(SERVER, later) }));
+    expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
+    setSystemTime(new Date(later + 60_000));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passFor(SERVER, later) }));
+    expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(later + RELAY_PASS_LIFETIME_S * 1000);
+  });
 });
+

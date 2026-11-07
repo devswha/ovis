@@ -12,7 +12,7 @@
  */
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, passRefusal, type Frame, type RateLimiter, type RoomHost, type SocketInfo, type UsageReport } from "./core.ts";
+import { CLOSE, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, Room, admit, parseSocketRequest, passRefusal, type Frame, type RateLimiter, type RoomAuthorization, type RoomHost, type SocketInfo, type UsageReport } from "./core.ts";
 import { passPolicy, type PassPolicy, type PassResult, type PassSettings } from "./pass.ts";
 import { PairRoom, isPairInfo, parsePairRequest, type PairInfo } from "./pair-room.ts";
 
@@ -72,7 +72,8 @@ function isPassResult(value: unknown): value is PassResult {
   const result = value as Record<string, unknown>;
   return ["ok", "missing", "invalid", "expired"].includes(result["state"] as string)
     && (result["reason"] === undefined || typeof result["reason"] === "string")
-    && (result["exp"] === undefined || typeof result["exp"] === "number");
+    && (result["exp"] === undefined || typeof result["exp"] === "number")
+    && (result["kid"] === undefined || typeof result["kid"] === "string");
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -114,6 +115,7 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["generation"] === undefined || typeof info["generation"] === "string")
     && (info["usage"] === undefined || isUsage(info["usage"]))
     && (info["pass_exp"] === undefined || typeof info["pass_exp"] === "number")
+    && (info["pass_kid"] === undefined || typeof info["pass_kid"] === "string")
     && (info["pass_state"] === undefined || ["ok", "missing", "invalid", "expired"].includes(info["pass_state"] as string))
     && (info["ended"] === undefined || info["ended"] === true);
 }
@@ -126,12 +128,14 @@ export class RelayRoom {
   private alarmWrites: Promise<void> = Promise.resolve();
   /** the pass policy and this room's authorization, read before the first event reaches the object */
   private policy: PassPolicy | undefined;
-  private passUntil: number | null = null;
+  private passUntil: RoomAuthorization | null = null;
 
   constructor(private readonly state: RelayState, env?: Pick<Env, "USAGE"> & PassSettings) {
     void state.blockConcurrencyWhile(async () => {
       this.policy = env ? await policyOf(env) : undefined;
-      this.passUntil = (await state.storage.get<number>(PASS_UNTIL)) ?? null;
+      const saved = await state.storage.get<unknown>(PASS_UNTIL);
+      const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
+      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid } : null;
     });
     const room = this;
     state.setWebSocketAutoResponse(new (runtime().WebSocketRequestResponsePair)(KEEPALIVE_PING, KEEPALIVE_PONG));
@@ -174,9 +178,9 @@ export class RelayRoom {
         return {
           policy,
           until: () => room.passUntil,
-          setUntil: (until: number) => {
-            room.passUntil = until;
-            void state.storage.put(PASS_UNTIL, until);
+          setUntil: (value: RoomAuthorization) => {
+            room.passUntil = value;
+            void state.storage.put(PASS_UNTIL, value);
           },
         };
       },

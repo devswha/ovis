@@ -4,7 +4,7 @@
  * README.md). It keeps everything in memory and stores nothing.
  */
 import type { ServerWebSocket } from "bun";
-import { MAX_MESSAGE_BYTES, Room, admit, type Limiters, type SocketInfo, type SocketRequest } from "./core.ts";
+import { MAX_MESSAGE_BYTES, Room, admit, type Limiters, type RoomAuthorization, type SocketInfo, type SocketRequest } from "./core.ts";
 import { PairRoom, PAIR_GUEST_GAP_MS, type PairInfo, type PairSocketRequest } from "./pair-room.ts";
 import { memoryLimiters, relayLimits, relayLimitsFromArgs, relayPassFromArgs, type BunRelayLimits } from "./bun-limits.ts";
 import { passPolicy, type PassPolicy } from "./pass.ts";
@@ -59,11 +59,11 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
         now: () => Date.now(),
       };
       // a room's pass authorization lives as long as the room, which a reconnecting PC opens again with its pass
-      let until: number | null = null;
+      let until: RoomAuthorization | null = null;
       const room = "kind" in request
         ? new PairRoom<Socket>({ ...common, info: (socket) => socket.data.info as PairInfo | null, setInfo: (socket, info) => { socket.data.info = info; } }, options.pairGuestGapMs ?? PAIR_GUEST_GAP_MS)
         : new Room<Socket>({ ...common, info: (socket) => socket.data.info as SocketInfo | null, setInfo: (socket, info) => { socket.data.info = info; },
-          ...(pass ? { pass: { policy: pass, until: () => until, setUntil: (value: number) => { until = value; } } } : {}) });
+          ...(pass ? { pass: { policy: pass, until: () => until, setUntil: (value: RoomAuthorization) => { until = value; } } } : {}) });
       entry = { room, sockets, pending: 0 };
       rooms.set(key, entry);
     }
