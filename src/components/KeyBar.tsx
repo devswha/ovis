@@ -67,6 +67,38 @@ function keepFocus(event: PointerEvent<HTMLButtonElement> | MouseEvent<HTMLButto
   event.preventDefault();
 }
 
+/**
+ * Android's Back puts the soft keyboard away but leaves the field focused, and Chrome raises the
+ * keyboard again on any tap while a text field has the focus, a key's tap too (#3274). For a key's
+ * touch, the focused field asks for no keyboard (inputmode=none), which also leaves a keyboard that
+ * is up where it is; it gets its own inputmode back once the tap's click is handled, at the next
+ * press anywhere, or when it loses the focus.
+ */
+let keyboardHold: (() => void) | null = null;
+function releaseKeyboardHold(): void {
+  const release = keyboardHold;
+  keyboardHold = null;
+  release?.();
+}
+function holdKeyboardForTap(): void {
+  releaseKeyboardHold();
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !(field.matches("textarea, input") || field.isContentEditable)) return;
+  const previous = field.getAttribute("inputmode");
+  if (previous === "none") return;
+  field.setAttribute("inputmode", "none");
+  keyboardHold = (): void => {
+    document.removeEventListener("pointerdown", releaseKeyboardHold, true);
+    field.removeEventListener("blur", releaseKeyboardHold);
+    if (field.getAttribute("inputmode") !== "none") return;
+    if (previous === null) field.removeAttribute("inputmode");
+    else field.setAttribute("inputmode", previous);
+  };
+  // added while this press is dispatched, past the document's capture phase: the next press ends it
+  document.addEventListener("pointerdown", releaseKeyboardHold, true);
+  field.addEventListener("blur", releaseKeyboardHold);
+}
+
 interface KeyProps {
   disabled?: boolean;
   /**
@@ -152,6 +184,7 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
       tabIndex={command ? 0 : -1}
       onPointerDown={(event) => {
         keepFocus(event);
+        if (event.pointerType === "touch" && !command) holdKeyboardForTap();
         if (!repeatable || disabled || event.button !== 0 || !event.isPrimary || pointerRef.current.id !== null) return;
         const pointer = pointerRef.current;
         pointer.id = event.pointerId;
@@ -176,6 +209,8 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
       onMouseDown={keepFocus}
       onContextMenu={keepFocus}
       onClick={() => {
+        // Chrome raises the keyboard right after the tap's click: the field asks for none until then
+        if (keyboardHold !== null) window.setTimeout(releaseKeyboardHold, 0);
         if (refused) return;
         if (!repeatable) {
           onPress(false);
