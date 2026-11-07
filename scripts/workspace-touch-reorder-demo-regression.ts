@@ -26,6 +26,15 @@ const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd", p
 
 /** A finger moves after the row lifts, or immediately for a quick scroll stroke. */
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
+  // the demo's timeline raises a finish droplet over the top of a phone's screen at its own moment, where the first
+  // row sits: a person dismisses it before pressing the row under it
+  if (holdMs > 0) {
+    const dismiss = page.locator(".droplet-close");
+    if (await dismiss.isVisible()) {
+      await dismiss.tap();
+      await page.locator(".droplet").waitFor({ state: "detached" });
+    }
+  }
   await touch(cdp, "touchStart", from);
   if (holdMs > 0) await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 });
   const steps = 12;
@@ -697,12 +706,7 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      // the demo's timeline raises a finish droplet over the top of the screen at its own moment, where the first
-      // pinned row now sits (the PCs list has no head above it); the checks are of the rows, not the droplet
-      await context.addInitScript(() => {
-        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
-        document.addEventListener("DOMContentLoaded", () => { const style = document.createElement("style"); style.textContent = ".droplet { display: none !important; }"; document.head.append(style); });
-      });
+      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
