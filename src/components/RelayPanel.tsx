@@ -25,12 +25,15 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
   const pass = status.pass;
   // Ovis's relay asks for an account (docs/relay.md, "Relay pass"): refused, or soon
   // only once the relay actually refused this PC for its pass: any other relay error keeps its own text
-  if (pass?.refused && status.phase === "error") return pass.state === "limit"
+  if (pass?.refused && status.phase === "error" && pass.state !== "ok") return pass.state === "not_listed"
+    ? t("Add this PC to your Ovis account to use the Ovis relay, or connect over the same Wi-Fi or Tailscale.")
+    : pass.state === "limit"
     ? t("This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.")
     : pass.state === "unavailable"
       ? t("Cannot reach the Ovis account service for a relay pass. Retrying.")
       : t("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");
-  if (pass && status.phase === "online" && pass.relay !== null && pass.relay !== "ok" && pass.enforce_at !== null) {
+  // a pass renewed on the open control socket is not answered: once this PC holds one, the notice is stale
+  if (pass && status.phase === "online" && pass.state !== "ok" && pass.relay !== null && pass.relay !== "ok" && pass.enforce_at !== null) {
     return t("Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.", { date: new Date(pass.enforce_at).toLocaleDateString() });
   }
   switch (status.phase) {

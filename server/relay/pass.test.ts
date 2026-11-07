@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signRelayPass } from "../../shared/relay-pass.ts";
 import { loadRelayIdentity } from "./identity.ts";
-import { RelayPassKeeper } from "./pass.ts";
-import { TestClock } from "./test-helpers.ts";
+import { RelayPassKeeper, retryAfterMs } from "./pass.ts";
+import { bounded, deferred, TestClock } from "./test-helpers.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -66,6 +66,60 @@ test("a fresh pass the relay refuses too is kept, and the keeper backs off inste
   await k.made.rejected();
   expect(asked).toBe(2);
   expect(k.made.current()).toBe(replacement);
+  k.made.stop();
+});
+
+test("Retry-After in seconds or as an HTTP date, never past six hours", () => {
+  const now = Date.parse("2026-12-01T00:00:00Z");
+  expect(retryAfterMs("120", now)).toBe(120_000);
+  expect(retryAfterMs("Tue, 01 Dec 2026 00:10:00 GMT", now)).toBe(600_000);
+  expect(retryAfterMs("99999999", now)).toBe(6 * 3600_000);
+  for (const bad of [null, "", "-5", "soon", "Mon, 30 Nov 2026 00:00:00 GMT"]) expect(retryAfterMs(bad, now)).toBe(0);
+});
+
+test("a renewal time the relay would not honor is not taken", async () => {
+  for (const [expires, refresh] of [[172_800, -1], [172_800, 0], [172_800, 172_800], [172_800 * 2, 43_200], [Number.POSITIVE_INFINITY, 43_200]]) {
+    const k = await keeper(async () => new Response(JSON.stringify({ pass: await k.signed(), expires_in: expires, refresh_in: refresh }).replace("null", "1e999"), { headers: { "content-type": "application/json" } }));
+    k.made.start();
+    await k.made.refresh();
+    expect([expires, refresh, k.made.current()]).toEqual([expires, refresh, null]);
+    k.made.stop();
+  }
+});
+
+test("a pass that ran out with no new one is no longer reported ok", async () => {
+  let answer: () => Promise<Response> = async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 });
+  const k = await keeper(() => answer());
+  k.made.start();
+  await k.made.refresh();
+  expect(k.made.state).toBe("ok");
+  answer = async () => new Response("down", { status: 503 });
+  k.clock.advance(172_800_000);
+  expect(k.made.current()).toBeNull();
+  expect(k.made.state).toBe("unavailable");
+  k.made.stop();
+});
+
+test("a refresh asked for while a request is out is asked again once it ends", async () => {
+  let asked = 0;
+  const entered = deferred<void>();
+  const gate = deferred<void>();
+  const again = deferred<void>();
+  const k = await keeper(async () => {
+    asked++;
+    if (asked === 1) { entered.resolve(); await gate.promise; }
+    if (asked === 2) again.resolve();
+    return Response.json({ error: { code: "not_listed" } }, { status: 403 });
+  });
+  k.made.start();
+  const first = k.made.refresh();
+  await entered.promise;
+  // the owner names an account while the old request is out
+  void k.made.refresh();
+  gate.resolve();
+  await first;
+  await bounded(again.promise, 2000);
+  expect(asked).toBe(2);
   k.made.stop();
 });
 

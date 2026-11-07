@@ -34,7 +34,8 @@ export interface RelayLinkOptions {
   /** This PC's relay pass for this relay, or null: sent with every PC socket (shared/relay-pass.ts). */
   readonly pass?: () => string | null;
   /** What the relay said of the pass in `sync` (relay/README.md, "Relay pass"). */
-  readonly onPassNotice?: (notice: RelayPassNotice) => void;
+  /** Every `sync`: what the relay said of the pass, or null when it said nothing (it asks for none). */
+  readonly onPassNotice?: (notice: RelayPassNotice | null) => void;
   /** The relay refused this PC's pass (4402): a new one is asked for. */
   readonly onPassRefused?: () => void;
   readonly clock?: MuxClock;
@@ -107,6 +108,8 @@ export class RelayLink {
   private proven: WebSocket | undefined;
   /** The relay refused this PC for its pass (4402): no retry until a pass comes. */
   private passRefused = false;
+  /** The pass the current control socket was opened with. */
+  private controlPass: string | null = null;
 
   constructor(private readonly options: RelayLinkOptions) {
     this.clock = options.clock ?? relayClock;
@@ -127,6 +130,7 @@ export class RelayLink {
     if (connectionId) url.searchParams.set("connection_id", connectionId);
     if (warm) url.searchParams.set("warm", warm);
     const pass = this.options.pass?.() ?? null;
+    if (!connectionId && !warm) this.controlPass = pass;
     const headers = pass === null ? undefined : { [RELAY_PASS_HEADER]: pass };
     // Bun's WebSocket takes headers (never the URL: a pass is good for hours)
     return (this.options.connect ?? ((address, extra) => new WebSocket(address, (extra ? { headers: extra } : undefined) as unknown as string[])))(url.href, headers);
@@ -183,8 +187,7 @@ export class RelayLink {
         && value.connection_ids.length <= 8 && value.connection_ids.every((id) => typeof id === "string" && /^[0-9a-f]{32}$/.test(id))) {
         this.attempts = 0;
         this.options.onState("online", null);
-        const notice = "relay_pass" in value ? passNotice(value.relay_pass) : null;
-        if (notice) this.options.onPassNotice?.(notice);
+        this.options.onPassNotice?.("relay_pass" in value ? passNotice(value.relay_pass) : null);
         for (const id of value.connection_ids) this.openData(id);
         if ("warm" in value && typeof value.warm === "string" && /^[0-9a-f]{32}$/.test(value.warm)) {
           this.warmControl = { socket, generation: value.warm };
@@ -211,6 +214,9 @@ export class RelayLink {
       }
       // refused for the pass: asking again without a new one would be refused again (renewPass reopens)
       if (event.code === RELAY_PASS_CLOSE) {
+        // a pass came while this socket was being let in: try again with it, it was not the one refused
+        const held = this.options.pass?.() ?? null;
+        if (held !== null && held !== this.controlPass) { if (!this.stopped) this.retry(); return; }
         this.passRefused = true;
         this.options.onPassRefused?.();
         // a relay moved back to grace or off lets the PC in without a pass: look again now and then

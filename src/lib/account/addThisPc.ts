@@ -32,6 +32,10 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   await service.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
   // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
   const session = await service.session();
-  if (session) await apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) }).catch(() => undefined);
+  if (session) {
+    const named = await apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) });
+    // 404: an Ovis from before relay passes, which asks for none; any other refusal shows, and Add tries again
+    if (!named.ok && named.status !== 404) throw new Error(`This PC did not take the account for its relay pass (${named.status})`);
+  }
   return name;
 }

@@ -18,6 +18,11 @@ test("the relay row says when Ovis's relay needs an account, and nothing new oth
   // passes off on the relay (today): a PC without an account still sees the relay's own error
   expect(statusText(t, { ...base, phase: "error", error: "Relay connection lost; reconnecting.", pass: { state: "no_account", relay: null, enforce_at: null, refused: false } })).toBe("Error: Relay connection lost; reconnecting.");
   expect(statusText(t, { ...base, phase: "error", error: "Relay connection lost; reconnecting.", pass: { state: "unavailable", relay: null, enforce_at: null, refused: false } })).toBe("Error: Relay connection lost; reconnecting.");
+  expect(statusText(t, { ...base, phase: "error", pass: { state: "not_listed", relay: null, enforce_at: null, refused: true } })).toStartWith("Add this PC to your Ovis account");
+  // refused, but a new pass came since: the relay's own error until the PC is back
+  expect(statusText(t, { ...base, phase: "error", error: "x", pass: { state: "ok", relay: null, enforce_at: null, refused: true } })).toBe("Error: x");
+  // a pass renewed on the open control socket: no stale grace notice
+  expect(statusText(t, { ...base, pass: { state: "ok", relay: "missing", enforce_at: "2027-01-01T00:00:00.000Z", refused: false } })).toBe("Online. No phone connected.");
   // a passing outage of the account service while the relay is unreachable is the old error
   expect(statusText(t, { ...base, phase: "error", error: "Relay connection lost; reconnecting.", pass: { state: "ok", relay: "ok", enforce_at: null, refused: false } })).toBe("Error: Relay connection lost; reconnecting.");
 });

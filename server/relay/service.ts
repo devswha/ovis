@@ -213,27 +213,34 @@ export class RelayService {
     return true;
   }
 
+  /** Whether `relay` is one of Ovis's own: the only relays a pass goes to. */
+  private isOvisRelay(relay: string | null): boolean {
+    return relay !== null && (this.options.ovisRelays ?? [GLOBAL_RELAY, ...REGIONAL_RELAYS]).includes(relay);
+  }
+
   private startPass(identity: RelayIdentity): void {
     const service = this.options.accountService;
     // a pass goes only to Ovis's own relays, and only from an account service that can be used
-    if (service === undefined || !(this.options.ovisRelays ?? [GLOBAL_RELAY, ...REGIONAL_RELAYS]).includes(this.relay)) return;
+    if (service === undefined || !this.isOvisRelay(this.relay)) return;
     this.passKeeper = new RelayPassKeeper({
       stateDir: this.options.stateDir, identity: () => this.identity ?? identity, account: () => this.passAccount(), service,
       ...(this.options.accountFetch ? { fetch: this.options.accountFetch } : {}), ...(this.options.passClock ? { clock: this.options.passClock } : {}),
-      onPass: (pass) => { this.link?.renewPass(pass); this.regionalLink?.renewPass(pass); },
+      onPass: (pass) => { this.link?.renewPass(pass); if (this.isOvisRelay(this.regionalRelay)) this.regionalLink?.renewPass(pass); },
     });
     this.passKeeper.start();
   }
 
   /** What every link of this service sends and hears of the relay pass. */
-  private passOptions(): Pick<RelayLinkOptions, "pass" | "onPassNotice" | "onPassRefused"> {
+  private passOptions(relay: string, global: boolean): Pick<RelayLinkOptions, "pass" | "onPassNotice" | "onPassRefused"> {
+    // a relay that is not Ovis's (a regional one named otherwise) never gets the pass
+    if (!this.isOvisRelay(relay)) return {};
     return {
       pass: () => this.passKeeper?.current() ?? null,
       onPassNotice: (notice) => {
-        this.passNotice = notice;
-        this.passRefused = false;
+        // the status is the global link's, so only its relay's word is shown
+        if (global) { this.passNotice = notice; this.passRefused = false; }
         // the relay does not take the pass this PC sent (in grace it still lets the PC in): ask for a new one
-        if (notice.state === "invalid" || notice.state === "expired") void this.passKeeper?.rejected();
+        if (notice?.state === "invalid" || notice?.state === "expired") void this.passKeeper?.rejected();
       },
       onPassRefused: () => { this.passRefused = true; void this.passKeeper?.rejected(); },
     };
@@ -320,7 +327,7 @@ export class RelayService {
       // An unsaved choice only means measuring again at the next start; the link opens either way.
       if (choice.save) try { writePrivateState(this.regionPath(), { relay }); } catch { /* measured again next start */ }
       const regional = new RelayLink({
-        relay, identity, services, port: this.port, ...this.passOptions(),
+        relay, identity, services, port: this.port, ...this.passOptions(relay, false),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
@@ -373,7 +380,7 @@ export class RelayService {
       this.phase = "connecting";
       this.startPass(this.identity);
       const link = new RelayLink({
-        relay: this.relay, identity: this.identity, services, port: this.port, ...this.passOptions(),
+        relay: this.relay, identity: this.identity, services, port: this.port, ...this.passOptions(this.relay, true),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase, error) => { if (this.link === link) { this.phase = phase; this.error = error; } },

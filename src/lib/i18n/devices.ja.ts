@@ -157,6 +157,7 @@ export const DEVICES_JA: Record<string, string> = {
   "The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.": "Ovis リレーには Ovis アカウントが必要です。サインインするか、同じ Wi-Fi または Tailscale で接続してください。",
   "Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "オンライン。{date} 以降も Ovis リレーを使うにはサインインしてください。同じ Wi-Fi、Tailscale、自分で運用するリレーはアカウントなしで使えます。",
   "Cannot reach the Ovis account service for a relay pass. Retrying.": "リレーパスを受け取るための Ovis アカウントサービスに接続できません。再試行しています。",
+  "Add this PC to your Ovis account to use the Ovis relay, or connect over the same Wi-Fi or Tailscale.": "Ovis リレーを使うには、この PC を Ovis アカウントに追加するか、同じ Wi-Fi または Tailscale で接続してください。",
   "Online. No phone connected.": "オンライン。接続中のスマートフォンはありません。",
   "Online. 1 phone connected.": "オンライン。スマートフォン 1 台が接続中です。",
   "Online. {n} phones connected.": "オンライン。スマートフォン {n} 台が接続中です。",
