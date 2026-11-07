@@ -143,9 +143,14 @@ export class RelayPassKeeper {
     return this.refresh().finally(() => { this.replacing = false; });
   }
 
-  /** Asks now (the account or the relay changed its mind): a pass may come at once. */
+  /** Not before this (ms): the backoff or Retry-After of the last failure, which an early refresh waits out too. */
+  private notBefore = 0;
+
+  /** Asks now (the account or the relay changed its mind), unless the service asked to wait: then when it may. */
   refresh(): Promise<void> {
     if (this.stopped) return Promise.resolve();
+    const wait = this.notBefore - this.clock.now();
+    if (wait > 0) { this.schedule(wait); return Promise.resolve(); }
     this.cancel?.();
     this.cancel = undefined;
     return this.ask();
@@ -182,7 +187,8 @@ export class RelayPassKeeper {
     this.inflight = inflight;
     const signal = AbortSignal.any([inflight.signal, AbortSignal.timeout(REQUEST_MS)]);
     const post = (path: string, body: unknown) => fetcher(new Request(`${service}${path}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+      // never followed: a redirect would carry the proof and the account to another origin
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal, redirect: "manual",
     }));
     try {
       const publicKey = bytesToHex(importPublicKey(identity.public_key));
@@ -217,6 +223,7 @@ export class RelayPassKeeper {
       this.saved = saved;
       try { writePrivateState(this.path, saved); } catch { /* kept in memory; asked again after a restart */ }
       this.failures = 0;
+      this.notBefore = 0;
       this.replacement = this.replacing ? saved.pass : null;
       this.state = "ok";
       this.options.onPass(saved.pass);
@@ -230,6 +237,8 @@ export class RelayPassKeeper {
     if (this.stopped) return;
     if (this.current() === null) this.state = "unavailable";
     const backoff = Math.min(RETRY_CAP_MS, RETRY_MS * 2 ** this.failures++);
-    this.schedule(Math.max(retryAfterMs(response?.headers.get("retry-after") ?? null), backoff));
+    const delay = Math.max(retryAfterMs(response?.headers.get("retry-after") ?? null), backoff);
+    this.notBefore = this.clock.now() + delay;
+    this.schedule(delay);
   }
 }

@@ -164,6 +164,8 @@ test("a pass renewed while online goes to the relay on the open control socket",
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await f.start();
   await bounded(f.synced);
+  // another account (which does not list this PC), then back: the PC asks again and renews on the open socket
+  expect((await f.nameAccount("acct_2")).status).toBe(204);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   expect(JSON.parse(await bounded(f.renewal))).toEqual({ type: "relay_pass", pass: expect.stringMatching(/^ovp1\./) });
 });
@@ -176,4 +178,15 @@ test("in grace, a PC that signs in sends its pass on the open control socket and
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await bounded(f.renewal);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false });
+});
+
+test("naming the same account again asks the account service nothing more", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  await bounded(f.synced);
+  const asked = f.asked.length;
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  expect(f.asked).toHaveLength(asked);
 });
