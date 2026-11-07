@@ -281,9 +281,10 @@ describe("push delivery", () => {
     const push = subscribed();
     const { terminal_title: _untitled, ...shell } = pane("w1:p1", "working", "");
     push.seed([{ ...shell, cwd: "/home/u/projects/api" }, pane("w1:p2", "working", "C:\\work\\site"), pane("w1:p3", "working", "vim /etc/hosts"),
-      pane("w1:p4", "working", "me@host:~/work/web"), { ...pane("w1:p5", "working", "π ⠋ /home/u/projects/cli"), agent: "pi" }]);
-    for (const id of ["w1:p1", "w1:p2", "w1:p3", "w1:p4", "w1:p5"]) await push.onStatus(id, "blocked");
-    expect(fake.received.map((received) => received.payload.title)).toEqual(["api", "site", "vim /etc/hosts", "web", "cli"]);
+      pane("w1:p4", "working", "me@host:~/work/web"), { ...pane("w1:p5", "working", "π ⠋ /home/u/projects/cli"), agent: "pi" },
+      { ...pane("w1:p6", "working", "/srv/a/api"), label: "billing" }, pane("w1:p7", "working", "me@host:")]);
+    for (const id of ["w1:p1", "w1:p2", "w1:p3", "w1:p4", "w1:p5", "w1:p6", "w1:p7"]) await push.onStatus(id, "blocked");
+    expect(fake.received.map((received) => received.payload.title)).toEqual(["api", "site", "vim /etc/hosts", "web", "cli", "billing", "w1:p7"]);
   });
 
   it("tells the device a pane's terminal ended, under its last known title", async () => {

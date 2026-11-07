@@ -32,11 +32,11 @@ export function paneTitle(pane: Pick<PaneInfo, "pane_id" | "cwd" | "terminal_tit
 }
 
 /**
- * A pane's name in a web push, as the browser's own alerts show it (#3235): without a shell's
- * `user@host:` or an agent's glyph, and a path title as its folder.
+ * A pane's name in a web push, as the browser's own alerts show it (#3235): its label, else its
+ * title without a shell's `user@host:` or an agent's glyph, a path title as its folder.
  */
-export function pushPaneTitle(pane: Parameters<typeof paneTitle>[0] & Pick<PaneInfo, "agent">): string {
-  return shortPathTitle(stripPaneChrome(paneTitle(pane), pane.agent, true));
+export function pushPaneTitle(pane: Parameters<typeof paneTitle>[0] & Pick<PaneInfo, "agent" | "label">): string {
+  return pane.label?.trim() || shortPathTitle(stripPaneChrome(paneTitle(pane), pane.agent, true)) || pane.pane_id;
 }
 
 const STATUS_BODY: Readonly<Record<string, string>> = {
