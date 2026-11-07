@@ -84,6 +84,14 @@ function labelMapUses(): [key: string, file: string][] {
 
 const DICTIONARIES = { Korean: KO, Japanese: JA, Chinese: ZH };
 
+// a Ready PC is one the directory lists, not one anything is linked to: its state word claims no connection
+describe.each([["Korean", KO, /연결|접속/], ["Japanese", JA, /接続/], ["Chinese", ZH, /连接/]] as const)("%s Ready wording", (_name, dictionary, connected) => {
+  it.each(["Ready", "Ready · not in the account yet"])("does not say connected in %p", (key) => {
+    expect(dictionary[key]).toBeString();
+    expect(dictionary[key]).not.toMatch(connected);
+  });
+});
+
 describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary) => {
   const inCode = keysInCode();
   const keys = new Set([...inCode.keys(), ...labelMapUses().map(([key]) => key)]);

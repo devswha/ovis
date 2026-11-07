@@ -67,20 +67,6 @@ describe("the connection map", () => {
     expect(html).not.toMatch(/\b(session|online|connected)\b/i);
   });
 
-  it("says ready, never connected, in Korean, Japanese and Chinese", () => {
-    // a Ready PC is one the directory lists, not one anything is linked to: the state word claims no connection
-    const word = (html: string) => /data-state="paired" aria-hidden="true"><\/span>([^<]+)<\/li>/.exec(html)?.[1] ?? "";
-    for (const [language, claim] of [["ko", /연결|접속/], ["ja", /接続/], ["zh", /连接/]] as const) {
-      const ready = word(render(mockup(), language));
-      expect(ready).not.toBe("");
-      expect(ready).not.toBe("Ready");
-      expect(ready).not.toMatch(claim);
-    }
-    const label = /aria-label="([^"]*)"/.exec(render(mockup(), "ko"))?.[1] ?? "";
-    expect(label).toContain("PC: 4");
-    expect(label).not.toMatch(/연결|접속/);
-  });
-
   it("lists the same journey as rows for a phone: this device, each relay, the PCs behind it", () => {
     const html = render(mockup());
     const routes = html.slice(html.indexOf('<ol class="relay-map-routes"'));

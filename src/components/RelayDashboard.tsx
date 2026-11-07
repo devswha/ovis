@@ -232,7 +232,10 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                   <tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col">{t("Relay")}</th><th scope="col">{t("Last seen")}</th><th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr>
                 </thead>
                 <tbody>
-                  {shown.map((pc) => (
+                  {shown.map((pc) => {
+                    const offline = pc.state === "offline";
+                    const status = pc.paired ? pcStatus?.get(pc.server_id) : undefined;
+                    return (
                     <tr key={pc.server_id} data-pc-state={pc.state}>
                       <td>
                         <div className="relay-dash-name">
@@ -242,16 +245,17 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                       </td>
                       <td className="relay-dash-state-cell">
                         {/* offline is the directory's word, as the strip and the map say it; this device's own check only adds that the PC still answered it */}
-                        {pc.state !== "offline" && pc.paired && pcStatus?.get(pc.server_id)
-                          ? <PcStatusLine status={pcStatus.get(pc.server_id)!} lastSeenAt={pc.last_seen_at} />
-                          : <span className="relay-dash-state"><StateDot state={pc.state} />{pc.state === "offline" ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
-                        {pc.state === "offline" && pc.paired && pcStatus?.get(pc.server_id)?.kind === "answered" && <small className="relay-dash-state-note">{t("Answered this device's latest check")}</small>}
+                        {!offline && status
+                          ? <PcStatusLine status={status} lastSeenAt={pc.last_seen_at} />
+                          : <span className="relay-dash-state"><StateDot state={pc.state} />{offline ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
+                        {offline && status?.kind === "answered" && <small className="relay-dash-state-note">{t("Answered this device's latest check")}</small>}
                       </td>
                       <td className="relay-dash-relay">{relayHost(pc.relay ?? defaultRelay)}</td>
                       <td className="relay-dash-seen">{pc.listed ? lastSeen(pc.last_seen_at) : "—"}</td>
                       <td className="relay-dash-act">{action(pc)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
               {shown.length === 0 && <p className="relay-dash-quiet relay-dash-none">{t("No PC matches this filter.")}</p>}
