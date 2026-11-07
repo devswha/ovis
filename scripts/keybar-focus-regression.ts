@@ -101,6 +101,10 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         assert.equal(await page.evaluate((field) => document.activeElement?.matches(field) === true, field), true, `${tag}: the field keeps the focus`);
         await page.waitForFunction(([pane, from]) => (window as unknown as InputWindow).typed_.slice(from).some((frame) => frame.pane === pane && frame.text === "\x1b"), [pane, sentBefore] as const, { timeout: 10_000 });
         await page.waitForFunction(([field, before]) => document.querySelector(field)?.getAttribute("inputmode") === before, [field, modeBefore] as const, { timeout: 10_000 });
+        // More keys only opens the second row: its tap holds the keyboard down as a key's does
+        await page.locator('.key-bar [data-key="more"]').tap();
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { atClick_: (string | null)[] }).atClick_), ["none", "none"], `${tag}: at More keys' click the focused field asks for no keyboard`);
+        await page.waitForFunction(([field, before]) => document.querySelector(field)?.getAttribute("inputmode") === before, [field, modeBefore] as const, { timeout: 10_000 });
       } finally { await context.close(); }
     }
     console.log("PASS key-bar taps on a touch screen send their keys without taking the focus (the keyboard stays down), in Direct typing and Input line modes; a fine pointer's click still focuses the grid");
