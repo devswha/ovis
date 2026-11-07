@@ -922,6 +922,9 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
               case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
               case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
               case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [{ provider: "google", added_at: "2026-11-06T00:00:00Z" }] } });
+              // a device sign-in that stays pending: the code shows until someone approves it elsewhere
+              case "/v1/signin/github/device": return route.fulfill({ headers: cors, json: { code_challenge_method: "S256", device_code: "fixture-device", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 } });
+              case "/v1/token": return route.fulfill({ status: 400, headers: cors, json: { error: "authorization_pending" } });
               default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
             }
           });
@@ -956,6 +959,14 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
           const expected = offered.map((provider) => provider === "github" ? "Continue with GitHub" : "Continue with Google");
           assert.deepEqual(await signIn.locator(".account-provider").allTextContents(), expected, `one button for each provider the service lists ${at}`);
           await shot(`welcome-signin-${offered.join("-")}`);
+          if (offered.length === 1 && offered[0] === "github") {
+            // a code on screen: only its Cancel ends it, Not now cannot fold it away unnoticed
+            await signIn.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
+            await signIn.locator(".account-device-code").filter({ hasText: "ABCD-1234" }).waitFor();
+            assert.equal(await signIn.getByRole("button", { name: "Not now", exact: true }).count(), 0, `no Not now while a device code waits ${at}`);
+            await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
+            await signIn.locator("[data-offer='service'] .account-provider").first().waitFor();
+          }
           // by keyboard: the box goes and the keyboard's place moves to the first choice, not the page
           await signIn.getByRole("button", { name: "Not now", exact: true }).focus();
           await page.keyboard.press("Enter");

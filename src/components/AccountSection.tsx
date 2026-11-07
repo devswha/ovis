@@ -349,7 +349,8 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
         {view.kind === "signed-in"
           ? <><p className="setup-signin-done" role="status">{t("Signed in as {account}.", { account: view.account })}</p><AddThisPc relayAbove={false} /></>
           : <>{welcome.lead}{signInParts}</>}
-        {welcome.later}
+        {/* a sign-in under way is ended with its own Cancel, never folded away unnoticed by Not now */}
+        {view.kind !== "device-code" && view.kind !== "signing-in" && welcome.later}
       </div>
     );
   }
