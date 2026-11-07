@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { stateAge } from "./AgentSidebar.tsx";
-import { compactBranch, compactWorktreeName } from "./Sidebar.tsx";
+import { compactBranch, compactWorktreeName, sameName } from "./Sidebar.tsx";
 
 describe("compact sidebar rows", () => {
   test("a worktree's name drops herdr's prefix and four-digit hash only when it has both", () => {
@@ -22,6 +22,15 @@ describe("compact sidebar rows", () => {
     // a prefix that says whose branch it is stays, so two teams' branches never read the same
     expect(compactBranch("team-a/fix")).toBe("team-a/fix");
     expect(compactBranch("integration")).toBe("integration");
+  });
+
+  test("a worktree herdr named hides its branch, which only repeats the name; any other branch shows", () => {
+    expect(sameName("worktree/rapid-harbor-d939", "worktree-rapid-harbor-d939")).toBe(true);
+    expect(sameName("worktree-rapid-harbor-d939", "worktree-rapid-harbor-d939")).toBe(true);
+    expect(sameName("rapid-harbor", "worktree-rapid-harbor-d939")).toBe(true);
+    expect(sameName("feat/devices-ui", "worktree-rapid-harbor-d939")).toBe(false);
+    expect(sameName("release", "release-cafe")).toBe(false);
+    expect(sameName("fix/release-dead", "release-cafe")).toBe(false);
   });
 
   test("a waiting row's time reads in minutes, hours, then days", () => {

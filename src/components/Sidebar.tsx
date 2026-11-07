@@ -196,9 +196,14 @@ export function compactWorktreeName(label: string): string {
   return generated ? generated[1]! : label;
 }
 
-/** whether a branch only repeats a workspace's name, herdr's prefix and hash aside */
-function sameName(branch: string, name: string): boolean {
-  return compactWorktreeName(branch) === compactWorktreeName(name);
+/**
+ * Whether a branch only repeats a workspace's name: the same text, or for a worktree herdr named
+ * (`worktree-brave-valley-7fc6`) its branch `worktree/brave-valley-7fc6` or `brave-valley`, herdr's prefix and hash aside.
+ */
+export function sameName(branch: string, name: string): boolean {
+  if (branch === name) return true;
+  const short = compactWorktreeName(name);
+  return short !== name && branch.replace(/^worktree[-/]/, "").replace(/-[0-9a-f]{4}$/, "") === short;
 }
 
 /** the kind-of-change prefixes a branch drops on a compact row; any other prefix (`team-a/`) says something and stays */
@@ -862,7 +867,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // only a worktree herdr opened has a name it made: a name the user chose is drawn whole
     const shownTitle = compact && linked ? compactWorktreeName(rowTitle) : rowTitle;
     const tailBranch = compact ? compactBranch(branchTitle) : null;
-    const branchTail = tailBranch !== null && !sameName(tailBranch, rowTitle) && tailBranch !== worktreeLabel(shownTitle) ? tailBranch : null;
+    const branchTail = tailBranch !== null && branchTitle !== null && !sameName(branchTitle, rowTitle) && tailBranch !== worktreeLabel(shownTitle) ? tailBranch : null;
     // the tooltip and the menu keep the exact branch (its slashes) even where the row does not repeat it
     const branchNote = branchTitle && branchTitle !== workspace.label ? branchTitle : null;
     const paths = [...new Set([workspace.worktree?.checkout_path, pane.cwd].filter((path): path is string => Boolean(path)))];
