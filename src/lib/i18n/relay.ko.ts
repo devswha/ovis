@@ -73,7 +73,7 @@ export const RELAY_KO: Record<string, string> = {
   "{name} is not taking new phones right now": "{name}이(가) 지금은 새 휴대폰을 받지 않습니다",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "링크가 만료됐거나(10분 동안 쓸 수 있음), 시도가 너무 많아 잠시 멈췄거나, 다른 휴대폰을 처리하는 중일 수 있습니다. PC에서 새 링크를 복사하거나 몇 분 기다리세요.",
   "Pair with a code": "코드로 페어링",
-  "On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.": "PC에서 설정 → 기기와 PC를 열고 연결 추가를 누르세요(이전 Ovis에서는 연결 또는 입력할 코드 보기). 거기 보이는 코드를 여기에 입력하세요.",
+  "On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.": "PC에서 설정 → 기기와 PC → 연결 추가 → Ovis 릴레이를 여세요(이전 Ovis에서는 연결 또는 입력할 코드 보기). 거기 보이는 코드를 여기에 입력하세요. PC가 Ovis 계정을 쓰면 대신 같은 계정으로 로그인하세요.",
   "Code from the PC": "PC에 표시된 코드",
   "Looking for the PC…": "PC를 찾는 중…",
   "Every PC of the account removes this device. You can pair it again later.": "계정의 모든 PC에서 이 기기가 빠집니다. 나중에 다시 연결할 수 있습니다.",

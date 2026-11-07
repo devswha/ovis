@@ -73,7 +73,7 @@ export const RELAY_JA: Record<string, string> = {
   "{name} is not taking new phones right now": "{name} は今は新しいスマートフォンを受け付けていません",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "リンクの有効期限が切れた(10 分間有効)か、試行が多すぎて一時停止しているか、ほかのスマートフォンの対応中かもしれません。PC で新しいリンクをコピーするか、数分待ってください。",
   "Pair with a code": "コードでペアリング",
-  "On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.": "PC で「設定 → デバイスと PC」を開き、「接続を追加」を選んでください（古い Ovis では「接続」または「入力するコードを表示」）。表示されたコードをここに入力してください。",
+  "On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.": "PC で「設定 → デバイスと PC → 接続を追加 → Ovis リレー」を開いてください（古い Ovis では「接続」または「入力するコードを表示」）。表示されたコードをここに入力してください。PC が Ovis アカウントを使っている場合は、代わりに同じアカウントでサインインしてください。",
   "Code from the PC": "PC に表示されたコード",
   "Looking for the PC…": "PC を探しています…",
   "Every PC of the account removes this device. You can pair it again later.": "アカウントのすべての PC からこのデバイスが外れます。あとでまたペアリングできます。",

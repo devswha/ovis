@@ -179,17 +179,25 @@ const SOURCE_LABEL: Record<FoundSource, string> = { herdr: "herdr", ssh_config: 
 export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
   const t = useT();
   const [found, setFound] = useState<SshCandidate[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [reads, setReads] = useState(0);
   const [typed, setTyped] = useState("");
   useEffect(() => {
     let live = true;
+    setFailed(false);
     findSshCandidates().then(({ pcs }) => { if (live) setFound(pcs); }, (error: unknown) => {
-      if (!(error instanceof ApiError)) console.warn("Ovis: the PCs to add over SSH could not be read", error instanceof Error ? error.name : error);
-      if (live) setFound([]);
+      // a window the server will not tell (owner_only, read_only) gets the field alone; anything else says so, with Try again
+      const refused = error instanceof ApiError && (error.code === "owner_only" || error.code === "read_only");
+      if (!refused) console.warn("Ovis: the PCs to add over SSH could not be read", error instanceof Error ? error.name : error);
+      if (!live) return;
+      setFound([]);
+      setFailed(!refused);
     });
     return () => { live = false; };
-  }, []);
+  }, [reads]);
   const saved = machines.filter((machine) => machine.herdr_profile_id !== undefined && machine.action_required === "connect");
-  const added = (destination: string) => machines.some((machine) => machine.target?.destination === destination);
+  // a found PC is Added only as Add would add it: its own address, on ssh's default port and herdr's default session
+  const added = (destination: string) => machines.some(({ target }) => target?.destination === destination && (target.port ?? 22) === 22 && target.session === undefined);
   const add = (event: FormEvent) => {
     event.preventDefault();
     const destination = typed.trim();
@@ -216,6 +224,12 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
               ? <span className="connect-found-added"><Check aria-hidden="true" />{t("Added")}</span>
               : <button type="button" className="btn" aria-label={t("Add {name}", { name: pc.name })} onClick={() => onAddPc({ destination: pc.destination, name: pc.name })}>{t("Add")}</button>))}
           </ul>
+        </div>
+      )}
+      {failed && (
+        <div className="connect-found-failed" role="alert">
+          <p className="settings-hint">{t("The PCs this PC knows could not be read.")}</p>
+          <button type="button" className="btn" onClick={() => { setFound(null); setReads((count) => count + 1); }}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
         </div>
       )}
       <form className="connect-ssh-form" onSubmit={add}>
@@ -256,10 +270,12 @@ function DevicesTab({ plan, loading, onRefresh, pairUrl, readOnly, canPair, phon
 
 /**
  * The Ovis relay, used through the Ovis account: signed out, the sign-in alone; signed in, how a new device joins
- * (it signs in to the same account and is approved here once), with the relay's switch while it is off. On the
- * hosted shell, the card that says this device already reaches the PC through the relay.
+ * (it signs in to the same account and is approved here once), with the relay's switch while it is off. Where the
+ * page has no account (none offered, or its service cannot be reached), the relay's own pairing as before the
+ * account: its switch, then its QR code and code to type. On the hosted shell, the card that says this device
+ * already reaches the PC through the relay.
  */
-function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, onAccount, phone, canPair, onUseCode }: {
+export function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, onAccount, phone, canPair, onUseCode }: {
   relay: RelayState; readOnly: boolean; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; onAccount: (() => void) | null; phone: boolean; canPair: boolean; onUseCode: () => void;
 }) {
   const t = useT();
@@ -274,10 +290,26 @@ function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, onAccou
     setSwitchError(null);
     try { await relay.request(next ? "start" : "stop"); } catch (reason) { setSwitchError(failureText(reason)); }
   };
+  const relaySwitch = switchable && (
+    <>
+      <div className="connect-relay-switch">
+        <span className="settings-label">{t("Ovis relay")}</span>
+        <Toggle label={t("Ovis relay")} checked={on} describedBy={closesGate && !on ? `${id}-gate` : undefined} onChange={(next) => { if (!relay.pending) void switchRelay(next); }} />
+      </div>
+      {closesGate && !on && <p className="settings-condition connect-phone-gate" id={`${id}-gate`}>{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+    </>
+  );
+  if (onAccount === null) return (
+    <>
+      {relaySwitch}
+      {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
+      <RelayRoute relay={relay} readOnly={readOnly} phone={phone} onUseCode={canPair && !readOnly ? onUseCode : undefined} compact />
+    </>
+  );
   if (!signedIn) return (
     <div className="connect-signin" data-testid="connect-signin">
       <p className="settings-description">{t("Sign in to Ovis to connect from anywhere, with no SSH and no open port. Your PCs and devices are kept in your account.")}</p>
-      {onAccount !== null && !readOnly
+      {!readOnly
         ? <button type="button" className="btn btn-primary connect-signin-button" onClick={onAccount}>{t("Sign in to Ovis")}</button>
         : <p className="settings-hint">{t("Sign in to Ovis on this PC itself, or from a device paired with it directly.")}</p>}
     </div>
@@ -291,18 +323,15 @@ function RelayTab({ relay, readOnly, closesGate, signedIn, joinBySignIn, onAccou
         </>
       ) : (
         <>
-          <p className="settings-description">{t("Turn the relay on and add this PC to your account. Then a new device joins by signing in to the same account.")}</p>
-          {switchable && (
-            <div className="connect-relay-switch">
-              <span className="settings-label">{t("Ovis relay")}</span>
-              <Toggle label={t("Ovis relay")} checked={on} describedBy={closesGate && !on ? `${id}-gate` : undefined} onChange={(next) => { if (!relay.pending) void switchRelay(next); }} />
-            </div>
-          )}
-          {switchable && closesGate && !on && <p className="settings-condition connect-phone-gate" id={`${id}-gate`}>{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+          {/* a blocked relay (serve-only, an unreadable identity) has no switch: its state says why, and what to do */}
+          {relay.status !== null && relay.status.blocked !== null
+            ? <p className="relay-status" role="status">{statusText(t, relay.status)}</p>
+            : <p className="settings-description">{t("Turn the relay on and add this PC to your account. Then a new device joins by signing in to the same account.")}</p>}
+          {relaySwitch}
           {switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>}
           {/* a start that failed before the link existed: the server answers phase off with its reason, and nothing retries it */}
           {switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>}
-          {onAccount !== null && !readOnly && <button type="button" className="btn connect-signin-button" onClick={onAccount}>{t("Open the account")}</button>}
+          {!readOnly && <button type="button" className="btn connect-signin-button" onClick={onAccount}>{t("Open the account")}</button>}
         </>
       )}
     </div>

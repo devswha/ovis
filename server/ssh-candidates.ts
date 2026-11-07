@@ -44,13 +44,20 @@ export interface SshCandidatesOptions {
 /** a Host pattern that names one host, not a set of them */
 const plainAlias = (pattern: string): boolean => pattern !== "" && !/[*?!]/.test(pattern);
 
-/** `Key value`, `Key=value` and `Key "quoted value"`, as ssh reads a line; null for a blank line or a comment */
+/**
+ * `Key value`, `Key=value` and `Key "quoted value"`, as ssh reads a line, up to a word that starts a comment
+ * (`Host lab # work` names `lab` alone); null for a blank line or a comment
+ */
 function keyword(line: string): { key: string; values: string[] } | null {
   const trimmed = line.trim();
   if (trimmed === "" || trimmed.startsWith("#")) return null;
   const match = /^(\S+?)(?:\s*=\s*|\s+)(.*)$/.exec(trimmed);
   if (match === null) return null;
-  const values = [...match[2]!.matchAll(/"([^"]*)"|(\S+)/g)].map((part) => part[1] ?? part[2]!);
+  const values: string[] = [];
+  for (const part of match[2]!.matchAll(/"([^"]*)"|(\S+)/g)) {
+    if (part[2]?.startsWith("#")) break;
+    values.push(part[1] ?? part[2]!);
+  }
   return { key: match[1]!.toLowerCase(), values };
 }
 
@@ -61,33 +68,37 @@ interface HostBlock { aliases: string[]; hostname?: string; user?: string }
  * by a pattern (`*`, `?`, `!`) and everything under Match are left out; a later block repeating an alias adds nothing.
  * `include(pattern)` reads the files an Include names, as text, in their order.
  */
-export async function sshConfigHosts(text: string, include: (pattern: string) => Promise<string[]> = async () => [], depth = 0): Promise<{ alias: string; hostname: string | null; user: string | null }[]> {
+export async function sshConfigHosts(text: string, include: (pattern: string) => Promise<string[]> = async () => []): Promise<{ alias: string; hostname: string | null; user: string | null }[]> {
   const blocks: HostBlock[] = [];
   let current: HostBlock | null = null;
   let inMatch = false;
-  for (const line of text.split(/\r?\n/)) {
-    const parsed = keyword(line);
-    if (parsed === null) continue;
-    if (parsed.key === "host") {
-      inMatch = false;
-      // `Host valid server-*` still names `valid`; `Host a !a` names nothing
-      current = { aliases: parsed.values.filter((value) => plainAlias(value) && !parsed.values.includes(`!${value}`)) };
-      blocks.push(current);
-    } else if (parsed.key === "match") {
-      inMatch = true;
-      current = null;
-    } else if (parsed.key === "include" && depth < MAX_INCLUDE_DEPTH && !inMatch) {
-      // an Include inside a Host block applies to that block only; its own Host lines still start blocks of their own
-      for (const pattern of parsed.values) {
-        for (const included of await include(pattern)) {
-          for (const host of await sshConfigHosts(included, include, depth + 1)) blocks.push({ aliases: [host.alias], ...(host.hostname === null ? {} : { hostname: host.hostname }), ...(host.user === null ? {} : { user: host.user }) });
+  const walk = async (text: string, depth: number): Promise<void> => {
+    for (const line of text.split(/\r?\n/)) {
+      const parsed = keyword(line);
+      if (parsed === null) continue;
+      if (parsed.key === "host") {
+        inMatch = false;
+        // `Host valid server-*` still names `valid`; `Host a !a` names nothing
+        current = { aliases: parsed.values.filter((value) => plainAlias(value) && !parsed.values.includes(`!${value}`)) };
+        blocks.push(current);
+      } else if (parsed.key === "match") {
+        inMatch = true;
+        current = null;
+      } else if (parsed.key === "include" && depth < MAX_INCLUDE_DEPTH && !inMatch) {
+        // as ssh reads it: an included file goes on in the Host block the Include sits in (its HostName and User
+        // before a Host line of its own are that block's), and the including file's block goes on after it
+        const [outer, outerMatch] = [current, inMatch];
+        for (const pattern of parsed.values) {
+          for (const included of await include(pattern)) await walk(included, depth + 1);
         }
+        [current, inMatch] = [outer, outerMatch];
+      } else if (current !== null && !inMatch) {
+        if (parsed.key === "hostname" && current.hostname === undefined) current.hostname = parsed.values[0];
+        if (parsed.key === "user" && current.user === undefined) current.user = parsed.values[0];
       }
-    } else if (current !== null && !inMatch) {
-      if (parsed.key === "hostname" && current.hostname === undefined) current.hostname = parsed.values[0];
-      if (parsed.key === "user" && current.user === undefined) current.user = parsed.values[0];
     }
-  }
+  };
+  await walk(text, 0);
   const seen = new Set<string>();
   const hosts: { alias: string; hostname: string | null; user: string | null }[] = [];
   for (const block of blocks) {
@@ -131,11 +142,17 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<st
   const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
   const budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES };
   return async (pattern) => {
+    if (budget.files <= 0 || budget.bytes <= 0) return [];
     const allowed = (await roots).filter((root): root is string => root !== null);
     // ssh's glob(3) has no `**`: it is one `*`, which also keeps a scan to the pattern's own depth
     const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
     const paths: string[] = [];
-    if (/[*?[]/.test(expanded)) {
+    const wildcard = expanded.search(/[*?[]/);
+    if (wildcard >= 0) {
+      // the folder before the first wildcard is scanned only inside the home or ssh folder
+      const literal = expanded.slice(0, wildcard);
+      const base = await realpath(literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1) || ".").catch(() => null);
+      if (base === null || !allowed.some((root) => inside(base, root))) return [];
       for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true })) {
         paths.push(path);
         if (paths.length >= budget.files) break;

@@ -212,6 +212,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Add {name}": "添加 {name}",
   "How to connect": "连接方式",
   "Looking for PCs…": "正在查找 PC…",
+  "The PCs this PC knows could not be read.": "无法读取这台电脑已知的电脑。",
   "On the new device, open Ovis and sign in to the same account.": "在新设备上打开 Ovis，并登录同一个账户。",
   "On the same Wi-Fi, or a device not on your Tailscale": "同一 Wi-Fi，或不在你的 Tailscale 中的设备",
   "Open the account": "打开账户",

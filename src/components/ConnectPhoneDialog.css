@@ -200,6 +200,12 @@
   gap: var(--space-2);
 }
 
+.connect-found-failed {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .connect-ssh-field > .input {
   flex: 1;
   min-width: 0;

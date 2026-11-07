@@ -212,6 +212,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Add {name}": "{name} を追加",
   "How to connect": "接続方法",
   "Looking for PCs…": "PC を探しています…",
+  "The PCs this PC knows could not be read.": "この PC が知っている PC を読み込めませんでした。",
   "On the new device, open Ovis and sign in to the same account.": "新しいデバイスで Ovis を開き、同じアカウントでサインインしてください。",
   "On the same Wi-Fi, or a device not on your Tailscale": "同じ Wi-Fi、または自分の Tailscale にないデバイス",
   "Open the account": "アカウントを開く",

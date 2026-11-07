@@ -73,7 +73,7 @@ export const RELAY_ZH: Record<string, string> = {
   "{name} is not taking new phones right now": "{name} 现在不接受新手机",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "链接可能已过期（有效 10 分钟），或因尝试次数过多而暂停，或正在处理其他手机。请在电脑上复制新链接，或等几分钟。",
   "Pair with a code": "用代码配对",
-  "On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.": "在电脑上打开“设置 → 设备和电脑”，选择“添加连接”（旧版 Ovis 中为“连接”或“显示要输入的代码”）。在这里输入显示的代码。",
+  "On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.": "在电脑上打开“设置 → 设备和电脑 → 添加连接 → Ovis 中继”（旧版 Ovis 中为“连接”或“显示要输入的代码”）。在这里输入显示的代码。如果电脑使用 Ovis 账户，请改为登录同一账户。",
   "Code from the PC": "电脑上显示的代码",
   "Looking for the PC…": "正在查找电脑…",
   "Every PC of the account removes this device. You can pair it again later.": "账户中的所有 PC 都会移除此设备。之后可以再次配对。",

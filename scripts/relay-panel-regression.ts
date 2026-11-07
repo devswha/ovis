@@ -53,6 +53,8 @@ export function startRelayFixture(options: { serveOnly?: boolean } = {}): RelayF
   const server = createServer({
     port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false,
     tailscaleServeOnly: options.serveOnly ?? false, relay: service, usage: new UsageService(undefined, []), registerBridge: false,
+    // the SSH tab reads a fixture, never the runner's own ssh config or Tailscale
+    sshCandidates: { sshDir: join(stateDir, "no-ssh"), readStatus: async () => null },
   });
   return {
     origin: `http://127.0.0.1:${server.port}`,
@@ -319,8 +321,9 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.deepEqual(await seen.tabs.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-tab"))), ["devices", "relay"], "a Portal visitor gets no SSH tab");
     assert.equal(await seen.sheet.locator(".connect-phone-code").count(), 0, "a Portal visitor is offered no pairing code");
     assert.equal(await seen.sheet.locator(".compact-pair").count(), 0, "nor a code to type");
+    // no Ovis account on this page: the relay's own state, with who may control it
     await seen.openTab("relay");
-    await seen.relayTab.getByTestId("connect-signin").waitFor();
+    await seen.relayTab.getByTestId("relay-owner-help").waitFor();
     assert.equal(await seen.sheet.getByRole("switch").count(), 0, "a Portal visitor gets no relay switch");
     assert.equal(await seen.sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "nor the sign-in");
     assert.equal(await seen.sheet.getByRole("button", { name: /^Reset/ }).count(), 0, "nor the reset");
@@ -424,6 +427,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await blocked.connect.click();
     await blocked.openTab("relay");
     await blocked.relayTab.getByTestId("connect-signin").waitFor();
+    await blocked.relayTab.getByRole("status").filter({ hasText: "Blocked: OVIS_TAILSCALE_SERVE_ONLY" }).waitFor();
     assert.equal(await blocked.sheet.getByRole("switch").count(), 0, "nor in the sheet");
     assert.equal(await blocked.relayTab.getByRole("img").count(), 0, "no offer on a blocked install");
     assert.equal(await blocked.sheet.getByRole("button", { name: /^Reset/ }).count(), 0, "nor a reset in the sheet");

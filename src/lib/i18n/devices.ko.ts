@@ -212,6 +212,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Add {name}": "{name} 추가",
   "How to connect": "연결 방법",
   "Looking for PCs…": "PC를 찾는 중…",
+  "The PCs this PC knows could not be read.": "이 PC가 아는 PC 목록을 읽지 못했습니다.",
   "On the new device, open Ovis and sign in to the same account.": "새 기기에서 Ovis를 열고 같은 계정으로 로그인하세요.",
   "On the same Wi-Fi, or a device not on your Tailscale": "같은 Wi-Fi이거나 내 Tailscale에 없는 기기",
   "Open the account": "계정 열기",

@@ -1251,7 +1251,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
-  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null });
+  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, reachable: true });
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
   const [pcAccount, setPcAccount] = useState<string | null>(null);
@@ -1280,7 +1280,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
         <div className="settings-item my-devices">
-          <MyPcRows machines={machines} accountPcs={account.pcs} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`}>
+          <MyPcRows machines={machines} accountPcs={account.pcs} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`}>
             <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} />
           </MyPcRows>
         </div>
@@ -1349,7 +1349,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {connecting && (
         <ConnectPhoneDialog plan={plan} loading={access === undefined} onRefresh={loadAccess} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
-          signedIn={account.signedIn} joinBySignIn={joinBySignIn} onAccount={accountOffered() ? signIn : null}
+          signedIn={account.signedIn} joinBySignIn={joinBySignIn} onAccount={accountOffered() && account.reachable ? signIn : null}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
           onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }} onClose={closeConnect} />
       )}
@@ -1426,7 +1426,9 @@ const removablePc = (machine: Machine): boolean => machine.state !== "connected"
  * (a reset in another window) is read again too. Removing a PC stays
  * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
  */
-function MyPcRows({ machines, accountPcs, relayKey, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
+function MyPcRows({ machines, accountPcs, relayKey, watching, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
+  /** a watching device: the server refuses it the removal, so it is not offered */
+  watching: boolean;
   /** the paired phones and browsers, the one in use first: right under this PC, above the other PCs */
   children?: ReactNode }) {
   const t = useT();
@@ -1463,7 +1465,7 @@ function MyPcRows({ machines, accountPcs, relayKey, children }: { machines: read
             <span className="settings-label">{machine.name}<span className="devices-kind">PC</span></span>
             <span className="settings-description">{t(STATE_WORD[machine.state])}</span>
           </div>
-          {removablePc(machine) && (
+          {!watching && removablePc(machine) && (
             <div className="devices-actions">
               <button type="button" className="icon-button" aria-label={t("Remove PC {name}", { name: machine.name })} onClick={() => setRemoving(machine)}><Trash2 aria-hidden="true" /></button>
             </div>

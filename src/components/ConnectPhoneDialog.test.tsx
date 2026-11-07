@@ -8,7 +8,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
-import { CodeRoute, connectTabs, RelayRoute, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
+import { CodeRoute, connectTabs, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -45,7 +45,7 @@ describe("Connect a phone on a phone", () => {
       addEventListener: events.addEventListener.bind(events),
       removeEventListener: events.removeEventListener.bind(events),
       dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout,
+      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
     } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
@@ -210,6 +210,19 @@ describe("Connect a phone on a phone", () => {
     expect(added).toEqual([{ destination: "nuc12", name: "nuc12" }]);
     await act(async () => { button("Connect").props.onClick(); });
     expect(connected).toEqual(["build-box"]);
+  });
+
+  it("without the Ovis account here, the relay tab keeps the relay's own pairing: its switch, QR code and code to type", async () => {
+    const tab = (relay: RelayState) => <RelayTab relay={relay} readOnly={false} closesGate={false} signedIn={false} joinBySignIn={false} onAccount={null} phone={false} canPair onUseCode={() => undefined} />;
+    await mount(tab(relayState()));
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: true })).toHaveLength(1);
+    expect(qrCodes()).toHaveLength(1);
+    expect(text(renderer!.root)).toContain("7K3QD-M2XHA");
+    expect(buttons()).not.toContain("Sign in to Ovis");
+    // off, the switch turns it on
+    await act(async () => { renderer!.update(<SettingsProvider>{tab(relayState({ ...ONLINE, phase: "off" }))}</SettingsProvider>); });
+    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
   });
 
   it("keeps the desktop's relay QR code up front, with no self-pairing", async () => {

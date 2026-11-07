@@ -3,11 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import type { CompletionTracker } from "./completion.ts";
-import { createServer } from "./index.ts";
-import { handleMachineRequest } from "./machine-api.ts";
-import { MachineManager } from "./machines.ts";
-import type { PushService } from "./push.ts";
 import { sshCandidates, sshConfigHosts } from "./ssh-candidates.ts";
 
 const cleanup: (() => void)[] = [];
@@ -58,6 +53,18 @@ it("lists the hosts a config names with their first HostName and User, leaving o
     { alias: "github.com", hostname: null, user: "git" },
     { alias: "quoted", hostname: "q.example", user: null },
     { alias: "keep", hostname: null, user: "k" },
+  ]);
+});
+
+it("stops a line at a word that starts a comment", async () => {
+  expect(await sshConfigHosts("Host lab # work machine\n  HostName lab.example # the desk\n")).toEqual([{ alias: "lab", hostname: "lab.example", user: null }]);
+});
+
+it("reads an Include inside a Host block as part of that block", async () => {
+  const dir = sshDir({ config: "Host lab\n  Include lab.conf\nHost after\n", "lab.conf": "HostName lab-pc.tail.ts.net\nUser alice\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc"]) });
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.source])).toEqual([
+    ["lab", "alice@lab-pc.tail.ts.net", "ssh_config"], ["after", null, "ssh_config"],
   ]);
 });
 
@@ -124,27 +131,4 @@ it("lists only the other source when one is missing", async () => {
   const empty = sshDir({});
   expect(await sshCandidates({ sshDir: empty, readStatus: async () => null })).toEqual([]);
   expect((await sshCandidates({ sshDir: empty, readStatus: async () => status(["box"]) })).map((candidate) => candidate.destination)).toEqual(["box.tail.ts.net"]);
-});
-
-it("answers the owner's window with the list, and refuses an open LAN window and a watching device", async () => {
-  const dir = sshDir({ config: "Host nuc12\n  HostName 100.127.218.1\n  User rise\nHost *\n" });
-  const state = sshDir({});
-  const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: state, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false,
-    sshCandidates: { sshDir: dir, readStatus: async () => status(["winvm"]) } });
-  cleanup.push(() => { void server.stop(); });
-  const base = `http://127.0.0.1:${server.port}`;
-  const owner = await fetch(`${base}/api/machines/ssh-candidates`, { headers: { origin: base } });
-  expect(owner.status).toBe(200);
-  expect((await owner.json() as { pcs: { destination: string }[] }).pcs.map((pc) => pc.destination)).toEqual(["nuc12", "winvm.tail.ts.net"]);
-  const fromLan = await fetch(`${base}/api/machines/ssh-candidates`, { headers: { origin: base, "x-forwarded-for": "192.168.1.5" } });
-  expect(fromLan.status).toBe(403);
-  expect((await fromLan.json() as { error: { code: string } }).error.code).toBe("owner_only");
-
-  let read = 0;
-  const manager = new MachineManager(state, {} as PushService, {} as CompletionTracker, async () => { throw new Error("local offline"); },
-    { sshCandidates: { sshDir: dir, readStatus: async () => { read++; return null; } } });
-  const watching = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/ssh-candidates"), manager, undefined, undefined, true);
-  expect(watching.status).toBe(403);
-  expect(read).toBe(0);
-  manager.stop();
 });

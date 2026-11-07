@@ -93,7 +93,7 @@ function CodeEntry({ failure, onSubmit, back }: { failure: TypedCodeFailure | nu
   return (
     <>
       <h1 className="relay-shell-title">{t("Pair with a code")}</h1>
-      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.")}</p>
+      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.")}</p>
       <form className="relay-shell-code-form" onSubmit={submit}>
         <input name="code" className="relay-shell-code-input" aria-label={t("Code from the PC")} placeholder="XXXXX-XXXXX"
           autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
