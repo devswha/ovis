@@ -187,6 +187,35 @@ export function ContextBadge({ context }: { context?: PaneContext | undefined })
   );
 }
 
+/**
+ * A workspace's face in the compact rows: its first letter on one of six colors its name picks, as herdr-app's
+ * Spaces list draws it; the colors are the theme's own (Sidebar.css `data-tone`).
+ */
+export function WorkspaceAvatar({ name }: { name: string }) {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + char.codePointAt(0)!) >>> 0;
+  const letter = [...name.trim()][0]?.toUpperCase() ?? "?";
+  return <span className="sidebar-mark workspace-avatar-cell" aria-hidden="true"><span className="workspace-avatar" data-tone={hash % 6}>{letter}</span></span>;
+}
+
+/** A worktree workspace's name without what herdr adds to it: the `worktree-` prefix and the short hash after it. */
+export function compactWorktreeName(label: string): string {
+  const bare = label.replace(/^worktree-/, "");
+  return bare === label ? label : bare.replace(/-[0-9a-f]{4,10}$/, "") || bare;
+}
+
+/** whether a branch only repeats a workspace's name: the same once herdr's prefix and hash are off either */
+function sameName(branch: string, name: string): boolean {
+  const bare = (value: string) => compactWorktreeName(value).replace(/-[0-9a-f]{4,10}$/, "");
+  return bare(branch) === bare(name);
+}
+
+/** The branch a compact row says at its end: none for the default branch, and without a `feat/`-style prefix. */
+export function compactBranch(branch: string | null): string | null {
+  if (branch === null || branch === "main" || branch === "master") return null;
+  return branch.includes("/") ? branch.slice(branch.indexOf("/") + 1) : branch;
+}
+
 function cwdBasename(cwd: string | null | undefined): string {
   return cwd ? folderName(cwd) : "unknown directory";
 }
@@ -836,7 +865,11 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // as herdr's own sidebar: a top-level git workspace says its branch on a second line, while an
     // indented worktree (its name already the branch's), a pinned row (the card stays compact; the
     // branch is in its tooltip and menu) and a folder outside git keep one line
-    const branchLine = !twoLine && !nested && !pinnedIds.includes(workspace.workspace_id) && branchTitle ? branchTitle : null;
+    // the compact rows (the default): one line, the branch dim at its end, herdr-app's Spaces list
+    const compact = !twoLine;
+    const shownTitle = compact ? compactWorktreeName(rowTitle) : rowTitle;
+    const tailBranch = compact ? compactBranch(branchTitle) : null;
+    const branchTail = tailBranch !== null && !sameName(tailBranch, rowTitle) && tailBranch !== worktreeLabel(shownTitle) ? tailBranch : null;
     // the tooltip and the menu keep the exact branch (its slashes) even where the row does not repeat it
     const branchNote = branchTitle && branchTitle !== workspace.label ? branchTitle : null;
     const paths = [...new Set([workspace.worktree?.checkout_path, pane.cwd].filter((path): path is string => Boolean(path)))];
@@ -860,7 +893,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const contentsId = `${rosterId}-worktrees-${encodeURIComponent(workspace.workspace_id)}`;
     // without a project icon the folder itself says the fold's state: open while the worktrees show
     const unfolded = children.length > 0 && repoKey !== undefined && !collapsed;
-    const face = <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
+    const face = compact ? <WorkspaceAvatar name={rowTitle} /> : <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
+    const rowStatus = online ? rollupStatus(statusPanes.map((candidate) => activity.status(machineId, candidate))) : undefined;
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void => setMenu(menuOpen ? null : { anchor, point, previousFocus, workspace, title: rowTitle, place: [branchNote, ...paths].filter(Boolean).join(" · ") || workspace.label });
     return <li
       className={`workspace workspace-group pane-item${selected ? " is-selected" : ""}${workerSelected ? " has-selected-agent" : ""}${collapsed ? " is-collapsed" : ""}${context ? " is-filter-context" : ""}${dragWorkspaceId === workspace.workspace_id ? " is-dragging" : ""}${touchDrag?.source === workspace.workspace_id ? " is-lifted" : ""}`}
@@ -876,7 +910,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
         {/* a workspace leads with its own face, the project's icon or else a folder; when linked
             worktrees sit under it, that face is also the fold, and turns to an open or closed folder under a pointer */}
-        {nested ? null : children.length > 0 && repoKey !== undefined ? <button
+        {nested ? compact ? <span className="sidebar-mark workspace-branch-mark" aria-hidden="true"><GitBranch /></span> : null : children.length > 0 && repoKey !== undefined ? <button
           type="button"
           className="sidebar-row-action workspace-toggle"
           aria-label={collapsed ? t("Expand worktrees of {name}", { name: workspace.label }) : t("Collapse worktrees of {name}", { name: workspace.label })}
@@ -907,7 +941,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
             actions.selectPane(pane.pane_id);
           }}
         >
-          {rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
+          {!compact && rowMark(pane, workspace.worktree?.is_linked_worktree === true)}
           {editingWorkspace ? <input
             className="input workspace-rename-input"
             aria-label={t("Workspace name")}
@@ -930,22 +964,17 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
               {filterNote}
             </span>
             {lines.place && <span className="workspace-place">{lines.place}</span>}
-          </span> : branchLine ? <span className="workspace-copy is-branch-line">
-            <span className="workspace-line">
-              <span className="workspace-name">{rowTitle}</span>
-              {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
-              {filterNote}
-            </span>
-            <span className="workspace-place workspace-branch">{branchLine}</span>
           </span> : <span className="workspace-copy">
-            <span className="workspace-name">{rowTitle}</span>
-            {secondaryBranch && <span className="worktree-workspace-label">{secondaryBranch}</span>}
+            <span className="workspace-name">{shownTitle}</span>
+            {!compact && secondaryBranch && <span className="worktree-workspace-label">{secondaryBranch}</span>}
+            {branchTail && <span className="workspace-branch-tail">{branchTail}</span>}
             {foldedCount > 0 && <span className="workspace-fold-count" aria-hidden="true">+{foldedCount}</span>}
             {filterNote}
           </span>}
           <span className="sidebar-pane-meta">
             <span className="visually-hidden">{markName(pane)}</span>
-            {online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={online ? rollupStatus(statusPanes.map((candidate) => activity.status(machineId, candidate))) : undefined} />}
+            {compact && rowStatus === "blocked" && !(online && pane.restore_error) && <span className="workspace-wait-pill" aria-hidden="true">{t("Waiting")}</span>}
+            {online && pane.restore_error ? <RestoreErrorBadge reason={pane.restore_error} /> : <StatusBadge compact status={rowStatus} />}
           </span>
         </div>
         <div className="workspace-actions">

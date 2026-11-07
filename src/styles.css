@@ -157,7 +157,7 @@
   --divider: var(--border-strong);
   /* the header from 769px, in either density: one line beside the sidebar's own top row */
   --header-h-wide: 46px;
-  --sidebar-w: 320px;
+  --sidebar-w: 268px;
   --control-h: 34px;
   /* what the segmented track takes from --control-h above and below an option: its padding and
      hairline, both sides. An option is --control-h less this, and its touch expander grows from that */
@@ -1510,7 +1510,7 @@
   --fs-pairing: calc(26px * var(--ui-scale));
   --lh-base: 1.45;
   --header-h: 46px;
-  --sidebar-w: 300px;
+  --sidebar-w: 268px;
   --control-h: 32px;
   --row-h: 44px;
   --chip-h: 18px;
