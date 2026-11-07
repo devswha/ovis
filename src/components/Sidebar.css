@@ -645,12 +645,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
    on the height and in the type of an agent's row. */
 .machine-workspaces.is-two-line .workspace-header { min-height: var(--side-row-2); }
 
-/* One line: as in herdr's sidebar, a top-level git workspace says its branch under its name, on
-   the same height as a two-line row; worktrees and folders outside git stay one line. */
-.workspace-header:has(.workspace-copy.is-branch-line) { min-height: var(--side-row-2); }
-
-.workspace-copy.is-two-line,
-.workspace-copy.is-branch-line {
+.workspace-copy.is-two-line {
   flex-direction: column;
   align-items: stretch;
   justify-content: center;
