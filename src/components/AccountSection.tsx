@@ -43,7 +43,7 @@ const RELIST_MS = 9 * 60_000;
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  */
-function AddThisPc() {
+function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch above; the welcome does not */ relayAbove?: boolean } = {}) {
   const t = useT();
   const [state, setState] = useState<{ kind: "hidden" } | { kind: "offer" } | { kind: "waiting"; name: string } | { kind: "error"; message: string }>({ kind: "hidden" });
   /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
@@ -67,7 +67,8 @@ function AddThisPc() {
     listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
       setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
-        ? t("Turn on remote access through the Ovis relay above first.") : t("This PC could not be listed in your account. Try again.") });
+        ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
+        : t("This PC could not be listed in your account. Try again.") });
     });
   };
   if (state.kind === "hidden") return null;
@@ -341,11 +342,12 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
   );
 
   if (welcome !== undefined) {
-    if (view.kind === "loading") return null;
+    // signed out, the buttons wait for the service's own list: the build's fallback could offer one it lacks
+    if (view.kind === "loading" || (view.kind === "signed-out" && offer === null)) return null;
     return (
       <div className="setup-signin">
         {view.kind === "signed-in"
-          ? <><p className="setup-signin-done" role="status">{t("Signed in as {account}.", { account: view.account })}</p><AddThisPc /></>
+          ? <><p className="setup-signin-done" role="status">{t("Signed in as {account}.", { account: view.account })}</p><AddThisPc relayAbove={false} /></>
           : <>{welcome.lead}{signInParts}</>}
         {welcome.later}
       </div>

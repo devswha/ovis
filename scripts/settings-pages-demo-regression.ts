@@ -897,6 +897,7 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
   const cases = [
     { offered: ["github", "google"], signedIn: false },
     { offered: ["github"], signedIn: false },
+    { offered: ["google"], signedIn: false },
     { offered: null, signedIn: false },
     { offered: ["github", "google"], signedIn: true },
   ] as const;
@@ -955,8 +956,11 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
           const expected = offered.map((provider) => provider === "github" ? "Continue with GitHub" : "Continue with Google");
           assert.deepEqual(await signIn.locator(".account-provider").allTextContents(), expected, `one button for each provider the service lists ${at}`);
           await shot(`welcome-signin-${offered.join("-")}`);
-          await signIn.getByRole("button", { name: "Not now", exact: true }).click();
+          // by keyboard: the box goes and the keyboard's place moves to the first choice, not the page
+          await signIn.getByRole("button", { name: "Not now", exact: true }).focus();
+          await page.keyboard.press("Enter");
           await signIn.waitFor({ state: "detached" });
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("setup-choice") ?? false), true, `Not now hands the keyboard to the first choice ${at}`);
           assert.equal(await guide.getByRole("button", { name: /I'm new to Ovis/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
           assert.equal(await guide.getByRole("button", { name: /I've used Ovis before/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
         } else {

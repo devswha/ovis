@@ -471,6 +471,7 @@ const BASE: Record<string, string> = {
   "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "在已加入账号的手机上打开 Ovis 应用，点按 {name} 的“添加”。然后在这里批准。",
   "This PC could not be listed in your account. Try again.": "无法将此电脑列入你的账号。请重试。",
   "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
+  "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "请先在 设置 → 设备和电脑 中开启通过 Ovis 中继的远程访问。",
   "New terminal": "新建终端",
   "New terminal failed: {reason}": "新建终端失败：{reason}",
   "herdr prefix: press a key": "herdr 前缀键：请按一个键",
