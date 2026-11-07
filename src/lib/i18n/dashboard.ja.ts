@@ -60,4 +60,5 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Remove this device": "このデバイスを外す",
   "Remove this device from your account": "アカウントからこのデバイスを外す",
   "Every PC of the account removes this device. You can pair it again later.": "アカウントのすべての PC からこのデバイスが外れます。あとでまたペアリングできます。",
+  "Answered this device's latest check": "このデバイスの直近の確認には応答あり",
 };

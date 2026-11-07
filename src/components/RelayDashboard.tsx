@@ -241,9 +241,11 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
                         </div>
                       </td>
                       <td className="relay-dash-state-cell">
-                        {pc.paired && pcStatus?.get(pc.server_id)
+                        {/* offline is the directory's word, as the strip and the map say it; this device's own check only adds that the PC still answered it */}
+                        {pc.state !== "offline" && pc.paired && pcStatus?.get(pc.server_id)
                           ? <PcStatusLine status={pcStatus.get(pc.server_id)!} lastSeenAt={pc.last_seen_at} />
-                          : <span className="relay-dash-state"><StateDot state={pc.state} />{pcStateWord(pc.state, t)}</span>}
+                          : <span className="relay-dash-state"><StateDot state={pc.state} />{pc.state === "offline" ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
+                        {pc.state === "offline" && pc.paired && pcStatus?.get(pc.server_id)?.kind === "answered" && <small className="relay-dash-state-note">{t("Answered this device's latest check")}</small>}
                       </td>
                       <td className="relay-dash-relay">{relayHost(pc.relay ?? defaultRelay)}</td>
                       <td className="relay-dash-seen">{pc.listed ? lastSeen(pc.last_seen_at) : "—"}</td>

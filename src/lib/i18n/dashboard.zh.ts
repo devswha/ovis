@@ -60,4 +60,5 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Remove this device": "移除此设备",
   "Remove this device from your account": "从账户中移除此设备",
   "Every PC of the account removes this device. You can pair it again later.": "账户中的所有 PC 都会移除此设备。之后可以再次配对。",
+  "Answered this device's latest check": "对此设备最近一次检查有响应",
 };

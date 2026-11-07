@@ -103,11 +103,11 @@ describe("the front page's account part", () => {
     expect(html.indexOf("Check now")).toBeLessThan(html.indexOf("home"));
     // a check stops before signing in: the PC answering is all it knows, never that this device is connected
     expect(text).not.toContain("Connected");
-    // signed in, the dashboard's row for the PC says the same in its State cell, in place of what the account's directory says of it
-    const signedIn = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "home", "offline", true)] } }), scoped: false, onSignIn: none, pcStatus, onCheckPcs: none });
+    // signed in, the dashboard's row for a ready PC says the same in its State cell (an offline one says Offline: the dashboard's case below)
+    const signedIn = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "home", "paired")] } }), scoped: false, onSignIn: none, pcStatus, onCheckPcs: none });
     const row = rowOf(signedIn, "home").replace(/<[^>]+>/g, "");
     expect(row).toContain("Answers · Same Wi-Fi, direct · 9 ms");
-    expect(row).not.toContain("Offline");
+    expect(row).not.toContain("Ready");
     expect(signedIn).toContain("Check now");
   });
 
@@ -216,6 +216,24 @@ describe("the dashboard", () => {
     const unpaired = render(signedIn([pc(ids.home, "Home server", "offline")], { directoryRelays: [{ server_id: ids.home, relay: AP }] }));
     expect(actionsOf(rowOf(unpaired, "Home server"))).toEqual([]);
     expect(rowOf(unpaired, "Home server")).toContain("relay-ap.ovis.sh");
+  });
+
+  it("says Offline in the row of a PC the directory has not seen lately, as the strip and the map do, even when this device's check got an answer", () => {
+    const answered = { kind: "answered", route: "relay", rttMs: 13 } as const;
+    const html = render(signedIn(four(), { pcStatus: new Map([[ids.home, answered], [ids.desk, answered]]), onCheckPcs: none }));
+    const cell = (name: string) => /<td class="relay-dash-state-cell">([\s\S]*?)<\/td>/.exec(rowOf(html, name))?.[1] ?? "";
+    expect(cell("Home server")).toContain('<span class="relay-dash-dot" data-pc-state="offline"');
+    const state = (html: string) => /<span class="relay-dash-state">([\s\S]*?)<\/span>(?=<small|$)/.exec(html)?.[1] ?? "";
+    expect(text(state(cell("Home server")))).toBe("Offline · 20 h ago");
+    expect(cell("Home server")).not.toContain("connection-line");
+    expect(cell("Home server")).toContain('class="relay-dash-state-note"');
+    // a PC the directory calls ready keeps the check's own line
+    expect(text(cell("Desk PC"))).toBe("Answers · Through the relay · 13 ms");
+    // a check that did not answer adds nothing to Offline
+    const down = render(signedIn(four(), { pcStatus: new Map([[ids.home, { kind: "offline", reason: "pc" }]] as const), onCheckPcs: none }));
+    const downCell = /<td class="relay-dash-state-cell">([\s\S]*?)<\/td>/.exec(rowOf(down, "Home server"))?.[1] ?? "";
+    expect(text(downCell)).toBe("Offline · 20 h ago");
+    expect(downCell).not.toContain("relay-dash-state-note");
   });
 
   it("gives a phone's tab bar the sidebar's places: Overview, PCs and Devices as links to what is there, Settings a row with no page, Relay the sidebar's alone", () => {

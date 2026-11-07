@@ -60,4 +60,5 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Remove this device": "이 기기 빼기",
   "Remove this device from your account": "계정에서 이 기기 빼기",
   "Every PC of the account removes this device. You can pair it again later.": "계정의 모든 PC에서 이 기기가 빠집니다. 나중에 다시 페어링할 수 있습니다.",
+  "Answered this device's latest check": "이 기기의 최근 확인에는 응답함",
 };
