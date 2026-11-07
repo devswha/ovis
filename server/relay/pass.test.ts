@@ -162,6 +162,32 @@ test("an early refresh waits out the service's Retry-After", async () => {
   k.made.stop();
 });
 
+test("a refusal held back by the keeper's own limit never delays the ask a newly named account makes", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-pass-keeper-"));
+  dirs.push(stateDir);
+  const identity = loadRelayIdentity(stateDir);
+  const clock = new TestClock();
+  let account: string | null = null;
+  let asked = 0;
+  const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const fetch = async (request: Request) => {
+    if (new URL(request.url).pathname === "/v1/pc/challenge") return Response.json({ challenge_id: "0".repeat(32), frame: JSON.stringify({ type: "server_challenge", public_key: "9".repeat(64), nonce: "1".repeat(64) }) });
+    asked++;
+    return Response.json({ pass: await signRelayPass(keys.privateKey, "0badc0de", identity.server_id, Math.floor(clock.now() / 1000)), expires_in: 172_800, refresh_in: 43_200 });
+  };
+  const made = new RelayPassKeeper({ stateDir, identity: () => identity, account: () => account, service: "https://account.test", fetch, clock, onPass: () => {} });
+  made.start();
+  // the global and the regional relay refuse this PC at once, before it names any account
+  await made.rejected();
+  await made.rejected();
+  expect(made.state).toBe("no_account");
+  account = "acct_1";
+  await made.refresh();
+  expect(asked).toBe(1);
+  expect(made.state).toBe("ok");
+  made.stop();
+});
+
 test("a pass for another PC is not kept", async () => {
   const other = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));
   const k = await keeper(async () => Response.json({ pass: await other.signed(), expires_in: 172_800, refresh_in: 43_200 }));
