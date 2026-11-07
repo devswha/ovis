@@ -28,7 +28,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway } from "../lib/userError.ts";
 import { changePc, inNativeApp } from "../lib/nativeApp.ts";
 import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
-import { canHideMachine, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
+import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 
 /**
  * Which list of PCs this page goes back to, when it shows one PC of a phone's list: the phone app's
@@ -219,8 +219,10 @@ export function MachineSidebar(props: Props) {
     }
   });
   const hideMachine = (id: string) => {
-    focusListAfterHide.current = true;
-    setHiddenMachines(withMachineHidden(roster, hiddenIds, id, true));
+    const next = withMachineHidden(roster, hiddenIds, id, true);
+    // a hide the stored list's cap drops changes nothing: no render follows, so no focus is asked for either
+    focusListAfterHide.current = next.indexOf(id) < HIDDEN_MACHINES_MAX;
+    setHiddenMachines(next);
   };
   useEffect(() => { if (!drawerOpen) { setQuery(""); setFilterAsked(false); } }, [drawerOpen]);
   // the roster's wait is a live region that is in the list from its first render, clipped while empty (never
