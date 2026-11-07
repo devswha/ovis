@@ -2,15 +2,13 @@
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
-import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 
-import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import type { MyPc, MyPcState } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
-import type { AccountView } from "../lib/relay/shellState.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { ConnectionLine } from "./ConnectionLine.tsx";
 
@@ -68,13 +66,22 @@ export function AccountFinePrint() {
   return <p className="account-fineprint">{t("The account only lists your PCs. Sessions stay end-to-end encrypted.")}</p>;
 }
 
+/** A PC's state in a word or two, as the dashboard's rows and counts say it beside its dot. */
+export function pcStateWord(state: MyPcState, t: ReturnType<typeof useT>): string {
+  switch (state) {
+    case "paired": return t("Ready");
+    case "needs-approval": return t("Needs approval");
+    case "offline": return t("Offline");
+    case "needs-update": return t("Update Ovis on it");
+  }
+}
+
 export function accountPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string {
   switch (pc.state) {
     // a pairing from before the account: removing this device through the account does not reach it yet
-    case "paired": return pc.linked ? t("Ready") : t("Ready · not in the account yet");
-    case "needs-approval": return t("Needs approval");
+    case "paired": return pc.linked ? pcStateWord("paired", t) : t("Ready · not in the account yet");
     case "offline": return t("Offline · {when}", { when: lastSeen(pc.last_seen_at) });
-    case "needs-update": return t("Update Ovis on it");
+    default: return pcStateWord(pc.state, t);
   }
 }
 
@@ -119,57 +126,5 @@ export function AccountPcList({ pcs, onJoin, status }: { pcs: readonly MyPc[]; o
         );
       })}
     </ul>
-  );
-}
-
-/** The front page once signed in: the account's PCs, then how another one joins. */
-export function AccountPcs({ view, onJoin, onSignOut, onLeave, status, onCheck }: {
-  view: Extract<AccountView, { kind: "signed-in" }>; onJoin?: (pc: MyPc, options?: { typed?: boolean }) => void;
-  /** how each saved PC answered the latest check, and Check now */
-  status?: ReadonlyMap<string, PcStatus>;
-  onCheck?: () => void;
-  /** ends the sign-in; every pairing stays */
-  onSignOut?: () => void;
-  /** removes this device from every PC of the account, then signs out */
-  onLeave?: () => void;
-}) {
-  const t = useT();
-  const [leaving, setLeaving] = useState(false);
-  return (
-    <>
-      <h1 className="relay-shell-title">{t("Your PCs")}</h1>
-      <p className="relay-shell-copy account-subtitle">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p>
-      {view.pcs !== null && onJoin && newPcs(view.pcs, Date.now()).map((pc) => (
-        <section key={pc.server_id} className="account-new-pc" aria-label={t("New PC")}>
-          <p className="account-new-pc-title">{t("Add {name} to your account?", { name: pc.name })}</p>
-          <p className="account-fineprint">{t("You type the number {name} shows on its own screen, then approve there. Every device of your account can then use it.", { name: pc.name })}</p>
-          <button type="button" className="btn btn-primary" onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button>
-        </section>
-      ))}
-      {view.pcs === null
-        ? <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Loading your PCs…")}</span></div>
-        : <>
-          {onCheck && view.pcs.some((pc) => pc.paired) && <CheckPcsButton status={status ?? new Map()} onCheck={onCheck} />}
-          <AccountPcList pcs={view.pcs} {...(onJoin ? { onJoin } : {})} {...(status ? { status } : {})} />
-        </>}
-      {view.error !== null && <p className="relay-shell-detail" role="alert">{view.error}</p>}
-      <p className="account-fineprint">{t("To add a PC, sign in on it or scan its QR code.")}</p>
-      {(onSignOut || onLeave) && (
-        <div className="account-actions">
-          {leaving && onLeave ? (
-            <>
-              <p className="account-fineprint">{t("Every PC of the account removes this device. You can pair it again later.")}</p>
-              <button type="button" className="btn btn-danger" onClick={onLeave}>{t("Remove this device")}</button>
-              <button type="button" className="btn" onClick={() => setLeaving(false)}>{t("Cancel")}</button>
-            </>
-          ) : (
-            <>
-              {onSignOut && <button type="button" className="account-link" onClick={onSignOut}>{t("Sign out")}</button>}
-              {onLeave && <button type="button" className="account-link account-link-danger" onClick={() => setLeaving(true)}>{t("Remove this device from your account")}</button>}
-            </>
-          )}
-        </div>
-      )}
-    </>
   );
 }

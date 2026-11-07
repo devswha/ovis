@@ -135,7 +135,7 @@ const PART_FILES: Record<string, string[]> = {
   setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
   guide: ["components/SetupGuide.tsx"],
   relay: ["components/RelayShell.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx"],
-  dashboard: [],
+  dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
 };
 

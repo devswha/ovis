@@ -3,6 +3,23 @@ import { REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
 
 export type DashboardPc = MyPc & { relay: string | null };
 
+/**
+ * The PCs with the relay each one goes through: the account directory's `relay` for a PC it lists
+ * (the one its `join` route carries, docs/account.md "GET /v1/pcs"), else the relay of this device's
+ * own pairing (RelayDevice.relay) for a PC paired without the account, else null, which
+ * dashboardModel puts under the shell's default relay. Pure: `saved` is whatever the device store listed.
+ */
+export function dashboardPcs(pcs: readonly MyPc[], saved: readonly { server_id: string; relay: string }[], directory: readonly { server_id: string; relay: string | null }[] = []): DashboardPc[] {
+  const listed = new Map(directory.map((pc) => [pc.server_id, pc.relay]));
+  const paired = new Map(saved.map((device) => [device.server_id, device.relay]));
+  return pcs.map((pc) => ({ ...pc, relay: listed.get(pc.server_id) ?? pc.join?.relay ?? paired.get(pc.server_id) ?? null }));
+}
+
+/** A relay origin as a row names it: its host alone (`relay-ap.ovis.sh`), or the origin as given when it is not a URL. */
+export function relayHost(origin: string): string {
+  try { return new URL(origin).host; } catch { return origin; }
+}
+
 export function dashboardModel(pcs: readonly DashboardPc[], me: { label: string }, defaultRelay: string) {
   const relays = new Map<string, string[]>();
   const hubs = new Map<string, DashboardPc[]>();

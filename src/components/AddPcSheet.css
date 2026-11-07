@@ -1,0 +1,206 @@
+/*
+ * Add a PC (AddPcSheet.tsx): the system's modal (styles.css .modal*) with four segmented bars at its
+ * head and the join's steps below the screen the shell shows for that step. Tokens only. The digit
+ * field, the digits to compare and the waits are the relay shell's own rules (RelayShell.css), so the
+ * sheet and the shell's page draw them alike; the rules at the end only fit them into the sheet.
+ */
+
+.add-pc-sheet {
+  width: min(100%, 520px);
+}
+
+.add-pc-sheet:focus {
+  outline: none;
+}
+
+/* the head holds the bars, the title and its line; the body's own top padding parts them from what follows */
+.add-pc-head {
+  display: block;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.add-pc-bars {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.add-pc-bars span {
+  height: var(--rail-w);
+  border-radius: var(--radius-pill);
+  background: var(--border);
+}
+
+.add-pc-bars span[data-bar="done"] {
+  background: var(--primary);
+  opacity: 0.45;
+}
+
+.add-pc-bars span[data-bar="running"] {
+  background: var(--primary);
+}
+
+.add-pc-bars span[data-bar="failed"] {
+  background: var(--status-blocked);
+}
+
+.add-pc-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+  color: var(--text-dim);
+}
+
+.add-pc-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* the steps: a mark, the step and what it proves, a hairline between them */
+.add-pc-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.add-pc-steps li {
+  display: grid;
+  grid-template-columns: var(--icon-size) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-3) 0;
+  border-top: var(--hairline) solid var(--border);
+  font-size: var(--fs-md);
+  line-height: var(--lh-base);
+}
+
+.add-pc-steps li:first-child {
+  border-top: 0;
+}
+
+.add-pc-steps li:last-child {
+  padding-bottom: 0;
+}
+
+.add-pc-step-label {
+  display: block;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.add-pc-step-detail {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.add-pc-steps li[data-step="todo"] .add-pc-step-label {
+  color: var(--text-dim);
+  font-weight: var(--fw-regular);
+}
+
+/* the mark sits on the label's first line: a ring to do, the working colour running, a tick done, a cross failed */
+.add-pc-mark {
+  display: grid;
+  place-items: center;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  margin-top: calc((var(--fs-md) * var(--lh-base) - var(--icon-size)) / 2);
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 var(--hairline) var(--border-strong);
+  color: var(--text-dim);
+}
+
+.add-pc-mark svg {
+  width: var(--space-3);
+  height: var(--space-3);
+  stroke-width: 2.5;
+}
+
+.add-pc-steps li[data-step="done"] .add-pc-mark {
+  background: var(--status-done-tint);
+  box-shadow: none;
+  color: var(--status-done);
+}
+
+.add-pc-steps li[data-step="running"] .add-pc-mark {
+  box-shadow: inset 0 0 0 calc(2 * var(--hairline)) var(--status-working);
+}
+
+.add-pc-steps li[data-step="running"] .add-pc-mark::after {
+  content: "";
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: var(--radius-pill);
+  background: var(--status-working);
+  animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
+}
+
+.add-pc-steps li[data-step="failed"] .add-pc-mark {
+  background: var(--status-blocked-tint);
+  box-shadow: none;
+  color: var(--status-blocked);
+}
+
+/* what went wrong, in one line above the steps: the wrong number, or why the join ended */
+.add-pc-problem {
+  margin: 0;
+  color: var(--status-blocked);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+/* the shell's screens inside the sheet: the typed number's heading repeats the running step and its copy
+   the sheet's own line, so only those say it; their buttons sit in a row at the foot's side, the first in
+   the DOM (the primary) on the right */
+.add-pc-sheet .relay-shell-title,
+.add-pc-typed > .relay-shell-copy {
+  display: none;
+}
+
+.add-pc-typed > .relay-shell-detail {
+  margin-top: 0;
+}
+
+.add-pc-sheet .relay-shell-actions {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  margin-top: var(--space-3);
+}
+
+.add-pc-sheet .relay-shell-actions .btn {
+  width: auto;
+}
+
+.add-pc-sheet .relay-shell-digits {
+  margin: var(--space-2) 0;
+}
+
+.add-pc-sheet .relay-shell-wait {
+  margin: 0;
+}
+
+.add-pc-sheet .relay-shell-wait .relay-shell-detail {
+  margin-top: var(--space-2);
+  text-align: center;
+}
+
+/* fingers: the number's field is a control a finger reaches, so it takes the touch target's height */
+@media (pointer: coarse) {
+  .add-pc-sheet .relay-shell-code-input {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .add-pc-steps li[data-step="running"] .add-pc-mark::after {
+    animation: none;
+  }
+}

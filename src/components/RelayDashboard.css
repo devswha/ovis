@@ -1,0 +1,522 @@
+/*
+ * The relay dashboard (RelayDashboard.tsx): the app's sidebar grid (DESIGN.md, sidebar roster row:
+ * one grid, neutral hover fill, the selected row's fill and no stroke) beside one column of panels
+ * on --bg. Tokens only; every count in tabular numerals; every control a finger can reach grows to
+ * --touch-target through the .btn, .segmented and .account-link rules it reuses.
+ */
+
+/* the <main> the shell gives the dashboard: the whole viewport, no card */
+.relay-dash-screen {
+  display: grid;
+  min-height: 100dvh;
+  min-height: var(--app-height, 100dvh);
+  background: var(--bg);
+}
+
+.relay-dash {
+  /* the sidebar: narrower than the app's roster, which has rows to fill; aliases of existing tokens only */
+  --dash-side-w: calc(var(--sidebar-w) - 2 * var(--space-8) - var(--space-4));
+  --dash-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-panel));
+  --dash-selected: var(--bg-hover);
+  display: grid;
+  grid-template-columns: var(--dash-side-w) minmax(0, 1fr);
+  min-width: 0;
+}
+
+/* ---- sidebar ---- */
+
+.relay-dash-side {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-self: start;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
+  padding: calc(var(--space-3) + env(safe-area-inset-top, 0px)) var(--space-2) calc(var(--space-3) + env(safe-area-inset-bottom, 0px)) calc(var(--space-2) + env(safe-area-inset-left, 0px));
+  background: var(--bg-panel);
+  border-right: var(--hairline) solid var(--divider);
+}
+
+.relay-dash-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  margin: 0 0 var(--space-3);
+  padding: 0 var(--space-2);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.relay-dash-brand-mark {
+  width: calc(var(--mark-size) + var(--space-1));
+  height: calc(var(--mark-size) + var(--space-1));
+}
+
+.relay-dash-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* one grid for every row: a --control-h leading cell for the glyph, the words, a trailing count */
+.relay-dash-nav-item {
+  display: grid;
+  grid-template-columns: var(--control-h) minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: var(--control-h);
+  padding-right: var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.relay-dash-nav-item svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  justify-self: center;
+  color: var(--text-dim);
+}
+
+.relay-dash-nav-item:hover {
+  background: var(--dash-hover);
+}
+
+.relay-dash-nav-item[aria-current="page"] {
+  background: var(--dash-selected);
+  color: var(--text-strong);
+}
+
+.relay-dash-nav-item[aria-current="page"] svg {
+  color: var(--accent);
+}
+
+/* keyboard focus draws the ring inside the row, so it is not clipped by the panel's edge */
+.relay-dash-nav-item:focus-visible {
+  outline: var(--ring);
+  outline-offset: calc(-1 * var(--ring-offset));
+}
+
+.relay-dash-nav-item[aria-disabled="true"] {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.relay-dash-nav-item[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.relay-dash-nav-count {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* forced colors repaint the fill as Canvas: the current row keeps a Highlight leading bar, as the app's sidebar does */
+@media (forced-colors: active) {
+  .relay-dash-nav-item[aria-current="page"] {
+    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+  }
+}
+
+.relay-dash-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: auto;
+  padding: var(--space-3) var(--space-2) 0;
+  border-top: var(--hairline) solid var(--border);
+}
+
+.relay-dash-who {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.relay-dash-who svg {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+}
+
+.relay-dash-foot .account-link {
+  margin-top: 0;
+  text-align: start;
+}
+
+.relay-dash-foot .account-fineprint {
+  margin-top: 0;
+}
+
+/* ---- the page ---- */
+
+.relay-dash-main {
+  min-width: 0;
+  padding: var(--space-5) calc(var(--space-6) + env(safe-area-inset-right, 0px)) calc(var(--space-8) + env(safe-area-inset-bottom, 0px)) var(--space-6);
+}
+
+.relay-dash-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.relay-dash-top-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.relay-dash-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  color: var(--text-strong);
+}
+
+.relay-dash-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-dash-top .btn svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+/* a PC waiting on this device: one line in the waiting state's tint, with the row's own action */
+.relay-dash-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--status-working-tint);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+.relay-dash-notice p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* the summary strip: counts, relays, what needs attention, three cells parted by hairlines */
+.relay-dash-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr) minmax(0, 1fr);
+  margin-bottom: var(--space-4);
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.relay-dash-cell {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.relay-dash-cell + .relay-dash-cell {
+  border-left: var(--hairline) solid var(--border);
+}
+
+.relay-dash-h {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-dash-counts,
+.relay-dash-relays,
+.relay-dash-attention {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.relay-dash-counts li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--space-6);
+}
+
+.relay-dash-counts b {
+  margin-left: auto;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
+}
+
+.relay-dash-relays li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-3);
+  align-items: center;
+  min-height: var(--space-6);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-dash-host {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-dash-attention li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.relay-dash-attention li .relay-dash-dot {
+  margin-top: calc(var(--space-2) - var(--hairline));
+}
+
+.relay-dash-attention-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-dash-attention small {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.relay-dash-quiet {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+/* the state's dot, the same four as AccountPcs.css: offline is a hollow ring, so it never reads as a colour alone */
+.relay-dash-dot {
+  display: inline-block;
+  flex: none;
+  box-sizing: border-box;
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.relay-dash-dot[data-pc-state="paired"] { background: var(--status-done); }
+.relay-dash-dot[data-pc-state="needs-approval"] { background: var(--status-working); }
+.relay-dash-dot[data-pc-state="needs-update"] { background: var(--status-blocked); }
+.relay-dash-dot[data-pc-state="offline"] { background: transparent; border: var(--hairline) solid var(--status-idle); }
+
+/* the connection map's slot: nothing is drawn until RelayMap mounts in it */
+.relay-dash-map {
+  display: block;
+}
+
+/* ---- the PC table ---- */
+
+.relay-dash-pcs-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.relay-dash-pcs-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.relay-dash-pcs-head .account-link {
+  width: auto;
+  margin-top: 0;
+}
+
+.relay-dash-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--fs-md);
+}
+
+.relay-dash-col-name { width: 34%; }
+.relay-dash-col-state { width: 22%; }
+.relay-dash-col-relay { width: 20%; }
+.relay-dash-col-seen { width: 12%; }
+.relay-dash-col-act { width: 12%; }
+
+.relay-dash-table th {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--text-dim);
+  text-align: start;
+}
+
+.relay-dash-table td {
+  padding: var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  vertical-align: middle;
+}
+
+.relay-dash-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.relay-dash-name-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  color: var(--text);
+}
+
+.relay-dash-name-icon svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.relay-dash-name-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* a long name truncates: the row keeps its columns, and the PC's own page shows the name whole */
+.relay-dash-name-text b,
+.relay-dash-name-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-dash-name-text b {
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.relay-dash-name-text small {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.relay-dash-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.relay-dash-relay,
+.relay-dash-seen {
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-dash-relay {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.relay-dash-seen {
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-dash-act {
+  text-align: end;
+  white-space: nowrap;
+}
+
+.relay-dash-none {
+  margin-top: var(--space-3);
+}
+
+/* no PC at all: one sentence and the one thing to do */
+.relay-dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.relay-dash-empty p {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--text-dim);
+}
+
+@media (pointer: coarse) {
+  .relay-dash-nav-item {
+    min-height: var(--touch-target);
+  }
+}
+
+/* a narrower window: the attention list takes a row of its own under the counts and relays */
+@media (max-width: 1100px) {
+  .relay-dash-summary {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .relay-dash-cell-attention {
+    grid-column: 1 / -1;
+    border-top: var(--hairline) solid var(--border);
+  }
+
+  .relay-dash-cell + .relay-dash-cell-attention {
+    border-left: 0;
+  }
+}

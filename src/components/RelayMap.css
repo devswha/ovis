@@ -1,0 +1,262 @@
+/*
+ * The dashboard's connection map (RelayMap.tsx), after GOAT's FleetGraph in technique: a dashed
+ * orbit, cubic wires, a flowing stepped dash and SMIL particles on the wires of PCs the directory
+ * saw lately. Rings and keys take the colors the PC rows use (AccountPcs.css); the one accent is
+ * this device and what was seen lately. Under 760px the svg gives way to the route list, and
+ * reduced motion removes the flow and the particles: the words under each PC carry its state.
+ */
+.relay-map {
+  margin: 0;
+}
+
+.relay-map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.relay-map-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+
+/* the legend's keys and the route list's marks: one dot in the state's color, hollow for offline */
+.relay-map-key {
+  flex: none;
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.relay-map-key[data-state="lately"] { background: var(--accent); }
+.relay-map-key[data-state="paired"] { background: var(--status-done); }
+.relay-map-key[data-state="needs-approval"] { background: var(--status-working); }
+.relay-map-key[data-state="needs-update"] { background: var(--status-blocked); }
+.relay-map-key[data-state="offline"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--status-idle); }
+
+.relay-map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: var(--space-2);
+  font-family: var(--font-ui);
+}
+
+.relay-map-orbit {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-dasharray: 6 8;
+}
+
+.relay-map-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.3;
+}
+
+.relay-map-edge[data-wire="live"] {
+  stroke: var(--accent);
+  stroke-opacity: 0.45;
+}
+
+.relay-map-edge[data-wire="off"] {
+  stroke-dasharray: 3 5;
+}
+
+/* the flow: 2 on, 12 off, two periods a cycle, stepped so it draws 30 frames a second rather than every refresh; towards the relay, as the PC's check-in goes */
+.relay-map-flow {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-dasharray: 2 12;
+  animation: relay-map-flow 1.1s steps(33) infinite reverse;
+}
+
+@keyframes relay-map-flow {
+  to { stroke-dashoffset: -28; }
+}
+
+.relay-map-svg[data-paused] .relay-map-flow {
+  animation-play-state: paused;
+}
+
+.relay-map-dot {
+  fill: var(--accent);
+}
+
+.relay-map-ring {
+  fill: var(--bg-elevated);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.relay-map-node[data-me] .relay-map-ring { stroke: var(--accent); }
+.relay-map-node[data-pc-state="paired"] .relay-map-ring { stroke: var(--status-done); }
+.relay-map-node[data-pc-state="needs-approval"] .relay-map-ring { stroke: var(--status-working); }
+.relay-map-node[data-pc-state="needs-update"] .relay-map-ring { stroke: var(--status-blocked); }
+.relay-map-node[data-pc-state="offline"] { opacity: 0.75; }
+
+.relay-map-glyph {
+  color: var(--text);
+}
+
+.relay-map-name {
+  fill: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.relay-map-word,
+.relay-map-caption {
+  fill: var(--text-dim);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+}
+
+.relay-map-hub-disc {
+  fill: var(--primary);
+}
+
+.relay-map-hub .relay-map-glyph {
+  color: var(--primary-text);
+}
+
+.relay-map-hub-small .relay-map-hub-disc {
+  fill: var(--bg-elevated);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+
+.relay-map-hub-small .relay-map-glyph {
+  color: var(--text-dim);
+}
+
+.relay-map-lock {
+  fill: var(--bg-panel);
+  stroke: var(--border-strong);
+}
+
+.relay-map-lock-glyph {
+  color: var(--status-done);
+}
+
+/* the phone's map: this device, then each relay and the PCs behind it, one row each */
+.relay-map-routes {
+  display: none;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.relay-map-route {
+  display: grid;
+}
+
+.relay-map-fan {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0 0 0 calc(var(--avatar-size) + var(--space-2));
+  padding: 0;
+  list-style: none;
+}
+
+.relay-map-hop {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--avatar-size);
+  font-size: var(--fs-md);
+}
+
+.relay-map-hop-mark {
+  display: grid;
+  flex: none;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text);
+  place-items: center;
+}
+
+.relay-map-hop-mark svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.relay-map-hop-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-map-host {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.relay-map-hop-note {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+
+.relay-map-hop-note svg {
+  width: 14px;
+  height: 14px;
+  color: var(--status-done);
+}
+
+/* the way from this device to its relay: a dotted drop, in the accent when a PC behind it was seen lately */
+.relay-map-link {
+  position: relative;
+  width: var(--avatar-size);
+  height: var(--space-4);
+}
+
+.relay-map-link::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--avatar-size) / 2 - 1px);
+  border-left: 2px dotted var(--border-strong);
+}
+
+.relay-map-link[data-live]::before {
+  border-left-color: var(--accent);
+}
+
+@media (max-width: 760px) {
+  .relay-map-legend,
+  .relay-map-svg {
+    display: none;
+  }
+
+  .relay-map-routes {
+    display: grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-map-flow,
+  .relay-map-dot {
+    display: none;
+    animation: none;
+  }
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import type { MyPc } from "../account/myPcs.ts";
 import type { DashboardPc } from "./dashboard.ts";
-import { dashboardModel } from "./dashboard.ts";
+import { dashboardModel, dashboardPcs, relayHost } from "./dashboard.ts";
 
 function pc(server_id: string, state: DashboardPc["state"], relay: string | null = null, last_seen_at: string | null = null): DashboardPc {
   return {
@@ -85,6 +86,12 @@ describe("dashboardModel", () => {
     ]);
   });
 
+  it("names a relay by its host, and an origin that is not a URL as it is", () => {
+    expect(relayHost("wss://relay-ap.ovis.sh")).toBe("relay-ap.ovis.sh");
+    expect(relayHost("wss://relay.example:8443/path")).toBe("relay.example:8443");
+    expect(relayHost("not a url")).toBe("not a url");
+  });
+
   it("preserves myPcs order for every PC needing attention", () => {
     const model = dashboardModel([
       pc("one", "needs-update"), pc("ready", "paired"), pc("two", "offline"), pc("three", "needs-approval"),
@@ -94,5 +101,35 @@ describe("dashboardModel", () => {
       { server_id: "two", reason: "offline" },
       { server_id: "three", reason: "needs-approval" },
     ]);
+  });
+});
+
+describe("dashboardPcs", () => {
+  const row = (server_id: string, state: MyPc["state"], extra: Partial<MyPc> = {}): MyPc => ({ server_id, name: server_id, state, last_seen_at: null, added_at: null, listed: false, paired: state === "paired", linked: false, ...extra });
+
+  it("takes the directory's relay for a PC the account lists, its join route's for one this device is not paired with, and the pairing's for one paired without the account", () => {
+    const pcs = dashboardPcs(
+      [row("listed", "paired", { listed: true }), row("joinable", "needs-approval", { listed: true, join: { server_public_key: "k", relay: "wss://relay-ap.ovis.sh" } }), row("qr", "paired")],
+      [{ server_id: "listed", relay: "wss://relay.old.example" }, { server_id: "qr", relay: "wss://relay.example" }],
+      [{ server_id: "listed", relay: "wss://relay.ovis.sh" }, { server_id: "joinable", relay: "wss://relay-ap.ovis.sh" }],
+    );
+    expect(pcs.map(({ server_id, relay }) => [server_id, relay])).toEqual([["listed", "wss://relay.ovis.sh"], ["joinable", "wss://relay-ap.ovis.sh"], ["qr", "wss://relay.example"]]);
+    // the rows keep everything myPcs said of them
+    expect(pcs[0]).toMatchObject({ state: "paired", listed: true, paired: true });
+  });
+
+  it("falls back from a directory entry without a relay to the pairing's, and to null when neither knows one", () => {
+    const pcs = dashboardPcs(
+      [row("paired", "paired", { listed: true }), row("unknown", "needs-approval", { listed: true })],
+      [{ server_id: "paired", relay: "wss://relay.example" }],
+      [{ server_id: "paired", relay: null }, { server_id: "unknown", relay: null }],
+    );
+    expect(pcs.map(({ relay }) => relay)).toEqual(["wss://relay.example", null]);
+    // the model then puts the unknown one under the shell's default relay
+    expect(dashboardModel(pcs, { label: "Me" }, "wss://relay.ovis.sh").relays.map(({ origin, pcs: ids }) => [origin, ids])).toEqual([["wss://relay.example", ["paired"]], ["wss://relay.ovis.sh", ["unknown"]]]);
+  });
+
+  it("works without a directory: every saved pairing is a local PC on its own relay", () => {
+    expect(dashboardPcs([row("a", "paired")], [{ server_id: "a", relay: "wss://relay-ap.ovis.sh" }]).map(({ relay }) => relay)).toEqual(["wss://relay-ap.ovis.sh"]);
   });
 });

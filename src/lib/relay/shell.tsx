@@ -11,9 +11,12 @@ import { ACCOUNT_FEATURE, MIN_SERVER_VERSION, MuxProtocolError } from "../../../
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStatus } from "../../../shared/update.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
+import { GLOBAL_RELAY } from "../../../shared/relay-regions.ts";
 import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { accountProvidersOf, AccountService, offeredProviders, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import type { DirectoryPc } from "../account/service.ts";
+import type { AccountSession } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
 import { enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -54,6 +57,8 @@ export interface RelayShellMount {
   entryUrl: string;
   /** mounts the app on the container once the transport is set; what it returns is unmounted should the PC turn this phone away later */
   renderApp: () => Root;
+  /** draws the shell's screens on the container: react-dom's root by default; tests hand in their own */
+  createRoot?: (container: HTMLElement) => Root;
   store?: RelayDeviceStore;
   pendingPush?: PendingPushStore;
   open?: typeof openRelayTransport;
@@ -87,6 +92,9 @@ const INTRODUCED_GRACE_MS = 15 * 60_000;
 /** How long a device that just paired looks for its introduction, and how often. */
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
+
+/** How often the dashboard reads the account's directory again while the page is in view (and once more when it comes back into view). */
+const DIRECTORY_REFRESH_MS = 60_000;
 
 /** How long a PC's update may take, from the install request to the restarted server: a build on a slow PC included. */
 const UPDATE_MS = 15 * 60_000;
@@ -197,6 +205,27 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const setTypedJoin = (serverId: string | null): void => {
     try { if (serverId === null) sessionStorage.removeItem(TYPED_JOIN); else sessionStorage.setItem(TYPED_JOIN, serverId); } catch { /* no storage: the plain comparison stays */ }
   };
+  /**
+   * A join the dashboard's Add-a-PC sheet started: kept the same way across the PC's page load, read
+   * once when that page arrives with the join's offer, so the sheet takes the join up again there and
+   * a later plain visit to the PC's page never shows it (RelayShellProps.sheetJoin).
+   */
+  const SHEET_JOIN = "ovis-add-pc-sheet";
+  type SheetJoin = { mode: "new" | "join"; server_id: string };
+  let sheetJoin: SheetJoin | null = null;
+  const takeSheetJoin = (serverId: string): SheetJoin | null => {
+    try {
+      const kept = sessionStorage.getItem(SHEET_JOIN);
+      sessionStorage.removeItem(SHEET_JOIN);
+      const parsed: unknown = kept === null ? null : JSON.parse(kept);
+      if (typeof parsed !== "object" || parsed === null) return null;
+      const { mode, server_id } = parsed as { mode?: unknown; server_id?: unknown };
+      return (mode === "new" || mode === "join") && server_id === serverId ? { mode, server_id } : null;
+    } catch { return null; }
+  };
+  const setSheetJoin = (join: SheetJoin | null): void => {
+    try { if (join === null) sessionStorage.removeItem(SHEET_JOIN); else sessionStorage.setItem(SHEET_JOIN, JSON.stringify(join)); } catch { /* no storage: the pairing screens stand alone */ }
+  };
   /** the phone apps' way to the PC's direct carriers; none in a browser, which reaches the PC through the relay only */
   const directSocket = nativeDirectSocket();
   /** whether that socket opens the PC's Tailscale address too, asked now so no connect waits for the answer */
@@ -286,11 +315,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
   }
 
+  /** the account's directory as last read, for the relay each PC of it named (the dashboard's rows) */
+  let directory: readonly DirectoryPc[] = [];
   const show = (state: RelayShellState): void => {
     shown = state;
-    shell ??= createRoot(mount.container);
+    shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
-      createElement(RelayShell, { state, scoped, iosTab, pcStatus: new Map(pcStatus), onCheckPcs: () => void checkPcs(), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
+      createElement(RelayShell, { state, scoped, iosTab, pcStatus: new Map(pcStatus), onCheckPcs: () => void checkPcs(), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, defaultRelay: GLOBAL_RELAY, meLabel: label, directoryRelays: directory, sheetJoin, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
+    armRefresh();
   };
 
   /** The front page: the saved PCs, or the account's once signed in. */
@@ -303,6 +335,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
   };
 
+  /** The rows of the front page: `listed` merged with the PCs this device is paired with, as of now. */
+  const pcsOf = async (session: AccountSession, listed: readonly DirectoryPc[]): Promise<MyPc[]> =>
+    myPcs(listed, await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account });
+
   /** The account's directory merged with the PCs this device is paired with; the pairings work whatever the service says. */
   const loadAccount = async (): Promise<void> => {
     if (accountService === null) { await showFront(); return; }
@@ -312,29 +348,74 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     accountView = signedIn;
     await showFront();
     try {
-      const directory = await account.listPcs();
+      directory = await account.listPcs();
       // an add this device signed that some PCs missed goes out again whenever the account answers
       sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
-      accountView = { ...signedIn, pcs: myPcs(directory, await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account }) };
+      accountView = { ...signedIn, pcs: await pcsOf(session, directory) };
     } catch (error) {
       if (error instanceof SignedOutError) accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
       else {
         console.warn("Ovis: the account's PCs could not be read", error);
-        accountView = { ...signedIn, pcs: myPcs([], await store.list(), { now: Date.now(), accountKey: (await accountStore.key()).public_spki, account: session.account }), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+        accountView = { ...signedIn, pcs: await pcsOf(session, []), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
       }
     }
     await showFront();
   };
 
+  /** Whether the dashboard is up: the front page, signed in, with no PC's app over it. */
+  const dashboardUp = (): boolean => app === null && accountView?.kind === "signed-in" && (shown?.kind === "list" || shown?.kind === "empty");
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let refreshing: Promise<void> | undefined;
+  /**
+   * The dashboard's directory read again: what it says of each PC (seen lately, offline, waiting for
+   * this device) changes while the page is open, so it is read once more when the page comes back
+   * into view and every DIRECTORY_REFRESH_MS while it stays in view. A read that fails keeps the rows
+   * shown and says so under them; one the service refuses signs the page out, as the first read does.
+   */
+  const refreshAccount = async (): Promise<void> => {
+    if (refreshing || !dashboardUp() || document.visibilityState !== "visible") return;
+    const session = await account.session();
+    if (session === undefined || accountView?.kind !== "signed-in") return;
+    const current = accountView;
+    refreshing = (async () => {
+      try {
+        directory = await account.listPcs();
+        if (accountView !== current) return;
+        accountView = { ...current, pcs: await pcsOf(session, directory), error: null };
+      } catch (error) {
+        if (accountView !== current) return;
+        if (error instanceof SignedOutError) accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
+        else {
+          console.warn("Ovis: the account's PCs could not be read again", error instanceof Error ? error.name : error);
+          accountView = { ...current, error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+        }
+      }
+      if (dashboardUp() || accountView?.kind === "signed-out") await showFront();
+    })().finally(() => { refreshing = undefined; });
+    await refreshing;
+  };
+  /** The refresh timer runs only while the dashboard is up and the page in view; `show` and the app's mount call this. */
+  const armRefresh = (): void => {
+    const wanted = dashboardUp() && document.visibilityState === "visible";
+    if (wanted && refreshTimer === undefined) refreshTimer = setInterval(() => { void refreshAccount(); }, DIRECTORY_REFRESH_MS);
+    else if (!wanted && refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void refreshAccount();
+    armRefresh();
+  });
+
   /**
    * A PC of the account this device is not paired with: compare digits with it, as a link without a
-   * code does. `typed`: from the new-PC card, whose PC shows its digits on its own screen (docs/account.md, "Adding a PC").
+   * code does. `typed`: a PC new in the account, whose PC shows its digits on its own screen (docs/account.md, "Adding a PC");
+   * `sheet`: the dashboard's Add-a-PC sheet asked, and goes on over the PC's page in that mode.
    */
-  const joinPc = (pc: MyPc, options: { typed?: boolean } = {}): void => {
+  const joinPc = (pc: MyPc, options: { typed?: boolean; sheet?: "new" | "join" } = {}): void => {
     const join = pc.join;
     if (join === undefined) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
     setTypedJoin(options.typed ? pc.server_id : null);
+    setSheetJoin(options.sheet ? { mode: options.sheet, server_id: pc.server_id } : null);
     navigate(link.pathname + link.hash);
   };
 
@@ -469,6 +550,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell?.unmount();
     shell = null;
     app = mount.renderApp();
+    armRefresh();
     registerPending(attempt.offer.server_id);
     void joinAccount(opened, attempt.offer.server_id, attempt.fresh === true);
   };
@@ -715,6 +797,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const cancel = (): void => {
     comparison = null;
     setTypedJoin(null);
+    sheetJoin = null;
     codeOffer = null;
     opening?.abort();
     opening = null;
@@ -743,7 +826,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       entry = { ...entry, offer: null };
       return true;
     }
-    if (entry.offer !== null) { show({ kind: "confirm", offer: entry.offer }); return true; }
+    if (entry.offer !== null) {
+      sheetJoin = takeSheetJoin(entry.offer.server_id);
+      show({ kind: "confirm", offer: entry.offer });
+      return true;
+    }
     return false;
   };
 
