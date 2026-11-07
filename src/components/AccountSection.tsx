@@ -90,8 +90,59 @@ function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch 
   );
 }
 
+/**
+ * A fetch for the account service's first request that reports whether the service can be reached: an answer
+ * other than a server error says it can (offeredProviders falls back quietly on any).
+ */
+export function reachabilityProbe(report: (reachable: boolean) => void, fetchImpl: typeof fetch = fetch): (input: Request | string | URL, init?: RequestInit) => Promise<Response> {
+  return async (input, init) => {
+    try {
+      const response = await fetchImpl(input, init);
+      // a server error (a 503 while it is down or restarting) is no service to sign in to
+      report(response.status < 500);
+      return response;
+    } catch (error) {
+      report(false);
+      throw error;
+    }
+  };
+}
+
+/** the waits before asking an account service that did not answer again: soon at first, then once a minute */
+export const REPROBE_MS = [5_000, 15_000, 60_000] as const;
+
+interface ReprobeTimers { set: (run: () => void, ms: number) => unknown; clear: (handle: unknown) => void }
+const windowTimers: ReprobeTimers = { set: (run, ms) => setTimeout(run, ms), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
+
+/**
+ * Asks `probe` until it says the account service can be reached, waiting REPROBE_MS between tries (the last one
+ * repeats), so the sign-in comes back once a service that was down answers again. The function returned stops it.
+ */
+export function probeUntilReachable(probe: (live: () => boolean) => Promise<boolean>, timers: ReprobeTimers = windowTimers): () => void {
+  let live = true;
+  let handle: unknown = null;
+  let tries = 0;
+  const run = async (): Promise<void> => {
+    handle = null;
+    const reachable = await probe(() => live).catch(() => false);
+    if (!live || reachable) return;
+    handle = timers.set(() => void run(), REPROBE_MS[Math.min(tries, REPROBE_MS.length - 1)]!);
+    tries += 1;
+  };
+  void run();
+  return () => {
+    live = false;
+    if (handle !== null) timers.clear(handle);
+    handle = null;
+  };
+}
+
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
-export interface AccountState { signedIn: boolean; account: string | null; pcs: MyPc[] | null }
+export interface AccountState {
+  signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
+  reachable: boolean;
+}
 
 /** the phone and Mac apps sign in their own way, never with a code from a PC's page */
 const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
@@ -106,7 +157,11 @@ export const accountOffered = (): boolean => desktopAccount() !== null || pcServ
 export interface WelcomeAccount { lead: ReactNode; later: ReactNode }
 
 /** `onAccount`: the page lists the account's PCs itself (My devices), so this group does not */
-export function AccountSection({ onAccount, welcome }: { onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount } = {}) {
+export function AccountSection({ onAccount, welcome, recheck = 0 }: {
+  onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount;
+  /** bumped to ask the account service again now (Settings bumps it when Add a connection opens) */
+  recheck?: number;
+} = {}) {
   const t = useT();
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
@@ -114,6 +169,7 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
   const [view, setView] = useState<View>({ kind: "loading" });
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | null>(null);
   const deviceSignIn = useRef<AbortController | null>(null);
@@ -123,10 +179,18 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
   const fallbackKey = fallback.join(",");
   useEffect(() => {
     if (service === null) return;
-    let live = true;
-    offeredProviders(service, fallbackKey.split(",") as AccountProvider[]).then((offered) => { if (live) setOffer(offered); }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
-    return () => { live = false; };
-  }, [service, fallbackKey]);
+    return probeUntilReachable(async (live) => {
+      let reachable = true;
+      const probe = reachabilityProbe((answer) => { reachable = answer; if (live()) setUnreachable(!answer); });
+      try {
+        const offered = await offeredProviders(service, fallbackKey.split(",") as AccountProvider[], { fetch: probe });
+        if (live()) setOffer(offered);
+      } catch (error) {
+        console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error);
+      }
+      return reachable;
+    });
+  }, [service, fallbackKey, recheck]);
   /** the desktop app comes back over loopback with any provider; a PC's page only through a device flow */
   const providers: AccountProvider[] = bridge !== null ? offer?.providers ?? fallback : offer?.device ?? ["github"];
   /** a PC's page whose service has the Ovis link page: one button, GitHub or Google chosen on the link page */
@@ -157,8 +221,8 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
 
   useEffect(() => { if (offered) void load(); }, [offered, load]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null });
-  }, [onAccount, view]);
+    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+  }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
 

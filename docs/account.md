@@ -35,9 +35,9 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
 7. **The account service can hide records, never forge them.** It stores the PC directory
    (`server_id`, a name, the PC's relay public key and the relay it is reached through; no account
    or device keys), a mailbox of signed records per PC, and admission requests.
-8. **Tailscale is not membership.** **PCs on your Tailscale** ([remote-pcs.md](remote-pcs.md#through-the-relay))
-   adds a PC through the relay with a code that PC hands over to your own Tailscale login. That makes
-   it a paired device of that PC, never an account member by itself: membership comes only from the
+8. **Tailscale is not membership.** A PC found on your Tailscale is added over SSH (Add a connection →
+   SSH, [remote-pcs.md](remote-pcs.md)), and one an older Ovis added through the relay with a code that
+   PC handed over to your own Tailscale login is a paired device of that PC. Neither is an account member by itself: membership comes only from the
    rules here (a device linking its own pairing, or an approval by a member).
 
 ## Account members
@@ -218,6 +218,13 @@ With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the req
 waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
 without an error, for the PC's current account and relay identity. A PC whose account service is
 turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
+
+`POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
+has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
+screen, after it listed the PC), or through the relay only from a drive account member of that same
+account (`account_required` otherwise). Kept in `relay/account.json`; a
+name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
+nothing: the service gives a pass only when that account lists the PC.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
