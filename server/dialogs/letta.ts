@@ -11,9 +11,9 @@ import { ANSI_RE, KEY, type ParsedPrompt, findLastIndex, finishPrompt, keySteps,
  *     Models you've recently used
  *     Search: (type to filter)
  *
- *   > Claude Opus 5.5 · Mimosa
- *     Claude Sonnet 5.5 · Mimosa
- *     Claude Opus 5.5 · ING (current)
+ *   > Claude Opus 5.5 · Anthropic
+ *     Claude Sonnet 5.5 · Anthropic
+ *     Claude Opus 5.5 · Amazon Bedrock (current)
  *     ↓ 2 more below
  *
  *     5 models · cached · R to refresh list
@@ -38,7 +38,7 @@ const LETTA_CURRENT_RE = /\s\(current\)(?=$|\s·\s)/;
  *
  *   Set your model's reasoning settings
  *
- *    Claude Haiku 4.5 · Mimosa
+ *    Claude Haiku 4.5 · Anthropic
  *
  *    ▌▌▌▌ Medium reasoning effort
  *

@@ -4,7 +4,7 @@ import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import { KEY } from "./shared.ts";
 
 // Screens of letta-code 0.34.31's /model, recorded with colour in a herdr pane 120 columns wide
-// (local backend, Claude subscription providers named Mimosa and ING).
+// (local backend, Claude subscription providers for Anthropic and Amazon Bedrock).
 const screen = (name: string) => readFileSync(new URL(`../fixtures/letta/${name}-0.34.31.txt`, import.meta.url), "utf8");
 const card = (shown: string) => {
   const prompt = parseInteractivePrompt("letta", shown);
@@ -16,13 +16,13 @@ describe("Letta Code's /model", () => {
     // Recents is shown: → is Recommended, ← wraps to All models
     expect(card(screen("model-recents"))).toEqual({
       question: "Select model for this session",
-      options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "openai-codex/gpt-6.1-sol", "Claude Opus 5.5 · ING", "Claude Sonnet 5.5 · ING",
+      options: ["Claude Opus 5.5 · Anthropic", "Claude Sonnet 5.5 · Anthropic", "openai-codex/gpt-6.1-sol", "Claude Opus 5.5 · Amazon Bedrock", "Claude Sonnet 5.5 · Amazon Bedrock",
         "Show the Recommended [12] tab", "Show the All models [21] tab", "Search models", "Cancel"],
     });
     expect(card(screen("model-recommended"))).toMatchObject({
       question: "Select model for this session. 5 more models in this tab: search, or show another tab.",
-      options: ["Claude Opus 5.5 · Mimosa", "Claude Sonnet 5.5 · Mimosa", "Claude Haiku 4.5 · Mimosa", "Claude Fable 5.1 · Mimosa",
-        "Claude Opus 4.8 · Mimosa", "Claude Sonnet 4.6 · Mimosa", "Claude Opus 5.5 · ING", "Show the All models [21] tab", "Show the Recents [5] tab", "Search models", "Cancel"],
+      options: ["Claude Opus 5.5 · Anthropic", "Claude Sonnet 5.5 · Anthropic", "Claude Haiku 4.5 · Anthropic", "Claude Fable 5.1 · Anthropic",
+        "Claude Opus 4.8 · Anthropic", "Claude Sonnet 4.6 · Anthropic", "Claude Opus 5.5 · Amazon Bedrock", "Show the All models [21] tab", "Show the Recents [5] tab", "Search models", "Cancel"],
     });
   });
 

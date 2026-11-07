@@ -7,11 +7,11 @@
  [0m[2m Models you've recently used[0m
  [0m[2m Search: (type to filter)[0m
 
-  Claude Opus 5.5 · Mimosa
-  Claude Sonnet 5.5 · Mimosa
+  Claude Opus 5.5 · Anthropic
+  Claude Sonnet 5.5 · Anthropic
 [0m[38;2;140;140;249m> [0m[1m[38;2;140;140;249mopenai-codex/gpt-6.1-sol[0m
-  Claude Opus 5.5 · ING
-  Claude Sonnet 5.5 · ING
+  Claude Opus 5.5 · Amazon Bedrock
+  Claude Sonnet 5.5 · Amazon Bedrock
 
 [0m[2m  5 models · cached · R to refresh list[0m
 [0m[2m  Enter select · ↑↓ navigate · ←→/Tab switch · Esc cancel[0m

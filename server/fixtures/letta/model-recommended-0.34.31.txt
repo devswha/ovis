@@ -7,13 +7,13 @@
  [0m[2m Recommended models currently available for this account[0m
  [0m[2m Search: (type to filter)[0m
 
-[0m[38;2;140;140;249m> [0m[1m[38;2;140;140;249mClaude Opus 5.5 · Mimosa[0m
-  Claude Sonnet 5.5 · Mimosa
-  Claude Haiku 4.5 · Mimosa
-  Claude Fable 5.1 · Mimosa
-  Claude Opus 4.8 · Mimosa
-  Claude Sonnet 4.6 · Mimosa
-  Claude Opus 5.5 · ING
+[0m[38;2;140;140;249m> [0m[1m[38;2;140;140;249mClaude Opus 5.5 · Anthropic[0m
+  Claude Sonnet 5.5 · Anthropic
+  Claude Haiku 4.5 · Anthropic
+  Claude Fable 5.1 · Anthropic
+  Claude Opus 4.8 · Anthropic
+  Claude Sonnet 4.6 · Anthropic
+  Claude Opus 5.5 · Amazon Bedrock
 [0m[2m  ↓ 5 more below[0m
 
 [0m[2m  12 models · cached · R to refresh list[0m
