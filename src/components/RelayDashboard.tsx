@@ -128,7 +128,10 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
           : <button type="button" className="btn" onClick={() => onOpenSheet(pc, "join")}>{t("Join")}</button>;
       // its own page runs the update (the shell's outdated screen) and says what an offline PC did last
       case "needs-update": return pc.paired ? <a className="btn" href={scope(pc)}>{t("Update")}</a> : null;
-      case "offline": return pc.paired ? <a className="btn" href={scope(pc)}>{t("Details")}</a> : null;
+      case "offline":
+        if (pc.paired) return <a className="btn" href={scope(pc)}>{t("Details")}</a>;
+        // a last-seen time goes stale until the PC's next mailbox pull, so a PC just back on stays joinable
+        return pc.join === undefined ? null : <button type="button" className="btn" onClick={() => onOpenSheet(pc, "join")}>{t("Join")}</button>;
     }
   };
   // the account's own PCs are the ones its directory lists: a PC paired by QR alone is a row here, not one of them

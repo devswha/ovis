@@ -115,7 +115,10 @@ describe("the front page's account part", () => {
     const fresh = { ...pc("b".repeat(32), "desk2", "needs-approval"), added_at: new Date().toISOString(), join: { server_public_key: "k", relay: "wss://relay.example" } };
     const old = { ...fresh, server_id: "c".repeat(32), name: "nuc", added_at: new Date(Date.now() - 3_600_000).toISOString() };
     const { join: _join, ...waiting } = { ...old, server_id: "d".repeat(32), name: "attic" };
-    const html = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [fresh, old, waiting] } }), scoped: false, onSignIn: none, onJoin: none });
+    // the directory's last-seen time is stale until the PC's next mailbox pull, so an offline row it may still be joined through keeps Join
+    const stale = { ...old, server_id: "e".repeat(32), name: "cabin", state: "offline" as const };
+    const html = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [fresh, old, waiting, stale] } }), scoped: false, onSignIn: none, onJoin: none });
+    expect(actionsOf(rowOf(html, "cabin"))).toEqual(["Join"]);
     expect(actionsOf(rowOf(html, "desk2"))).toEqual(["Add"]);
     expect(rowOf(html, "desk2")).toContain("new in your account");
     expect(actionsOf(rowOf(html, "nuc"))).toEqual(["Join"]);
