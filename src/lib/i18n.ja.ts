@@ -17,6 +17,7 @@ import { GUIDE_JA } from "./i18n/guide.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
+import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
 /**
@@ -505,6 +506,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_JA,
   palette: PALETTE_JA,
   relay: RELAY_JA,
+  dashboard: DASHBOARD_JA,
   "runtime-move": RUNTIME_MOVE_JA,
 };
 

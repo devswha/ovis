@@ -17,6 +17,7 @@ import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
+import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
 /**
@@ -503,6 +504,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_KO,
   palette: PALETTE_KO,
   relay: RELAY_KO,
+  dashboard: DASHBOARD_KO,
   "runtime-move": RUNTIME_MOVE_KO,
 };
 
