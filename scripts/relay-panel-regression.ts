@@ -2,9 +2,10 @@
  * Settings → Devices and PCs: the Ovis relay against a local Bun relay (relay/bun.ts). The page's one relay
  * switch is in More settings → Ovis relay, whose row says the relay's state and which holds Reset relay
  * identity. The Add a connection sheet has one tab per way (SSH, Phones and devices, Ovis relay), SSH first on
- * an owner's PC window, and none of the old sheet's folds or its relay pairing QR code. Signed out, the Ovis
- * relay tab is the Ovis sign-in, which closes the sheet for the account in More settings; signed in, it carries
- * the relay's switch (with the gate note while off). Phones and devices starts a six-digit code at once and
+ * an owner's PC window, and none of the old sheet's folds or its relay pairing QR code. Signed out, the account's
+ * sign-in sits above the tabs and the Ovis relay tab only points up to it; signed in, a row above the tabs names
+ * the sign-in, the relay's tab comes first and opens first, and it carries the relay's switch (with the gate note
+ * while off). Phones and devices starts a six-digit code at once and
  * keeps it while another tab is open; a phone pairing with it closes the sheet. Reset relay identity asks first
  * (Escape closes only the confirmation) and gives the PC a new ID. A Portal visitor gets no SSH tab, no switch,
  * no sign-in, no reset, no code and no relay group; a serve-only install shows Blocked with no switch and no
@@ -211,27 +212,35 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "the sheet offers no relay pairing QR code");
     assert.equal((await relayState()).phase, "off", "opening the sheet turns nothing on");
 
-    // signed out, the relay's tab is the Ovis sign-in alone: it closes the sheet for the account in More settings
+    // signed out, the account's own sign-in sits above the tabs (the service lists no providers here: GitHub, the
+    // build's fallback), and the relay's tab only points up to it
+    const accountBox = sheet.getByTestId("connect-account");
+    const continueGitHub = accountBox.getByRole("button", { name: "Continue with GitHub", exact: true });
+    await continueGitHub.waitFor();
+    assert.ok((await accountBox.boundingBox())!.y < (await sheet.locator(".connect-tabs").boundingBox())!.y, "the sign-in is above the tabs");
     await ui.openTab("relay");
-    const signInButton = relayTab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true });
-    await signInButton.waitFor();
+    await relayTab.getByText("Sign in above to use the relay.", { exact: true }).waitFor();
+    assert.equal(await relayTab.getByRole("button").count(), 0, "signed out, the relay's tab has no second sign-in");
     assert.equal(await relayTab.getByRole("switch").count(), 0, "signed out, the relay's tab has no switch");
-    await signInButton.click();
+    await page.keyboard.press("Escape");
     await sheet.waitFor({ state: "detached" });
-    await dialog.locator('[data-section="account"]').waitFor();
-    assert.notEqual(await dialog.locator('.settings-fold[data-fold="more"]').getAttribute("open"), null, "Sign in to Ovis opens More settings, where the account is");
 
     // signed in, the relay's tab carries the relay's switch while it is off, with the gate note and the account
     await signIn(page);
     await openPhoneSettings(page, fixture.origin);
     await connect.click();
+    // signed in, a row above the tabs names the sign-in, and the relay's tab leads and is the one open
+    await sheet.getByTestId("connect-account").getByText("Signed in with GitHub", { exact: true }).waitFor();
+    assert.deepEqual(await tabs.evaluateAll((buttons) => buttons.map((button) => [button.getAttribute("data-tab"), button.getAttribute("aria-pressed")])),
+      [["relay", "true"], ["ssh", "false"], ["devices", "false"]], "signed in, the sheet opens on the relay's tab, first");
     await ui.openTab("relay");
     await toggle.waitFor();
     assert.equal(await sheet.getByRole("switch").count(), 1, "the sheet carries the relay's switch once");
     assert.equal(await toggle.getAttribute("aria-checked"), "false", "the sheet's switch shows the relay off");
     assert.equal(await sheet.getByRole("button", { name: "Turn on the relay", exact: true }).count(), 0, "one way to turn it on: the switch");
     assert.equal(await sheet.getByRole("button", { name: "Sign in to Ovis", exact: true }).count(), 0, "signed in, no sign-in");
-    await relayTab.getByRole("button", { name: "Open the account", exact: true }).waitFor();
+    await sheet.getByTestId("connect-account").getByRole("button", { name: "Open the account", exact: true }).waitFor();
+    assert.equal(await relayTab.getByRole("button", { name: "Open the account", exact: true }).count(), 0, "the account opens from the row above the tabs, not twice");
     assert.equal(await sheet.getByTestId("relay-owner-help").count(), 0, "the direct owner needs no relay restriction explanation");
     assert.equal(await gateNote.getAttribute("title"), GATE_NOTE, "with no token and nothing paired, the switch's tooltip says turning the relay on closes the gate");
     assert.equal(await relayTab.getByText(GATE_NOTE, { exact: true }).count(), 0, "and the sheet carries no warning paragraph for it");
@@ -456,7 +465,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal((await (await fetch(`${unwritable.origin}/api/relay`)).json() as RelayStatus).phase, "online", "the switch turned the relay on once the cause was gone");
     assert.equal(await failed.relayTab.getByRole("alert").count(), 0, "no failure once it runs");
     assert.deepEqual(pageErrors, [], "the relay panel raises no page error");
-    console.log("PASS Add a connection's tabs: SSH, Phones and devices (a kept pairing code that closes the sheet once used) and Ovis relay (the sign-in, then the switch); the relay turns off from More settings and resets the identity; a Portal visitor and a serve-only install get no switch; a relay-paired device says how it reaches the PC now, or that it is offline");
+    console.log("PASS Add a connection's tabs: SSH, Phones and devices (a kept pairing code that closes the sheet once used) and Ovis relay (signed out, the sign-in above the tabs; signed in, the sign-in named above them and the relay's tab first, with the switch); the relay turns off from More settings and resets the identity; a Portal visitor and a serve-only install get no switch; a relay-paired device says how it reaches the PC now, or that it is offline");
   } finally {
     for (const context of contexts) await context.close();
     for (const fixture of fixtures) await fixture.stop();

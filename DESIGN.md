@@ -3705,12 +3705,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   typed address close Settings and open the PC setup dialog with the address filled in. **Phones and
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
-  offers it. **Ovis relay** is the account's: signed out one sentence and **Sign in to Ovis** (which
-  opens the account's sign-in in More settings), signed in how a new device joins, or the relay's
-  switch and **Open the account** while this PC cannot admit one yet. Relay pairing without the
-  account, a code from another PC and Tailscale PCs added through the relay are gone from it. A phone
-  opens on Phones and devices, a PC's window on SSH; a tab once opened stays mounted, so its code
-  is not minted again. The dialog closes by itself once My devices sees the device a code let in.
+  offers it. Above the tabs, where the page has the account and its service answers, the account
+  comes first, as a phone's Link a device leads with the account: signed out the first-run welcome's
+  sign-in box (`AccountSection` with `welcome`, its buttons or the link page's code) under one muted
+  line on why, signed in one hairline row naming the sign-in (**Signed in with GitHub**; the service
+  keeps no name for the account) with a ghost **Open the account**. **Ovis relay** is the account's:
+  signed out only a line pointing up to that sign-in, signed in how a new device joins, or the
+  relay's switch (its state's one line when it cannot be turned on) while this PC cannot admit one
+  yet; **Open the account** is on the row above the tabs. Relay pairing without
+  the account, a code from another PC and Tailscale PCs added through the relay are gone from it.
+  Signed in, the relay's tab comes first and the sheet opens on it; otherwise a phone opens on
+  Phones and devices, a PC's window on SSH. A tab once opened stays mounted, so its code is not
+  minted again. The dialog closes by itself once My devices sees the device a code let in.
 - The Ovis relay's own group in More settings: its state as the row's sentence with the switch,
   then **Reset relay identity** (confirmed in the shared `ConfirmDialog`; none for a serve-only
   install, which refuses it). Not shown in the hosted shell or to a read-only device.

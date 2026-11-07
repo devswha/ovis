@@ -482,7 +482,7 @@ const BASE: Record<string, string> = {
   "Removes this registration. Remote sessions keep running.": "이 등록만 지웁니다. 원격 세션은 계속 돕니다.",
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "이 PC에서만 지웁니다. 접근까지 끊으려면 그 PC의 폰 및 기기에서 취소하세요.",
   "Added": "추가됨",
-  "Sign in to Ovis": "Ovis에 로그인",
+  "Signed in": "로그인됨",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

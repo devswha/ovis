@@ -486,7 +486,7 @@ const BASE: Record<string, string> = {
   "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "仅从这台 PC 移除。要同时取消它的访问权限，请在那台 PC 的 手机和设备 中撤销。",
   "Added": "新增",
-  "Sign in to Ovis": "登录 Ovis",
+  "Signed in": "已登录",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

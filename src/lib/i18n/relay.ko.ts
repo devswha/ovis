@@ -102,4 +102,5 @@ export const RELAY_KO: Record<string, string> = {
   "It matches": "같습니다",
   "Does {name}'s screen show this ID?": "{name} 화면에 이 ID가 보이나요?",
   "ID of the PC this code found": "이 코드로 찾은 PC의 ID",
+  "Sign in to Ovis": "Ovis에 로그인",
 };

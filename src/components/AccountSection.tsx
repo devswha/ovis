@@ -93,6 +93,8 @@ function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch 
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
 export interface AccountState {
   signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** the sign-in this browser uses: it names the account, which has no name of its own */
+  provider: AccountProvider | null;
   /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
   reachable: boolean;
 }
@@ -110,7 +112,11 @@ export const accountOffered = (): boolean => desktopAccount() !== null || pcServ
 export interface WelcomeAccount { lead: ReactNode; later: ReactNode }
 
 /** `onAccount`: the page lists the account's PCs itself (My devices), so this group does not */
-export function AccountSection({ onAccount, welcome }: { onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount } = {}) {
+export function AccountSection({ onAccount, welcome, reloads = 0 }: {
+  onAccount?: (state: AccountState) => void; welcome?: WelcomeAccount;
+  /** bumped when a sign-in finished elsewhere on the page (Add a connection): the session is read again, nothing remounts */
+  reloads?: number;
+} = {}) {
   const t = useT();
   const bridge = desktopAccount();
   const pcService = pcServiceHere();
@@ -172,8 +178,9 @@ export function AccountSection({ onAccount, welcome }: { onAccount?: (state: Acc
   }, [t]);
 
   useEffect(() => { if (offered) void load(); }, [offered, load]);
+  useEffect(() => { if (offered && reloads > 0) void load(); }, [offered, load, reloads]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, provider: view.kind === "signed-in" ? view.provider : null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);

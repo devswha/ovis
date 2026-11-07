@@ -69,7 +69,6 @@ export const SETUP_KO: Record<string, string> = {
   "Remaining": "남은 양",
   "Read Claude's limits from its status line": "Claude 상태 줄에서 한도 읽기",
   "For networks where Claude's usage API is refused. Wraps Claude Code's status line on this PC and keeps only the limits; turning it off puts Claude's settings back.": "Claude 사용량 API가 거부되는 네트워크용입니다. 이 PC에서 Claude Code 상태 줄을 감싸 한도만 보관하고, 끄면 Claude 설정을 그대로 되돌립니다.",
-  "Signed in": "로그인됨",
   "Its account needs attention": "계정 확인 필요",
   "New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.": "새 작업 공간과 새 탭에 미리 채워지며 거기서 바꿀 수 있고, 새 워크트리는 이 모델로 에이전트를 시작합니다. 비우면 에이전트 자체 모델을 씁니다.",
   "Filled in the same way. Agent default adds no flag; the levels a model takes depend on the model.": "같은 방식으로 미리 채워집니다. 에이전트 기본값은 플래그를 붙이지 않으며, 고를 수 있는 수준은 모델에 따라 다릅니다.",

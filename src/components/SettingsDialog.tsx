@@ -1251,7 +1251,11 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
-  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, reachable: true });
+  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, provider: null, reachable: true });
+  // a sign-in finished above Add a connection's tabs: the Account group here reads the session again
+  const [accountReads, setAccountReads] = useState(0);
+  const accountSignedIn = account.signedIn;
+  const readAccountAgain = useCallback(() => { if (!accountSignedIn) setAccountReads((reads) => reads + 1); }, [accountSignedIn]);
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
   const [pcAccount, setPcAccount] = useState<string | null>(null);
@@ -1324,7 +1328,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           </SettingsGroup>
         )}
 
-        <AccountSection onAccount={setAccount} />
+        <AccountSection reloads={accountReads} onAccount={setAccount} />
         <SettingsGroup title={t("Devices and access")} section="devices-more">
           {/* in the hosted shell too (a phone reaching this PC through the relay or directly), there without the switch */}
           {(relayOffered(relay) || inRelayShell()) && <RelayDirectRow relay={relay} readOnly={relayReadOnly || inRelayShell()} />}
@@ -1349,7 +1353,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {connecting && (
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
-          signedIn={account.signedIn} joinBySignIn={joinBySignIn} onAccount={accountOffered() && account.reachable ? signIn : null}
+          signedIn={account.signedIn} accountProvider={account.provider} joinBySignIn={joinBySignIn} onAccount={accountOffered() && account.reachable ? signIn : null}
+          onAccountSignedIn={readAccountAgain}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
           onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }} onClose={closeConnect} />
       )}

@@ -102,4 +102,5 @@ export const RELAY_ZH: Record<string, string> = {
   "It matches": "一致",
   "Does {name}'s screen show this ID?": "{name} 的屏幕上显示的是这个 ID 吗？",
   "ID of the PC this code found": "此代码找到的电脑的 ID",
+  "Sign in to Ovis": "登录 Ovis",
 };

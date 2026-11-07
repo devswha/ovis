@@ -90,6 +90,28 @@
 }
 
 /* Add a connection's ways, one tab each across the top, as herdr's Add a machine */
+/* the account above the tabs: signed out the welcome's sign-in box, signed in one row */
+.connect-account .setup-signin {
+  padding: var(--space-3);
+}
+
+.connect-account-lead {
+  margin: 0;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.connect-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+}
+
 .connect-tabs {
   align-self: stretch;
 }
@@ -209,10 +231,6 @@
 .connect-ssh-field > .input {
   flex: 1;
   min-width: 0;
-}
-
-.connect-signin-button {
-  align-self: flex-start;
 }
 
 /* on a phone the address goes under the name, so the name, its source and its button keep one line */

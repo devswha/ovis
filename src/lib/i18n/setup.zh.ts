@@ -69,7 +69,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Remaining": "剩余",
   "Read Claude's limits from its status line": "从 Claude 状态栏读取额度",
   "For networks where Claude's usage API is refused. Wraps Claude Code's status line on this PC and keeps only the limits; turning it off puts Claude's settings back.": "适用于 Claude 用量 API 被拒绝的网络。在此电脑上包装 Claude Code 状态栏，只保存额度；关闭后会恢复 Claude 的设置。",
-  "Signed in": "已登录",
   "Its account needs attention": "账号需要处理",
   "New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.": "新建工作区和新建标签页会预先填入，仍可在那里修改；新建工作树直接用它启动代理。留空则使用代理自身的模型。",
   "Filled in the same way. Agent default adds no flag; the levels a model takes depend on the model.": "以同样方式预先填入。代理默认不添加任何参数；可选的级别取决于模型。",

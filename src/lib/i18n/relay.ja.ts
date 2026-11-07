@@ -102,4 +102,5 @@ export const RELAY_JA: Record<string, string> = {
   "It matches": "一致しています",
   "Does {name}'s screen show this ID?": "{name} の画面にこの ID が表示されていますか？",
   "ID of the PC this code found": "このコードで見つかった PC の ID",
+  "Sign in to Ovis": "Ovis にサインイン",
 };

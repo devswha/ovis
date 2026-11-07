@@ -8,7 +8,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
-import { CodeRoute, connectTabs, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
+import { CodeRoute, ConnectAccount, connectTabs, defaultConnectTab, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -185,6 +185,36 @@ describe("Connect a phone on a phone", () => {
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: true })).toEqual(["devices"]);
     shellMeta = true;
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["devices"]);
+  });
+
+  it("signed in, the relay tab comes first and opens first; otherwise a PC opens on SSH and a phone on its devices", () => {
+    const off = relayState({ ...ONLINE, phase: "off" });
+    expect(connectTabs({ sshOffered: true, relay: off, readOnly: false, relayFirst: true })).toEqual(["relay", "ssh", "devices"]);
+    // no relay here: nothing to put first
+    expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false, relayFirst: true })).toEqual(["ssh", "devices"]);
+    expect(defaultConnectTab(["relay", "ssh", "devices"], true)).toBe("relay");
+    expect(defaultConnectTab(["ssh", "devices", "relay"], true)).toBe("devices");
+    expect(defaultConnectTab(["ssh", "devices", "relay"], false)).toBe("ssh");
+  });
+
+  it("signed in, the top of the sheet says which sign-in this browser uses and opens the account", async () => {
+    let opened = 0;
+    await mount(<ConnectAccount signedIn provider="github" onAccount={() => { opened += 1; }} onSignedIn={() => {}} />);
+    expect(text(renderer!.root)).toContain("Signed in with GitHub");
+    await act(async () => { button("Open the account").props.onClick(); });
+    expect(opened).toBe(1);
+  });
+
+  it("signed out, the relay tab points up to the sign-in above the tabs instead of a second button", async () => {
+    await mount(<RelayTab relay={relayState()} closesGate={false} signedIn={false} joinBySignIn={false} onAccount={() => {}} phone={false} />);
+    expect(buttons()).not.toContain("Sign in to Ovis");
+    expect(text(renderer!.root)).toContain("Sign in above to use the relay.");
+  });
+
+  it("signed in on a relay that cannot be turned on, the relay tab says why instead of standing empty", async () => {
+    await mount(<RelayTab relay={relayState({ ...ONLINE, phase: "off", blocked: "serve_only" })} closesGate={false} signedIn joinBySignIn={false} onAccount={() => {}} phone={false} />);
+    expect(text(renderer!.root)).toContain("Blocked: OVIS_TAILSCALE_SERVE_ONLY");
+    expect(buttons()).toEqual([]);
   });
 
   it("lists the PCs found over SSH: Add opens Add PC with that address, an added one says so, a herdr PC connects", async () => {

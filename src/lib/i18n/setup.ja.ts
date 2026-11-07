@@ -69,7 +69,6 @@ export const SETUP_JA: Record<string, string> = {
   "Remaining": "残量",
   "Read Claude's limits from its status line": "Claude のステータスラインから上限を読む",
   "For networks where Claude's usage API is refused. Wraps Claude Code's status line on this PC and keeps only the limits; turning it off puts Claude's settings back.": "Claude の使用量 API が拒否されるネットワーク向けです。この PC で Claude Code のステータスラインをラップして上限だけを保存し、オフにすると Claude の設定を元に戻します。",
-  "Signed in": "ログイン済み",
   "Its account needs attention": "アカウントの確認が必要",
   "New workspace and New tab fill it in, still changeable there; New worktree starts the agent on it. Empty: the agent's own model.": "新しいワークスペースと新しいタブにあらかじめ入り、そこで変更できます。新しいワークツリーはこのモデルでエージェントを起動します。空のままならエージェント自身のモデルを使います。",
   "Filled in the same way. Agent default adds no flag; the levels a model takes depend on the model.": "同じようにあらかじめ入ります。エージェントの既定ではフラグを付けません。選べるレベルはモデルによって異なります。",
