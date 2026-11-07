@@ -699,7 +699,9 @@ run yourself need no account and no pass.
   key to the account service (the `account` server proof, as for its mailbox) and asks
   `POST /v1/pc/relay-pass` for a pass under an account: the account of its members
   ([Linking devices with an account](account.md)), else the one its signed-in owner named with
-  `POST /api/account/relay-account` after adding the PC to that account. The service gives one only
+  `POST /api/account/relay-account` after adding the PC to that account. A pass the relay refuses
+  (`4402`, or `invalid`/`expired` in `sync`) is dropped and a new one asked for at once, at most once
+  a minute. The service gives one only
   when that account lists the PC, so another account listing it neither charges nor blocks it.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the

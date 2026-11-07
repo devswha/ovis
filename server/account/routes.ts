@@ -47,8 +47,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   switch (pathname) {
     case "/api/account/relay-account": {
       setRequestRoute(pathname);
-      // the account this PC asks its relay pass under (docs/relay.md, "Relay pass"): named by its owner on
-      // the PC itself after listing it, or by a member of this PC's own account through the relay
+      // the account this PC asks its relay pass under (docs/relay.md, "Relay pass"): named over a direct
+      // connection with drive access (the PC's own screen, after listing it), or through the relay only by a
+      // member of this PC's own account
       const account = body.account;
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       if (peer.kind === "relay" && !(devices.isAccountApproverSession(peer.device.id, peer.key) && devices.account() === account)) return fail("account_required", "Name this PC's account from a device linked to it", 403);

@@ -220,8 +220,9 @@ without an error, for the PC's current account and relay identity. A PC whose ac
 turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
 
 `POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
-has no members ([relay.md](relay.md#relay-pass)): from a window on the PC itself, or through the relay from a drive
-account member of that same account (`account_required` otherwise). Kept in `relay/account.json`; a
+has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
+screen, after it listed the PC), or through the relay only from a drive account member of that same
+account (`account_required` otherwise). Kept in `relay/account.json`; a
 name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
 nothing: the service gives a pass only when that account lists the PC.
 

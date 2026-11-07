@@ -225,8 +225,16 @@ export class RelayService {
   }
 
   /** What every link of this service sends and hears of the relay pass. */
-  private passOptions(): Pick<RelayLinkOptions, "pass" | "onPassNotice"> {
-    return { pass: () => this.passKeeper?.current() ?? null, onPassNotice: (notice) => { this.passNotice = notice; } };
+  private passOptions(): Pick<RelayLinkOptions, "pass" | "onPassNotice" | "onPassRefused"> {
+    return {
+      pass: () => this.passKeeper?.current() ?? null,
+      onPassNotice: (notice) => {
+        this.passNotice = notice;
+        // the relay does not take the pass this PC sent (in grace it still lets the PC in): ask for a new one
+        if (notice.state === "invalid" || notice.state === "expired") void this.passKeeper?.rejected();
+      },
+      onPassRefused: () => { void this.passKeeper?.rejected(); },
+    };
   }
 
   private directPath(): string { return join(this.options.stateDir, "relay", "direct.json"); }

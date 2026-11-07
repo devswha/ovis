@@ -5,7 +5,7 @@
  * relays, keeps it in `relay/pass.json` (readable by your user only) so a restart or an account
  * service outage costs nothing while it holds, and asks for the next one after `refresh_in`.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
@@ -98,6 +98,23 @@ export class RelayPassKeeper {
     this.stopped = true;
     this.cancel?.();
     this.cancel = undefined;
+  }
+
+  private lastRejected = Number.NEGATIVE_INFINITY;
+
+  /**
+   * The relay refused the pass this PC holds (its key changed, the PC was revoked, a clock is off):
+   * drop it and ask for a new one now, at most once a minute (a pass the relay keeps refusing then
+   * waits for the usual backoff, so the PC never loops between the two services).
+   */
+  rejected(): Promise<void> {
+    this.saved = null;
+    try { rmSync(this.path, { force: true }); } catch { /* gone from memory either way */ }
+    if (this.stopped) return Promise.resolve();
+    const now = this.clock.now();
+    if (now - this.lastRejected < RETRY_MS) { this.failed(null); return Promise.resolve(); }
+    this.lastRejected = now;
+    return this.refresh();
   }
 
   /** Asks now (the account or the relay changed its mind): a pass may come at once. */

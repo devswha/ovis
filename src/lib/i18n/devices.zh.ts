@@ -156,6 +156,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.": "此账户在 Ovis 中继上的 PC 数量已达上限。从账户中移除一台 PC 后即可添加这台。",
   "The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.": "Ovis 中继需要 Ovis 账户。请登录，或通过同一 Wi-Fi 或 Tailscale 连接。",
   "Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "在线。{date} 之后若要继续使用 Ovis 中继，请登录。同一 Wi-Fi、Tailscale 和您自己运行的中继无需账户即可继续使用。",
+  "Cannot reach the Ovis account service for a relay pass. Retrying.": "无法连接 Ovis 账户服务以获取中继通行证。正在重试。",
   "Online. No phone connected.": "在线。没有已连接的手机。",
   "Online. 1 phone connected.": "在线。已连接 1 部手机。",
   "Online. {n} phones connected.": "在线。已连接 {n} 部手机。",

@@ -12,6 +12,7 @@ test("the relay row says when Ovis's relay needs an account, and nothing new oth
   expect(statusText(t, { ...base, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", pass: { state: "no_account", relay: null, enforce_at: null } }))
     .toBe("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");
   expect(statusText(t, { ...base, phase: "error", pass: { state: "limit", relay: null, enforce_at: null } })).toStartWith("This account has as many PCs");
+  expect(statusText(t, { ...base, phase: "error", pass: { state: "unavailable", relay: null, enforce_at: null } })).toBe("Cannot reach the Ovis account service for a relay pass. Retrying.");
   // in grace: still online, with the date
   expect(statusText(t, { ...base, pass: { state: "no_account", relay: "missing", enforce_at: "2027-01-01T00:00:00.000Z" } })).toStartWith("Online. Sign in to keep using the Ovis relay after ");
   // a passing outage of the account service while the relay is unreachable is the old error

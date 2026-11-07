@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../../relay/bun.ts";
@@ -9,6 +9,7 @@ import { proofKey, serverChallenge, verifyServerProof } from "../../shared/relay
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
 import { RelayService } from "./service.ts";
+import { loadRelayIdentity } from "./identity.ts";
 import { bounded, deferred } from "./test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -48,6 +49,9 @@ async function fixture() {
   /** what each control socket heard first after its proof, and how it closed */
   const syncs: Record<string, unknown>[] = [];
   const headers: (Record<string, string> | undefined)[] = [];
+  /** what the PC sent on its control sockets after the proof */
+  const sentOnControl: string[] = [];
+  const renewal = deferred<string>();
   let synced = deferred<Record<string, unknown>>();
   let refused = deferred<{ code: number; reason: string }>();
   const connect = (url: string, extra?: Record<string, string>) => {
@@ -55,6 +59,11 @@ async function fixture() {
     headers.push(extra);
     const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`, (extra ? { headers: extra } : undefined) as unknown as string[]);
     if (!target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
+      const send = socket.send.bind(socket);
+      socket.send = (data) => {
+        if (typeof data === "string") { sentOnControl.push(data); if (data.includes('"relay_pass"')) renewal.resolve(data); }
+        send(data);
+      };
       socket.addEventListener("message", (event) => {
         const value = typeof event.data === "string" ? JSON.parse(event.data) as Record<string, unknown> : null;
         if (value?.["type"] === "sync") { syncs.push(value); synced.resolve(value); }
@@ -69,7 +78,7 @@ async function fixture() {
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = () => `http://127.0.0.1:${app.port}`;
   return {
-    stateDir, asked, headers, syncs,
+    stateDir, asked, headers, syncs, sentOnControl, renewal: renewal.promise,
     get service() { return service; },
     get synced() { return synced.promise; },
     get refused() { return refused.promise; },
@@ -134,4 +143,27 @@ test("a relay that is not Ovis's gets no pass, and the account service is never 
   expect(f.headers.every((sent) => sent === undefined)).toBe(true);
   expect(f.asked).toEqual([]);
   expect(f.service.status().pass).toBeUndefined();
+});
+
+test("a pass the relay refuses is dropped and a new one asked for at once", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  // a pass this PC kept, signed under a key the relay no longer trusts
+  const identity = loadRelayIdentity(f.stateDir);
+  const stale = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+  writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
+  await f.start();
+  expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass invalid" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
+  expect(f.service.status().phase).toBe("online");
+});
+
+test("a pass renewed while online goes to the relay on the open control socket", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  await bounded(f.synced);
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  expect(JSON.parse(await bounded(f.renewal))).toEqual({ type: "relay_pass", pass: expect.stringMatching(/^ovp1\./) });
 });

@@ -33,6 +33,8 @@ export interface RelayLinkOptions {
   readonly pass?: () => string | null;
   /** What the relay said of the pass in `sync` (relay/README.md, "Relay pass"). */
   readonly onPassNotice?: (notice: RelayPassNotice) => void;
+  /** The relay refused this PC's pass (4402): a new one is asked for. */
+  readonly onPassRefused?: () => void;
   readonly clock?: MuxClock;
   readonly random?: () => number;
   /** The version WELCOME tells the shell (src/lib/relay/skew.ts); package.json's by default. */
@@ -208,6 +210,7 @@ export class RelayLink {
       // refused for the pass: asking again without a new one would be refused again (renewPass reopens)
       if (event.code === RELAY_PASS_CLOSE) {
         this.passRefused = true;
+        this.options.onPassRefused?.();
         this.options.onState("error", `The Ovis relay needs a signed-in account (${event.reason || "relay pass required"}).`);
         return;
       }
