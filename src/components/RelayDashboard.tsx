@@ -11,10 +11,14 @@ import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { accountPcStateText, CheckPcsButton, pcStateWord, PcStatusLine, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RelayMap } from "./RelayMap.tsx";
 
 type Filter = "all" | "ready" | "needs";
+
+/** A phone, as RelayDashboard.css lays the page out in one column: the sidebar's foot is drawn last there, so it is rendered last too, and Tab follows the eye. */
+const PHONE_QUERY = "(max-width: 760px)";
 
 export interface RelayDashboardProps {
   /** every PC with the relay it goes through (dashboardPcs); null while the account's directory loads */
@@ -104,6 +108,7 @@ function Foot({ account, onSignIn, onSignOut, onLeave }: Pick<RelayDashboardProp
  */
 export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = null, pcStatus, onCheckPcs, onAddPc, onOpenSheet, onSignIn, onSignOut, onLeave }: RelayDashboardProps) {
   const t = useT();
+  const phone = useMediaQuery(PHONE_QUERY);
   const [filter, setFilter] = useState<Filter>("all");
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel }, defaultRelay);
   const fresh = new Set(pcs === null ? [] : newPcs(pcs, Date.now()).map((pc) => pc.server_id));
@@ -126,8 +131,10 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
       case "offline": return pc.paired ? <a className="btn" href={scope(pc)}>{t("Details")}</a> : null;
     }
   };
+  // the account's own PCs are the ones its directory lists: a PC paired by QR alone is a row here, not one of them
+  const inAccount = (pcs ?? []).filter((pc) => pc.listed).length;
   const subtitle = pcs === null ? null : account
-    ? pcs.length === 1 ? t("1 PC in your account") : t("{count} PCs in your account", { count: pcs.length })
+    ? inAccount === 1 ? t("1 PC in your account") : t("{count} PCs in your account", { count: inAccount })
     : pcs.length === 1 ? t("1 PC paired with this device") : t("{count} PCs paired with this device", { count: pcs.length });
   const under = (pc: DashboardPc): string => pc.listed ? (fresh.has(pc.server_id) ? t("new in your account") : t("in your account"))
     : account ? t("paired by QR · not in the account yet") : t("paired with this device");
@@ -139,6 +146,8 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
     { href: "#relay-dash-relays", Icon: Waypoints, label: t("Relay"), tab: false },
     { href: null, Icon: Settings, label: t("Settings"), tab: true },
   ];
+  /** The sidebar's foot: last in the sidebar's box, or, on a phone, after the page it is drawn under (moving it across the breakpoint starts it afresh). */
+  const foot = <Foot account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />;
 
   return (
     <div className="relay-dash" data-dashboard-mode={account ? "account" : "local"}>
@@ -149,7 +158,7 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
           <nav className="relay-dash-nav">
             {places.map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-nav-item" />)}
           </nav>
-          <Foot account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
+          {!phone && foot}
         </div>
       </aside>
       <div className="relay-dash-main" id="relay-dash-overview">
@@ -264,6 +273,7 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
         )}
         {error !== null && <p className="account-error" role="alert">{error}</p>}
       </div>
+      {phone && foot}
       {/* a phone's tab bar (RelayDashboard.css, 760px and under): the sidebar's places but Relay, each a touch target, over the safe area */}
       <nav className="relay-dash-tabs">
         {places.filter((place) => place.tab).map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-tab" />)}

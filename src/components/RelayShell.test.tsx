@@ -171,7 +171,9 @@ describe("the dashboard", () => {
   it("sums the model into the strip: counts, relays in the map's order with their kind, and what needs attention", () => {
     const html = render(signedIn(four()));
     expect(html).toContain('data-dashboard-mode="account"');
-    expect(html).toContain("4 PCs in your account");
+    // the header counts the account's PCs: MacBook, paired by QR alone, is a row and not one of them
+    expect(html).toContain("3 PCs in your account");
+    expect(html).not.toContain("4 PCs in your account");
     const counts = [...html.matchAll(/<li><span class="relay-dash-dot" data-pc-state="[^"]+" aria-hidden="true"><\/span>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
     expect(counts).toEqual([["Ready", 2], ["Needs you", 1], ["Offline", 1]]);
     const relays = [...html.matchAll(/<code class="relay-dash-host">([^<]+)<\/code><span>([^<]+)<\/span><span>([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
@@ -257,6 +259,18 @@ describe("the dashboard", () => {
     expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell">');
   });
 
+  it("counts the account's own PCs in the header, never a PC paired by QR alone", () => {
+    // the directory empty, this device paired with one PC by QR: a row, and nothing in the account yet
+    const alone = render(signedIn([pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
+    expect(text(alone)).toContain("0 PCs in your account");
+    expect(alone).not.toContain("1 PC in your account");
+    expect(text(rowOf(alone, "MacBook"))).toContain("paired by QR · not in the account yet");
+    // the sidebar's PCs row counts the table's rows, as the strip and the map count every PC
+    expect(alone).toContain('<span class="relay-dash-nav-count">1</span>');
+    const one = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
+    expect(text(one)).toContain("1 PC in your account");
+  });
+
   it("says who is signed in at the sidebar's foot, with Sign out and the way out of the account", () => {
     const html = render(signedIn(four()));
     const foot = /<div class="relay-dash-foot"[\s\S]*?<\/aside>/.exec(html)![0];
@@ -333,6 +347,26 @@ describe("the dashboard", () => {
     const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
     const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.type === "b")));
+
+    it("keeps the sidebar's foot after the page on a phone, so Tab reaches Add a PC before Sign out, and in the sidebar on a desktop", async () => {
+      /** every control, in the order Tab visits it: the links with a page and the buttons */
+      const stops = () => renderer!.root.findAll((node) => node.type === "button" || (node.type === "a" && node.props.href !== undefined)).map((node) => textOf(node).trim());
+      await mount(signedIn(four()));
+      const desktop = stops();
+      expect(desktop.indexOf("Sign out")).toBeLessThan(desktop.indexOf("Add a PC"));
+      await act(async () => { renderer!.unmount(); });
+      // a phone: the one-column layout of RelayDashboard.css, which draws the foot after the page
+      const narrow = (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} });
+      (window as unknown as { matchMedia: typeof narrow }).matchMedia = narrow;
+      await mount(signedIn(four()));
+      const phone = stops();
+      expect(phone.indexOf("Add a PC")).toBeLessThan(phone.indexOf("Sign out"));
+      // the foot follows the table's last action and precedes the tab bar
+      expect(phone.lastIndexOf("Details")).toBeLessThan(phone.indexOf("Sign out"));
+      expect(phone.indexOf("Sign out") + 1).toBe(phone.indexOf("Remove this device from your account"));
+      expect(phone.indexOf("Remove this device from your account")).toBeLessThan(phone.lastIndexOf("Overview"));
+      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash-foot")).toHaveLength(1);
+    });
 
     it("narrows the table: Needs you hides the ready and offline rows, Ready the others, All brings them back", async () => {
       await mount(signedIn(four()));

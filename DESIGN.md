@@ -4394,7 +4394,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   device's own pairings, `data-dashboard-mode="local"`, the sidebar's foot offering the sign-in).
 - Dashboard (signed in, or local mode): the shell's one wide screen, not the card. A sidebar of
   places (Overview, PCs, Devices, Relay; Settings a row with no page yet) with the provider, Sign
-  out and Remove this device at its foot; a top bar with the title, a count line and **Add a PC**,
+  out and Remove this device at its foot; a top bar with the title, a count line (the PCs the
+  account's directory lists: a PC paired by QR alone is a row, not one of them) and **Add a PC**,
   the one primary action. Under it, a notice for the first PC waiting on this device, then a
   summary strip of three cells (PCs as Ready / Needs you / Offline counts; Relays, each host with
   its PC count and regional or global; Needs attention, each PC and its state in words), the
@@ -4415,7 +4416,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shell's own screen's), except a new identity, which keeps the shell's screen with its ids and
   Forget.
 - Phone (760 px and under): the sidebar becomes a bottom tab bar (Overview, PCs, Devices,
-  Settings) over the safe area, and the map its route list.
+  Settings) over the safe area, its foot the page's last section, rendered after the page so that
+  Tab follows the eye (Add a PC first, Sign out after the table); and the map its route list.
 - Precedent: GOAT's Fleet console (a telemetry strip over the machines) for the dashboard, and
   its onboarding bars and connection steps for the sheet; Tailscale's admin machine list (every
   machine of the account, its state in words) for the table; Signal's linked devices for keeping

@@ -616,6 +616,11 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await a.locator(".relay-dash-foot").getByRole("button", { name: "Sign in" }).click();
       await signIn(a);
       await row(a, "Desk PC").getByText("paired by QR · not in the account yet").waitFor();
+      // the header counts the account's PCs, and the directory lists none yet: the QR pairing is a row, not one of them
+      assert.equal(await a.locator(".relay-dash-sub").innerText(), "0 PCs in your account", "the header counts only the PCs the account lists");
+      assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");
+      await capture(a, "account-unlisted-1440-dark");
+      log9(`account, before Open: directory [] -> header "0 PCs in your account", row "paired by QR · not in the account yet"`);
       assert.equal(await wire(a, pc1.id).getAttribute("data-wire"), "still");
       const listed = accountRequest(`PUT /v1/pcs/${pc1.id}`, "the shell listed Desk PC in the account");
       await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
@@ -759,6 +764,34 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
         }
       }
+
+      // a phone's Tab order follows the page top to bottom: Add a PC first, the sidebar's foot (Sign out, Remove this device) after the table, the tab bar last
+      await setTheme(b, "dark");
+      await row(b, "Desk PC").and(b.locator('[data-pc-state="paired"]')).waitFor();
+      /** where the focus is after a Tab: the control's words and its place on the page; null once it reached the tab bar or left the page */
+      const focused = () => b.evaluate(() => {
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement) || active === document.body || active.closest(".relay-dash-tabs") !== null) return null;
+        return { name: active.textContent?.trim() ?? "", top: Math.round(active.getBoundingClientRect().top + window.scrollY), scrollY: Math.round(window.scrollY) };
+      });
+      await b.keyboard.press("Tab");
+      const first = await focused();
+      assert.deepEqual({ name: first?.name, scrollY: first?.scrollY }, { name: "Add a PC", scrollY: 0 }, `the first Tab stop at 390 is Add a PC at the top, with no scrolling (${JSON.stringify(first)})`);
+      await capture(b, "first-tab-390-dark");
+      const stops = [first!];
+      for (let presses = 1; presses < 40; presses += 1) {
+        await b.keyboard.press("Tab");
+        const stop = await focused();
+        if (stop === null) break;
+        stops.push(stop);
+      }
+      assert.ok(stops.length < 40, `Tab reached the tab bar (${stops.length} stops)`);
+      const names = stops.map((stop) => stop.name);
+      assert.deepEqual(names.slice(-2), ["Sign out", "Remove this device from your account"], `the sidebar's foot comes last before the tab bar (${names.join(" > ")})`);
+      assert.ok(names.lastIndexOf("Open") < names.indexOf("Sign out"), "the table's actions come before the foot");
+      const climbs = stops.filter((stop, index) => index > 0 && stop.top < stops[index - 1]!.top - 1).map((stop) => stop.name);
+      assert.deepEqual(climbs, [], `no Tab stop sits above the one before it (${stops.map((stop) => `${stop.name}@${stop.top}`).join(" > ")})`);
+      log9(`phone Tab order (390): ${stops.map((stop) => `${stop.name}@${stop.top}`).join(" > ")} > tab bar`);
 
       // reduced motion: still wires, no running animation, no dot
       await a.emulateMedia({ reducedMotion: "reduce" });

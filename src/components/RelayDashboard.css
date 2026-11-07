@@ -547,7 +547,8 @@
 @media (max-width: 760px) {
   /*
    * One column. The sidebar's box goes (display: contents): its brand is the top bar, stuck to the
-   * top; its foot, where the Devices tab leads, is the last section; its nav gives way to the tab bar
+   * top; its foot, where the Devices tab leads, is the last section, and RelayDashboard.tsx renders it
+   * after the page here so that Tab reaches the page's controls first; its nav gives way to the tab bar
    * fixed at the bottom, over the safe area. The page ends above the tab bar, and what a tab leads to
    * stops under the top bar, not behind it.
    */
@@ -584,7 +585,6 @@
   }
 
   .relay-dash-foot {
-    order: 1;
     margin-top: 0;
     padding: var(--space-4) calc(var(--space-4) + env(safe-area-inset-right, 0px)) 0 calc(var(--space-4) + env(safe-area-inset-left, 0px));
   }
