@@ -139,8 +139,9 @@ export class RelayPassKeeper {
     const now = this.clock.now();
     if (now - this.lastRejected < RETRY_MS) { this.failed(null); return Promise.resolve(); }
     this.lastRejected = now;
+    // read by the request this starts, now or once the backoff allows it
     this.replacing = true;
-    return this.refresh().finally(() => { this.replacing = false; });
+    return this.refresh();
   }
 
   /** Not before this (ms): the backoff or Retry-After of the last failure, which an early refresh waits out too. */
@@ -229,7 +230,10 @@ export class RelayPassKeeper {
       this.options.onPass(saved.pass);
       this.schedule(refreshIn * 1000);
     } catch { this.failed(null); }
-    finally { if (this.inflight === inflight) this.inflight = undefined; }
+    finally {
+      if (this.inflight === inflight) this.inflight = undefined;
+      this.replacing = false;
+    }
   }
 
   /** The service did not answer as it should: keep any pass that holds, and ask again later (Retry-After when it says). */
