@@ -163,12 +163,13 @@ const CODEX_HINT = /\besc (back|cancel|close|exit|dismiss)\b|\bq close\b|\benter
  * under it, and `? for shortcuts` (`? for shortc` at 40 columns) in one of the next 4 rows: the hint
  * leaves while the composer holds text. Picker rows (`› catppuccin-mocha`, `› [x] Use theme colors`)
  * and /rename's field (`› Type a name and press Enter`, over `enter submit · esc back`) look alike.
+ * At Ultra reasoning effort Codex (0.164 on) draws the composer's mark as `»`; its other rows keep `›`.
  */
 export const codexInputRow: InputRowRecognizer = (screen) => {
   const rows = filled(screen);
   const candidates = rows.filter((index) => {
     const text = screen.rows[index]!.text;
-    return (text === "›" || text.startsWith("› ")) && !/^› \d+\./.test(text);
+    return /^[›»](?: |$)/.test(text) && !/^› \d+\./.test(text);
   });
   const at = candidates.at(-1);
   if (at === undefined) return "gone";

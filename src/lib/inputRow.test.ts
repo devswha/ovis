@@ -232,6 +232,20 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await screenOf("  Side question\n\n  Press Space, Enter, or Escape to dismiss", 60))).toBe("gone");
   });
 
+  test("Codex's composer at Ultra: » with the same rules, under the prompts and over the footer it draws as ever", async () => {
+    const footer = ["  GPT-6-Astra ultra · /fixture", "  ← for agents · ? for shortcuts"];
+    const codex = async (...rows: string[]) => inputRowState("codex", await screenOf(rows.join("\n"), 120));
+    const empty = "» \u001b[2mAsk Codex to do anything\u001b[22m";
+    expect(await codex(empty, ...footer)).toBe("ready");
+    expect(await codex("» ", ...footer)).toBe("ready");
+    expect(await codex("› what was sent keeps its mark", "", "• An answer", "", empty, ...footer)).toBe("ready");
+    expect(await codex("» a draft", ...footer)).toBe("draft");
+    // the lists keep ›: at Ultra /model opens on its reasoning levels
+    expect(await codex("Select Reasoning Level for GPT-6-Astra", "› 5. More reasoning… (current)", "", "  enter select · esc back")).toBe("gone");
+    // Codex's transcript view draws the composer and its status over its own keys
+    expect(await codex(empty, footer[0]!, "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back")).toBe("gone");
+  });
+
   test("a blank screen says nothing, and an agent without a recognizer is not read", async () => {
     const blank = await screenOf("", 40);
     expect(inputRowState("codex", blank)).toBe("unknown");

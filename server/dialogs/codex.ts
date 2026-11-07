@@ -271,6 +271,34 @@ export function codexModelListWaits(screen: string): boolean {
   return false;
 }
 
+/** A whole hint of a row of them, by Codex's words: what Enter or Esc does on a screen that is not the composer. */
+const CODEX_HOLD_HINT_RE = /^(?:esc (?:back|cancel|close|exit|dismiss|save\/close)|q close|enter (?:select|default|apply|submit|save|continue|open|resume))$/;
+
+/** The composer's status row, which may name a thread "esc back": the model and its effort come first. Its levels' `enter default ·` is no model at its default. */
+const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|medium|high|xhigh|max|ultra)(?:\s+fast)?\s+·/;
+
+/**
+ * Whether a screen of Codex's own holds the input instead of its composer, whichever it is: the lists of
+ * /model, /permissions, /review, /theme and /resume, /statusline, /experimental, /rename's field, the
+ * agents view and the transcript view (live in 0.166). herdr reports the pane at rest under all of them,
+ * so agent.prompt pastes into them: the paste is dropped, and its Enter takes the row under the cursor,
+ * which saves a model as the default for every new session, or in the transcript view rewinds the
+ * conversation. Each draws its key hints last on the screen, with its last two rows at most (/resume),
+ * so only whole hints there count: the composer's rows hold a draft, and under it a folder and a thread's name.
+ * With the composer's own footer last (`? for shortcuts`) nothing holds it, whatever a wrapped status row
+ * above says; and rows between the composer's mark and its status row are its draft, so only rows under
+ * that status row count (the transcript view and /statusline draw their keys there).
+ */
+export function codexInputHeld(screen: string): boolean {
+  const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
+  if (/\? for shortc/.test(rows.at(-1) ?? "")) return false;
+  const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
+  const status = findLastIndex(rows, (row) => !/^[›»]/.test(row) && CODEX_STATUS_ROW_RE.test(row));
+  const from = Math.max(rows.length - 2, composer >= 0 && status > composer ? status + 1 : 0);
+  return rows.slice(from).some((row) => !/^[›»]/.test(row) && !CODEX_STATUS_ROW_RE.test(row)
+    && row.split(/\s+·\s+|\s{2,}/).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
+}
+
 function parseCodexModel(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
   const hintIndex = findLastIndex(lines, (_, index) => codexModelRowKey(wrapped(lines, index)) !== null);

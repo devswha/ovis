@@ -54,6 +54,13 @@ describe("startScreenMetadata", () => {
     expect(startScreenMetadata("codex-transcript", CODEX.replace("GPT-6-Luna medium fast", "GPT-5.6 xhigh"))).toEqual({ model: "gpt-5.6", reasoning_effort: "xhigh" });
   });
 
+  it("reads Codex at Ultra, whose composer is drawn with \u00bb", () => {
+    const ultra = CODEX.replace("\u203a Ask Codex", "\u00bb Ask Codex").replace("GPT-6-Luna medium fast", "GPT-6-Astra ultra");
+    expect(startScreenMetadata("codex-transcript", ultra)).toEqual({ model: "gpt-6-astra", reasoning_effort: "ultra" });
+    expect(codexStartScreenUnused(ultra)).toBeTrue();
+    expect(codexStartScreenUnused(ultra.replace("\u00bb Ask Codex", "\u203a hello\n\n\u2022 Hi!\n\n\u00bb Ask Codex"))).toBeFalse();
+  });
+
   it("reads nothing of a Codex screen without its header or its status line", () => {
     expect(startScreenMetadata("codex-transcript", "  GPT-6-Luna medium fast · /tmp/test-project")).toEqual({ model: null, reasoning_effort: null });
     expect(startScreenMetadata("codex-transcript", "  >_ OpenAI Codex (v0.162.1)\n  Trust this folder?\n› 1. Trust and continue")).toEqual({ model: null, reasoning_effort: null });

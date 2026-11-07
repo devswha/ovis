@@ -98,6 +98,11 @@ const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent st
 /** receipts of first messages kept per pane, so a connection that attaches later drops a stale copy */
 const FIRST_MESSAGE_RECEIPTS = 8;
 
+/** agent_blocked for what the screen alone shows while herdr reports the agent at rest (`status`), as under Codex's own lists */
+class ScreenHeldError extends HerdrError {
+  constructor(readonly status: "idle" | "done") { super("agent_blocked", "The agent is waiting for an answer in the terminal"); }
+}
+
 /**
  * The server's pending messages. `authorizeSocket`, `clientSnapshot`, `omo` and `queueHeld` belong to the
  * connections and the status hub, which are built after this (they take its store), so they are
@@ -168,6 +173,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const requested = new WeakMap<Client, Set<PendingItem>>();
   const present = (client: Client): boolean => clients.has(client) && !connectionOf(client).closing;
   const pendingDrains = new Set<string>();
+  // a queued message refused for what the screen alone shows: no status event comes when that screen closes, so the
+  // pane's next output tries it again, under the status herdr reported at the refusal (screenChanged)
+  const screenHeld = new Map<string, { status: "idle" | "done"; mark: number }>();
   const pendingRequests = new WeakMap<Client, PendingRequestBook<SubmitReply>>();
   // the last input_draft refusal per pane: its named draft (Clear it and send), or none (Send anyway)
   const draftConfirmations = new WeakMap<Client, Map<string, { draft: string | null; identity: PendingIdentity; box?: string | null }>>();
@@ -583,7 +591,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const prompt = current.agent ? parseInteractivePrompt(current.agent, screen, null, true, [], held) : null;
     // as the card's own reader decides it: Claude's grey text under a hint left behind is no held message
     const waits = prompt !== null && !(pasted && isClaudeHeld(prompt)) && !(await claudeHeldIsGrey(paneId, prompt));
-    if (current.agent && (waits || registry.waits(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
+    if (current.agent && (waits || registry.holdsInput(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
+      if (pane.agent_status === "idle" || pane.agent_status === "done") throw new ScreenHeldError(pane.agent_status === "idle" ? "idle" : "done");
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
@@ -768,7 +777,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (stranded) return { ok: false, code: "pasted_not_sent", message: PASTED_NOT_SENT_MESSAGE };
       const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error)
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
-      if (automatic && !wrote && fault.code === "agent_blocked") pending.observe(paneId, "blocked", mark);
+      if (automatic && !wrote && fault.code === "agent_blocked") {
+        pending.observe(paneId, "blocked", mark);
+        if (error instanceof ScreenHeldError) screenHeld.set(paneId, { status: error.status, mark });
+      }
       // a queued request typed at once is refused as an immediate send is: with the draft (or box) its actions need
       if (queued && !wrote && error instanceof InputDraftError && error.identity) return { ok: false, ...fault, refusal: { draft: error.draft, box: error.box, identity: error.identity } };
       return { ok: false, ...fault };
@@ -800,6 +812,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // only the user copies or discards it
     pending.settle(item, fault, reply.code === "submit_changed" || reply.code === "pasted_not_sent", automatic && retryable && !unattended);
     return reply;
+  }
+  /** The pane drew output: a message refused for its screen alone (ScreenHeldError) is tried again, unless a status event came since. */
+  function screenChanged(paneId: string): void {
+    const held = screenHeld.get(paneId);
+    if (held === undefined) return;
+    screenHeld.delete(paneId);
+    pending.observe(paneId, held.status, held.mark);
+    // a drain still running (the refusing one) drains once more as it ends
+    if (pendingDrains.has(paneId)) drainAgain.add(paneId);
+    else drainPending(paneId);
   }
   function drainPending(paneId: string): void {
     // a first message learns its launched agent at every event of its pane, also while no connection can type it
@@ -1298,5 +1320,5 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     },
   };
 
-  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries };
+  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, screenChanged, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries };
 }

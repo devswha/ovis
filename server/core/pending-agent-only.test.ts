@@ -28,9 +28,9 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   });
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
   spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
-  const hooks: { paste?: () => void } = {};
+  const hooks: { paste?: () => void; enter?: () => void } = {};
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); hooks.paste?.(); if (afterPaste !== undefined) screen = afterPaste; });
-  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); });
+  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); hooks.enter?.(); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
   owner.data.attached.set("p", { keepSize: false });
   const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: status, focused: false, revision: 0 };
@@ -47,8 +47,22 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   const sendNow = (id: number, pendingId: string) => pending.pendingFrames["pending-action"](owner as never, { type: "pending-action", id, pane_id: "p", pending_id: pendingId, action: "steer" } as never);
   const result = (type: string, id: number) => frames.find((frame) => frame.type === type && frame.id === id);
   const setStatus = (next: string) => { pane.agent_status = next; pending.pending.status("p", next as never); pending.drainPending("p"); };
-  return { writes, submitted, submit, sendNow, result, front, count, setStatus, hooks, pane, frames, screen: (text: string) => { screen = text; }, settled: () => tail };
+  return { writes, submitted, submit, sendNow, result, front, count, setStatus, hooks, pane, frames, screen: (text: string) => { screen = text; }, settled: () => tail, screenChanged: () => pending.screenChanged("p") };
 }
+
+it("tries a queued message refused under a Codex list again once the pane draws it closed, which herdr reports no status for", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen("Update Model Permissions\n› 1. Read Only\n  2. Auto\n\n  enter select · esc back\n");
+  d.setStatus("idle");
+  await d.settled();
+  expect(d.writes).toEqual([]);
+  d.screen("› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n");
+  const entered = new Promise<void>((resolve) => { d.hooks.enter = resolve; });
+  d.screenChanged();
+  await entered;
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+});
 
 // #511: herdr can keep naming an agent that has exited; the pane's own shell in front is no agent for a message
 // whose `> quote` lines a shell would run as redirects

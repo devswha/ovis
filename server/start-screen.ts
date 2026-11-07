@@ -11,7 +11,7 @@ const NOTHING: Screen = { model: null, reasoning_effort: null };
 /** Claude's model families and a version part, as its ids and display names write them (also conversation-metadata.ts) */
 export const CLAUDE_FAMILY = "opus|sonnet|haiku|fable|mythos";
 export const VERSION = "[1-9]\\d?";
-const EFFORT = "none|minimal|low|medium|high|xhigh|max";
+const EFFORT = "none|minimal|low|medium|high|xhigh|max|ultra";
 
 function lastMatch(lines: string[], pattern: RegExp): RegExpExecArray | null {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -30,7 +30,8 @@ function claudeScreen(lines: string[]): Screen {
   return { model: `claude-${named[1]!.toLowerCase()}-${named[2]}${named[3] === undefined ? "" : `-${named[3]}`}`, reasoning_effort: null };
 }
 
-const CODEX_PROMPT = /^\s*›(?:\s|$)/u;
+// (Codex 0.164 draws the main prompt as » at Ultra reasoning effort)
+const CODEX_PROMPT = /^\s*[›»](?:\s|$)/u;
 
 /** The lines under the last Codex session header down to its composer footer, the model and
  * effort that footer states, or null when the screen does not show both. */
@@ -61,7 +62,7 @@ const CODEX_CELL = /^\s*[•⚠■]/u;
 
 /**
  * Whether a Codex screen is its start screen with nothing said in it yet: under the last session
- * header, its card and start tips, then the composer (the first prompt line, `›`) with what it
+ * header, its card and start tips, then the composer (the first prompt line, `›` or `»`) with what it
  * holds, then the footer. A message sent or a resumed conversation puts a prompt or an answer
  * above the composer, and a long one pushes the header off the screen; either way this says no.
  * So does one said above the header: the header may be a card a command drew (`/status`) after

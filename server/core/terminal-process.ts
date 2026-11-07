@@ -236,7 +236,7 @@ export function paneGrid(snapshot: Pick<SessionSnapshot, "layouts">, pane: Pick<
   return rect ? { width: rect.width, height: rect.height } : null;
 }
 
-export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor }: {
+export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, screenChanged = () => {}, holdFor, heldRetry, retryFor, relookupFor }: {
   attachments: Map<string, PaneAttachment>;
   retiringAttachments: Map<string, Promise<void>>;
   terminalAttach: () => Promise<boolean>;
@@ -249,6 +249,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
   holdPendingPane: (paneId: string, fault: { code: string; message: string }) => void;
   /** the attach took and input flows: a pending message waiting for a typist may go now */
   inputReady: (paneId: string) => void;
+  /** the pane drew output: a pending message refused for its screen alone may go now */
+  screenChanged?: (paneId: string) => void;
   holdFor: number;
   heldRetry: number;
   retryFor: number;
@@ -312,6 +314,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           if (attachments.get(paneId) !== attachment) return;
           for (const client of attachment.clients) sendOutput(client, paneId, frame, attachment.unscreened.delete(client));
           reconcileOutput(paneId);
+          screenChanged(paneId);
         },
         onExit: (code) => {
           if (attachments.get(paneId) !== attachment) return;
@@ -339,6 +342,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       attachment.replay.append(data);
       for (const client of attachment.clients) sendOutput(client, paneId, data);
       reconcileOutput(paneId);
+      screenChanged(paneId);
     };
     let retries = 0;
     let refusedSince: number | null = null;

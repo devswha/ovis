@@ -1424,7 +1424,8 @@ describe("WebSocket submit", () => {
       socket.send({ type: "submit", id: 30, pane_id: codex.pane, text: "follow up", payload: paste("follow up") });
       expect(await socket.result(30)).toMatchObject({ ok: true, pane_id: codex.pane });
       expect(prompt).toHaveBeenCalledWith(codex.pane, "follow up", undefined, expect.any(Function));
-      expect(read).not.toHaveBeenCalled();
+      // only Codex's screen for its own lists (codexInputHeld), never its input box
+      expect(read.mock.calls.map(([options]) => options.source)).toEqual(["detection"]);
     } finally {
       prompt.mockRestore();
       read.mockRestore();
@@ -1550,7 +1551,7 @@ describe("WebSocket submit", () => {
       socket.send({ type: "submit", id: 20, pane_id: codexApproval.pane, text: "y", payload: "y" });
       expect(await socket.result(20)).toMatchObject({ ok: false, code: "agent_blocked" });
       expect(chunks(codexApproval).slice(from)).toEqual([]);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codexApproval.pane).map(([options]) => options.source)).toEqual(["detection"]);
+      expect(read.mock.calls.filter(([options]) => options.paneId === codexApproval.pane).map(([options]) => options.source)).toEqual(["detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();
@@ -1570,7 +1571,7 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection"]);
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();
