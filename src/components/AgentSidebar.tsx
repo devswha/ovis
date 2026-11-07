@@ -14,6 +14,7 @@ import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, 
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "../lib/paneLocks.ts";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
+import { customTabLabel } from "../lib/tabName.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useSidebarActivity } from "../lib/sidebarActivity.tsx";
 import { machineFilter } from "../lib/sidebarFilter.ts";
@@ -228,10 +229,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // a waiting row says how long it has waited: from the change this page saw, or from when it first saw the row waiting
   const waitingSince = useRef(new Map<string, number>());
   const [now, setNow] = useState(() => Date.now());
+  const [ticking, setTicking] = useState(false);
   useEffect(() => {
+    if (!ticking) return;
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [ticking]);
   const ownListId = useId();
   const listId = givenListId ?? ownListId;
   const [collapsed, setCollapsed] = useState(initialFold);
@@ -300,6 +303,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   for (const row of allRows) if (rowStatus(row) === "blocked") waiting.add(sidebarPinKey(row.machine.id, row.entry.pane.pane_id));
   for (const key of [...waitingSince.current.keys()]) if (!waiting.has(key)) waitingSince.current.delete(key);
   for (const key of waiting) if (!waitingSince.current.has(key)) waitingSince.current.set(key, Date.now());
+  // the wait times tick only while one is drawn
+  const shouldTick = compact && waiting.size > 0;
+  useEffect(() => { setTicking(shouldTick); if (shouldTick) setNow(Date.now()); }, [shouldTick]);
   const waitedFor = (key: string, status: AgentStatus | undefined): string | null => {
     const since = waitingSince.current.get(key);
     return compact && status === "blocked" && since !== undefined ? stateAge(Math.max(0, now - since)) : null;
@@ -388,7 +394,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const tokens = online ? paneTokenValues(rowTokens, entry.canonicalAgent, pane.tokens ?? agent?.tokens) : [];
     // on one line a row leads with what the agent is on (its own label, else its tab's name) and says its workspace once
     if (settings.sidebarRows === "one") {
-      const lead = compactWorktreeName(pane.label?.trim() || parts.tabName || title);
+      // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
+      const place = tabs.findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
+      const lead = compactWorktreeName(pane.label?.trim() || (tab ? customTabLabel(tab, place) : null) || title);
       const leadParts = agentContext({ ...parts, title: lead, tabName: parts.tabName === lead ? null : parts.tabName, workspaceLabel: compactWorktreeName(workspace.label) }).filter((part) => part !== lead);
       return { online, title: lead, name, mark, context: leadParts.join(" · "), markKind: kind && kind !== lead && !leadParts.includes(kind) ? kind : null, tokens };
     }

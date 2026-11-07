@@ -97,6 +97,31 @@ describe("AgentSidebar plugin tokens", () => {
   });
 });
 
+describe("AgentSidebar one-line row titles", () => {
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }) } });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  });
+  afterEach(() => {
+    if (saved) Object.defineProperty(globalThis, "window", saved); else Reflect.deleteProperty(globalThis, "window");
+    if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages); else Reflect.deleteProperty(navigator, "languages");
+  });
+
+  test("a tab herdr only numbers never replaces what the agent is on; a tab the user named leads", () => {
+    const base = machine([
+      pane("w1:p1", { tab_id: "w1:t1", label: "", title: "Idempotent payments" }),
+      pane("w1:p2", { tab_id: "w1:t2", label: "", title: "Guard the export button" }),
+    ]);
+    base.snapshot!.tabs = [
+      { tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1, focused: false, pane_count: 1, agent_status: "idle" },
+      { tab_id: "w1:t2", workspace_id: "w1", label: "release", number: 2, focused: false, pane_count: 1, agent_status: "idle" },
+    ];
+    expect(texts(render([base]), "agent-title")).toEqual(["Idempotent payments", "release"]);
+  });
+});
+
 describe("AgentSidebar, what herdr-core reports", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
