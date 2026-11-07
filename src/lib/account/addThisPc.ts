@@ -30,5 +30,8 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const name = (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48);
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
   await service.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+  // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
+  const session = await service.session();
+  if (session) await apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) }).catch(() => undefined);
   return name;
 }

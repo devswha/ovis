@@ -22,6 +22,14 @@ export const failureText = (error: unknown): string => error instanceof ApiError
 export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): string {
   if (status.blocked === "serve_only") return t("Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.");
   if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it under More settings in Devices and PCs to use the relay again.");
+  const pass = status.pass;
+  // Ovis's relay asks for an account (docs/relay.md, "Relay pass"): refused, or soon
+  if (pass && status.phase === "error" && pass.state !== "ok" && pass.relay !== "ok") return pass.state === "limit"
+    ? t("This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.")
+    : t("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");
+  if (pass && status.phase === "online" && pass.relay !== null && pass.relay !== "ok" && pass.enforce_at !== null) {
+    return t("Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.", { date: new Date(pass.enforce_at).toLocaleDateString() });
+  }
   switch (status.phase) {
     case "off": return t("Off. Nothing goes through the relay.");
     case "connecting": return t("Connecting…");
