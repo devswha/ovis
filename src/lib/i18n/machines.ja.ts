@@ -5,6 +5,8 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const MACHINES_JA: Record<string, string> = {
+  "Add device": "デバイスを追加",
+  "Spaces": "ワークスペース",
   "PCs": "PC",
   "1 agent running": "実行中のエージェント: 1 件",
   "{n} agents running": "実行中のエージェント: {n} 件",

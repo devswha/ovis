@@ -19,8 +19,6 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Background agents": "后台代理",
   "Background workspaces": "后台工作区",
   "Waiting": "等待中",
-  "Workspaces": "工作区",
-  "Add device": "添加设备",
   "Agents: {n} waiting": "智能体：{n} 个在等待",
   "Show agents": "打开智能体栏",
   "Hide agents": "关闭智能体栏",

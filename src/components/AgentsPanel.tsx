@@ -16,14 +16,15 @@ import "./AgentsPanel.css";
 /** the panel's open or folded state, kept on this device: a phone and a desktop each keep their own */
 const OPEN_KEY = "ovis:agents-panel-open";
 
-/** The agents panel's open state on this device; it starts open. */
-export function useAgentsPanelOpen(): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(() => { try { return window.localStorage.getItem(OPEN_KEY) !== "0"; } catch { return true; } });
-  const change = useCallback((next: boolean) => {
-    setOpen(next);
+/** The agents panel's open state on this device (it starts open), and whether a phone's agents sheet is out. */
+export function useAgentsPanel(): { open: boolean; setOpen(open: boolean): void; sheet: boolean; setSheet(open: boolean): void } {
+  const [open, setOpenState] = useState(() => { try { return window.localStorage.getItem(OPEN_KEY) !== "0"; } catch { return true; } });
+  const [sheet, setSheet] = useState(false);
+  const setOpen = useCallback((next: boolean) => {
+    setOpenState(next);
     try { window.localStorage.setItem(OPEN_KEY, next ? "1" : "0"); } catch { /* private mode: this page keeps it */ }
   }, []);
-  return [open, change];
+  return { open, setOpen, sheet, setSheet };
 }
 
 /** the panel's order of the states, as herdr-app's Priority sort: waiting, done, working, idle */

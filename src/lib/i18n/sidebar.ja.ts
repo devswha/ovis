@@ -19,8 +19,6 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Background agents": "バックグラウンドのエージェント",
   "Background workspaces": "バックグラウンドのワークスペース",
   "Waiting": "応答待ち",
-  "Workspaces": "ワークスペース",
-  "Add device": "デバイスを追加",
   "Agents: {n} waiting": "エージェント: {n}件が応答待ち",
   "Show agents": "エージェント欄を開く",
   "Hide agents": "エージェント欄を閉じる",

@@ -250,11 +250,12 @@ export function MachineSidebar(props: Props) {
       {query !== "" ? <button type="button" className="sidebar-filter-clear" aria-label={t("Clear filter")} title={t("Clear filter")} onClick={clearFilter}><X aria-hidden="true" /></button>
         : closable && <button type="button" className="sidebar-filter-clear" aria-label={t("Close filter")} title={t("Close filter")} onClick={closeFilter}><X aria-hidden="true" /></button>}
     </div>}
-    {/* Settings → Group agents by state: the agents come first on this device, the PCs under them */}
+    {/* the compact sidebar's head: its name and a + for a new workspace on the selected PC, as herdr-app's Spaces head */}
     {!agentsHere && <div className="sidebar-spaces-head">
-      <span className="sidebar-spaces-title">{t("Workspaces")}</span>
+      <span className="sidebar-spaces-title">{t("Spaces")}</span>
       {onlineHost && <button type="button" className="sidebar-row-action sidebar-spaces-new" aria-label={t("New workspace")} title={t("New workspace")} onClick={() => props.onNew(onlineHost.id)}><Plus aria-hidden="true" /></button>}
     </div>}
+    {/* Settings → Group agents by state: the agents come first on this device, the PCs under them */}
     {settings.agentGroups && agentList}
     {settings.agentGroups && agentsHere && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
     {/* the PCs' list has no head: it starts right under the logo, and with several PCs each PC's own header

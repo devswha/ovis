@@ -19,8 +19,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Background agents": "백그라운드 에이전트",
   "Background workspaces": "백그라운드 워크스페이스",
   "Waiting": "기다림",
-  "Workspaces": "워크스페이스",
-  "Add device": "기기 추가",
   "Agents: {n} waiting": "에이전트: {n}개 기다림",
   "Show agents": "에이전트 칸 열기",
   "Hide agents": "에이전트 칸 닫기",

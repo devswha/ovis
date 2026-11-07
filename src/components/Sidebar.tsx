@@ -862,10 +862,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // branch itself is the tooltip's and the menu's, where the name does not already say it
     const rowTitle = workspace.label;
     const secondaryBranch = linked && branchTitle && workspace.label !== branchTitle && workspace.label !== worktreeLabel(branchTitle) ? branchTitle : null;
-    // as herdr's own sidebar: a top-level git workspace says its branch on a second line, while an
-    // indented worktree (its name already the branch's), a pinned row (the card stays compact; the
-    // branch is in its tooltip and menu) and a folder outside git keep one line
-    // the compact rows (the default): one line, the branch dim at its end, herdr-app's Spaces list
+    // the compact rows (the default), as herdr-app's Spaces list: one line, the name without herdr's worktree prefix and
+    // hash, and a branch other than the default one dim at its end, unless it only repeats the name
     const compact = !twoLine;
     const shownTitle = compact ? compactWorktreeName(rowTitle) : rowTitle;
     const tailBranch = compact ? compactBranch(branchTitle) : null;
