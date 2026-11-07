@@ -924,7 +924,7 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
               case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [{ provider: "google", added_at: "2026-11-06T00:00:00Z" }] } });
               // a device sign-in that stays pending: the code shows until someone approves it elsewhere
               case "/v1/signin/github/device": return route.fulfill({ headers: cors, json: { code_challenge_method: "S256", device_code: "fixture-device", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 } });
-              case "/v1/token": return route.fulfill({ status: 400, headers: cors, json: { error: "authorization_pending" } });
+              case "/v1/token": return route.fulfill({ status: 400, headers: cors, json: { error: { code: "authorization_pending" } } });
               default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
             }
           });
