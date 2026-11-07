@@ -23,9 +23,9 @@ const mockup = (): RelayMapModel => dashboardModel([
   pc("Home server", "offline", GLOBAL, "2026-11-01T00:00:00Z"),
 ], { label: "This iPhone" }, GLOBAL).map;
 
-const render = (map: RelayMapModel): string => {
+const render = (map: RelayMapModel, language: "en" | "ko" | "ja" | "zh" = "en"): string => {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
-  Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  Object.defineProperty(navigator, "languages", { configurable: true, value: [language] });
   try {
     return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayMap, { map }) }));
   } finally {
@@ -65,6 +65,20 @@ describe("the connection map", () => {
     const html = render(mockup());
     expect(html).toContain('aria-label="Connection map: This iPhone. Relays: relay-ap.ovis.sh, relay.ovis.sh. PCs: 4. Seen lately: 1. Ready: 2. Needs you: 1. Offline: 1."');
     expect(html).not.toMatch(/\b(session|online|connected)\b/i);
+  });
+
+  it("says ready, never connected, in Korean, Japanese and Chinese", () => {
+    // a Ready PC is one the directory lists, not one anything is linked to: the state word claims no connection
+    const word = (html: string) => /data-state="paired" aria-hidden="true"><\/span>([^<]+)<\/li>/.exec(html)?.[1] ?? "";
+    for (const [language, claim] of [["ko", /연결|접속/], ["ja", /接続/], ["zh", /连接/]] as const) {
+      const ready = word(render(mockup(), language));
+      expect(ready).not.toBe("");
+      expect(ready).not.toBe("Ready");
+      expect(ready).not.toMatch(claim);
+    }
+    const label = /aria-label="([^"]*)"/.exec(render(mockup(), "ko"))?.[1] ?? "";
+    expect(label).toContain("PC: 4");
+    expect(label).not.toMatch(/연결|접속/);
   });
 
   it("lists the same journey as rows for a phone: this device, each relay, the PCs behind it", () => {

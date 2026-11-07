@@ -496,7 +496,7 @@ const BASE: Record<string, string> = {
   "Nothing was added. Tap the PC again to compare a new number, and type the one its own screen shows.": "何も追加されていません。もう一度PCをタップして新しい番号を比べ、そのPC自身の画面に出ている番号を入力してください。",
   "Approve this phone on {name} to finish.": "{name} でこのスマートフォンを承認すると完了します。",
   "Type the number {name} shows": "{name} に表示された番号を入力してください",
-  "Ready": "接続可能",
+  "Ready": "準備完了",
   "Needs approval": "承認が必要",
   "Offline": "オフライン",
   "Update Ovis on it": "Ovis の更新が必要",

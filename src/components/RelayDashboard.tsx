@@ -143,11 +143,14 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
   return (
     <div className="relay-dash" data-dashboard-mode={account ? "account" : "local"}>
       <aside className="relay-dash-side">
-        <p className="relay-dash-brand"><img src="/icons/icon-192.png?v=sheep1" alt="" className="relay-dash-brand-mark" />Ovis</p>
-        <nav className="relay-dash-nav">
-          {places.map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-nav-item" />)}
-        </nav>
-        <Foot account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
+        {/* the column paints to the page's end; the box inside it sticks to the viewport (RelayDashboard.css) */}
+        <div className="relay-dash-side-box">
+          <p className="relay-dash-brand"><img src="/icons/icon-192.png?v=sheep1" alt="" className="relay-dash-brand-mark" />Ovis</p>
+          <nav className="relay-dash-nav">
+            {places.map((place) => <PlaceLink key={place.label} place={place} as="relay-dash-nav-item" />)}
+          </nav>
+          <Foot account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
+        </div>
       </aside>
       <div className="relay-dash-main" id="relay-dash-overview">
         <header className="relay-dash-top">

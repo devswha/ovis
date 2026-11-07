@@ -50,7 +50,7 @@ export const RELAY_KO: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "PC가 꺼져 있거나 Ovis가 실행 중이 아닙니다.",
   "The relay did not answer. Check this device's network.": "릴레이가 답하지 않습니다. 이 기기의 네트워크를 확인하세요.",
   "If they match, approve this phone on {name}.": "같으면 {name}에서 이 폰을 승인하세요.",
-  "Ready · not in the account yet": "연결됨 · 아직 계정에 없음",
+  "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "링크가 만료됐거나(10분 동안 쓸 수 있음), 시도가 너무 많아 잠시 멈췄거나, 다른 휴대폰을 처리하는 중일 수 있습니다. PC에서 새 링크를 복사하거나 몇 분 기다리세요.",
   "Pair with a code": "코드로 페어링",
   "On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.": "PC에서 설정 → 기기와 PC를 열고 연결 추가를 누르세요(이전 Ovis에서는 연결 또는 입력할 코드 보기). 거기 보이는 코드를 여기에 입력하세요.",

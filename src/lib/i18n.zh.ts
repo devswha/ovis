@@ -498,7 +498,7 @@ const BASE: Record<string, string> = {
   "Nothing was added. Tap the PC again to compare a new number, and type the one its own screen shows.": "未添加任何内容。请再次点按该电脑以比较新的数字，并输入它自己屏幕上显示的数字。",
   "Approve this phone on {name} to finish.": "在 {name} 上批准这部手机即可完成。",
   "Type the number {name} shows": "输入 {name} 显示的数字",
-  "Ready": "可连接",
+  "Ready": "就绪",
   "Needs approval": "需要批准",
   "Offline": "离线",
   "Update Ovis on it": "需要更新 Ovis",

@@ -50,7 +50,7 @@ export const RELAY_JA: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "PCの電源が切れているか、Ovisが動いていません。",
   "The relay did not answer. Check this device's network.": "リレーが応答しません。このデバイスのネットワークを確認してください。",
   "If they match, approve this phone on {name}.": "一致したら {name} でこのスマホを承認してください。",
-  "Ready · not in the account yet": "接続可能 · まだアカウント外",
+  "Ready · not in the account yet": "準備完了 · まだアカウント外",
   "Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.": "リンクの有効期限が切れた(10 分間有効)か、試行が多すぎて一時停止しているか、ほかのスマートフォンの対応中かもしれません。PC で新しいリンクをコピーするか、数分待ってください。",
   "Pair with a code": "コードでペアリング",
   "On the PC, open Settings → Devices and PCs and choose Add a connection (Connect, or Show a code to type, on an older Ovis). Type the code it shows here.": "PC で「設定 → デバイスと PC」を開き、「接続を追加」を選んでください（古い Ovis では「接続」または「入力するコードを表示」）。表示されたコードをここに入力してください。",

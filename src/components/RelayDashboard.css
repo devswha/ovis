@@ -26,18 +26,22 @@
 
 /* ---- sidebar ---- */
 
+/* the column stretches to the grid's row, so its fill and hairline reach the end of a page taller than the viewport */
 .relay-dash-side {
+  background: var(--bg-panel);
+  border-right: var(--hairline) solid var(--divider);
+}
+
+/* the box inside sticks to the viewport, one screen tall, its foot at the bottom */
+.relay-dash-side-box {
   position: sticky;
   top: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  align-self: start;
   height: 100dvh;
   height: var(--app-height, 100dvh);
   padding: calc(var(--space-3) + env(safe-area-inset-top, 0px)) var(--space-2) calc(var(--space-3) + env(safe-area-inset-bottom, 0px)) calc(var(--space-2) + env(safe-area-inset-left, 0px));
-  background: var(--bg-panel);
-  border-right: var(--hairline) solid var(--divider);
 }
 
 .relay-dash-brand {
@@ -547,7 +551,8 @@
     padding-bottom: var(--dash-tabs-h);
   }
 
-  .relay-dash-side {
+  .relay-dash-side,
+  .relay-dash-side-box {
     display: contents;
   }
 
