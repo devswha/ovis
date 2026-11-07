@@ -1242,6 +1242,10 @@ export async function claudeTranscriptFile(
 
   const seen = new Set<string>();
   const path = await follow(session, seen);
+  // a Claude started inside the pane inherits HERDR_PANE_ID and can take Herdr's report of the pane: a session
+  // with no transcript, or one print mode wrote, is no conversation of the pane's own Claude (#3260)
+  const own = await ownSessionInstead(path, live, seen, follow);
+  if (own !== null) return own;
   if (path === null || live === null || !SESSION_ID.test(live) || seen.has(live)) return path;
   // a branch stays in its project: only that folder is looked in, and what cannot be read there is no evidence of one
   const inProject = async (id: string): Promise<string | null> => {
@@ -1260,6 +1264,69 @@ export async function claudeTranscriptFile(
     branch = await inProject(parent);
   }
   return path;
+}
+
+/** How much of a transcript's end `lastEntrypoint` reads. */
+const ENTRYPOINT_TAIL_BYTES = 256 * 1024;
+
+/**
+ * The `entrypoint` the newest record within a transcript's last ENTRYPOINT_TAIL_BYTES names ("cli", "sdk-cli"),
+ * or null when none does or the file cannot be read. Whole records only, read as JSON reads them (#2130).
+ * Non-blocking and no symlinks, as branchedFrom.
+ */
+async function lastEntrypoint(path: string): Promise<string | null> {
+  let file;
+  try { file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    const info = await file.stat();
+    if (!info.isFile()) return null;
+    const length = Math.min(info.size, ENTRYPOINT_TAIL_BYTES);
+    const bytes = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) {
+      const { bytesRead } = await file.read(bytes, read, length - read, info.size - length + read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    const lines = bytes.subarray(0, read).toString("utf8").split("\n");
+    // the first line may be cut by the read, the last one may still be being written: neither parses, and is passed by
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const line = lines[index]!.trim();
+      if (line === "") continue;
+      let entry: { entrypoint?: unknown };
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (typeof entry?.entrypoint === "string") return entry.entrypoint;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally { await file.close(); }
+}
+
+/** Whether print mode or the SDK (`claude -p`) wrote a transcript's newest records: an `sdk-…` entrypoint, as claude-transcript.ts tells an SDK prompt. */
+async function printModeTranscript(path: string): Promise<boolean> {
+  return (await lastEntrypoint(path))?.startsWith("sdk") === true;
+}
+
+/**
+ * The transcript of the session the pane's Claude process names in its PID record (`live`), in place of the one
+ * Herdr reports, when that report cannot be the pane's conversation: no project holds its transcript, or print
+ * mode or the SDK wrote its newest records. A Claude started inside the pane (`claude -p` from a hook, a script or
+ * the agent itself) inherits HERDR_PANE_ID, and its SessionStart can take the pane's report (#3260). Null keeps
+ * the answer as it was: no PID record, a live session the report's chain already holds, a live session with no
+ * transcript either or, beside a print-mode report, one print mode wrote too; an interactive report always stands,
+ * as after a /resume back (#2020).
+ */
+async function ownSessionInstead(
+  reported: string | null, live: string | null, seen: ReadonlySet<string>,
+  follow: (start: string, seen: Set<string>) => Promise<string | null>,
+): Promise<string | null> {
+  if (live === null || !SESSION_ID.test(live) || seen.has(live)) return null;
+  if (reported !== null && !await printModeTranscript(reported)) return null;
+  const path = await follow(live, new Set<string>());
+  if (path === null || reported === null) return path;
+  // beside a print-mode report, a live session print mode wrote too tells neither apart
+  return await printModeTranscript(path) ? null : path;
 }
 
 /** Where `claudeSessionTempDir` looks for this user's `claude-<uid>` folder. */
