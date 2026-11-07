@@ -106,6 +106,17 @@ describe("AgentSidebar phone sheet live row", () => {
     expect(since()).toEqual(["<1m"]);
   });
 
+  it("makes no wait time from a PC's return: a wait it finds there began out of sight", async () => {
+    const at = (status: AgentStatus, state: Machine["state"] = "connected") => roster().map((machine) => ({ ...machine, ...(machine.id === "local" ? { state } : {}), snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    await act(async () => { renderer = create(view(at("working"))); });
+    await act(async () => { renderer!.update(view(at("working", "disconnected"))); });
+    await act(async () => { renderer!.update(view(at("blocked"))); });
+    expect(since()).toEqual([]);
+  });
+
   async function open() {
     await act(async () => {
       renderer = create(view(roster()), { createNodeMock: () => anchor });

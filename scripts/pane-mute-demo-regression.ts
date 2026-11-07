@@ -584,6 +584,9 @@ try {
           await toggleMute(page, phone, "local", P);
           await row(page, "local", P).locator('[data-testid="alerts-muted"]').waitFor({ state: "attached" });
           if (phone) await openDrawer(page);
+          // the mark is drawn at rest on a phone, and under the pointer on a desktop (the compact rows)
+          if (!phone) await row(page, "local", P).hover();
+          await row(page, "local", P).locator('[data-testid="alerts-muted"]').waitFor({ state: "visible" });
           await capture(page, theme, language, "rest-muted");
           await openMenu(page, phone, "local", P);
           await capture(page, theme, language, "menu-muted");

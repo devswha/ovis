@@ -310,8 +310,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     setWaitStarts((starts) => {
       const next = new Map<string, number>();
       for (const [key, status] of statuses) {
+        // a PC that is away says no state: a start already seen is kept, and none is made from it on its return
+        if (status === undefined) { const kept = starts.get(key); if (kept !== undefined) next.set(key, kept); continue; }
         if (status !== "blocked") continue;
-        const start = starts.get(key) ?? (seen !== null && seen.has(key) && seen.get(key) !== "blocked" ? at : undefined);
+        const before = seen?.get(key);
+        const start = starts.get(key) ?? (before !== undefined && before !== "blocked" ? at : undefined);
         if (start !== undefined) next.set(key, start);
       }
       return next.size === starts.size && [...next].every(([key, start]) => starts.get(key) === start) ? starts : next;
