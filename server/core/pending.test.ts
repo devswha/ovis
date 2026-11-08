@@ -251,6 +251,12 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
         const back = client("device", token);
         delivery.attached(back, "p");
         expect(heldIds(back)).toEqual([item.message.id]);
+        // its own pane's Send now then records its sent receipt there: a replay after the resend ledger expired types nothing
+        await delivery.pendingFrames.submit(back, { type: "submit", id: 3, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        const typedBefore = typed;
+        now += 60_001; delivery.pending.expire();
+        await delivery.pendingFrames.submit(back, { type: "submit", id: 4, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        expect(typed).toBe(typedBefore);
         return;
       }
       if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry" || scenario === "attach during resend after closed-owner expiry" || scenario === "replayed resend after its record expired") {

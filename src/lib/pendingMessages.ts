@@ -253,7 +253,8 @@ export class PendingMessageStore {
     if (heldByReceipt) { delete view.sending_at; view.heldUntil = until; this.heldResumed.get(owner)?.delete(message.id); }
     // a late held answer for a copy this page holds on a receipt keeps that proof this page's alone
     // (and once its proof has ended, the copy is uncertain)
-    else if (scope === null && view.state === "held" && prior !== undefined) {
+    // a held answer with no connection left to prove it holds only on a live receipt: otherwise it is uncertain
+    else if (scope === null && view.state === "held") {
       if (freshReceipt(prior)) view.heldUntil = prior; else view.state = "uncertain";
     }
     const at = previous.findIndex((item) => item.id === message.id);

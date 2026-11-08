@@ -191,6 +191,9 @@ describe("pending message ownership", () => {
     // the connection ends: no proof is left on this page either
     live.suspendScope("connection");
     expect(live.read("p").map(({ state }) => state)).toEqual(["uncertain"]);
+    // and that connection's late held answer, with no connection left to prove it, is no proof either
+    live.accept("p", message("held", "held"), null);
+    expect(live.read("p").map(({ state }) => state)).toEqual(["uncertain"]);
   });
   it("takes a held ID only with a valid time left: any other shape proves nothing", () => {
     const ids = (frame: Parameters<typeof frameRemovals>[0]) => frameRemovals(frame).map((removal) => removal.id);

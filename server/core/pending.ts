@@ -1261,7 +1261,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             }, message.resend_generation);
             if (sent.ok && (typedNow || held)) {
               // the claim, before the turn ends: a concurrent resend finds it sent
-              if (!completed.some((entry) => entry.id === id && entry.outcome === "sent")) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: Date.now(), hash });
+              if (!completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane)) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: Date.now(), hash });
               if (held) pushResumed(client, pane, held.key, { removed: [{ id, outcome: "sent", resumed: true }] });
             } else if (held && !sent.ok && submitNotTyped(sent.code ?? "")) {
               // back in its place by age, as pruning drops expired receipts from the front
