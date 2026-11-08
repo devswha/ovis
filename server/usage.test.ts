@@ -1144,6 +1144,49 @@ describe("the service", () => {
     expect((await service.report()).providers.map((usage) => usage.account)).toEqual(["other@example.com"]);
   });
 
+  it("stops looking up a provider's sign-ins once every account it lists is hidden or removed, until one is shown again", async () => {
+    let searches = 0;
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() {
+        searches += 1;
+        return ["a", "b", "none"].map((id) => ({ source: id, token: `token-${id}`, expiresAt: null, account: { id, label: id } }));
+      },
+      // "none" has no plan, so it is never listed and cannot be hidden
+      async read(_ctx, signIn) { return signIn.token === "token-none" ? null : { plan: "pro", windows: [] }; },
+    };
+    let skipped = new Set(["copilot:a"]);
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => skipped);
+    await service.report();
+    now += FRESH_MS;
+    await service.report();
+    expect(searches).toBe(2);
+
+    skipped = new Set(["copilot:a", "copilot:b"]);
+    now += FRESH_MS;
+    const report = await service.report(true);
+    expect(searches).toBe(2);
+    expect(report.providers.map((usage) => usage.key)).toEqual(["copilot:a", "copilot:b"]);
+
+    skipped = new Set(["copilot:a"]);
+    await service.report(true);
+    expect(searches).toBe(3);
+  });
+
+  it("still finds a provider's accounts the first time, whatever the hidden list names", async () => {
+    let searches = 0;
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { searches += 1; return [{ source: "new", token: "token-new", expiresAt: null, account: { id: "new", label: "new" } }]; },
+      async read() { return { plan: "pro", windows: [] }; },
+    };
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => new Set(["copilot:old"]));
+    expect((await service.report()).providers.map((usage) => usage.key)).toEqual(["copilot:new"]);
+    expect(searches).toBe(1);
+  });
+
   it("marks a failed request and asks again after RETRY_MS", async () => {
     signInCodex(NOW / 1000 + 24 * 3600);
     replies.set(CODEX_USAGE, { status: 500 });

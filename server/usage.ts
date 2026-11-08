@@ -1086,6 +1086,8 @@ export class UsageService {
   private readonly backoffs = new Map<string, number>();
   private pending: Promise<UsageReport> | null = null;
   private pendingRefresh = false;
+  /** the keys of the accounts hidden or removed from Ovis (skipAccounts) */
+  private skipped: () => ReadonlySet<string> = () => new Set();
 
   constructor(private readonly ctx: UsageContext = systemUsageContext(), private readonly providers: readonly UsageProvider[] = USAGE_PROVIDERS,
     private readonly additional: (refresh: boolean) => Promise<readonly ProviderUsage[]> = async () => []) {}
@@ -1104,10 +1106,22 @@ export class UsageService {
     return pass;
   }
 
+  /**
+   * A provider whose every listed account is among `keys` is not searched again: hiding or removing an
+   * account must stop reading its credentials, not only showing them (#3333). Its last numbers stay, so it
+   * can be shown or restored. An account without the plan is never listed, so it cannot hold a provider
+   * back; a provider not searched yet is searched once, whatever `keys` names, so a new account is still found.
+   */
+  skipAccounts(keys: () => ReadonlySet<string>): void { this.skipped = keys; }
+
   private async collect(refresh: boolean): Promise<UsageReport> {
     const now = this.ctx.now();
     const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
-    const usages = await Promise.all(this.providers.map((provider) => this.collectProvider(provider, now, refresh, missing.has(provider.id))));
+    const skipped = this.skipped();
+    const usages = await Promise.all(this.providers.map((provider) => {
+      const listed = (this.searches.get(provider.id)?.sources ?? []).flatMap((source) => this.entries.get(source)?.usage ?? []);
+      return listed.length > 0 && listed.every((usage) => skipped.has(usage.key)) ? listed : this.collectProvider(provider, now, refresh, missing.has(provider.id));
+    }));
     // one account found in two places is listed once: the reading without a problem, else the first
     const byKey = new Map<string, ProviderUsage>();
     for (const usage of usages.flat()) {
