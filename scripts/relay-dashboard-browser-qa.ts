@@ -806,8 +806,21 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       const qr = await inspectDialog();
       const qrTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
       await shot(page, `pair-dialog-qr-${width}-dark`);
+      // an unkeyed footer reused the clicked button as the code form's submit button, so its activation submitted the empty form
+      await page.evaluate(() => {
+        const seen = document.documentElement.dataset;
+        seen["qaInvalid"] = "0"; seen["qaSubmit"] = "0";
+        document.addEventListener("invalid", () => { seen["qaInvalid"] = String(Number(seen["qaInvalid"]) + 1); }, true);
+        document.addEventListener("submit", () => { seen["qaSubmit"] = String(Number(seen["qaSubmit"]) + 1); }, true);
+      });
       await dialog.getByRole("button", { name: "Pair with a code" }).click();
       await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
+      const codeField = await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>("[data-pair-dialog=code] .relay-shell-code-input");
+        return { events: { invalid: Number(document.documentElement.dataset["qaInvalid"]), submit: Number(document.documentElement.dataset["qaSubmit"]) }, focused: input !== null && document.activeElement === input, placeholderShown: input?.matches(":placeholder-shown") ?? false, alerts: document.querySelectorAll("[data-pair-dialog=code] [role=alert]").length };
+      });
+      expect(codeField.events.invalid === 0 && codeField.events.submit === 0, `opening the code screen neither submits nor validates the empty code form (${JSON.stringify(codeField)})`);
+      expect(codeField.focused && codeField.placeholderShown && codeField.alerts === 0, `the empty code input has focus, shows its placeholder and no error (${JSON.stringify(codeField)})`);
       await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
       const code = await inspectDialog();
       const codeTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
