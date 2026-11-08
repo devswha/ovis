@@ -144,6 +144,26 @@ if (ios) {
   document.addEventListener("focusin", (event) => field(event.target)?.setAttribute("data-armed", ""), true);
   document.addEventListener("focusout", (event) => field(event.target)?.removeAttribute("data-armed"), true);
 }
+// iPadOS 26 draws a windowed app's controls (close, minimize, full screen) over the page's top-left
+// corner, where the header's first button sits, and no safe area or titlebar-area value reports them.
+// A full-screen app has none there (they wait in the menu bar). A home-screen app narrower than the
+// screen is in a window: mark it, and the header leaves the corner free (styles.css). The visual
+// viewport's width × scale is the window's width in points whatever Safari's page zoom. The controls
+// are drawn in points and the page in CSS pixels, so their room is converted through the page zoom
+// (viewport.scale while the visual viewport is as wide as the layout, i.e. not pinched).
+const WINDOW_CONTROLS_PT = 68; // the controls' right edge plus a gap, in points, measured on iPadOS 26
+const standaloneApp = window.matchMedia("(display-mode: standalone)");
+const syncWindowControls = (): void => {
+  if (viewport && Math.abs(viewport.width - window.innerWidth) < 2)
+    root.style.setProperty("--window-controls-w", `${Math.ceil(WINDOW_CONTROLS_PT / viewport.scale)}px`);
+  const width = viewport ? viewport.width * viewport.scale : window.innerWidth;
+  const landscape = screen.orientation ? screen.orientation.type.startsWith("landscape") : window.innerWidth > window.innerHeight;
+  const screenWidth = landscape ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+  root.toggleAttribute("data-window-controls", ios && standaloneApp.matches && width < screenWidth - 1);
+};
+viewport?.addEventListener("resize", syncWindowControls);
+window.addEventListener("resize", syncWindowControls);
+syncWindowControls();
 viewport?.addEventListener("resize", syncKeyboard);
 viewport?.addEventListener("scroll", syncKeyboard);
 window.addEventListener("resize", syncKeyboard);

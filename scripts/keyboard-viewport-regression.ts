@@ -331,5 +331,37 @@ try {
       assert.equal(await field.evaluate((el) => getComputedStyle(el).fontSize), rest, `iOS ${width}px: the press keeps a size over 16px`);
     } finally { await context.close(); }
   }
-  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS");
+  // an iPad home-screen app in a window (iPadOS 26): the window's controls sit over the page's top-left corner, so
+  // the header's first button moves clear of them, by the controls' width in points through Safari's page zoom.
+  // A full-screen app, a Safari tab and a desktop browser keep the header as it is.
+  for (const [name, width, scale, standalone, ipad, room] of [
+    ["windowed", 800, 1, true, true, 68], ["windowed at 85% page zoom", 941, 0.85, true, true, 80],
+    ["full screen", 1180, 1, true, true, null], ["Safari tab", 800, 1, false, true, null], ["desktop", 800, 1, true, false, null],
+  ] as const) {
+    const context = await browser.newContext({ viewport: { width, height: 820 }, screen: { width: 1180, height: 820 }, hasTouch: ipad });
+    try {
+      await context.addInitScript(({ width, scale, standalone, ipad }) => {
+        if (ipad) {
+          Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
+          Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => 5 });
+        }
+        const fake = new EventTarget();
+        for (const [key, value] of [["width", width], ["height", 820], ["scale", scale]] as const) Object.defineProperty(fake, key, { get: () => value });
+        Object.defineProperty(window, "visualViewport", { configurable: true, value: fake });
+        const originalMatchMedia = window.matchMedia.bind(window);
+        window.matchMedia = (query) => query === "(display-mode: standalone)" ? ({ matches: standalone } as MediaQueryList) : originalMatchMedia(query);
+      }, { width, scale, standalone, ipad });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.port}/`);
+      const header = await page.evaluate(() => {
+        const header = document.createElement("header");
+        header.className = "app-header";
+        document.querySelector(".app")!.prepend(header);
+        return { marked: document.documentElement.hasAttribute("data-window-controls"), padding: parseFloat(getComputedStyle(header).paddingLeft) };
+      });
+      assert.equal(header.marked, room !== null, `${name}: the window's controls are ${room === null ? "not " : ""}there`);
+      if (room !== null) assert.equal(header.padding, room, `${name}: the header leaves the controls' room`);
+    } finally { await context.close(); }
+  }
+  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS, iPad window controls");
 } finally { await browser?.close(); server.stop(); }
