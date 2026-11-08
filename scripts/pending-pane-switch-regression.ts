@@ -64,6 +64,8 @@ try {
   let admit = true;
   let routed: WebSocketRoute | undefined;
   let holdDiscard = false, delayedDiscard: (() => void) | undefined;
+  // a Send now that left the page but whose fate the page never learns
+  let swallowResend = false, swallowedResend = false;
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     if (!admit) { void socket.close(); return; }
     const upstream = socket.connectToServer(); routed = socket;
@@ -71,6 +73,8 @@ try {
       const frame = JSON.parse(String(data)) as ClientMessage;
       if (holdDiscard && frame.type === "pending-action" && frame.action === "discard") {
         delayedDiscard = () => upstream.send(data);
+      } else if (swallowResend && frame.type === "submit" && frame.resend_id !== undefined) {
+        swallowedResend = true;
       } else upstream.send(data);
     });
   });
@@ -308,30 +312,83 @@ try {
   await splitRow.waitFor({ state: "detached" });
   assert.equal(bytes(), delivered);
 
-  // A real lost WebSocket is different from component navigation: ownership must end.
-  const disconnected = await queue("never replay after a lost connection");
-  admit = false; await routed!.close();
-  await page.locator(".conn-live").waitFor({ state: "hidden" });
-  await until(async () => await rows().filter({ hasText: disconnected.text }).getAttribute("data-state") === "uncertain", "disconnect removes proof of the pending ID");
-  admit = true;
-  await page.locator(".conn-live").waitFor(); await inputReady(pane);
-  const uncertain = rows().filter({ hasText: disconnected.text });
-  assert.equal(await uncertain.locator(".pending-message-send").count(), 0, "an uncertain copy never offers Send now");
-  await report("idle"); await noBytes(delivered, "reconnect and readiness never replay disconnected pending input");
-  await uncertain.getByRole("button", { name: "Discard saved copy", exact: true }).click();
-  await uncertain.waitFor({ state: "detached" });
+  // A real lost WebSocket is different from component navigation: ownership ends. Only the bridge's
+  // receipt that it holds the message untyped, for this browser, brings the copy back, held for an
+  // explicit Send now; nothing is ever sent without one.
+  const lostConnection = async (): Promise<void> => {
+    admit = false; await routed!.close();
+    await page.locator(".conn-live").waitFor({ state: "hidden" });
+    admit = true;
+    await page.locator(".conn-live").waitFor(); await inputReady(pane);
+  };
+  const reload = async (): Promise<void> => {
+    await page.reload(); await page.locator(".conn-live").waitFor(); await current(pane).waitFor(); await inputReady(pane);
+  };
+  const provenHeld = async (text: string, label: string): Promise<void> => {
+    const row = rows().filter({ hasText: text });
+    await until(async () => await row.getAttribute("data-state") === "held", `${label}: the bridge's held receipt brings the copy back held`);
+    assert.equal(await row.locator(".pending-message-send").count(), 1, `${label}: a proven held copy offers Send now`);
+    await report("idle"); await noBytes(delivered, `${label}: readiness never sends a held copy without Send now`);
+    await row.getByRole("button", { name: /^Send now:/ }).click();
+    delivered += paste(text);
+    await until(() => bytes() === delivered, `${label}: Send now delivers the held copy once`);
+    await row.waitFor({ state: "detached" });
+    await noBytes(delivered, `${label}: Send now delivers the held copy once`);
+    await report("working");
+  };
+  const unproven = async (text: string, label: string): Promise<void> => {
+    const row = rows().filter({ hasText: text });
+    await row.waitFor();
+    // checked again after readiness, so a held receipt arriving late would be caught too
+    assert.equal(await row.getAttribute("data-state"), "uncertain", `${label}: an unproven copy stays uncertain`);
+    assert.equal(await row.locator(".pending-message-send").count(), 0, `${label}: an unproven copy never offers Send now`);
+    await report("idle"); await noBytes(delivered, `${label}: readiness never replays an unproven copy`);
+    assert.equal(await row.getAttribute("data-state"), "uncertain", `${label}: an unproven copy stays uncertain`);
+    assert.equal(await row.locator(".pending-message-send").count(), 0, `${label}: an unproven copy never offers Send now`);
+    await row.getByRole("button", { name: "Discard saved copy", exact: true }).click();
+    await row.waitFor({ state: "detached" });
+    await report("working");
+  };
 
-  await report("working");
-  const reloaded = await queue("never replay after reload");
-  await page.reload(); await page.locator(".conn-live").waitFor(); await current(pane).waitFor(); await inputReady(pane);
-  const saved = rows().filter({ hasText: reloaded.text });
-  await saved.waitFor();
-  assert.equal(await saved.getAttribute("data-state"), "uncertain", "reload restores text without connection proof");
-  assert.equal(await saved.locator(".pending-message-send").count(), 0);
-  await report("idle"); await noBytes(delivered, "reload and readiness never replay saved pending input");
+  const disconnected = await queue("held after a lost connection");
+  await lostConnection();
+  await provenHeld(disconnected.text, "lost connection");
+
+  const reloaded = await queue("held after reload");
+  await reload();
+  await provenHeld(reloaded.text, "reload");
+
+  // (a) another browser session: its saved copy, but none of this browser's receipts
+  const otherBrowser = await queue("unproven in another browser session");
+  await page.evaluate(() => localStorage.setItem("ovis:pi-receipt-resume", crypto.randomUUID()));
+  await reload();
+  await unproven(otherBrowser.text, "another browser session");
+
+  // (b) past the ten minutes the bridge keeps a held receipt
+  const expired = await queue("unproven after the receipt expired");
+  const ambient = Date.now;
+  try {
+    Date.now = () => ambient() + 10 * 60 * 1000 + 1000;
+    await reload();
+    await unproven(expired.text, "expired receipt");
+  } finally { Date.now = ambient; }
+
+  // (c) an ambiguous send: Send now left the page and the connection dropped before any answer
+  const ambiguous = await queue("unproven after an ambiguous send");
+  await lostConnection();
+  const ambiguousRow = rows().filter({ hasText: ambiguous.text });
+  await until(async () => await ambiguousRow.getAttribute("data-state") === "held", "the ambiguous case starts from a proven held copy");
+  swallowResend = true;
+  await ambiguousRow.getByRole("button", { name: /^Send now:/ }).click();
+  await until(() => swallowedResend, "the Send now left the page");
+  await lostConnection();
+  swallowResend = false;
+  await unproven(ambiguous.text, "ambiguous send");
+
+  await report("idle"); await noBytes(delivered, "no unproven copy was ever typed");
   assert.deepEqual(errors, []);
   await context.close();
-  console.log("PASS split panes share one connection; real disconnect and reload stay uncertain without automatic or explicit replay");
+  console.log("PASS split panes share one connection; a proven held copy comes back held for an explicit Send now, and every unproven copy stays uncertain without automatic or explicit replay");
 } finally {
   await browser?.close(); server?.stop();
   for (const workspace of workspaces) await workspaceClose(workspace).catch(() => {});
