@@ -185,8 +185,13 @@ export class CLIProxyService {
       // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
       // accounts shown again count as just shown at the next report, so it reads them again
       if (!due && entries === null) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
-      // a full read that failed keeps the hidden accounts' rows, so they stay unread, and the next report reads again
-      if (entries === null) { this.entries = this.entries.filter((entry) => skipped.has(entry.key)); return this.entries; }
+      // a full read that failed keeps the hidden accounts' rows, so they stay unread, and the next report reads again;
+      // hidden by this report's snapshot or since (the live list), as invalidate keeps them
+      if (entries === null) {
+        const hidden = this.hidden();
+        this.entries = this.entries.filter((entry) => skipped.has(entry.key) || hidden.has(entry.key));
+        return this.entries;
+      }
       this.entries = entries;
       if (due) { this.readAt = now; this.nextAt = now + FRESH_MS; this.shownAt.clear(); }
       else for (const key of shown) this.shownAt.set(key, now);

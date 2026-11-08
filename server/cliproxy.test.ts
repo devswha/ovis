@@ -219,6 +219,23 @@ describe("CLIProxyAPI v8", () => {
     expect(after[0]).toBe(first[0]);
   });
 
+  it("keeps the row of an account hidden after the report's snapshot when the Hub cannot be read", async () => {
+    // Given
+    await configure();
+    await service.report();
+    let hidden = new Set<string>();
+    service.skipAccounts(() => hidden);
+    hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.invalidate();
+    fake.setDown(true);
+    await service.report(false, new Set());
+    fake.setDown(false);
+    // When
+    await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+  });
+
   it("reads a hidden Hub file anew when it names no account", async () => {
     // Given
     Reflect.deleteProperty(fake.files[0]!, "email");
