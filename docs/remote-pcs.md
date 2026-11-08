@@ -246,7 +246,9 @@ and herdr's default session only.
   that account can read. The stop goes ahead only while that pid is still the very server its bridge
   registration recorded (its birth: this boot's id and start ticks on Linux, `ps`'s start time on macOS),
   so another Ovis that took the pid after it ended is never stopped (`changed`), whether or not the
-  restore is on. The copy and the stop each go ahead only while that pid is still the process
+  restore is on. A registration that recorded no birth (every 0.5.x server's) is stopped only if its
+  process started no later than its registration file was written (2 s of slack): one that took the
+  pid later is refused in plain words. The copy and the stop each go ahead only while that pid is still the process
   shown (on Linux its start in clock ticks since boot from `/proc/<pid>/stat` and its owner; on macOS `ps`'s start time to the second and owner, where a pid reused within that second stays a residual; checked in the same command): one that took
   its pid since is never copied or signalled (`changed`). A copy cut short removes itself. Nothing is stopped when copying fails this time (try again). When no faithful
   copy can be made (its environment unreadable, its program or folder deleted since it started, as after

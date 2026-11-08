@@ -31,6 +31,7 @@ const STOP_WAIT_MS = 15_000;
 /** what installerRun says when the installer could not even be downloaded: none of it ran */
 const DOWNLOAD_FAILED = "Ovis: could not download the installer of";
 const CHANGED_WORDS = "That PC's Ovis changed since it was looked at, so nothing was stopped. Reconnect it and try again.";
+const NOT_REGISTERED_WORDS = (pid: number) => `The process ${pid} on that PC started after that Ovis registered, so it may be another program that took its process id; nothing was stopped. Reconnect it and try again.`;
 /** a folder captureServer made: only such a path is ever put back into a command (quoted) */
 export const SAVED_SERVER = /^\/[^\n\0]*\/ovis-restore\.[A-Za-z0-9]{8}$/;
 /** how long a copy may stay on that PC whatever becomes of the install (this server stopping mid-job, say) */
@@ -79,6 +80,20 @@ export const bornAs = (pid: number, birth: ProcessBirth | undefined): string =>
   : birth.platform === "linux" ? `[ "$(born_of=${pid}; printf '%s:%s' "$(cat /proc/sys/kernel/random/boot_id)" "$(sed 's/.*) //' /proc/$born_of/stat 2>/dev/null | cut -d' ' -f20)")" = ${shellQuote(birth.value)} ]`
   : birth.platform === "darwin" ? `[ "$(born_of=${pid}; LC_ALL=C TZ=UTC ps -o lstart= -p $born_of 2>/dev/null | sed 's/^ *//;s/ *$//;s/  */ /g')" = ${shellQuote(birth.value)} ]`
   : "false";
+/**
+ * A shell test, for a registration that recorded no birth (every 0.5.x bridge's), that the process at that pid started
+ * no later than its registration file was written (2 s of slack): the server writes it after it starts, so a process
+ * that took the pid after that server ended started later. Its file is the one in this account's bridge registry that
+ * holds its token. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
+ */
+export const startedBeforeRegistration = (pid: number, token: string): string =>
+  `{ reg_of=${pid}; f=$(grep -l -F ${shellQuote(token)} "$HOME/.config/herdr-web-ui/bridges/"*.json 2>/dev/null | head -n 1); `
+  + `[ -n "$f" ] && m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
+  + `e=$(ps -o etime= -p $reg_of 2>/dev/null | awk '{ n = split($1, a, /[-:]/); if (index($1, "-")) print a[1]*86400 + a[2]*3600 + a[3]*60 + a[4]; else if (n == 3) print a[1]*3600 + a[2]*60 + a[3]; else print a[1]*60 + a[2] }') && `
+  + `[ -n "$e" ] && [ $(( $(date +%s) - e )) -le $(( m + 2 )) ]; }`;
+/** the very server a registration names: by its recorded birth, or (none recorded) by having started before it registered */
+export const registeredAs = (pid: number, descriptor: { birth?: ProcessBirth; token: string }): string =>
+  descriptor.birth ? bornAs(pid, descriptor.birth) : startedBeforeRegistration(pid, descriptor.token);
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
@@ -370,8 +385,9 @@ export class PcInstaller {
         const command = shown ? await ssh.run(`ps -o args= -p ${plan.pid} 2>/dev/null || true`) : "";
         const still = shown ? (await ssh.run(processIdentity(plan.pid))).trim() : "";
         // the very server its registration recorded (its birth), not another Ovis that took its pid after it ended
-        const born = shown ? (await ssh.run(`${bornAs(plan.pid, shown.birth)} && echo born || true`)).trim() === "born" : false;
-        if (!gone && (!shown || !born || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
+        const born = shown ? (await ssh.run(`${registeredAs(plan.pid, shown)} && echo born || true`)).trim() === "born" : false;
+        if (!gone && (!shown || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
+        if (!gone && !born) throw new InstallFailed("changed", NOT_REGISTERED_WORDS(plan.pid));
         if (gone && plan.mode === "replace") stopped = true;
         // a restart goes through the launcher that runs it, which must be there before anything is stopped
         if (plan.mode === "restart" && !installed) throw new InstallFailed("no_launcher", "That PC's Ovis was not installed as a herdr plugin or a user service, so it cannot be restarted from here. Restart it on that PC (Settings → Updates there tells how), then update it.");
@@ -388,7 +404,7 @@ export class PcInstaller {
           // the stop, in the same command as the check that it is still that process
           signalled = plan.pid;
           // ... and only the very server its registration names (its birth): never another that took the pid after it ended
-          if ((await ssh.run(`${bornAs(plan.pid, shown?.birth)} && ${sameProcess(plan.pid, identity)} && kill -TERM ${plan.pid} && echo stopping || echo changed`)).trim() !== "stopping") { signalled = null; throw new InstallFailed("changed", CHANGED_WORDS); }
+          if ((await ssh.run(`${shown ? registeredAs(plan.pid, shown) : "false"} && ${sameProcess(plan.pid, identity)} && kill -TERM ${plan.pid} && echo stopping || echo changed`)).trim() !== "stopping") { signalled = null; throw new InstallFailed("changed", CHANGED_WORDS); }
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
             if (Date.now() >= until) throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) did not stop within ${Math.round(this.stopMs / 1000)} seconds, so nothing was installed.`);
             await pause();

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as listenOn } from "node:net";
 import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER } from "./pc-install.ts";
+import { bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -53,6 +53,8 @@ interface Pc {
   restoreOff?: boolean;
   /** the birth each pid's process has now, where it differs from what its registration recorded (a pid reused) */
   births?: Record<number, string>;
+  /** pids whose process started after its birth-less registration was written (a pid reused later) */
+  startedLate?: number[];
   /** pids that run another program than Ovis now (a registration left behind, its pid reused) */
   otherPrograms?: number[];
   /** the stop signal does not end the server */
@@ -90,7 +92,8 @@ function fixture(pc: Pc) {
   const identity = (pid: number) => pid === 4242 && pc.reusedAfterReads !== undefined && identityReads > pc.reusedAfterReads ? "Mon Nov  9 09:00:00 2026 1000" : `Sun Nov  8 08:00:00 2026 1000 ${pid}`;
   /** whether a script's sameProcess gate holds for that pid now */
   /** whether a script's bornAs gates hold: the process at that pid has the birth its registration recorded */
-  const bornAsShown = (script: string) => [...script.matchAll(/born_of=(\d+);[\s\S]*?\)" = '([^']*)' \]/g)].every((m) => (pc.births?.[Number(m[1])] ?? m[2]) === m[2]);
+  const bornAsShown = (script: string) => [...script.matchAll(/born_of=(\d+);[\s\S]*?\)" = '([^']*)' \]/g)].every((m) => (pc.births?.[Number(m[1])] ?? m[2]) === m[2])
+    && [...script.matchAll(/reg_of=(\d+);/g)].every((m) => !pc.startedLate?.includes(Number(m[1])));
   const sameAsShown = (script: string) => { const m = /\[ "\$\(id_of=(\d+);[\s\S]*?fi\)" = '([^']*)' \]/.exec(script); if (!m) return true; identityReads++; return identity(Number(m[1])) === m[2]; };
   /** signalled servers still stopping, and how many liveness checks each has left */
   const dying = new Map<number, number>();
@@ -399,6 +402,19 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
     expect(pc.commands.some((command) => /kill -TERM 4242$/.test(command) || command.includes("&& kill -TERM 4242"))).toBe(false);
     expect(pc.alive.has(4242)).toBe(true);
+  });
+
+  it("stops a server whose registration recorded no birth (0.5.x) only if it started before that registration, the setting off", async () => {
+    // the pid now runs a process that started after the registration was written: another, never stopped
+    const late = fixture({ descriptors: [descriptor(4242)], startedLate: [4242], restoreOff: true });
+    const job = await late.settled(late.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
+    expect(job.error).toContain("started after that Ovis registered");
+    expect(late.alive.has(4242)).toBe(true);
+    // the genuine old server, which started before it registered: stopped and replaced
+    const genuine = fixture({ descriptors: [descriptor(4242)], restoreOff: true });
+    expect((await genuine.settled(genuine.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }))).phase).toBe("connected");
+    expect(genuine.alive.has(4242)).toBe(false);
   });
 
   it("stops the shown server when its birth still matches its registration", async () => {
@@ -852,5 +868,27 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     if (reading.state !== "identified") throw new Error("no birth here");
     expect(await shell(`${bornAs(server.pid, reading.birth)} && echo born || true`, {})).toBe("born");
     expect(await shell(`${bornAs(server.pid, { ...reading.birth, value: reading.birth.value + "0" })} && echo born || true`, {})).toBe("");
+  });
+
+  it("tells a process that started before its birth-less registration was written from one that started after it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-registry-"));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const bridges = join(home, ".config", "herdr-web-ui", "bridges");
+    mkdirSync(bridges, { recursive: true });
+    const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const token = "c".repeat(64), file = join(bridges, "own.json");
+    const check = () => shell(`${startedBeforeRegistration(server.pid, token)} && echo before || true`, { HOME: home });
+    // written after it started, as a server writes its own registration
+    writeFileSync(file, JSON.stringify({ pid: server.pid, token }));
+    expect(await check()).toBe("before");
+    // a registration written well before it started: this process took the pid of a server that ended
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(file, past, past);
+    expect(await check()).toBe("");
+    // and none at all holds its token
+    rmSync(file);
+    expect(await check()).toBe("");
   });
 });
