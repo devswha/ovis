@@ -81,6 +81,17 @@ function xtermRowRenderer(term: Terminal): XtermRowRenderer | null {
   return renderer && typeof renderer.renderRows === "function" ? renderer : null;
 }
 
+/**
+ * xterm's cell in device pixels, which follows the font alone, or null before it measured one. Its screen keeps the
+ * last grid's size while its renderer is paused (a screen the chat lens covers, or out of view) and takes the new one
+ * only when it shows again, but tells the resize at once: the screen measured then was the old grid's (#3366).
+ */
+function xtermDeviceCell(term: Terminal): { width: number; height: number } | null {
+  const core = (term as unknown as { _core?: { _renderService?: { dimensions?: { device?: { cell?: { width: number; height: number } } } } } })._core;
+  const cell = core?._renderService?.dimensions?.device?.cell;
+  return cell && cell.width > 0 && cell.height > 0 ? cell : null;
+}
+
 /** xterm.js 6's own ANSI colours, which it draws with wherever the theme names none (the dark palettes name none) */
 const XTERM_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b", "#06989a", "#d3d7cf",
   "#555753", "#ef2929", "#8ae234", "#fce94f", "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec"];
@@ -153,7 +164,11 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   const decoded = new Map<string, HTMLCanvasElement>();
 
   const metrics = (): void => {
-    const box = screen.getBoundingClientRect();
+    // the screen xterm draws for the grid it has now, rounded as its DomRenderer rounds it
+    const device = xtermDeviceCell(term);
+    const box = device
+      ? { width: Math.round(device.width * term.cols / (window.devicePixelRatio || 1)), height: Math.round(device.height * term.rows / (window.devicePixelRatio || 1)) }
+      : screen.getBoundingClientRect();
     cellW = box.width / term.cols;
     cellH = box.height / term.rows;
     const font = term.options.fontFamily ?? "monospace";
