@@ -40,6 +40,23 @@ describe("running herdr discovery", () => {
     expect(await discoverHerdrSessions(f)).toEqual([]);
   });
 
+  it("finds a listening herdr socket of this account by /proc/net/unix, any program and any XDG root, only outside a sandbox", async () => {
+    const f = fixture();
+    // a desktop herdr under an XDG root outside HOME, served by a program not named herdr: no process line names it
+    const outside = mkdtempSync(join(tmpdir(), "herdr-discovery-xdg-"));
+    roots.push(outside);
+    const socket = join(outside, "herdr/sessions/work/herdr.sock");
+    listening(socket);
+    mkdirSync(join(f.procRoot, "net"));
+    writeFileSync(join(f.procRoot, "net/unix"), `Num       RefCount Protocol Flags    Type St Inode Path
+0000000000000000: 00000002 00000000 00010000 0001 01 4242 ${socket}
+0000000000000000: 00000002 00000000 00000000 0001 03 4243 ${join(outside, "other/herdr.sock")}
+`);
+    expect(await discoverHerdrSessions({ ...f, accountHome: f.home })).toEqual([{ socket_path: socket, session: "work", label: "work" }]);
+    // a sandbox HOME never reaches it
+    expect(await discoverHerdrSessions({ ...f, accountHome: "/home/someone-else" })).toEqual([]);
+  });
+
   it("rejects sockets owned by another uid even in the inherited XDG root", async () => {
     const f = fixture();
     const xdg = join(f.home, "inherited-xdg");

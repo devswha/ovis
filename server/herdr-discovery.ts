@@ -6,6 +6,8 @@ import type { FoundHerdrSession } from "../shared/machines.ts";
 
 export interface HerdrDiscoveryHost {
   home: string;
+  /** the account's own home (its passwd entry): a HOME other than it is a sandbox, which sees only its own roots */
+  accountHome?: string;
   xdg?: string;
   procRoot?: string;
   uid?: number;
@@ -54,7 +56,30 @@ function candidates(host: HerdrDiscoveryHost): string[] {
       } catch { /* a process may exit while it is being inspected */ }
     }
   }
+  // every listening unix socket named herdr.sock, whatever program serves it (a wrapper, a renamed binary) and wherever
+  // its XDG root is: ownership, scope and a real connection decide below
+  if (host.platform === "linux" && host.procRoot) {
+    try {
+      for (const line of readFileSync(join(host.procRoot, "net/unix"), "utf8").split("\n").slice(1)) {
+        const fields = line.trim().split(/\s+/);
+        // Flags 00010000: a listening socket (__SO_ACCEPTCON)
+        const path = fields[7];
+        if (fields[3] === "00010000" && path?.startsWith("/") && path.endsWith("/herdr.sock")) paths.push(path);
+      }
+    } catch { /* no /proc/net/unix: the roots and processes above are all there is */ }
+  }
   return [...new Set(paths)];
+}
+
+/** the account's home from /etc/passwd (Bun's userInfo().homedir follows $HOME); none found keeps discovery confined */
+function passwdHome(uid: number | undefined): string | undefined {
+  try {
+    for (const line of readFileSync("/etc/passwd", "utf8").split("\n")) {
+      const fields = line.split(":");
+      if (fields.length >= 7 && Number(fields[2]) === uid && fields[2] !== "") return fields[5];
+    }
+  } catch { /* no /etc/passwd */ }
+  return undefined;
 }
 
 export async function discoverHerdrSessions(host: HerdrDiscoveryHost = { home: process.env.HOME || homedir(), xdg: process.env.XDG_CONFIG_HOME, procRoot: "/proc", platform: process.platform, uid: process.getuid?.() }): Promise<FoundHerdrSession[]> {
@@ -65,6 +90,8 @@ export async function discoverHerdrSessions(host: HerdrDiscoveryHost = { home: p
     if (!root?.startsWith("/")) continue;
     try { roots.push(realpathSync(root)); } catch { /* a missing config root has no candidates */ }
   }
+  // only a sandboxed HOME is confined to its own roots; the account itself may run herdr under any XDG root it set
+  const confined = host.home !== (host.accountHome ?? passwdHome(uid));
   const found: FoundHerdrSession[] = [];
   const paths = candidates(host);
   if (host.platform === "darwin") {
@@ -89,7 +116,7 @@ export async function discoverHerdrSessions(host: HerdrDiscoveryHost = { home: p
       socket = realpathSync(path);
       const resolved = statSync(socket);
       if (resolved.uid !== uid || !resolved.isSocket()) continue;
-      if (!roots.some((root) => socket === root || socket.startsWith(root + "/"))) continue;
+      if (confined && !roots.some((root) => socket === root || socket.startsWith(root + "/"))) continue;
     } catch { continue; /* a daemon may leave while discovery runs */ }
     if (seen.has(socket)) continue;
     seen.add(socket);
