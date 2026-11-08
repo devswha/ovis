@@ -26,40 +26,27 @@
  * fixed --space-4 (16px) left inset and the label centered across the full button width.
  */
 .account-provider {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: var(--touch-target);
-  min-height: var(--touch-target);
-  padding-inline: calc(var(--space-4) + var(--icon-size) + var(--space-2));
-  background: var(--bg-elevated);
-  border: var(--hairline) solid var(--border);
-  color: var(--text-strong);
-  font-weight: var(--fw-medium);
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; min-width: 0; height: auto; min-height: var(--touch-target);
+  padding-block: var(--space-2); padding-inline: calc(var(--space-4) + var(--icon-size) + var(--space-2));
+  background: var(--bg-elevated); border: var(--hairline) solid var(--border); color: var(--text-strong);
+  font-weight: var(--fw-medium); line-height: var(--lh-tight); text-align: center; white-space: normal; overflow-wrap: anywhere;
 }
 
 @media (hover: hover) {
-  .account-provider:hover:not(:disabled) {
-    background: var(--bg-hover);
-    border-color: var(--border-strong);
-    color: var(--text-strong);
-  }
+  .account-provider:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text-strong); }
 }
 
-.account-provider-mark {
-  flex: none;
-  width: var(--icon-size);
-  height: var(--icon-size);
-}
+.account-provider-mark { flex: none; width: var(--icon-size); height: var(--icon-size); }
 
 .btn.account-provider > svg.account-provider-mark,
 .account-provider > .account-provider-mark {
-  position: absolute;
-  inset-inline-start: var(--space-4);
-  width: var(--icon-size);
-  height: var(--icon-size);
+  position: absolute; inset-inline-start: var(--space-4); width: var(--icon-size); height: var(--icon-size);
+}
+
+@media (max-width: 240px) {
+  .account-provider { padding-inline: calc(var(--space-3) + var(--icon-size) + var(--space-2)) var(--space-3); }
+  .btn.account-provider > svg.account-provider-mark, .account-provider > .account-provider-mark { inset-inline-start: var(--space-3); }
 }
 
 .account-provider-spinner {
@@ -92,11 +79,8 @@
 }
 
 .account-continue-saved {
-  width: 100%;
-  height: var(--touch-target);
-  min-height: var(--touch-target);
-  margin-top: var(--space-2);
-  font-variant-numeric: tabular-nums;
+  width: 100%; min-width: 0; height: auto; min-height: var(--touch-target); margin-top: var(--space-2);
+  padding-block: var(--space-2); line-height: var(--lh-tight); text-align: center; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums;
 }
 
 .account-divider {
@@ -109,24 +93,11 @@
 
 /* the other way in: a ghost button or quiet link at touch-target height */
 .account-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: var(--touch-target);
-  margin-top: var(--space-2);
-  padding: 0 var(--space-3);
-  background: none;
-  border: 0;
-  border-radius: var(--radius-md);
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  color: var(--text-dim);
-  text-decoration: underline;
-  text-underline-offset: 0.15em;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; width: 100%; min-width: 0;
+  height: auto; min-height: var(--touch-target); margin-top: var(--space-2); padding: var(--space-2) var(--space-3);
+  background: none; border: 0; border-radius: var(--radius-md); font: inherit; font-size: var(--fs-sm);
+  font-weight: var(--fw-medium); line-height: var(--lh-tight); color: var(--text-dim); text-align: center;
+  text-decoration: underline; text-underline-offset: 0.15em; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; cursor: pointer;
 }
 
 .account-link.btn-ghost {
@@ -156,6 +127,7 @@
   line-height: var(--lh-base);
   color: var(--text-dim);
   text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .account-fineprint a {
