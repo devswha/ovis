@@ -5767,7 +5767,39 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         pane.onRead = () => { if (reads >= 0 && ++reads === 5) pane.screen = effort; };
         expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
         // the card read right after the answer: a model list again would take a second tap's Enter
+        expect((await card())?.question ?? "").not.toStartWith("Select model");
+        // Letta's next step: the pane's model list after this is asked anew
+        pane.screen = effort;
         expect((await card())?.question).toStartWith("Select reasoning level");
+      });
+    });
+
+    test("serves no fresh card for a picked model list until the screen changes", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        // Letta has not redrawn yet: the list just answered is no new asking, however long it stays
+        const again = await card();
+        expect(again, "a card for the unchanged list would take a second Enter").toBeNull();
+        expect(pane.sent).toEqual(["enter"]);
+        // once the screen moves on, its cards are served again, and the list after it too
+        pane.screen = effort;
+        expect((await card())?.question).toStartWith("Select reasoning level");
+        pane.screen = lettaModels("");
+        expect((await card())?.question).toStartWith("Select model");
+      });
+    });
+
+    test("stops a search once the picker shows another tab", async () => {
+      const recommended = readFileSync(new URL("./fixtures/letta/model-recommended-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // → in the terminal right after the first key: Recommended, under the same search
+        pane.onSent = (sent) => { if (sent === "text:a") pane.screen = recommended.replace("(type to filter)", "a"); };
+        const result = await answer(prompt.id, { custom_text: "abc" });
+        expect(pane.sent, "another tab must not take the rest of the search").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
       });
     });
 

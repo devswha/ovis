@@ -135,8 +135,8 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     custom_option_index: searchIndex,
   }, {
     responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search", "cancel"], selectedIndex, lettaSearch: typed,
-    // the tab shown, by its line of tabs and the line Letta draws under them: a row of the same name on another tab is another row
-    lettaTab: `${lines[search - 2]?.trim() ?? ""}\n${lines[search - 1]?.trim() ?? ""}`,
+    // the tab shown, by the line Letta draws under the tabs (their counts follow the search), and the tabs drawn
+    lettaTab: shown ?? lines[search - 1]?.trim() ?? "", lettaTabs: names,
     checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: cancelIndex,
     optionSteps: [
       ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
@@ -183,6 +183,16 @@ function parseLettaEffort(screen: string): ParsedPrompt | null {
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: 1,
     optionSteps: [[{ keys: [KEY.enter] }], [{ keys: [KEY.escape] }]],
   });
+}
+
+/**
+ * Whether a read shows the card's model list with `search` typed, on the card's tab: a key of the card's search goes
+ * nowhere else. Letta moves to the first tab with models itself once the search leaves the shown one none (and draws
+ * that tab no more): a tab still drawn but not shown is a switch from somewhere else, where the search would not go.
+ */
+export function lettaSearchShown(shown: ParsedPrompt | null | undefined, card: ParsedPrompt, search: string): boolean {
+  return shown?.responder === "letta-model" && shown.lettaSearch === search.trimEnd()
+    && (shown.lettaTab === card.lettaTab || !(shown.lettaTabs ?? []).includes(card.lettaTab ?? ""));
 }
 
 export const readers: readonly DialogReader[] = [

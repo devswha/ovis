@@ -23,7 +23,7 @@ import { registry } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
-import { LETTA_SEARCH_MAX } from "./dialogs/letta.ts";
+import { LETTA_SEARCH_MAX, lettaSearchShown } from "./dialogs/letta.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
@@ -576,7 +576,11 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
  * two askings cannot be told apart from the screen.
  */
 /** `call`: the omp ask call the asking's card was read under (omp-ask.ts ompCallPrompt), once a read proved one */
-interface Asking { content: string | null; n: number; queued: boolean; call?: string }
+/**
+ * `picked`: a Letta picker answered with its Enter (a model, a level), by what it says: Letta redraws a moment after
+ * the key, and until a read shows anything else that drawing is the asking just answered, never a new one
+ */
+interface Asking { content: string | null; n: number; queued: boolean; call?: string; picked?: string }
 const askings = new Map<string, Asking>();
 /** counted across panes and never reused: a pane forgotten here starts no asking over */
 let askingCount = 0;
@@ -603,7 +607,9 @@ const answerTurns = new Map<string, number>();
  */
 function asked(paneId: string, prompt: InteractivePrompt | null, turns: number): InteractivePrompt | null {
   let asking = askings.get(paneId);
+  if (prompt !== null && asking?.picked === prompt.id) return null;
   if (!answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
+    if (asking) asking.picked = undefined;
     if (prompt === null) {
       if (asking) asking.content = null;
       return null;
@@ -1983,7 +1989,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
-              (shown, screen, settled) => lettaTyping ? shown?.responder === "letta-model" && shown.lettaSearch === lettaSearch.trimEnd()
+              (shown, screen, settled) => lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch)
                 : sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
               interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
@@ -2026,7 +2032,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               reading.catch(() => undefined);
               const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
               const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
-              if (read && !read.inputUnverified && shown?.responder === "letta-model" && shown.lettaSearch === draft.trimEnd()) {
+              if (read && !read.inputUnverified && lettaSearchShown(shown, parsed, draft)) {
                 return asks() && !request.signal.aborted && Date.now() < deadline;
               }
               await Bun.sleep(50);
@@ -2117,6 +2123,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (queueOpened && !answered) await closeOpenQuestion(body.pane_id).catch(() => undefined);
         // answered, or as good as: the same prompt on the screen after this is asked anew
         if (committed) askingEnded(body.pane_id);
+        // but Letta's picker picked with Enter is no new asking until the screen shows something else
+        const answeredCard = parsedByPublicPrompt.get(target);
+        if (committed && (answeredCard?.responder === "letta-model" || answeredCard?.responder === "letta-effort") && body.option_index !== undefined
+          && answeredCard.optionSteps?.[body.option_index]?.at(-1)?.keys?.[0] === KEY.enter) {
+          const asking = askings.get(body.pane_id);
+          if (asking) asking.picked = answeredCard.id;
+        }
         // sent or dropped from its card: the same words in the box after this are a new message
         if (committed && parsedByPublicPrompt.get(target)?.responder === "claude-held") heldCandidates.delete(body.pane_id);
       }
@@ -2142,8 +2155,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (responder === "claude-question" || responder === "claude-submit"
         || responder === "claude-approval" || responder === "claude-plan" || responder === "claude-confirm") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       else if (target.steps) form.still = sameContent(contentId(target));
-      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model"
-        || responder === "letta-model" || responder === "letta-effort") form.still = sameContent(lastSeen ?? contentId(target));
+      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
       return jsonResponse({ ok: true });
     });
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message

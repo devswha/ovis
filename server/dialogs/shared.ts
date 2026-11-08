@@ -161,8 +161,10 @@ export type ParsedPrompt = InteractivePrompt & {
   claudeUltracode?: boolean | null;
   /** Letta's /model: what its search line shows (letta.ts), the search each key of a typed one is checked against */
   lettaSearch?: string;
-  /** Letta's /model: the tab it shows, by the lines of its tab bar (letta.ts), part of a row's identity */
+  /** Letta's /model: the tab it shows (letta.ts), part of a row's identity */
   lettaTab?: string;
+  /** Letta's /model: the tabs its tab bar draws, which a search can empty (letta.ts lettaSearchShown) */
+  lettaTabs?: string[];
   menuLabels: string[];
   selectedIndex: number;
   checkedOptionIndices: number[];
