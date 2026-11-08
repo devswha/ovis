@@ -3,7 +3,8 @@
  * or nothing (shared/runtime-move.ts). One row with a button, only where the server offers the move
  * (read once as About opens). Its dialog previews what every pane becomes and starts the move, then
  * follows it, reading the server every two seconds only while it is open: the wait for busy panes
- * (Cancel ends it), the steps, and the end. A finished move switches the runtime, which the page
+ * (Cancel ends it; a shell's command can be ended there, all at once after a confirm, and an agent's
+ * pane opened), the steps, and the end. A finished move switches the runtime, which the page
  * follows as Settings' own switch does; a rolled-back one names what was not put back, and Try
  * again shows the plan as it stands now.
  */
@@ -13,12 +14,12 @@ import { X } from "lucide-react";
 
 import "./RuntimeMove.css";
 
-import type { MovePlanResponse } from "../../shared/runtime-move.ts";
+import type { MovePane, MovePlanResponse, MoveStopAllOffer } from "../../shared/runtime-move.ts";
 import { LOCAL_MACHINE } from "../../shared/machines.ts";
-import { ApiError, cancelMove, fetchBridgeHealth, fetchMovePlan, startMove } from "../lib/api.ts";
+import { ApiError, cancelMove, confirmStopAll, fetchBridgeHealth, fetchMovePlan, installHerdrCore, prepareStopAll, startMove, stopMovePane } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
-import { moveInProgress } from "../lib/runtimeMove.ts";
+import { moveInProgress, runningCommands } from "../lib/runtimeMove.ts";
 import { awaitRestart } from "../lib/runtimeSwitch.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
@@ -36,12 +37,16 @@ interface Props {
   /** the row stays away while the page waits for a restarted server; an open dialog stays */
   hidden: boolean;
   onServerRestarted?: () => void;
+  /** opens a pane of this PC in the app (Settings closes); absent where the dialog has no app around it */
+  onOpenPane?: (machineId: string, paneId: string) => void;
 }
 
-export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
+export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: Props) {
   const t = useT();
   const [answer, setAnswer] = useState<MovePlanResponse | null>(null);
   const [open, setOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
   const from = useRef<string | null>(bootId);
   const followed = useRef(false);
 
@@ -54,13 +59,40 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
 
   if (answer === null) return null;
   const { state } = answer.status;
-  // a move that just finished is answered by a server no longer offering one: its dialog stays to follow the restart
-  if (!answer.available && !open) return null;
   const openDialog = (): void => {
     // the bridge answering now (its boot id needs no herdr): the move's own switch restarts it
     void fetchBridgeHealth().then((health) => { from.current = health.web_ui?.boot_id ?? bootId; }, () => { from.current = bootId; });
     setOpen(true);
   };
+  // no herdr-core yet: one press installs it, then the move's plan opens as it would have
+  if (!answer.available && answer.install && !open) {
+    const install = async (): Promise<void> => {
+      setInstalling(true);
+      setInstallError(null);
+      try {
+        await installHerdrCore();
+        const next = await fetchMovePlan();
+        setAnswer(next);
+        if (next.available) openDialog();
+      } catch (reason: unknown) {
+        setInstallError(said(reason));
+        // an install that went in while its answer was lost: the row follows what the server offers now
+        void fetchMovePlan().then(setAnswer, () => {});
+      } finally {
+        setInstalling(false);
+      }
+    };
+    if (hidden) return null;
+    return (
+      <SettingsRow label={t("Install herdr-core and move everything")}
+        description={t("Installs herdr-core {version} into ~/.local/bin, then shows what moves before anything does.", { version: answer.install.version })}
+        condition={installError === null ? undefined : <span className="settings-condition" role="alert">{t("Could not install: {detail}", { detail: installError })}</span>}>
+        <button type="button" className="btn" disabled={installing} onClick={() => void install()}>{installing ? t("Installing…") : t("Install and move…")}</button>
+      </SettingsRow>
+    );
+  }
+  // a move that just finished is answered by a server no longer offering one: its dialog stays to follow the restart
+  if (!answer.available && !open) return null;
   return (
     <>
       {!hidden && answer.available && (
@@ -69,7 +101,7 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
         </SettingsRow>
       )}
       {open && (
-        <RuntimeMoveDialog answer={answer} onAnswer={setAnswer} onClose={() => setOpen(false)} follow={() => {
+        <RuntimeMoveDialog answer={answer} onAnswer={setAnswer} onClose={() => setOpen(false)} onOpenPane={onOpenPane ? (paneId) => onOpenPane(LOCAL_MACHINE, paneId) : null} follow={() => {
           if (followed.current) return;
           followed.current = true;
           paneLifetimes.runtimeSwitched(LOCAL_MACHINE);
@@ -86,7 +118,7 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted }: Props) {
 
 type View = "plan" | "waiting" | "moving" | "done" | "result";
 
-function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { answer: MovePlanResponse; onAnswer: (answer: MovePlanResponse) => void; onClose: () => void; follow: () => void; onStarted: () => void }) {
+function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onStarted }: { answer: MovePlanResponse; onAnswer: (answer: MovePlanResponse) => void; onClose: () => void; onOpenPane: ((paneId: string) => void) | null; follow: () => void; onStarted: () => void }) {
   const t = useT();
   const id = useId();
   const first = useRef<HTMLButtonElement>(null);
@@ -95,6 +127,8 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
   const [error, setError] = useState<string | null>(null);
   // a rollback the person has read: Try again shows the plan as it stands now
   const [acknowledged, setAcknowledged] = useState(false);
+  // End all and move now was pressed: the list the server offered to end, asked once more before anything is ended
+  const [confirming, setConfirming] = useState<MoveStopAllOffer | null>(null);
   useSheetSwipe(surface, pending ? null : onClose);
   usePhoneSheetBack(() => { if (pending) return false; onClose(); });
   const { status } = answer;
@@ -121,6 +155,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
     return () => { live = false; clearInterval(timer); };
   }, [onAnswer]);
   useEffect(() => { if (status.state === "done") follow(); }, [status.state, follow]);
+  useEffect(() => { if (view !== "waiting") setConfirming(null); }, [view]);
   useEffect(() => { if (!answer.available && status.state !== "done" && !moveInProgress(status)) onClose(); }, [answer.available, status, onClose]);
 
   const act = async (deed: () => Promise<void>): Promise<void> => {
@@ -140,9 +175,24 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
   });
   const cancel = () => act(async () => { await cancelMove(); onAnswer(await fetchMovePlan()); });
   const again = () => act(async () => { onAnswer(await fetchMovePlan()); setAcknowledged(true); });
+  const stopping = status.state === "waiting" ? status.stopping ?? [] : [];
+  // the command each row shows: the server ends none that runs in its place
+  const shown = (pane: MovePane): string | null => pane.verdict.kind === "busy" ? pane.verdict.command : null;
+  const stop = (pane: MovePane, force: boolean) => act(async () => { await stopMovePane(pane.pane_id, shown(pane), force); onAnswer(await fetchMovePlan()); });
+  const askStopAll = () => act(async () => {
+    const offer = await prepareStopAll();
+    if (offer.panes.length > 0) setConfirming(offer);
+    else onAnswer(await fetchMovePlan());
+  });
+  // the server ends exactly the list it offered, or refuses when the panes changed: then the person asks again
+  const stopAll = (offer: MoveStopAllOffer) => act(async () => {
+    setConfirming(null);
+    try { await confirmStopAll(offer.token); } finally { onAnswer(await fetchMovePlan()); }
+  });
 
   if (!answer.available) return null;
   const { plan } = answer;
+  const untried = runningCommands(plan).filter((pane) => !stopping.some((entry) => entry.pane_id === pane.pane_id)).length;
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
       <div ref={surface} className="modal runtime-move" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-lead`} tabIndex={-1} data-view={view}>
@@ -152,7 +202,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
         </header>
         <div className="modal-body">
           {view === "plan" && <PlanView t={t} plan={plan} leadId={`${id}-lead`} />}
-          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} />}
+          {view === "waiting" && <WaitingView t={t} plan={plan} leadId={`${id}-lead`} confirming={confirming ? confirming.panes : null} stopping={stopping} pending={pending} onStop={(pane, force) => void stop(pane, force)} onOpenPane={onOpenPane} />}
           {view === "moving" && status.state === "moving" && <MovingView t={t} status={status} leadId={`${id}-lead`} />}
           {view === "done" && <p className="runtime-move-lead" id={`${id}-lead`} role="status">{t("Now running on herdr-core. To go back to herdr, switch the runtime again.")}</p>}
           {view === "result" && (status.state === "rolled_back" || status.state === "interrupted") && <ResultView t={t} plan={plan} status={status} leadId={`${id}-lead`} />}
@@ -163,10 +213,15 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, follow, onStarted }: { a
             <button ref={first} type="button" className="btn" disabled={pending} onClick={onClose}>{t("Cancel")}</button>
             <button type="button" className="btn btn-primary" disabled={pending} onClick={() => void start(plan.revision)}>{plan.ready ? t("Move everything") : t("Move everything once all work is done")}</button>
           </>}
-          {view === "waiting" && <>
+          {view === "waiting" && (confirming ? <>
+            <button ref={first} type="button" className="btn" disabled={pending} onClick={() => setConfirming(null)}>{t("Back")}</button>
+            <button type="button" className="btn btn-danger" disabled={pending} onClick={() => void stopAll(confirming)}>{t("End and move")}</button>
+          </> : <>
             <button ref={first} type="button" className="btn" disabled={pending} onClick={() => void cancel()}>{t("Cancel")}</button>
-            <button type="button" className="btn btn-primary" disabled>{t("Waiting for work to finish…")}</button>
-          </>}
+            {untried > 0
+              ? <button type="button" className="btn btn-primary" disabled={pending} onClick={() => void askStopAll()}>{t("End all and move now")}</button>
+              : <button type="button" className="btn btn-primary" disabled>{t("Waiting for work to finish…")}</button>}
+          </>)}
           {(view === "moving" || view === "done") && <button ref={first} type="button" className="btn" onClick={onClose}>{t("Close")}</button>}
           {view === "result" && <>
             <button ref={first} type="button" className="btn" disabled={pending} onClick={onClose}>{t("Close")}</button>

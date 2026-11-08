@@ -6,6 +6,11 @@
 export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "Move everything to herdr-core": "全部迁移到 herdr-core",
   "Every workspace, tab and agent reopens on herdr-core, all at once.": "所有工作区、标签页和 Agent 一次性在 herdr-core 上重新打开。",
+  "Install herdr-core and move everything": "安装 herdr-core 并全部迁移",
+  "Installs herdr-core {version} into ~/.local/bin, then shows what moves before anything does.": "将 herdr-core {version} 安装到 ~/.local/bin,然后先显示将迁移的内容。",
+  "Install and move…": "安装并迁移…",
+  "Installing…": "正在安装…",
+  "Could not install: {detail}": "无法安装:{detail}",
   "Move…": "迁移…",
   "Waiting…": "等待中…",
   "Moving…": "迁移中…",
@@ -24,7 +29,15 @@ export const RUNTIME_MOVE_ZH: Record<string, string> = {
 
   "One pane is at work. Everything moves at once when it is done.": "1 个面板正在工作。完成后一次性迁移。",
   "{n} panes are at work. Everything moves at once when they are done.": "{n} 个面板正在工作。全部完成后一次性迁移。",
-  "End a program in a shell (Ctrl+C) or an agent marked above yourself; the move then goes on by itself.": "请手动结束 Shell 中的程序（Ctrl+C）或上面标出的 Agent，之后迁移会自动继续。",
+  "End an agent marked above yourself; the move goes on by itself once nothing runs.": "请手动结束上面标出的 Agent，全部结束后迁移会自动继续。",
+  "End": "结束",
+  "Ending…": "正在结束…",
+  "Force end": "强制结束",
+  "Open the agent's pane": "打开 Agent 窗格",
+  "End all and move now": "全部结束并立即迁移",
+  "End and move": "结束并迁移",
+  "Ends 1 running command. Unsaved work may be lost.": "将结束 1 个正在运行的命令。未保存的工作可能会丢失。",
+  "Ends {n} running commands. Unsaved work may be lost.": "将结束 {n} 个正在运行的命令。未保存的工作可能会丢失。",
   "Waiting for work to finish…": "正在等待工作完成…",
 
   "Ending the agents in herdr": "正在退出 herdr 中的 Agent",

@@ -9,6 +9,7 @@ import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { announcePairingCode, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
+import { isTailnetCarrier } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { KeyId } from "./KeyId.tsx";
@@ -21,6 +22,20 @@ export const failureText = (error: unknown): string => error instanceof ApiError
 export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): string {
   if (status.blocked === "serve_only") return t("Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.");
   if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it under More settings in Devices and PCs to use the relay again.");
+  const pass = status.pass;
+  // Ovis's relay asks for an account (docs/relay.md, "Relay pass"): refused, or soon
+  // only once the relay actually refused this PC for its pass: any other relay error keeps its own text
+  if (pass?.refused && status.phase === "error" && pass.state !== "ok") return pass.state === "not_listed"
+    ? t("Add this PC to your Ovis account to use the Ovis relay, or connect over the same Wi-Fi or Tailscale.")
+    : pass.state === "limit"
+    ? t("This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.")
+    : pass.state === "unavailable"
+      ? t("Cannot reach the Ovis account service for a relay pass. Retrying.")
+      : t("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");
+  // a pass renewed on the open control socket is not answered: once this PC holds one, the notice is stale
+  if (pass && status.phase === "online" && pass.state !== "ok" && pass.relay !== null && pass.relay !== "ok" && pass.enforce_at !== null) {
+    return t("Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.", { date: new Date(pass.enforce_at).toLocaleDateString() });
+  }
   switch (status.phase) {
     case "off": return t("Off. Nothing goes through the relay.");
     case "connecting": return t("Connecting…");
@@ -65,7 +80,9 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
   return (
     <SettingsRow label={direct.on ? t("Same Wi-Fi direct connection on") : t("Same Wi-Fi direct connection off")} description={<>
       {!direct.on ? t("Phones paired through the relay always go through the relay.")
-        : direct.carriers.length > 0 ? t("This PC takes connections on your home network. Only devices paired through the relay can sign in there; nothing new pairs.")
+        : direct.carriers.length > 0 ? (!direct.carriers.some(isTailnetCarrier) ? t("This PC takes connections on your home network. Only devices paired through the relay can sign in there; nothing new pairs.")
+          : direct.carriers.every(isTailnetCarrier) ? t("This PC takes connections on Tailscale. Only devices paired through the relay can sign in there; nothing new pairs.")
+          : t("This PC takes connections on your home network and on Tailscale. Only devices paired through the relay can sign in there; nothing new pairs."))
         : t("On, but this PC has no home network address to listen on right now.")}
       {failure !== null && <span className="settings-hint relay-error" role="alert">{failure}</span>}
     </>}>
