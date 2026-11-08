@@ -72,6 +72,11 @@ describe("Letta Code's /model", () => {
     expect(plan.matches(screen("model-recommended"))).toBe(false);
   });
 
+  it("puts a capital R first whenever it goes into an emptied search", () => {
+    const prompt = parseInteractivePrompt("letta", screen("model-recents").replace("(type to filter)", "old"))!;
+    expect(answerKeys(prompt, { custom_text: "ri" })).toEqual([{ keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { text: "R" }, { text: "i" }]);
+  });
+
   it("reads no picker once output follows it, nor another agent's screen", () => {
     expect(parseInteractivePrompt("letta", `${screen("model-recents")}\n• Model switched\n`)).toBeNull();
     expect(parseInteractivePrompt("letta", `${screen("effort")}\n› \n`)).toBeNull();

@@ -140,10 +140,11 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
       [{ keys: [KEY.escape] }],
     ],
     // the search: what was typed is taken out a key at a time, then the new words go in a key at a
-    // time, as Letta reads one. With nothing typed, `r` refreshes the list instead: its capital goes in
+    // time, as Letta reads one. The first goes into a search the backspaces emptied, where `r` refreshes the list
+    // instead: its capital goes in
     customSteps: (text: string) => {
       const words = text.slice(0, LETTA_SEARCH_MAX);
-      const first = typed === "" && words.startsWith("r") ? `R${words.slice(1)}` : words;
+      const first = words.startsWith("r") ? `R${words.slice(1)}` : words;
       return [...keySteps(Array.from({ length: typed.length }, () => KEY.backspace)), ...[...first].map((character) => ({ text: character }))];
     },
   });
