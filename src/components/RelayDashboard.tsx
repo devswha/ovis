@@ -107,7 +107,7 @@ export function RelayDashboard({
   const titleRef = useRef<HTMLHeadingElement>(null), prevViewRef = useRef<DashboardView>(route.view);
   const splitRef = useRef<HTMLDivElement>(null), prevPcRef = useRef<string | null>(route.pc);
   /** the PC whose details Back, Close or Escape just left: below 1100px its row takes the focus back */
-  const closedPcRef = useRef<string | null>(null);
+  const closedPcRef = useRef<string | null>(null), peersRef = useRef<readonly string[]>([]);
 
   useEffect(() => {
     const sync = () => { if (!window.location.hash || window.location.hash === "#" || isDashboardHash(window.location.hash)) setRoute(parseDashboardHash(window.location.hash)); };
@@ -116,31 +116,6 @@ export function RelayDashboard({
   }, []);
 
   useEffect(() => { if (prevViewRef.current !== route.view) { prevViewRef.current = route.view; titleRef.current?.focus(); } }, [route.view]);
-
-  // Below 1100px the details replace the list as a full view (IS-TABLE-08), so the view starts at the top,
-  // the details heading takes the focus (ringless, RelayDashboard.css), and leaving them (Back, Escape, or browser Back)
-  // focuses the row again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
-  useEffect(() => {
-    const prevPc = prevPcRef.current;
-    if (route.pc === prevPc) return;
-    prevPcRef.current = route.pc;
-    const closed = closedPcRef.current ?? prevPc;
-    closedPcRef.current = null;
-    const split = splitRef.current;
-    if (split === null) return;
-    const focusRow = (id: string | null) => id === null ? null : split.querySelector<HTMLElement>(`[data-pc-id="${id}"] .relay-pc-name-btn`);
-    if (!narrow) {
-      if (document.activeElement === null || document.activeElement === document.body) focusRow(route.pc ?? closed)?.focus({ preventScroll: true });
-      return;
-    }
-    if (route.pc !== null) {
-      const heading = split.querySelector<HTMLElement>("[data-pc-details]")?.querySelector<HTMLElement>("h2");
-      if (!heading) return;
-      heading.tabIndex = -1; heading.focus({ preventScroll: true }); window.scrollTo(0, 0);
-    } else if (closed !== null) {
-      (focusRow(closed) ?? titleRef.current)?.focus();
-    }
-  }, [route.pc, narrow]);
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
@@ -151,10 +126,39 @@ export function RelayDashboard({
   const handleCheckPcs = onCheckPcs ? () => { setCheckedByUser(true); onCheckPcs(); } : undefined;
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
-  const rowById = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
-  const selectedRow = route.view === "pcs" && route.pc !== null ? rowById.get(route.pc) ?? null : null;
+  const selectedRow = route.view === "pcs" && route.pc !== null ? model?.rows.find((row) => row.server_id === route.pc) ?? null : null;
+  if (selectedRow && model) peersRef.current = model.rows.map((row) => row.server_id);
   const selectPc = (serverId: string) => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: serverId }));
   const closeDetails = () => { closedPcRef.current = route.pc; navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null })); };
+
+  // Below 1100px the details replace the list as a full view (IS-TABLE-08), so the view starts at the top,
+  // the details heading takes the focus (ringless, RelayDashboard.css), and leaving them (Back, Escape, or browser Back)
+  // focuses the row again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
+  // When an unlisted pairing is forgotten, its row is gone: focus its next row, else its previous row, else the view heading.
+  const selectedPcId = selectedRow?.server_id ?? null;
+  useEffect(() => {
+    const prevPc = prevPcRef.current;
+    if (selectedPcId === prevPc) return;
+    prevPcRef.current = selectedPcId;
+    const closed = closedPcRef.current ?? prevPc, peers = peersRef.current;
+    closedPcRef.current = null;
+    const split = splitRef.current;
+    const focusRow = (id: string | null | undefined) => !id || !split ? null : split.querySelector<HTMLElement>(`[data-pc-id="${id}"] .relay-pc-name-btn`);
+    const target = (id: string | null) => {
+      const idx = id === null ? -1 : peers.indexOf(id);
+      const order = idx < 0 ? (id === null ? [] : [id]) : [id, ...peers.slice(idx + 1), ...peers.slice(0, idx).reverse()];
+      return order.map(focusRow).find((el) => el !== null) ?? titleRef.current;
+    };
+    if (!narrow) {
+      if (document.activeElement === null || document.activeElement === document.body) target(selectedPcId ?? closed)?.focus({ preventScroll: true });
+      return;
+    }
+    if (selectedPcId !== null) {
+      const heading = split?.querySelector<HTMLElement>("[data-pc-details]")?.querySelector<HTMLElement>("h2");
+      if (!heading) return;
+      heading.tabIndex = -1; heading.focus({ preventScroll: true }); window.scrollTo(0, 0);
+    } else if (closed !== null) target(closed)?.focus();
+  }, [selectedPcId, narrow]);
 
   const viewTitles: Record<DashboardView, string> = { overview: t("Overview"), pcs: t("PCs"), devices: t("Devices"), relay: t("Relay"), settings: t("Settings") };
   const places: Place[] = [

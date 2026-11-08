@@ -4482,17 +4482,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
   host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
-  allows (Open, Add, Join, Update, Details; a pending enrollment keeps "Ready · not in the account
-  yet" while a listed, unlinked failed enrollment shows "Ready", and both keep **Open**, which
-  reopens the PC's scope at the Ready checkpoint to retry enrollment). Selecting a
+  allows (Open, Add, Join, Update, Details; during pending or failed enrollment each row keeps its
+  own `displayState` word and action, so an `offline` row shows "Offline" or "Offline · {when}" with
+  **Details**, a `needs-update` row shows "Needs update" with **Update**, an unlisted or local `paired`
+  or `unchecked` row shows its local check word ("Paired · not checked", "Answers", or "No answer"),
+  a listed `paired` row shows "Ready" when linked or when enrollment failed and "Ready · not in the
+  account yet" when unlinked and not failed, and only `paired` and `unchecked` rows show **Open**,
+  which reopens the PC's scope at the Ready checkpoint to retry enrollment, so only they get "Open
+  it to try again."). Selecting a
   row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the list as a
   `--relay-detail-w` (360 px) side panel at 1100 px and wider, sitting beside the two-line narrow
   list from 1100 to 1391 px (`NARROW_SPLIT_TABLE_QUERY`) and beside the four-column table (dropping
   **Last seen** so rows stay on one line) at 1392 px and wider; below 1100 px the details replace the list as a full view with **Back**,
-  moving focus to the details heading and returning it to the PC's row on close (including browser Back). Details holds
+  moving focus to the details heading and returning it to the PC's row on close (including browser Back), or when an unlisted pairing's row is gone after **Forget**, to the next row, else the previous row, else the **PCs** view heading (`tabIndex={-1}`). Details holds
   seven labelled rows (state, with an "Account setup is incomplete." subline when enrollment failed;
   route; relay; last seen; this device; key ID; version) and the PC's
-  actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot.
+  actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot; pressing **Forget this PC** opens a portalled `ConfirmDialog` ("Forget this PC?", "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.", **Cancel** and **Forget**) over the `inert` dashboard (`.relay-dash`), moving initial focus to **Cancel**, returning focus to **Forget this PC** on **Cancel** or Escape, and after **Forget** returning focus to the row when the PC stays listed or to the next row, else the previous row, else the **PCs** view heading (`tabIndex={-1}`) when an unlisted pairing's row is removed.
 - Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
   by the same network or Tailscale draws its wire straight from this device and skips the hub; a
   PC reached through a relay hangs off that hub. Wires are still lines (`--accent` when live or seen
@@ -4527,17 +4532,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   out (`"failed"`), the checkpoint stays on Ready and `EnrollmentStatus` shows "Account setup is
   incomplete." with **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
   background if the user opens the PC or closes the checkpoint before enrollment settles; on the
-  dashboard row, a paired PC whose enrollment is pending or failed keeps **Open** (which retries
-  enrollment at the Ready checkpoint), shows "Ready · not in the account yet" only while listed,
-  not linked, and not failed (a failed enrollment shows "Ready"), and adds a separate enrollment
-  line ("Adding it to your account…", "Account setup is incomplete. Open it to try again." when
-  `paired` or `unchecked`, or "Account setup is incomplete." otherwise). In `AddPcSheet` and
+  dashboard row, a PC whose enrollment is pending or failed keeps its own `displayState` word and
+  action (an `offline` row shows "Offline" or "Offline · {when}" with **Details**, a `needs-update`
+  row shows "Needs update" with **Update**, an unlisted or local `paired` or `unchecked` row shows
+  its local check word, a listed `paired` row shows "Ready" when linked or when enrollment failed
+  and "Ready · not in the account yet" only while listed, not linked, and not failed, and only
+  `paired` and `unchecked` rows keep **Open**, which retries enrollment at the Ready checkpoint),
+  and adds a separate enrollment line ("Adding it to your account…", "Account setup is incomplete.
+  Open it to try again." only when `paired` or `unchecked`, or "Account setup is incomplete."
+  otherwise). In `AddPcSheet` and
   `PairQrDialog`, phone dialog and sheet footers (`SHEET_QUERY`, 640 px and under) render the
   primary action first in DOM markup and stack vertically, putting the primary action first in both
   visual and Tab order.
-- Status vocabulary: one state word per PC, specific to what's true: Ready (including when listed
-  and account enrollment failed), Ready · not in the account yet (only when listed, not linked, and
-  enrollment is not failed), Needs approval, Needs update, Updating, Checking…, Offline (or Offline · {when}), or
+- Status vocabulary: one state word per PC, specific to what's true: Ready (on a listed `paired`
+  row when linked or when account enrollment failed), Ready · not in the account yet (only on a
+  listed `paired` row that is not linked and whose enrollment is not failed), Needs approval, Needs update, Updating, Checking…, Offline (or Offline · {when}), or
   for a paired PC in local mode or not listed in the account (`unchecked`), Paired · not checked,
   Answers, or No answer (with pending or failed account enrollment shown on its own line under the
   state: "Adding it to your account…", "Account setup is incomplete. Open it to try again." on a

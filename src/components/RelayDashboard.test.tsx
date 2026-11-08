@@ -105,7 +105,9 @@ describe("RelayDashboard frame and routes", () => {
     querySelector: (selector: string) => {
       if (selector === "[data-pc-details]") return detailsPanel;
       const row = /^\[data-pc-id="([^"]+)"\] \.relay-pc-name-btn$/.exec(selector);
-      return row === null ? null : { focus() { focusedNodes.push(`row:${row[1]}`); } };
+      if (row === null || renderer === undefined) return null;
+      const mounted = renderer.root.findAll((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === row[1]);
+      return mounted.length === 0 ? null : { focus() { focusedNodes.push(`row:${row[1]}`); } };
     },
     getClientRects: () => [],
     closest: () => null,
@@ -436,6 +438,53 @@ describe("RelayDashboard frame and routes", () => {
     expect(detailsHeading.tabIndex).toBe(0);
     expect(detailsPanel.scrolledTo).toEqual([]);
     expect(scrolls).toEqual([]);
+
+    // when an unlisted pairing is forgotten and its row disappears (focus dropped to <body> as the dialog unmounted),
+    // focus moves to the next surviving row, else the previous surviving row, else the view heading when the last PC is gone
+    const zed = pc("z".repeat(32), "Zed laptop", "paired", { listed: false, linked: false });
+    const forgetSelect = async (id: string) => {
+      await act(async () => { nameButton(id).props.onClick({ stopPropagation() {} }); });
+    };
+    const closeAfterForget = async (remaining: DashboardPc[]) => {
+      Reflect.set(document, "activeElement", document.body);
+      const closeBtn = renderer?.root.find((n) => n.type === "button" && (textOf(n).trim() === "Back" || n.props["aria-label"] === "Close"));
+      await act(async () => {
+        renderer?.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, baseProps({ pcs: remaining })) }));
+        closeBtn?.props.onClick();
+      });
+    };
+    for (const isNarrow of [false, true] as const) {
+      await act(async () => { renderer?.unmount(); });
+      phoneMatches = isNarrow;
+      narrowMatches = isNarrow;
+      window.location.hash = "#pcs";
+      const withZed = dashboardPcs([...fourPcs(), zed], [
+        { server_id: IDS.desk, relay: AP },
+        { server_id: IDS.mac, relay: AP },
+        { server_id: IDS.home, relay: GLOBAL },
+        { server_id: zed.server_id, relay: AP },
+      ]);
+      await mount(baseProps({ pcs: withZed }));
+      // MacBook is before Zed laptop in the table: forgetting MacBook focuses the next row (Zed laptop)
+      await forgetSelect(IDS.mac);
+      focusedNodes = [];
+      await closeAfterForget(withZed.filter((item) => item.server_id !== IDS.mac));
+      expect(focusedNodes).toEqual([`row:${zed.server_id}`]);
+      // Zed laptop is now the last row in the table: forgetting it focuses the previous row (Desk PC)
+      await forgetSelect(zed.server_id);
+      focusedNodes = [];
+      await closeAfterForget(fourPcs().filter((item) => item.server_id !== IDS.mac));
+      expect(focusedNodes).toEqual([`row:${IDS.desk}`]);
+      // When the forgotten unlisted pairing was the only PC, the split unmounts and focus lands on the view heading
+      await act(async () => { renderer?.unmount(); });
+      window.location.hash = "#pcs";
+      const sole = dashboardPcs([pc(IDS.mac, "MacBook", "paired", { listed: false, linked: false })], [{ server_id: IDS.mac, relay: AP }]);
+      await mount(baseProps({ pcs: sole }));
+      await forgetSelect(IDS.mac);
+      focusedNodes = [];
+      await closeAfterForget([]);
+      expect(focusedNodes).toEqual(["h1"]);
+    }
   });
 
   it("keeps Sign out in the desktop sidebar foot while placing Remove this device only in Devices with same-element confirmation", async () => {

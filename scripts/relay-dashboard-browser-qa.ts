@@ -1026,6 +1026,49 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
         return `inert behind the confirmation, Tab stays in it, Cancel returns to Forget this PC, Forget leaves the focus on ${afterForget?.className.includes("relay-pc-name-btn") ? "the row" : afterForget?.tag}`;
       });
     }
+    await check(`details-forget-unlisted-last-${width}`, async () => {
+      const { page } = await open({ fleet: "FREADY", width });
+      await go(page, "#pcs", "pcs");
+      const forgetRow = async (target: Page, label: string): Promise<void> => {
+        await listedRows(target).filter({ hasText: label }).locator(".relay-pc-name-btn").click();
+        await target.locator("[data-pc-details]").getByRole("button", { name: "Forget this PC" }).focus();
+        await target.keyboard.press("Enter");
+        const dialog = target.getByRole("alertdialog");
+        await dialog.waitFor();
+        await dialog.getByRole("button", { name: "Forget", exact: true }).click();
+        await dialog.waitFor({ state: "detached" });
+        await target.locator("[data-pc-details]").waitFor({ state: "detached" });
+      };
+      // Lab NUC is an unlisted pairing before Studio desktop and Work laptop: forgetting it removes the row and focuses the next row (Studio desktop)
+      await forgetRow(page, "Lab NUC");
+      const afterMiddle = await focused(page);
+      expect(await listedRows(page).filter({ hasText: "Lab NUC" }).count() === 0, "forgetting an unlisted pairing removes its row");
+      expect(afterMiddle !== null && afterMiddle.className.includes("relay-pc-name-btn") && afterMiddle.text === "Studio desktop" && afterMiddle.inView,
+        `after forgetting an unlisted pairing with a following row, focus lands on the next row Studio desktop (${JSON.stringify(afterMiddle)})`);
+      // Seed an unlisted pairing that sorts last in the table and forget it: focus falls back to the previous row (Work laptop)
+      const [zed] = fleetOf("FUNKNOWN").seeds;
+      if (!zed) throw new Error("missing FUNKNOWN seed");
+      await seedPairings(page, [{ ...zed, name: "Zed laptop", listed: false }], ACCOUNT);
+      await page.reload();
+      await page.locator('.relay-dash[data-dashboard-view="pcs"]').waitFor({ timeout: LOAD_MS });
+      expect(await listedRows(page).last().locator(".relay-pc-name-label").textContent() === "Zed laptop", "Zed laptop is the last row before Forget");
+      await forgetRow(page, "Zed laptop");
+      const afterLastRow = await focused(page);
+      expect(await listedRows(page).filter({ hasText: "Zed laptop" }).count() === 0, "forgetting the last unlisted pairing removes its row");
+      expect(afterLastRow !== null && afterLastRow.className.includes("relay-pc-name-btn") && afterLastRow.text === "Work laptop" && afterLastRow.inView,
+        `after forgetting an unlisted pairing that is the last row, focus lands on the previous row Work laptop (${JSON.stringify(afterLastRow)})`);
+      // Single unlisted pairing on an otherwise empty account: forgetting the only row removes the table and focuses the PCs view heading (h1, tabIndex -1)
+      const { page: lone } = await open({ fleet: "F0", width });
+      await seedPairings(lone, [{ ...zed, name: "Zed laptop", listed: false }], ACCOUNT);
+      await lone.reload();
+      await lone.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
+      await go(lone, "#pcs", "pcs");
+      await forgetRow(lone, "Zed laptop");
+      const afterSole = await focused(lone);
+      expect(afterSole !== null && afterSole.tag === "h1" && afterSole.text === "PCs" && afterSole.inView,
+        `after forgetting the only unlisted pairing, focus lands on the PCs heading (${JSON.stringify(afterSole)})`);
+      return `middle unlisted -> Studio desktop; last row -> Work laptop; sole row -> h1 "PCs"`;
+    });
   }
 
   // the QR and code dialog is named by the heading of its current screen, sits over the visible scrimmed dashboard, and docks as a bottom sheet on phones
