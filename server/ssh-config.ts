@@ -83,7 +83,7 @@ type MatchBlock = Extract<Block, { kind: "match" }>;
  * In file order: an option line; a Match line, weighed where it stands since it reads the options set before it; or an
  * included file left unread (too deep, past the read budget, or out of reach), which may set any option
  */
-type Entry = { kind: "option"; block: Block; key: string; value: string } | { kind: "match"; block: MatchBlock } | { kind: "unread"; block: Block };
+type Entry = { kind: "option"; block: Block; key: string; value: string; unclaimed?: true } | { kind: "match"; block: MatchBlock } | { kind: "unread"; block: Block };
 
 const isWeighed = (on: string): on is (typeof WEIGHED)[number] => (WEIGHED as readonly string[]).includes(on);
 
@@ -110,11 +110,13 @@ function matchCriteria(values: string[]): Criterion[] {
 interface Weighing {
   alias: string; target: string; localUser: string | null; final: boolean;
   effective: Map<string, string | null>; applies: Map<Block, boolean | null>; wantsFinal: boolean | null;
+  /** whether an option taken came from a file listed by path (see Included), so the host must claim no PC */
+  unclaimed: boolean;
   /** the final pass, when ssh surely makes one */
   finalPass?: Weighing;
 }
 const passOf = (alias: string, target: string, localUser: string | null, final: boolean): Weighing =>
-  ({ alias, target, localUser, final, effective: new Map(), applies: new Map(), wantsFinal: false });
+  ({ alias, target, localUser, final, effective: new Map(), applies: new Map(), wantsFinal: false, unclaimed: false });
 
 const expandHost = (hostname: string, alias: string): string => hostname.replace(/%([%h])/g, (_, token: string) => token === "h" ? alias : "%");
 const allOf = (verdicts: (boolean | null)[]): boolean | null => verdicts.includes(false) ? false : verdicts.includes(null) ? null : true;
@@ -176,6 +178,7 @@ function pass(entries: Entry[], weighing: Weighing): void {
         const verdict = applies(weighing, entry.block);
         // a block that may apply makes the option unknown: whichever way it goes, no later block sets it
         if (verdict !== false) weighing.effective.set(entry.key, verdict === true ? entry.value : null);
+        if (verdict !== false && entry.unclaimed === true) weighing.unclaimed = true;
         if (verdict !== false && jumps) weighing.effective.set("proxycommand", verdict === true ? "none" : null);
         break;
       }
@@ -207,6 +210,7 @@ function weigh(entries: Entry[], alias: string, localUser: string | null): Weigh
   const final: Weighing = { ...passOf(alias, hostname === undefined ? alias : expandHost(hostname, alias).toLowerCase(), localUser, true), effective };
   pass(entries, final);
   first.finalPass = final;
+  first.unclaimed ||= final.unclaimed;
   return first;
 }
 
@@ -290,7 +294,7 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
       } else if ((EFFECTIVE_KEYS as readonly string[]).includes(parsed.key) && parsed.values[0] !== undefined) {
         // a proxy is off only for the bare word none: `'none' || ssh -W %h:%p bastion` still proxies, as in ssh
         const value = parsed.key === "proxycommand" || parsed.key === "proxyjump" ? parsed.raw : parsed.values[0];
-        entries.push({ kind: "option", block: current, key: parsed.key, value });
+        entries.push({ kind: "option", block: current, key: parsed.key, value, ...(unclaimed ? { unclaimed: true as const } : {}) });
       }
     }
   };
@@ -322,7 +326,7 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
       if (appliesOnEither(weighing, block) === false) continue;
       seen.add(alias);
       const named = blocksOf.get(alias)!.some((named) => appliesOnEither(weighing, named) === true);
-      hosts.push({ ...describe(alias, weighing.effective, named), ...(block.unclaimed === true ? { undetermined: true as const } : {}) });
+      hosts.push({ ...describe(alias, weighing.effective, named), ...(block.unclaimed === true || weighing.unclaimed ? { undetermined: true as const } : {}) });
     }
   }
   return hosts;

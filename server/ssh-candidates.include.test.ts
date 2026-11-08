@@ -238,6 +238,15 @@ it("lists a host only a wildcard Include names where getdents64 is not available
   } finally { delete includeTestOnly.getdents; }
 });
 
+it("claims no PC for a host whose options a wildcard Include listed by path sets, even one its own Host lines do not name", async () => {
+  includeTestOnly.getdents = null;
+  try {
+    expect(await rowsOf({ "conf.d/x.conf": "Host *\n  HostName 100.64.0.1\n", config: "Include conf.d/*\nHost lab\n" })).toEqual([
+      ["lab", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
+    ]);
+  } finally { delete includeTestOnly.getdents; }
+});
+
 it.skipIf(process.platform === "win32")("never reads a literally named Include file swapped for a link out of home after it was opened, where the opened file is checked by its path", async () => {
   const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/x.conf\nHost box\n  HostName 100.64.0.1\n" });
   writeFileSync(join(outside, "secret"), "Host leaked\n");
