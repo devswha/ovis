@@ -3100,6 +3100,34 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(swaps).toBe(1);
   });
 
+  it("answers from the new file when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    // the settle closes its handle on the transcript, then the agent writes it anew beside it and renames it over
+    let renames = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (renames++ > 0) return;
+        const next = join(project, "session.jsonl.tmp");
+        writeFileSync(next, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello") + message("u2", "u1", "rewritten"));
+        renameSync(next, path);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    const answer = await paneConversation(pane.pane_id);
+    expect(renames).toBeGreaterThan(0);
+    expect(JSON.stringify(answer.turns)).toContain("rewritten");
+  });
+
   it("settles again off the event loop a transcript touched between its settle and its page read", async () => {
     const base = await paneConversation(pane.pane_id);
     const { open } = fsp;
@@ -3190,7 +3218,7 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(await output).toBeNull();
   });
 
-  it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
+  it("answers the new file's tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
     const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
     writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");
     restores.push(
@@ -3205,7 +3233,7 @@ describe("a page read that settles its transcript's revision off the event loop"
     writeFileSync(`${path}.next`, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "new file" }] } }) + "\n");
     renameSync(`${path}.next`, path);
     stat.release();
-    expect(await output).toBeNull();
+    expect(await output).toBe("new file");
   });
 
   it("answers nothing from a herdr session left while its transcript settled", async () => {
