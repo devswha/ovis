@@ -7,7 +7,7 @@ import { inDashboardFilter, relayHost } from "../lib/relay/dashboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
-import { localStateWord, routeText } from "./relayPcState.tsx";
+import { mapStateDetail, mapStateWord } from "./relayPcState.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 import {
   checkingWirePaths, clip, hubRoutedNodes, hubWireState, isDirectRoute, isRegionalRelay, layoutRelayMap,
@@ -24,30 +24,6 @@ export interface RelayMapProps {
   readonly onSelectPc?: (serverId: string) => void;
   readonly onSelectRelay?: (origin: string) => void;
   readonly standalone?: boolean;
-}
-
-/** The model's state, with the answering route when known. Needs you stays the group's name. */
-function wordOf(node: RelayMapNode, t: Translate): string {
-  if (node.check?.kind === "checking") return t("Checking…");
-  switch (node.state) {
-    case "unchecked": return localStateWord(node.check, t);
-    case "needs-approval": return t("Needs approval");
-    case "needs-update": return t("Needs update");
-    case "offline": return t("Offline");
-    case "paired":
-      if (node.check?.kind === "answered") return routeText(node.check, t);
-      return node.seen === "lately" ? t("Seen lately") : t("Ready");
-  }
-}
-
-/** The tooltip's detail: the state word with what to do, and the measured route when this device's check answered. */
-function detailOf(node: RelayMapNode, t: Translate): string {
-  const route = node.check?.kind === "answered" ? ` · ${routeText(node.check, t)}` : "";
-  switch (node.state) {
-    case "needs-approval": return t("Needs approval") + route;
-    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}${route}`;
-    case "offline": case "paired": case "unchecked": return wordOf(node, t);
-  }
 }
 
 function seenTitleOf(node: RelayMapNode, t: Translate): string {
@@ -71,12 +47,12 @@ function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonl
 
 /** One PC in the route list: its glyph, name and route word, with the tooltip; a fan item under its hub, or a route of its own when reached directly. */
 function PcHop({ node, selected, onSelectPc, t }: { readonly node: RelayMapNode; readonly selected: boolean; readonly onSelectPc?: (serverId: string) => void; readonly t: Translate }) {
-  const detailWord = detailOf(node, t);
+  const detailWord = mapStateDetail(node, t);
   return (
     <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
       <StatusDot state={nodeStatusDotState(node)} />
       <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
-      <small className="relay-map-hop-note">{wordOf(node, t)}</small>
+      <small className="relay-map-hop-note">{mapStateWord(node, t)}</small>
       <NodeTooltip node={node} detail={detailWord} t={t} />
     </button>
   );
@@ -211,13 +187,13 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
             })}
 
             {layout.pcs.map((pc) => {
-              const detailWord = detailOf(pc.node, t);
+              const detailWord = mapStateDetail(pc.node, t);
               return (
                 <button key={pc.node.server_id} type="button" className="relay-map-pc-btn" style={pos(pc.x, pc.y, layout.width, layout.height)} tabIndex={-1} data-pc-node={pc.node.server_id} data-pc-state={pc.node.state} data-seen={pc.node.seen} data-selected={selectedPcId === pc.node.server_id ? "" : undefined} title={`${pc.node.name} · ${detailWord} · ${seenTitleOf(pc.node, t)}`} onClick={() => activatePc(pc.node.server_id, onSelectPc)}>
                   <StatusDot state={nodeStatusDotState(pc.node)} />
                   <span className="relay-map-pc-body">
                     <span className="relay-map-name">{clip(pc.node.name)}</span>
-                    <span className="relay-map-word">{wordOf(pc.node, t)}</span>
+                    <span className="relay-map-word">{mapStateWord(pc.node, t)}</span>
                   </span>
                   <NodeTooltip node={pc.node} detail={detailWord} t={t} />
                 </button>

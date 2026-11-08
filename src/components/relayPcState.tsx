@@ -5,6 +5,31 @@ import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { StatusDotState } from "./StatusDot.tsx";
 
 export type DashboardRow = ReturnType<typeof dashboardModel>["rows"][number];
+type MapNode = ReturnType<typeof dashboardModel>["map"]["hubs"][number]["nodes"][number];
+
+/** The model's state, with the answering route when known. Needs you stays the group's name. */
+export function mapStateWord(node: MapNode, t: Translate): string {
+  if (node.check?.kind === "checking") return t("Checking…");
+  switch (node.state) {
+    case "unchecked": return localStateWord(node.check, t);
+    case "needs-approval": return t("Needs approval");
+    case "needs-update": return t("Needs update");
+    case "offline": return t("Offline");
+    case "paired":
+      if (node.check?.kind === "answered") return routeText(node.check, t);
+      return node.seen === "lately" ? t("Seen lately") : t("Ready");
+  }
+}
+
+/** The tooltip's detail: the state word with what to do and the measured answering route. */
+export function mapStateDetail(node: MapNode, t: Translate): string {
+  const route = node.check?.kind === "answered" ? ` · ${routeText(node.check, t)}` : "";
+  switch (node.state) {
+    case "needs-approval": return t("Needs approval") + route;
+    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}${route}`;
+    case "offline": case "paired": case "unchecked": return mapStateWord(node, t);
+  }
+}
 
 /** The glyph uses the model's state, with transient work shown while it runs. */
 export function pcDotState(row: DashboardRow, updating = false): StatusDotState {
