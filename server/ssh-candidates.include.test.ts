@@ -126,7 +126,8 @@ it.skipIf(!wildcardIncludesRead)("never lists a folder swapped for a link out of
   } finally { restore(); }
 });
 
-it.skipIf(!wildcardIncludesRead)("never reads a file swapped for a link out of the home folder after it was checked", async () => {
+// off Linux the opened file is checked by its path again, so a file swapped after it was opened is left unread instead
+it.skipIf(process.platform !== "linux" || !wildcardIncludesRead)("never reads a file swapped for a link out of the home folder after it was checked", async () => {
   const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*.conf\n" });
   writeFileSync(join(outside, "secret"), "Host leaked\n");
   const file = join(ssh, "conf.d", "x.conf");
@@ -184,11 +185,11 @@ it.skipIf(process.platform === "win32")("claims no PC for a host a folder listed
     if (!swapped && String(looked) === folder) { swapped = true; renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); }
     return found;
   }) as typeof realpath);
-  includeTestOnly.getdents = null;
+  Object.assign(includeTestOnly, { getdents: null, dirStream: null });
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => twoPeers });
     expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["leaked", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
-  } finally { delete includeTestOnly.getdents; spy.mockRestore(); }
+  } finally { delete includeTestOnly.getdents; delete includeTestOnly.dirStream; spy.mockRestore(); }
 });
 
 /** the rows of a config whose Include may set `box`, beside a `box` host at 100.64.0.1 after it */
@@ -219,43 +220,43 @@ it.skipIf(!wildcardIncludesRead)("reads the files a wildcard matches in the orde
 
 it("reads a wildcard Include by path where getdents64 is not available, and claims no PC for the hosts it brings", async () => {
   const dir = sshDir({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
-  includeTestOnly.getdents = null;
+  Object.assign(includeTestOnly, { getdents: null, dirStream: null });
   try {
     const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
     expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.tailnet])).toEqual([
       ["box", "100.64.0.2", undefined], ["box", "box.tail.ts.net", "box.tail.ts.net"], ["other", "other.tail.ts.net", "other.tail.ts.net"],
     ]);
-  } finally { delete includeTestOnly.getdents; }
+  } finally { delete includeTestOnly.getdents; delete includeTestOnly.dirStream; }
 });
 
 it("lists a host only a wildcard Include names where getdents64 is not available, without claiming the PC its HostName reaches", async () => {
-  includeTestOnly.getdents = null;
+  Object.assign(includeTestOnly, { getdents: null, dirStream: null });
   try {
     expect(await rowsOf({ "config.d/lab.conf": "Host lab\n  HostName 100.64.0.2\n", config: "Include config.d/*\n" })).toEqual([
       ["lab", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
     ]);
-  } finally { delete includeTestOnly.getdents; }
+  } finally { delete includeTestOnly.getdents; delete includeTestOnly.dirStream; }
 });
 
 it("claims no PC for a host whose options a wildcard Include listed by path sets, even one its own Host lines do not name", async () => {
-  includeTestOnly.getdents = null;
+  Object.assign(includeTestOnly, { getdents: null, dirStream: null });
   try {
     expect(await rowsOf({ "conf.d/x.conf": "Host *\n  HostName 100.64.0.1\n", config: "Include conf.d/*\nHost lab\n" })).toEqual([
       ["lab", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
     ]);
-  } finally { delete includeTestOnly.getdents; }
+  } finally { delete includeTestOnly.getdents; delete includeTestOnly.dirStream; }
 });
 
 it("claims no PC for a host after a wildcard Include listed by path, whether the listing found files or none", async () => {
   const after = "Host lab\n  HostName 100.64.0.1\n";
   const empty = sshDir({ config: `Include conf.d/*\n${after}` });
   mkdirSync(join(empty, "conf.d"));
-  includeTestOnly.getdents = null;
+  Object.assign(includeTestOnly, { getdents: null, dirStream: null });
   try {
     expect(await rowsOf({ "conf.d/a.conf": "Host listed\n", config: `Include conf.d/*\n${after}` })).toEqual([["listed", undefined], ["lab", undefined], ...unclaimed]);
     const rows = await sshCandidates({ sshDir: empty, home: empty, readStatus: async () => twoPeers });
     expect(rows.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["lab", undefined], ...unclaimed]);
-  } finally { delete includeTestOnly.getdents; }
+  } finally { delete includeTestOnly.getdents; delete includeTestOnly.dirStream; }
 });
 
 it.skipIf(process.platform === "win32")("never reads a literally named Include file swapped for a link out of home after it was opened, where the opened file is checked by its path", async () => {
@@ -270,7 +271,8 @@ it.skipIf(process.platform === "win32")("never reads a literally named Include f
   } finally { delete includeTestOnly.platform; restore(); }
 });
 
-it.skipIf(!wildcardIncludesRead)("leaves a wildcard Include unread when a folder entry's name is not UTF-8", async () => {
+// macOS (APFS) refuses to create a name that is not UTF-8
+it.skipIf(process.platform === "darwin" || !wildcardIncludesRead)("leaves a wildcard Include unread when a folder entry's name is not UTF-8", async () => {
   const dir = sshDir({ config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
   mkdirSync(join(dir, "conf.d"));
   writeFileSync(Buffer.concat([Buffer.from(`${join(dir, "conf.d")}/`), Buffer.from([0xff, 0x2e, 0x63])]), "Host box\n  HostName 100.64.0.2\n");

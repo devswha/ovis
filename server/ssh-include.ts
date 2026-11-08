@@ -4,7 +4,8 @@
  * config. A file or folder is opened first and what was opened is checked, so nothing swapped in on the way after a
  * check stands in for it: Linux names the opened object itself (/proc/self/fd) and lists a folder through its open
  * descriptor (getdents64), a bounded read at a time; elsewhere a file's path is resolved again once open and must
- * still name the same object. Without getdents64 (macOS, Windows, a Linux without glibc) Bun has no descriptor-relative
+ * still name the same object, and a folder is listed through its open descriptor with libc's fdopendir and readdir
+ * (macOS, a Linux with musl: server/ssh-include-dir.ts). Without either (Windows) Bun has no descriptor-relative
  * listing, so a wildcard's folders are listed by path, which a swap after the check can redirect. Such a listing only
  * gives names: a name from a folder out of home can be listed (its file is still opened and checked), and a file can be
  * hidden. So every file reached that way comes back marked `unclaimed` (its hosts are listed but claim no Tailscale
@@ -17,6 +18,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 
 import type { Included } from "./ssh-config.ts";
+import { platformDirStream, streamEntries, type DirStream } from "./ssh-include-dir.ts";
 import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.ts";
 
 /** an ssh config is a few kilobytes; past this it is not read on */
@@ -92,12 +94,19 @@ const getdents: Getdents | null = (() => {
   try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
 })();
 
-/** whether a wildcard Include's folders are listed through their descriptor (getdents64); without it, by path, unclaimed */
-export const wildcardIncludesRead = getdents !== null;
+/** libc's fdopendir and readdir where getdents64 is not there; null without them too (Windows) */
+const dirStream: DirStream | null = getdents === null ? platformDirStream() : null;
 
-/** for tests only: getdents64 stood in for (a fake one, or null for a platform without it), and the platform openedInside checks on */
-export const includeTestOnly: { getdents?: Getdents | null; platform?: NodeJS.Platform } = {};
+/** whether a wildcard Include's folders are listed through their descriptor; without it, by path, unclaimed */
+export const wildcardIncludesRead = getdents !== null || dirStream !== null;
+
+/**
+ * for tests only: getdents64 and fdopendir/readdir stood in for (a fake, or null for a platform without it), and the
+ * platform openedInside checks on
+ */
+export const includeTestOnly: { getdents?: Getdents | null; dirStream?: DirStream | null; platform?: NodeJS.Platform } = {};
 const descriptorListing = (): Getdents | null => includeTestOnly.getdents === undefined ? getdents : includeTestOnly.getdents;
+const streamListing = (): DirStream | null => includeTestOnly.dirStream === undefined ? dirStream : includeTestOnly.dirStream;
 
 /**
  * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
@@ -130,16 +139,18 @@ function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
 }
 
 /**
- * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 is, else by
- * the path its realpath checked, read whole (Bun has no listing that stops early) and then charged to `budget.entries`
+ * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 or
+ * fdopendir is, else by the path its realpath checked, read whole (Bun has no listing that stops early) and then
+ * charged to `budget.entries`
  */
 async function listInside(dir: string, roots: readonly string[], budget: Budget): Promise<Listing> {
-  const read = descriptorListing();
-  if (read !== null) {
+  const [read, stream] = [descriptorListing(), streamListing()];
+  const list = read !== null ? (fd: number) => entriesOf(fd, read, budget) : stream !== null ? (fd: number) => streamEntries(fd, stream, budget) : null;
+  if (list !== null) {
     const folder = await openInside(dir, roots, FOLDER_FLAGS);
     if (folder === null) return null;
     if (folder === "refused") return "unread";
-    try { return entriesOf(folder.fd, read, budget); } finally { await folder.close(); }
+    try { return list(folder.fd); } finally { await folder.close(); }
   }
   const real = await realpath(dir).catch(() => null);
   if (real === null) return null;
@@ -205,7 +216,7 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
       const folders = await Promise.all(level.map((path) => stat(path).then((found) => found.isDirectory(), () => false)));
       paths = level.filter((_, at) => !folders[at]).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
     }
-    const byPath = first >= 0 && descriptorListing() === null;
+    const byPath = first >= 0 && descriptorListing() === null && streamListing() === null;
     const texts: Included[] = [];
     for (const path of paths) {
       if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }
