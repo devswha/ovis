@@ -147,7 +147,7 @@ describe("account pairing completion", () => {
     const action = /<a[^>]*href="([^"]+)"[^>]*data-pc-action="open"[^>]*>([^<]+)<\/a>/.exec(html);
     const line = /data-pc-enrollment="">([^<]+)</.exec(html)?.[1];
     expect(action?.[2]).toBe("Open");
-    expect(line).toBe("This PC could not be listed in your account. Open it to try again.");
+    expect(line).toBe("Account setup is incomplete. Open it to try again.");
     // Open is a link to the PC's own page, which retries the saved failed enrollment as it opens
     const before = run.enrolls();
     run.retrySuccess();
