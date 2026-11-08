@@ -185,7 +185,9 @@ export class CLIProxyService {
       // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
       // accounts shown again count as just shown at the next report, so it reads them again
       if (!due && entries === null) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
-      this.entries = entries ?? [];
+      // a full read that failed keeps the hidden accounts' rows, so they stay unread, and the next report reads again
+      if (entries === null) { this.entries = this.entries.filter((entry) => skipped.has(entry.key)); return this.entries; }
+      this.entries = entries;
       if (due) { this.readAt = now; this.nextAt = now + FRESH_MS; this.shownAt.clear(); }
       else for (const key of shown) this.shownAt.set(key, now);
       return this.entries;
@@ -213,10 +215,12 @@ export class CLIProxyService {
         const entry: ProviderUsage = { id: provider.id, key: `${provider.id}:cliproxy:${encodeURIComponent(name)}`, account, plan: null, windows: [], problem: "failed", checked_at: null };
         // a hidden or removed account keeps its last row; one never read yet is read once, so it can be listed
         // only while the file still names that account: another one under the same name is read anew
-        const holder = JSON.stringify([typeof file["email"] === "string" ? file["email"] : null, workspace]);
-        const last = kept.has(entry.key) ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
+        // a file naming neither is no known account: no row is kept on it, it is read again
+        const email = typeof file["email"] === "string" ? file["email"] : null;
+        const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
+        const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         if (last) return [Promise.resolve(last)];
-        const held = (row: ProviderUsage): ProviderUsage => { this.holders.set(row, holder); return row; };
+        const held = (row: ProviderUsage): ProviderUsage => { if (holder !== null) this.holders.set(row, holder); return row; };
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {
           try {
