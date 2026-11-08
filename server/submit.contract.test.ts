@@ -1571,8 +1571,8 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      // the send's look, the queue fallback's own, and the last one right before its raw paste (codexScreenFree)
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "detection", "detection"]);
+      // the send's look, the queue fallback's own, and the last ones right before its raw paste and before its Enter
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "detection", "detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();

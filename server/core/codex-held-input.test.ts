@@ -46,7 +46,10 @@ const FREE: Record<string, string[]> = {
   'a draft whose last line reads as keys, the footer gone': ['» Please follow these steps', '  enter select · esc back', STATUS],
   'a status row wrapped onto a thread named as a key': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  esc back', ROWS],
   'such a wrapped row, the footer gone': ['› a draft', '  GPT-6-Astra ultra · /fixture ·', '  esc back'],
+  'a draft with a status-shaped line over key hints': ['› note', '  gpt default · test', '  enter select · esc back', STATUS],
 };
+// /statusline in a narrow pane wraps its hints, the separator left at the end of the first row
+HELD['/statusline at 16 columns'] = ['Configure Status', '› [x] model', '↓', '  m low · /fixt…', '', '  enter save ·', '  esc cancel'];
 // a list's screen whose last row reads as the composer's footer: the footer is the composer's only under its status row
 HELD['a list over a footer-shaped row'] = [...HELD['/permissions']!, ROWS];
 const screen = (rows: string[]) => ['  >_ OpenAI Codex (v0.166.0)', '     /fixture', '', ...rows, '', ''].join('\n');
@@ -125,6 +128,19 @@ describe('a message sent to a Codex pane', () => {
     expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
     expect(prompt).not.toHaveBeenCalled();
     expect(typed).not.toHaveBeenCalled();
+    expect(keys).not.toHaveBeenCalled();
+  });
+
+  it('sends no Enter past a collapsed queue once one of its screens opened over the paste', async () => {
+    const queue = ['• Queued follow-up inputs', '  ? 1 question', '    alt+↑ to answer'];
+    const { read, prompt, typed, keys } = spies([...queue, ...FREE['its composer']!]);
+    spyOn(client, 'paneGet').mockResolvedValue({ ...pane, agent_status: 'blocked' });
+    prompt.mockRejectedValue(new client.HerdrError('agent_blocked', 'blocked'));
+    // /permissions opens once the paste is in
+    typed.mockImplementation(async () => { read.mockResolvedValue({ text: screen(HELD['/permissions']!) } as Awaited<ReturnType<typeof client.paneRead>>); });
+    const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('submit_partial');
+    expect(typed).toHaveBeenCalledTimes(1);
     expect(keys).not.toHaveBeenCalled();
   });
 

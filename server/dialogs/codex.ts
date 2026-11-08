@@ -286,18 +286,28 @@ const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|mediu
  * conversation. Read by the composer's own layout, never by what a row merely says: its mark (`›`, `»`),
  * then its draft, then its status row (model and effort first). Without that layout under the last mark
  * (a list hides the composer), each screen draws its key hints last, in its last two rows at most
- * (/resume), so a whole hint there holds the input, also over a footer-shaped last row. With it, only a
- * row of several hints under the status row holds it (the transcript view, /statusline): a single
- * `esc back` there is a wrapped folder or thread name, and the draft above the status row is the user's.
+ * (/resume), so a whole hint there holds the input, also over a footer-shaped last row. With it (the last
+ * status-shaped row: a draft above may read like one), only a row of several hints under the status row
+ * holds it (the transcript view, /statusline), a row ending in ` ·` going on in the next one (hints wrapped
+ * by a narrow pane): a single `esc back` going on from the status row is a wrapped folder or thread name,
+ * and the draft above the status row is the user's.
  */
 export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
   const hints = (row: string): string[] => row.split(/\s+·\s+|\s{2,}/);
   const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
-  const status = composer < 0 ? -1 : rows.findIndex((row, index) => index > composer && CODEX_STATUS_ROW_RE.test(row));
-  if (status < 0) return rows.slice(-2).some((row) => !/^[›»]/.test(row) && hints(row).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
-  return rows.slice(status + 1).some((row) => {
-    const parts = hints(row);
+  const status = findLastIndex(rows, (row, index) => index > composer && CODEX_STATUS_ROW_RE.test(row));
+  if (composer < 0 || status < 0) return rows.slice(-2).some((row) => !/^[›»]/.test(row) && hints(row).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
+  // the rows under the status row, each joined to the next while it ends in a separator; those going on from the status row are its own
+  const lines: string[] = [];
+  let joined = /\s·$/.test(rows[status]!);
+  for (const row of rows.slice(status + 1)) {
+    if (joined && lines.length > 0) lines[lines.length - 1] += ` ${row}`;
+    else if (!joined) lines.push(row);
+    joined = /\s·$/.test(row);
+  }
+  return lines.some((line) => {
+    const parts = hints(line.replace(/\s·$/, ""));
     return parts.length > 1 && parts.some((hint) => CODEX_HOLD_HINT_RE.test(hint));
   });
 }
