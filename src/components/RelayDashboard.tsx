@@ -251,7 +251,7 @@ export function RelayDashboard({
         <div className="relay-dash-content">
           <header className="relay-dash-top">
             <div className="relay-dash-top-text"><h1 ref={titleRef} className="relay-dash-title" tabIndex={-1}>{viewTitles[route.view]}</h1></div>
-            {!phone && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}><Plus aria-hidden="true" />{t("Add a PC")}</button>}
+            {!phone && <button type="button" className={pcs?.length === 0 && (route.view === "overview" || route.view === "pcs") ? "btn" : "btn btn-primary"} data-action="add-pc" onClick={onAddPc}><Plus aria-hidden="true" />{t("Add a PC")}</button>}
           </header>
           {route.view === "devices" ? <DevicesSection meLabel={meLabel} account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
             : route.view === "settings" ? <SettingsSection />

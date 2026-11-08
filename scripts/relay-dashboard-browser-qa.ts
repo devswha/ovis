@@ -307,11 +307,13 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
   await check("dashboard-F0", async () => {
     const { page } = await open({ fleet: "F0" });
     const empty = page.locator("[data-dashboard-empty]");
-    expect(await empty.locator(".btn-primary").count() === 1, "the zero-PC view has one primary");
+    const visiblePrimaries = await page.locator(".btn-primary").filter({ visible: true }).count();
+    expect(visiblePrimaries === 1, `the zero-PC view has one visible primary across the page (${visiblePrimaries})`);
+    expect(await empty.locator(".btn-primary").count() === 1, "the zero-PC view has one primary in the empty state");
     expect(await empty.locator('.btn-primary[data-action="add-pc"]').count() === 1, "its primary is Add a PC");
     expect(await empty.locator('[data-action="pair-qr"]:not(.btn-primary)').count() === 1, "Pair with a QR or code is the secondary");
     expect(await page.locator(".relay-overview-strip").count() === 0, "no count strip without PCs");
-    return "one Add a PC primary, QR secondary, no strip";
+    return "one Add a PC primary across the page, QR secondary, no strip";
   });
 
   for (const density of ["comfortable", "compact"] as const) {
