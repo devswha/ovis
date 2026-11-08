@@ -21,7 +21,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 
 import type { Included } from "./ssh-config.ts";
-import { platformDirStream, streamEntries, type DirStream } from "./ssh-include-dir.ts";
+import { entriesOf, platformDirStream, streamEntries, type DirStream, type Getdents } from "./ssh-include-dir.ts";
 import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.ts";
 
 /** an ssh config is a few kilobytes; past this it is not read on */
@@ -35,7 +35,6 @@ const MAX_SCANNED_ENTRIES = 1024;
 /** characters every Include of one config together tries a pattern on */
 const MAX_MATCH_STEPS = 1_000_000;
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
-const FOLDER_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0);
 
 type Budget = { files: number; bytes: number; entries: number; steps: number };
 /** a folder's names; "unread" for one left unlisted (out of reach, past the budget, or not listed safely); null for none there */
@@ -87,28 +86,26 @@ async function openedInside(fd: number, path: string, roots: readonly string[]):
 
 /**
  * An entry opened, links followed as ssh does, relative to the folder a listing held when it has one, when what was
- * opened is inside `roots`; null when nothing is there, unless it was listed: one gone since may have been swapped away
+ * opened is inside `roots`; null when nothing is there, as for ssh, unless a listing named it: any open of a listed
+ * entry that fails (gone, a link that loops or leads nowhere, refused) is unread, as it may have been swapped meanwhile
  */
 async function openInside({ path, base, listed }: Entry, roots: readonly string[], flags: number): Promise<Handle | "refused" | null> {
   const stream = streamListing();
   let handle: Handle;
   if (base !== undefined && stream !== null) {
     const fd = stream.openAt(base.fd, base.rest, flags);
-    if (fd < 0) return (-fd === os.errno.ENOENT && listed !== true) || -fd === os.errno.ENOTDIR ? null : "refused";
+    if (fd < 0) return listed !== true && (-fd === os.errno.ENOENT || -fd === os.errno.ENOTDIR) ? null : "refused";
     handle = { fd, close: () => closeOf(fd) };
   } else {
     try { handle = await open(path, flags); } catch (error) {
       // only a path that is not there is nothing, as for ssh; one it could not open (EACCES, EMFILE, ELOOP) is unread
-      return error instanceof Error && "code" in error && ((error.code === "ENOENT" && listed !== true) || error.code === "ENOTDIR") ? null : "refused";
+      return listed !== true && error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR") ? null : "refused";
     }
   }
   if (await openedInside(handle.fd, path, roots).catch(() => false)) return handle;
   await handle.close();
   return "refused";
 }
-
-/** getdents64(2): fills `buffer` with a folder's entries from its descriptor and answers the bytes written, or -1 */
-type Getdents = (fd: number, buffer: Buffer, length: number) => number | bigint;
 
 /**
  * glibc's getdents64(2), which reads a folder's entries from its descriptor a buffer at a time; null without glibc. It is
@@ -135,36 +132,6 @@ const descriptorListing = (): Getdents | null => includeTestOnly.getdents === un
 const streamListing = (): DirStream | null => includeTestOnly.dirStream === undefined ? dirStream : includeTestOnly.dirStream;
 
 /**
- * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
- * fails, or when what it answers is not well formed (a byte count past the buffer, a record that is empty, runs past
- * the bytes answered, or holds no terminated name)
- */
-function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
-  const buffer = Buffer.alloc(32 * 1024);
-  const names: string[] = [];
-  for (;;) {
-    const got = Number(read(fd, buffer, buffer.byteLength));
-    if (!Number.isInteger(got) || got < 0 || got > buffer.byteLength) return "unread";
-    if (got === 0) return names;
-    // struct linux_dirent64: d_ino (8), d_off (8), d_reclen (2), d_type (1), then the name and its NUL
-    for (let at = 0; at < got;) {
-      if (at + 20 > got) return "unread";
-      const length = buffer.readUInt16LE(at + 16);
-      const end = buffer.indexOf(0, at + 19);
-      if (length < 20 || at + length > got || end <= at + 19 || end >= at + length) return "unread";
-      const name = buffer.toString("utf8", at + 19, end);
-      // a name whose bytes are not UTF-8 cannot be opened by the name decoded: what that file sets is unknown
-      if (!Buffer.from(name).equals(buffer.subarray(at + 19, end))) return "unread";
-      at += length;
-      // every record counts against the budget, `.` and `..` too
-      if (budget.entries-- <= 0) return "unread";
-      if (name === "." || name === "..") continue;
-      names.push(name);
-    }
-  }
-}
-
-/**
  * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 or
  * fdopendir is, the folder then `held` open (the caller closes it) where openat is, else by the path its realpath
  * checked, read whole (Bun has no listing that stops early) and then charged to `budget.entries`
@@ -173,11 +140,16 @@ async function listInside(dir: Entry, roots: readonly string[], budget: Budget):
   const [getdentsCall, stream] = [descriptorListing(), streamListing()];
   const list = getdentsCall !== null ? (fd: number) => entriesOf(fd, getdentsCall, budget) : stream !== null ? (fd: number) => streamEntries(fd, stream, budget) : null;
   if (list !== null) {
-    const folder = await openInside(dir, roots, FOLDER_FLAGS);
+    // opened as any file: a match that is no folder is nothing, as for ssh, not a failed open
+    const folder = await openInside(dir, roots, READ_FLAGS);
     if (folder === null) return { names: null };
     if (folder === "refused") return { names: "unread" };
-    let names: Listing;
-    try { names = list(folder.fd); } catch (error) { await folder.close(); throw error; }
+    let names: Listing = null;
+    try {
+      if ((await fstatOf(folder.fd)).isDirectory()) names = list(folder.fd);
+      // still inside the home or ssh folder once listed, or what the listing gave is not trusted
+      if (Array.isArray(names) && !(await openedInside(folder.fd, dir.path, roots).catch(() => false))) names = "unread";
+    } catch (error) { await folder.close(); throw error; }
     if (stream !== null && Array.isArray(names)) return { names, held: folder };
     await folder.close();
     return { names };

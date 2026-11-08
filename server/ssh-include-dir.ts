@@ -1,11 +1,12 @@
 /**
- * A folder listed through its open descriptor with libc's fdopendir(3) and readdir(3), for server/ssh-include.ts where
- * glibc's getdents64 is not there (macOS, a Linux with musl). Each record is copied out at the platform's struct dirent
- * layout and checked before its name is used; the listing stops at the folder-entry budget, so a huge folder is never
- * read whole. The same libc (glibc's too) opens what a listing matched relative to the folder still held (openat), and
- * names what a descriptor holds on macOS. Like getdents64 every call is synchronous through bun:ffi and cannot be cut
- * short, so a folder on a stalled network mount (an NFS or SMB home) blocks the server's event loop, every request with
- * it, until the mount answers, while the SSH list is built.
+ * A folder listed through its open descriptor for server/ssh-include.ts: glibc's getdents64 records, or libc's
+ * fdopendir(3) and readdir(3) where getdents64 is not there (macOS, a Linux with musl). Each record is checked before
+ * its name is used, and the listing stops at the folder-entry budget, so a huge folder is never read whole (readdir
+ * reads no record past it; getdents64 reads 32 KiB at a time, so at most one more such read). The same libc (glibc's
+ * too) opens what a listing matched relative to the folder still held (openat), and names what a descriptor holds on
+ * macOS. Like getdents64 every call is synchronous through bun:ffi and cannot be cut short, so a folder on a stalled
+ * network mount (an NFS or SMB home) blocks the server's event loop, every request with it, until the mount answers,
+ * while the SSH list is built.
  */
 import { dlopen, FFIType, read, toArrayBuffer, type Pointer } from "bun:ffi";
 import { constants } from "node:fs";
@@ -98,6 +99,39 @@ export function loadDirStream(path: string, layout: Layout): DirStream | null {
       return Buffer.from(found).equals(info.subarray(FDINFO_PATH, end)) ? found : null;
     },
   };
+}
+
+/** getdents64(2): fills `buffer` with a folder's entries from its descriptor and answers the bytes written, or -1 */
+export type Getdents = (fd: number, buffer: Buffer, length: number) => number | bigint;
+
+/**
+ * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
+ * fails, or when what it answers is not well formed (a byte count past the buffer, a record that is empty, runs past
+ * the bytes answered, or holds no terminated name)
+ */
+export function entriesOf(fd: number, read: Getdents, budget: { entries: number }): string[] | "unread" {
+  const buffer = Buffer.alloc(32 * 1024);
+  const names: string[] = [];
+  for (;;) {
+    const got = Number(read(fd, buffer, buffer.byteLength));
+    if (!Number.isInteger(got) || got < 0 || got > buffer.byteLength) return "unread";
+    if (got === 0) return names;
+    // struct linux_dirent64: d_ino (8), d_off (8), d_reclen (2), d_type (1), then the name and its NUL
+    for (let at = 0; at < got;) {
+      if (at + 20 > got) return "unread";
+      const length = buffer.readUInt16LE(at + 16);
+      const end = buffer.indexOf(0, at + 19);
+      if (length < 20 || at + length > got || end <= at + 19 || end >= at + length) return "unread";
+      const name = buffer.toString("utf8", at + 19, end);
+      // a name whose bytes are not UTF-8 cannot be opened by the name decoded: what that file sets is unknown
+      if (!Buffer.from(name).equals(buffer.subarray(at + 19, end))) return "unread";
+      at += length;
+      // every record counts against the budget, `.` and `..` too
+      if (budget.entries-- <= 0) return "unread";
+      if (name === "." || name === "..") continue;
+      names.push(name);
+    }
+  }
 }
 
 /** this platform's libc: macOS's, or glibc's or musl's on Linux; null elsewhere (Windows) */

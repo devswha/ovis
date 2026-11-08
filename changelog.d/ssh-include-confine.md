@@ -5,7 +5,8 @@
   listed by path, which gives names only: a name from outside home can be listed and a file missed,
   so any host the files found that way name or set an option for, and any host after that Include,
   is listed without claiming a Tailscale PC. A wildcard looks at 1024 folder entries at most across
-  the config, and stops reading a folder there (except on Windows).
+  the config and stops reading a folder there: on macOS and Linux with musl at that entry, on Linux
+  with glibc after at most one more 32 KiB read of the folder; Windows reads the folder whole first.
 - The SSH list keeps the files a wildcard matches in ssh's order, and claims nothing for a host that
   an Include of another user's home (`~user`) or a pattern it cannot match exactly (`[[:digit:]]`)
   could change.

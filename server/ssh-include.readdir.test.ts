@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { ptr } from "bun:ffi";
-import { mkdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
@@ -64,6 +64,32 @@ it.skipIf(windows)("leaves an Include unread when a file it listed is gone befor
     return calls().openAt(at, rest, flags);
   } };
   expect(await rowsWith(removing, dir)).toEqual(unread);
+});
+
+it.skipIf(windows)("leaves an Include unread when any open of a file it listed fails", async () => {
+  const fails: Record<string, (dir: string, file: string) => void> = {
+    // a link whose target runs through a file: ENOTDIR
+    notDir: (dir, file) => { unlinkSync(file); symlinkSync(join(dir, "config", "sub"), file); },
+    loop: (_, file) => { unlinkSync(file); symlinkSync(file, file); },
+    ...(process.getuid?.() === 0 ? {} : { refused: (_: string, file: string) => { chmodSync(file, 0); } }),
+  };
+  for (const [kind, fail] of Object.entries(fails)) {
+    const dir = box({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n" });
+    fail(dir, join(dir, "conf.d", "x.conf"));
+    expect([kind, await rowsWith(calls(), dir)]).toEqual([kind, unread]);
+  }
+});
+
+it.skipIf(windows)("leaves an Include unread when its held folder is outside home once listed", async () => {
+  const outside = sshDir({});
+  let [held, listed] = [-1, false];
+  const moving: DirStream = {
+    ...calls(),
+    open: (fd) => { held = fd; return calls().open(fd); },
+    next: (dir) => { const record = calls().next(dir); listed ||= record === "end"; return record; },
+    pathOf: (fd) => (listed && fd === held ? outside : calls().pathOf?.(fd) ?? null),
+  };
+  expect(await rowsWith(moving, box({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n" }))).toEqual(unread);
 });
 
 it.skipIf(windows)("never reads a file swapped for a link out of the home folder after it was listed, just before it is opened", async () => {
