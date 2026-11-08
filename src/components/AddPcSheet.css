@@ -7,6 +7,10 @@
   width: min(100%, var(--relay-sheet-w));
 }
 
+.add-pc-sheet:lang(ja) {
+  word-break: auto-phrase;
+}
+
 .add-pc-sheet:focus {
   outline: none;
 }
@@ -57,7 +61,8 @@
   font-size: var(--fs-md);
   line-height: var(--lh-base);
   color: var(--text-dim);
-  text-wrap: balance;
+  text-wrap: pretty;
+  overflow-wrap: break-word;
 }
 
 .add-pc-body {
@@ -96,7 +101,8 @@
   display: block;
   color: var(--text-strong);
   font-weight: var(--fw-medium);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  text-wrap: pretty;
 }
 
 .add-pc-step-detail {
@@ -104,7 +110,8 @@
   margin-top: var(--space-1);
   font-size: var(--fs-xs);
   color: var(--text-dim);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  text-wrap: pretty;
 }
 
 .add-pc-steps li[data-step="done"] .add-pc-step-label {
@@ -169,8 +176,8 @@
   color: var(--status-blocked);
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
-  overflow-wrap: anywhere;
-  text-wrap: balance;
+  overflow-wrap: break-word;
+  text-wrap: pretty;
 }
 
 .add-pc-typed {
