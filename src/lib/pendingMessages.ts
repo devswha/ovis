@@ -111,8 +111,15 @@ export class PendingMessageStore {
         .map((message) => message.state === "held" && this.discarded.get(owner)?.has(message.id) ? { ...message, state: "uncertain" as const } : message);
       // this page's receipt proof stays with its copy while another tab saves the list (saved, it is uncertain)
       // only while the saved copy is the one this page wrote: another tab that acted on it (sent it, an error) ends the proof
+      const savedStates = new Map<string, unknown>();
+      try {
+        const data: unknown = JSON.parse(raw ?? "null");
+        if (data && typeof data === "object" && "messages" in data && Array.isArray(data.messages)) {
+          for (const item of data.messages as Array<{ id?: unknown; state?: unknown }>) if (typeof item?.id === "string") savedStates.set(item.id, item.state);
+        }
+      } catch { /* nothing saved proves this page's copy */ }
       const proven = new Map((this.rows.get(owner) ?? []).filter((message) => message.heldByReceipt && message.state === "held").map((message) => [message.id, message.text]));
-      const next = loaded.map((message) => proven.get(message.id) === message.text && message.state === "uncertain" && !message.resendInFlight && !message.error
+      const next = loaded.map((message) => proven.get(message.id) === message.text && savedStates.get(message.id) === "uncertain" && !message.resendInFlight && !message.error
         ? { ...message, state: "held" as const, heldByReceipt: true as const } : this.applyHeldResumed(owner, message));
       const heldAgain = next.some((message, at) => message !== loaded[at]);
       // Another tab cannot alter or discard a live connection's authoritative rows.
@@ -185,6 +192,8 @@ export class PendingMessageStore {
         : scope === null && (message.state === "queued" || message.state === "sending"
           || message.state === "held" && this.discarded.get(owner)?.has(message.id) === true) ? "uncertain" : message.state };
     if (heldByReceipt) { delete view.sending_at; view.heldByReceipt = true; this.heldResumed.get(owner)?.delete(message.id); }
+    // a late held answer for a copy this page holds on a receipt keeps that proof this page's alone
+    else if (scope === null && view.state === "held" && previous.find((item) => item.id === message.id)?.heldByReceipt) view.heldByReceipt = true;
     const at = previous.findIndex((item) => item.id === message.id);
     const next = [...previous];
     if (at < 0) next.push(view); else next[at] = view;

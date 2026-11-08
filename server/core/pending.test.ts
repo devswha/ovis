@@ -251,6 +251,11 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
             type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id,
           });
           expect(typed).toBe(1);
+          // other text under that ID is not the copy that went: the receipt does not answer for it
+          await delivery.pendingFrames.submit(resumed, {
+            type: "submit", id: 3, pane_id: "p", text: "edited", payload: "edited", delivery: "immediate", resend_id: item.message.id,
+          });
+          expect(typed).toBe(2);
         }
         const later = client("device", token);
         delivery.attached(later, "p");

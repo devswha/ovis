@@ -105,6 +105,22 @@ describe("pending message ownership", () => {
       expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["other", "uncertain"]]);
     } finally { clock.mockRestore(); }
   });
+  it("keeps a receipt's held copy this page's alone: a late held answer saves it uncertain, another tab's send is never held again", () => {
+    const port = storage(), tab = new PendingMessageStore(() => port);
+    tab.accept("p", message("late"), "old");
+    tab.accept("p", message("sent"), "old");
+    tab.suspendScope("old");
+    tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }, { id: "sent", outcome: "held", resumed: true }], "new");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["sent", "held"]]);
+    // the old connection's late answer says held: still no proof for the next page
+    tab.accept("p", message("late", "held"), null);
+    expect(tab.read("p").find((row) => row.id === "late")?.state).toBe("held");
+    expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["sent", "uncertain"]]);
+    // another tab saves the copy as being sent, with no mark or error: this page does not hold it again
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "uncertain"), message("sent", "sending")] }));
+    tab.refresh("p");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["sent", "uncertain"]]);
+  });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
     tab.accept("p", message("saved"), "old");

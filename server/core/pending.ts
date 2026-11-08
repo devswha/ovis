@@ -180,7 +180,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
   /** a follow-up's sent, discarded or held receipt, kept for its browser's return (#2421): the same bounds and binding as Pi's */
-  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held"; at: number }> = [];
+  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held"; at: number; /** a resend's text, when one sent it */ hash?: string }> = [];
   /** the resume key each follow-up's browser had when the bridge took it, by connection and message id */
   const receiptKeys = new WeakMap<Client, Map<string, string>>();
   const resumeKey = (client: Client, paneId: string): string | undefined => {
@@ -1236,8 +1236,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         };
         if (message.resend_id !== undefined) {
           authorizeSocket(client);
-          // sent already (its resend record may have expired): a replay never types it again
-          if (completed.some((entry) => entry.id === message.resend_id && entry.outcome === "sent")) {
+          const hash = new Bun.CryptoHasher("sha256").update(framed.text).digest("hex");
+          // sent already to this pane (its resend record may have expired): a replay of it never types it again
+          if (completed.some((entry) => entry.id === message.resend_id && entry.outcome === "sent" && entry.paneId === message.pane_id
+            && (entry.hash === undefined || entry.hash === hash))) {
             result(true, undefined, undefined, undefined, undefined, undefined, false, undefined);
             return;
           }
@@ -1249,7 +1251,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           };
           let typing: (typeof completed)[number] | undefined;
           const answer = await serialize(message.pane_id, () => pending.resend(message.pane_id, message.resend_id!,
-            new Bun.CryptoHasher("sha256").update(framed.text).digest("hex"), async () => {
+            hash, async () => {
               // no longer held while it is typed: a tab attaching now is not offered it again
               typing = takeHeld();
               try { await dispatch(); typedNow = true; return { ok: true }; }
@@ -1261,7 +1263,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               // its sent receipt only for the pane and browser the held one was kept for
               // (unless settling its record kept that receipt already)
               if (held.paneId === message.pane_id && held.key === resumeKey(client, message.pane_id) && !completed.some((entry) => entry.id === held.id)) {
-                completed.push({ ...held, outcome: "sent", at: Date.now() });
+                completed.push({ ...held, outcome: "sent", at: Date.now(), hash });
                 pushResumed(client, message.pane_id, held.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
               }
             } else if (submitNotTyped(answer.code ?? "")) {
