@@ -716,18 +716,26 @@ function agentIds(parentPath: string): string[] {
   if (sig === "-") { listings.delete(dir); return []; }
   const known = listings.get(dir);
   if (known?.sig === sig && known.readAt - latestMs >= 1000) return known.ids;
+  // the session's own folder only, as the detail read opens it: a link on the way, or one swapped in, lists nothing
+  const folder = sessionFolder(parentPath);
+  if (typeof folder === "string") return [];
   const ids: string[] = [];
-  let folder: Dir | undefined;
-  // read entry by entry: a folder of any size costs at most MAX_NAMES names
+  let listing: Dir | undefined;
+  // read entry by entry, inside the folder opened where the kernel allows: a folder of any size costs at most MAX_NAMES names
   try {
-    folder = opendirSync(dir);
+    listing = opendirSync(folder.fd === null ? folder.path : `${FD_DIR}/${folder.fd}`);
     for (let read = 0; read < MAX_NAMES; read += 1) {
-      const entry = folder.readSync();
+      const entry = listing.readSync();
       if (entry === null) break;
       const id = /^agent-(.+)\.meta\.json$/.exec(entry.name)?.[1];
       if (id !== undefined && AGENT_ID.test(id)) ids.push(id);
     }
-  } catch { return []; } finally { folder?.closeSync(); }
+    // a folder on the way swapped while it was listed: what was listed may be another folder's
+    if (!intact(folder)) return [];
+  } catch { return []; } finally {
+    listing?.closeSync();
+    if (folder.fd !== null) closeSync(folder.fd);
+  }
   remember(listings, dir, { sig, readAt: Date.now(), ids }, 256);
   return ids;
 }
@@ -765,13 +773,21 @@ export interface SubagentDetail {
 /** The subagents named, by agent id, as their meta files say. An id that is not a plain word is none. */
 export function subagentDetails(parentPath: string, ids: Iterable<string>): Map<string, SubagentDetail> {
   const found = new Map<string, SubagentDetail>();
-  const dir = subagentsDir(parentPath);
-  for (const id of new Set(ids)) {
-    if (!AGENT_ID.test(id)) continue;
-    const meta = readMeta(join(dir, `agent-${id}.meta.json`));
-    if (meta !== null) found.set(id, { title: meta.title, agent: meta.agent });
-  }
-  return found;
+  const wanted = [...new Set(ids)].filter((id) => AGENT_ID.test(id));
+  if (wanted.length === 0) return found;
+  // opened as the detail read opens them: another session's folder, linked or swapped in, titles nothing
+  const folder = sessionFolder(parentPath);
+  if (typeof folder === "string") return found;
+  try {
+    for (const id of wanted) {
+      const meta = openIn(folder, `agent-${id}.meta.json`, MAX_META_BYTES);
+      if (typeof meta === "string") continue;
+      let record: Row | null;
+      try { record = stillThere(meta) ? row(JSON.parse(readAt(meta.fd, 0, meta.size).toString("utf8"))) : null; } catch { record = null; } finally { closeSync(meta.fd); }
+      if (record !== null) found.set(id, { title: text(record["description"]) ?? text(record["name"]), agent: text(record["agentType"]) });
+    }
+    return intact(folder) ? found : new Map();
+  } finally { if (folder.fd !== null) closeSync(folder.fd); }
 }
 
 /**
@@ -885,6 +901,13 @@ function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
   } catch { /* refused below */ }
   closeSync(fd);
   return "unavailable";
+}
+
+/** The subagents folder of the session whose transcript is `parentPath`, opened by openFolder in the store's real place. */
+function sessionFolder(parentPath: string): Folder | DetailRefusal {
+  let store: string;
+  try { store = realpathSync(dirname(parentPath)); } catch { return "unavailable"; }
+  return openFolder(store, basename(parentPath, ".jsonl"));
 }
 
 /** Whether the folder is still the one looked at: every folder on the way the same, and the open one where it was. */
@@ -1039,9 +1062,7 @@ function readDetailRecords(fd: number, size: number, sessionId: string, agentId:
 export function backgroundAgentDetail(parentPath: string, agentId: string): { detail: Omit<PaneBackgroundAgentDetail, "server_time"> } | { refusal: DetailRefusal } {
   if (!validDetailId(agentId) || plain(parentPath) === null) return { refusal: "unavailable" };
   const sessionId = basename(parentPath, ".jsonl");
-  let store: string;
-  try { store = realpathSync(dirname(parentPath)); } catch { return { refusal: "unavailable" }; }
-  const folder = openFolder(store, sessionId);
+  const folder = sessionFolder(parentPath);
   if (typeof folder === "string") return { refusal: folder };
   try {
     const meta = openIn(folder, `agent-${agentId}.meta.json`, MAX_META_BYTES);
@@ -1583,7 +1604,7 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, restedOnWork: same && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1601,6 +1622,7 @@ export class ClaudeSubagentStatus {
     tracked.read = ++taskReadSequence;
     tracked.live = false;
     tracked.reset = true;
+    tracked.restedOnWork = false;
     // Leaving Claude retains the old transcript for the lost-task list, but a new Claude session cannot read it.
     if (session !== null) {
       tracked.path = null;
