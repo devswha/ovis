@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { PcInstaller, type InstallConnect } from "./pc-install.ts";
+import { installPlanFor, PcInstaller, type InstallConnect } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -64,7 +64,7 @@ function fixture(pc: Pc) {
     if (script.includes("kill -0")) return alive.has(Number(/kill -0 (\d+)/.exec(script)![1])) ? "live" : "";
     if (script.includes("kill -TERM")) { alive.delete(Number(/kill -TERM (\d+)/.exec(script)![1])); return ""; }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
-    if (script.includes("https://ovis.sh/install.sh")) {
+    if (script.includes("/install.sh -o")) {
       const answer = pc.installer ?? { exit: 0, output: "Ovis: installing the herdr plugin" };
       if (answer.exit === 0 && pc.herdrRunning !== false) register();
       return `${answer.output}\novis-install-exit=${answer.exit}\n`;
@@ -78,7 +78,9 @@ function fixture(pc: Pc) {
   /** while set, the connect after the install waits for it */
   let held: Promise<void> | null = null;
   let cancelled = 0;
-  const connect: InstallConnect = (request) => { connects.push(request); return { job_id: "setup-job", cancel: () => { cancelled++; }, finished: (held ?? Promise.resolve()).then(() => answer) }; };
+  /** each connect's follow-up hook, to tell it a second setup started */
+  const followUps: ((id: string) => void)[] = [];
+  const connect: InstallConnect = (request) => { const { onJob, ...asked } = request; connects.push(asked); if (onJob) followUps.push(onJob); return { job_id: "setup-job", cancel: () => { cancelled++; }, finished: (held ?? Promise.resolve()).then(() => answer) }; };
   /** resolves once a job reaches a phase, told by the installer's own change events */
   const waiters: { phase: string; resolve(): void }[] = [];
   const onChange = (job: PcInstallJob) => { for (const waiter of waiters.splice(0)) if (waiter.phase === job.phase) waiter.resolve(); else waiters.push(waiter); };
@@ -86,11 +88,21 @@ function fixture(pc: Pc) {
   const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200, stopMs: 100, onChange });
   cleanups.push(() => installer.stop());
   const settled = async (job: PcInstallJob) => { await installer.finished(job.id); return installer.job(job.id)!; };
-  return { installer, commands, challenges, connects, settled, alive, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
+  return { installer, commands, challenges, connects, settled, alive, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, followUps, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
 }
 
 const target = { destination: "me@lab.invalid" };
 const installs = (commands: string[]) => commands.filter((command) => command.includes("install.sh"));
+
+describe("which PCs an install over SSH is offered for", () => {
+  it("offers one on Linux and macOS, never on Windows, where the installer and its checks are not the ones used", () => {
+    const target = { destination: "me@pc.invalid" };
+    expect(installPlanFor("replace", "posix", 4242, target)).toEqual({ mode: "replace", pid: 4242, target });
+    expect(installPlanFor("restart", "posix", 4242, target)).toEqual({ mode: "restart", pid: 4242, target });
+    expect(installPlanFor("replace", "windows", 4242, target)).toBeUndefined();
+    expect(installPlanFor(undefined, "posix", 4242, target)).toBeUndefined();
+  });
+});
 
 describe("installing Ovis on a PC over SSH", () => {
   it("runs the official installer pinned to this app's release with keys only, waits for it to answer, then connects it", async () => {
@@ -100,7 +112,8 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(pc.challenges).toEqual([undefined]);
     expect(installs(pc.commands)).toHaveLength(1);
     // downloaded to a file and run from it: piped into a sh whose stdin is /dev/null, nothing would run at all
-    expect(installs(pc.commands)[0]).toContain("curl -fsSL --max-time 120 https://ovis.sh/install.sh -o \"$script\"");
+    // the installer of the release it installs, from that release's own tag: never a newer copy
+    expect(installs(pc.commands)[0]).toContain("curl -fsSL --max-time 120 https://raw.githubusercontent.com/devswha/ovis/v9.9.9/install.sh -o \"$script\"");
     expect(installs(pc.commands)[0]).toContain("OVIS_REF=v9.9.9 OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh \"$script\" </dev/null");
     expect(installs(pc.commands)[0]).not.toContain("| OVIS_REF");
     expect(pc.connects).toEqual([{ target, name: "Lab", update: false }]);
@@ -257,10 +270,42 @@ describe("installing Ovis on a PC over SSH", () => {
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
     expect(job).toMatchObject({ phase: "failed", error_code: "not_stopped" });
     expect(pc.connects).toEqual([]);
+    // the Ovis the launcher started beside it is stopped again; the planned one is left as it was
+    expect(pc.alive.has(5555)).toBe(false);
+    expect(pc.alive.has(4242)).toBe(true);
   });
 
   it("tells a connection dropped while it looks at the PC as one, not as an unsupported PC", async () => {
     const pc = fixture({ probeFails: true });
     expect(await pc.settled(pc.installer.start({ target }))).toMatchObject({ phase: "failed", error_code: "ssh_unreachable" });
+  });
+
+  it("follows the connect that updates it when the first one found it still older", async () => {
+    const pc = fixture({});
+    const gate = Promise.withResolvers<void>();
+    pc.holdConnect(gate.promise);
+    const handedOver = pc.reached("connecting_pc");
+    const started = pc.installer.start({ target });
+    await handedOver;
+    expect(pc.installer.job(started.id)?.connect_job).toBe("setup-job");
+    pc.followUps[0]!("update-job");
+    expect(pc.installer.job(started.id)?.connect_job).toBe("update-job");
+    gate.resolve();
+    expect((await pc.settled(started)).phase).toBe("connected");
+  });
+
+  it("keeps the PC busy after a cancel until the install's own run has ended", async () => {
+    const pc = fixture({});
+    const gate = Promise.withResolvers<void>();
+    pc.holdConnect(gate.promise);
+    const handedOver = pc.reached("connecting_pc");
+    const started = pc.installer.start({ target });
+    await handedOver;
+    pc.installer.cancel(started.id);
+    expect(pc.installer.job(started.id)?.phase).toBe("cancelled");
+    expect(pc.installer.runningAt(target)?.id).toBe(started.id);
+    gate.resolve();
+    await pc.settled(started);
+    expect(pc.installer.runningAt(target)).toBeUndefined();
   });
 });

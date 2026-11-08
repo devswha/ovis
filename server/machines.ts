@@ -29,7 +29,7 @@ import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
 import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
 import { followOwnUpdate, offerFromStatus, readOwnStatus } from "./pc-update.ts";
-import { appRelease, INSTALLER, PcInstaller, type InstallConnect, type InstallPlan } from "./pc-install.ts";
+import { appRelease, INSTALLER, installPlanFor, PcInstaller, type InstallConnect, type InstallPlan } from "./pc-install.ts";
 
 import type { RelaySocket } from "../shared/relay-channel.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel, type RouteProbes } from "./relay-pc.ts";
@@ -661,7 +661,7 @@ export class MachineManager {
       const unapproved = !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
       return { how: "install", current_version: own.version, latest_version: fix.mode === "replace" ? release.slice(1) : own.latest_version, updatable: !unapproved, reason: unapproved,
         steps: fix.mode === "replace"
-          ? [`Stop the Ovis server started by hand on that PC (process ${fix.pid}); its settings and data stay.`, `Install Ovis ${release} there with its official installer (${INSTALLER}), as a herdr plugin that updates itself; an Ovis already installed there is started and updated instead.`, "As when it is run by hand, the installer adds what is missing for this account only (herdr, Bun 1.4 or newer, which may add itself to the shell's startup file), and serves Ovis to the tailnet when Tailscale runs there.", "Start it and connect to it. herdr and its sessions keep running."]
+          ? [`Stop the Ovis server started by hand on that PC (process ${fix.pid}); its settings and data stay.`, `Install Ovis ${release} there with its official installer (install.sh at ${release}, as ${INSTALLER} gives it), as a herdr plugin that updates itself; an Ovis already installed there is started and updated instead.`, "As when it is run by hand, the installer adds what is missing for this account only (herdr, Bun 1.4 or newer, which may add itself to the shell's startup file), and serves Ovis to the tailnet when Tailscale runs there.", "Start it and connect to it. herdr and its sessions keep running."]
           : [`Restart that PC's Ovis (process ${fix.pid}) through its own launcher (its herdr plugin or user service), so it runs the supervisor that installs updates.`, `Then have it install its update${own.latest_version ? ` v${own.latest_version}` : ""}. herdr and its sessions keep running.`] };
     }
     if (machine.kind === "ssh" && own) {
@@ -924,7 +924,7 @@ export class MachineManager {
     const finished = (async () => {
       let result = await ended(current);
       // still older than this app (a restarted supervisor, or an install kept as it was): its own update now, as its steps said
-      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) { current = start(true); result = await ended(current); }
+      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) { current = start(true); request.onJob?.(current.id); result = await ended(current); }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
     return { job_id: current.id, cancel: () => this.cancelJob(current.id), finished };
@@ -1411,7 +1411,7 @@ export class MachineManager {
         if (newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
         const { revision: offeredRevision, fix, ...offer } = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
         if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
-        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = fix ? { mode: fix, pid: descriptor.pid, target: { ...target } } : undefined; }
+        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target); }
         if (job) job.public.remote_ovis = offer;
         // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");

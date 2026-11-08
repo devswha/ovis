@@ -17,6 +17,8 @@ import { sameSshSession } from "./herdr-profiles.ts";
 
 /** the official installer, as the README and docs/guide.md give it */
 export const INSTALLER = "https://ovis.sh/install.sh";
+/** the installer of one release, from its own tag: the same script as INSTALLER, at the release it installs, never a newer copy */
+export const installerAt = (release: string): string => `https://raw.githubusercontent.com/devswha/ovis/${release}/install.sh`;
 /** what an install needs in the home folder: Bun, herdr and a built checkout */
 const MIN_FREE_KB = 1024 * 1024;
 /** the installer clones and builds Ovis (about a minute), and may install herdr and Bun first */
@@ -24,9 +26,16 @@ const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const STOP_WAIT_MS = 15_000;
 
 /** connects the PC once Ovis answers there (MachineManager.setup, keys only): resolves null once connected, else why not */
-export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
+export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
 /** what to put right on a PC added here whose own Ovis cannot update itself, and the process that runs it now */
 export interface InstallPlan { mode: "replace" | "restart"; pid: number }
+/**
+ * The install a PC whose own Ovis refused to update can be offered (Machine.ovis_update how "install"): only on Linux
+ * and macOS, where the official installer and this installer's checks run. A Windows PC keeps its plain refusal.
+ */
+export function installPlanFor(fix: InstallPlan["mode"] | undefined, host: "posix" | "windows", pid: number, target: SshTarget): (InstallPlan & { target: SshTarget }) | undefined {
+  return fix && host === "posix" ? { mode: fix, pid, target: { ...target } } : undefined;
+}
 
 let release: string | undefined;
 /** this app's own release (`v0.5.1`): what the installer installs, so both ends speak one bundle version */
@@ -85,7 +94,7 @@ function sshFailure(error: unknown): InstallFailed {
   return new InstallFailed("ssh_unreachable", `That PC could not be reached over SSH: ${words.slice(0, 300)}`);
 }
 
-interface State { public: PcInstallJob; abort: AbortController; ssh?: SshConnection; connect?: { cancel(): void }; finished: Promise<void> }
+interface State { public: PcInstallJob; abort: AbortController; ssh?: SshConnection; connect?: { cancel(): void }; finished: Promise<void>; settled?: boolean }
 
 export class PcInstaller {
   private jobs = new Map<string, State>();
@@ -113,16 +122,16 @@ export class PcInstaller {
   async finished(id: string): Promise<void> { await this.jobs.get(id)?.finished; }
   /** the install running for a PC added here, if any */
   runningFor(machineId: string): PcInstallJob | undefined {
-    return [...this.jobs.values()].find((state) => state.public.machine_id === machineId && !["connected", "failed", "cancelled"].includes(state.public.phase))?.public;
+    return [...this.jobs.values()].find((state) => state.public.machine_id === machineId && !state.settled)?.public;
   }
   /** the install running at an SSH address, if any: one at a time per PC */
   runningAt(target: SshTarget): PcInstallJob | undefined {
-    return [...this.jobs.values()].find((state) => !["connected", "failed", "cancelled"].includes(state.public.phase) && sameSshSession(state.public.target, target))?.public;
+    return [...this.jobs.values()].find((state) => !state.settled && sameSshSession(state.public.target, target))?.public;
   }
   /**
-   * Ends the job here, and the connect it handed over to. Its SSH connection closes, which ends an installer running
-   * there part-way (what it installed so far stays, and a later install goes on from there); a server already
-   * stopped stays stopped, as the job then says.
+   * Ends the job here, and the connect it handed over to. Its SSH connection closes; an installer already running there
+   * may still run to its end. The PC counts as busy (runningFor, runningAt) until this job's own run has ended, so no
+   * other install or setup starts beside it. A server already stopped stays stopped, as the job then says.
    */
   cancel(id: string): void {
     const state = this.jobs.get(id);
@@ -214,7 +223,14 @@ export class PcInstaller {
         // there, and a second Ovis would serve the same socket, so nothing is connected
         if (plan?.mode === "restart") {
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
-            if (Date.now() >= until) throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) was not started by its launcher, so restarting the launcher did not restart it. Stop it on that PC, then update it.`);
+            if (Date.now() >= until) {
+              // the launcher started an Ovis of its own beside the planned one: only that new one (a token not seen
+              // before, an Ovis server's command line) is stopped again, so one Ovis serves the socket, as before
+              for (const extra of (await posixHost.descriptors(ssh)).filter((d) => d.socket_path === inspection.expectedSocket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== plan.pid)) {
+                if (OVIS_COMMAND.test(await ssh.run(`ps -o args= -p ${extra.pid} 2>/dev/null || true`))) await ssh.run(`kill -TERM ${extra.pid} 2>/dev/null || true`);
+              }
+              throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) was not started by its launcher, so restarting the launcher did not restart it; the one the launcher started beside it was stopped again. Stop it on that PC, then update it.`);
+            }
             await pause();
             if (abort.signal.aborted) throw new Error("Install cancelled");
           }
@@ -225,7 +241,7 @@ export class PcInstaller {
         // downloaded first, so a failed download is told as one (piped, sh would run an empty script and exit 0), then
         // run with nothing on stdin, on herdr (a herdr plugin that updates itself, as the steps shown say). The exit
         // status is printed rather than returned, so the installer's own last words come back either way
-        const out = await ssh.run(`${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; if ! curl -fsSL --max-time 120 ${INSTALLER} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer from ${INSTALLER}"; printf '\\novis-install-exit=1\\n'; exit 0; fi; OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`, undefined, INSTALL_TIMEOUT_MS);
+        const out = await ssh.run(`${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; if ! curl -fsSL --max-time 120 ${installerAt(release)} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`, undefined, INSTALL_TIMEOUT_MS);
         const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
         if (lines.at(-1) !== "ovis-install-exit=0") {
           const said = lines.filter((line) => !line.startsWith("ovis-install-exit=")).slice(-3).join(" ").slice(0, 500);
@@ -245,7 +261,9 @@ export class PcInstaller {
       }
       ssh.close();
       step("connecting_pc", "Connecting to that PC's Ovis…");
-      const connect = this.options.connect({ target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), update });
+      const connect = this.options.connect({ target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), update,
+        // a follow-up connect (its update after the first one found it older) is the one to follow from now on
+        onJob: (id) => { job.connect_job = id; this.options.onChange?.(job); } });
       state.connect = connect;
       job.connect_job = connect.job_id;
       this.options.onChange?.(job);
@@ -266,6 +284,7 @@ export class PcInstaller {
       }
     } finally {
       state.ssh?.close();
+      state.settled = true;
       this.options.onChange?.(job);
     }
   }

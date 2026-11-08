@@ -203,8 +203,9 @@ no query. Anything else gets 403 `forbidden`. The app sends the header on every 
 ### Installing Ovis on a PC over SSH
 
 Where a PC's own Ovis cannot update itself, or a PC has none yet, Ovis is installed there from
-here over SSH with the official installer (`curl -fsSL https://ovis.sh/install.sh | sh`, as in the
-[guide](guide.md)), pinned to this app's own release (`OVIS_REF=v<version>`), so both ends run one
+here over SSH with the official installer (the `install.sh` the [guide](guide.md) pipes from
+`https://ovis.sh/install.sh`), taken from this app's own release tag on GitHub and run with
+`OVIS_REF=v<version>`, so the script and what it installs are that release's and both ends run one
 version. SSH uses keys only (`BatchMode`): a PC that wants a password, or whose host key is not
 known here yet, is refused with what to do (add its key with `ssh-copy-id`, or add it once with
 **Add PC**, which checks the fingerprint and can register a key). Linux and macOS PCs (x64 or arm64)
@@ -235,7 +236,8 @@ and herdr's default session only.
   `no_launcher`, `not_started`, `connect_failed`. These routes are this PC's owner's only, with the
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
-  connects to that PC from here, and its final connect uses keys only too.
+  connects to that PC from here, and its final connect uses keys only too. A cancelled install keeps
+  the PC busy until its own run has ended: an installer already running there may run to its end.
 
 ## Runtime and endpoints
 
