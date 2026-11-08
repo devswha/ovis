@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as lettaStore from "../letta-store.ts";
@@ -10,10 +10,14 @@ const letta = (title: string, status = "unknown") => ({ pane_id: "w1:p1", worksp
 // One turn of letta-code 0.34.44's local backend: the prompt, a Bash call, its result, the answer
 const turn = readFileSync(join(import.meta.dir, "..", "fixtures", "letta", "messages-turn-0.34.44.jsonl"), "utf8").trim().split("\n");
 
+const resolved: { mockRestore(): void }[] = [];
+const resolving = () => { const spy = spyOn(lettaStore, "resolveLettaTranscript"); resolved.push(spy); return spy; };
+afterEach(() => { for (const spy of resolved.splice(0)) spy.mockRestore(); });
+
 describe("a Letta pane's status in the hub, where no report gives one", () => {
   it("works while Letta's title spins and finishes once when it stops, from the title alone", async () => {
     const h = hub();
-    spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue(null);
+    resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor"));
     await h.snapshot();
     expect(h.last().status).toBe("working");
@@ -25,7 +29,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
 
   it("tells no turn from a read that began before one already applied and finished after it", async () => {
     const h = hub();
-    spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue(null);
+    resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor"));
     await h.snapshot();
     // a read begins while the spinner still turns, and is answered only after a newer read saw it stop
@@ -40,7 +44,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
 
   it("keeps a status the program reports over its title", async () => {
     const h = hub();
-    spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue(null);
+    resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor", "blocked"));
     const snapshot = await h.snapshot();
     expect(snapshot.panes[0]!.agent_status).toBe("blocked");
@@ -53,7 +57,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     mkdirSync(join(messages, ".."), { recursive: true });
     writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
     const h = hub();
-    spyOn(lettaStore, "resolveLettaTranscript").mockResolvedValue({ path: join(root, "t.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
+    resolving().mockResolvedValue({ path: join(root, "t.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
     h.herdrSays(letta("Tutor"));
     await h.snapshot();
     expect(h.status.letta.tracks("w1:p1")).toBe(true);
