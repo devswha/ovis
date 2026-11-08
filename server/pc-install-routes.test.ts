@@ -286,7 +286,7 @@ it("ends a restart's install with the PC's own update it started: its error, or 
 function sshConfig(): void {
   const dir = mkdtempSync(join(tmpdir(), "ovis-ssh-config-"));
   const config = join(dir, "config");
-  writeFileSync(config, "Host new-alias\n  HostName new.invalid\n  User me\n\nHost *\n  User me\n");
+  writeFileSync(config, "Host new-alias\n  HostName new.invalid\n  User me\n\nHost lab-alias\n  HostName lab.invalid\n  User me\n\nHost *\n  User me\n");
   spyOn(sshAddresses, "resolve").mockImplementation((target) => realResolve.call(sshAddresses, target, config));
   forgetSshAddresses();
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -302,6 +302,8 @@ it.skipIf(!Bun.which("ssh"))("keeps one install or setup per PC as ssh resolves 
   expect(() => manager.setup({ destination: "me@new.invalid", port: 22 })).toThrow("Ovis is being installed on this PC");
   expect(() => manager.install({ destination: "new-alias" })).toThrow("being installed or connected already");
   manager.cancelInstall(job.id);
+  // a PC saved here, named by its alias or with its default port given: already added, not added again
+  for (const same of [{ destination: "lab-alias" }, { destination: "me@lab.invalid", port: 22 }]) expect(() => manager.install(same)).toThrow("already added here");
 });
 
 it.skipIf(!Bun.which("ssh"))("keeps one setup at a time per PC as ssh resolves it, whatever herdr session each names", async () => {

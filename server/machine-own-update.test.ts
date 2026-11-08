@@ -626,6 +626,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(installs).toEqual([{ expected_revision: OFFERED }]);
   });
 
+  it("waits for a just-started updater's first check instead of taking it as offering nothing, then updates", async () => {
+    // restarted a moment ago: its updater has not checked for releases yet, so it offers nothing so far
+    const fresh = { checked_at: null, available: false, latest_revision: null, latest_version: null };
+    const { installs, until } = pc({ status: managedOffer(), beforeInstall: [fresh, fresh] }, { ownUpdate: { pollMs: 5, checkMs: 2000 } });
+    await until((machine) => machine.state === "connected");
+    expect(installs).toEqual([{ expected_revision: OFFERED }]);
+  });
+
   it("tries again on its own, not waiting for a tap, when a check for releases there outlasts its wait", async () => {
     const { installs, until } = pc({ status: managedOffer(), beforeInstall: Array.from({ length: 10_000 }, () => checking) }, { ownUpdate: { pollMs: 5, checkMs: 20 } });
     const waiting = await until((machine) => machine.state === "reconnecting" && /still checking for updates/.test(machine.error ?? ""));
@@ -733,8 +741,8 @@ describe("a PC whose own Ovis is older than this app", () => {
     ["blocked there", { status: managedOffer({ blocked_reason: "The source checkout changed. Restart the app before updating." }) }, /cannot update itself now: The source checkout changed/, null],
     ["asks for its own token", { status: null }, /OVIS_TOKEN/, null],
     ["too old to install a named revision", { status: managedOffer({ revision_bound_install: undefined }) }, /too old to take an update/, "restart"],
-    ["too old, with no newer release a restart would install", { status: managedOffer({ revision_bound_install: undefined, available: false, latest_revision: null }) }, /too old to take an update/, null],
-    ["without a newer release on offer", { status: managedOffer({ available: false, latest_revision: null }) }, /no newer release on offer than v0\.4\.16/, null],
+    ["too old, with no newer release a restart would install", { status: managedOffer({ revision_bound_install: undefined, available: false, latest_revision: null, checked_at: "2026-11-08T00:00:00.000Z" }) }, /too old to take an update/, null],
+    ["without a newer release on offer", { status: managedOffer({ available: false, latest_revision: null, checked_at: "2026-11-08T00:00:00.000Z" }) }, /no newer release on offer than v0\.4\.16/, null],
   ];
   for (const [name, remote, reason, fix] of refusals) it(`says why it cannot be updated from here when it is ${name}`, async () => {
     const { manager, installs, operations, until } = pc({ ...remote, access: { port: OWN_PORT, tailscale: { serving_url: "https://home-server.example.ts.net" } } });

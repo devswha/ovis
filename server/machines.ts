@@ -935,7 +935,8 @@ export class MachineManager {
       return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid, ...(fix.token ? { token: fix.token } : {}) }, ...(revision ? { revision } : {}) });
     }
     const target = validateTarget(request);
-    if ([...this.machines.values()].some((runtime) => runtime.machine.target && sameSshSession(runtime.machine.target, target))) throw new PcUpdateRefused("That PC is already added here; update it from its card.");
+    // the same PC as ssh resolves it (an alias, or its default port given), added for herdr's default session
+    if ([...this.machines.values()].some((runtime) => runtime.machine.target && !runtime.machine.target.session && samePc(runtime.machine.target, target))) throw new PcUpdateRefused("That PC is already added here; update it from its card.");
     if (this.installer.runningAt(target) || [...this.jobs.values()].some((job) => !TERMINAL.has(job.public.phase) && samePc(job.public.target, target))) throw new PcUpdateRefused("That PC is being installed or connected already; wait for it to finish.");
     return this.installer.start({ target, ...(typeof name === "string" && name.trim() ? { name: name.trim() } : {}) });
   }
@@ -1692,7 +1693,9 @@ export class MachineManager {
     let told = await read();
     // the last status that told where it answers: a later read that fails does not take it back
     let located = "status" in told ? told.status : null;
-    for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && told.status?.phase === "checking" && Date.now() < until && !signal?.aborted;) {
+    // and so is a first one not begun yet: an updater just started (after its restart) has not checked, and offers nothing so far
+    const unchecked = (status: Partial<UpdateStatus> | null | undefined) => status?.phase === "checking" || (status?.managed === true && !status.checked_at && status.available !== true);
+    for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && unchecked(told.status) && Date.now() < until && !signal?.aborted;) {
       await this.pause(signal);
       told = await read();
       if ("status" in told && typeof told.status === "object" && told.status !== null && "port" in told.status) located = told.status;
