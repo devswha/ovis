@@ -16,7 +16,8 @@
  *   UI_EVIDENCE_DIR=<dir> bun scripts/relay-shell-browser-qa.ts
  *
  * writes the screenshots and logs there (task-16-*, task-18-* for push alerts, task-9-* for the sign-in screen and
- * dashboard); without it the checks still run.
+ * dashboard, dashboard-matrix/ for relay-dashboard-browser-qa.ts, which runs last on fixture fleets); without it the
+ * checks still run.
  *
  * The sign-in screen and the dashboard need the account service, which the shell offers on app.ovis.sh alone
  * (lib/account/service.ts shellAccountServiceOf): that part routes https://app.ovis.sh to the same built shell and
@@ -58,6 +59,7 @@ import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
+import { relayDashboardQa } from "./relay-dashboard-browser-qa.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
 import { openSettingsPage } from "./settings-page.ts";
@@ -409,6 +411,16 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     await page.locator(".app").waitFor();
     assert.equal(await page.locator("main[data-relay-state]").count(), 0, "the shell's screen is gone once the app is up");
   };
+  /**
+   * A first pairing stops at its Ready checkpoint (lib/relay/shell.tsx): the app is not up until Open PC, and Open PC enters it.
+   * A saved PC opened again goes straight to the app (inApp alone).
+   */
+  const openFromReady = async (page: Page): Promise<void> => {
+    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
+    await ready.waitFor();
+    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app: nothing opens until Open PC");
+    await ready.getByRole("button", { name: "Open PC" }).click();
+  };
   /** Opens a pairing offer, confirms it, and pairs; resolves once the connection attempt is under way. */
   const pairFrom = async (page: Page, offer: RelayOffer): Promise<void> => {
     await page.goto(offerUrl(offer));
@@ -566,8 +578,31 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await page.getByRole("button", { name: "Continue with GitHub" }).click();
       await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor();
     };
-    const row = (page: Page, name: string) => page.locator(".relay-dash-table tbody tr", { hasText: name });
+    /** A PC's row in the PC list, the desktop table or the phone list alike: by its data-pc-id, never the attention list or the map. */
+    const row = (page: Page, name: string) => page.locator("[data-pc-list] [data-pc-id]", { hasText: name });
+    /** The dashboard's views are hash routes (#overview, #pcs, #devices, #relay, #settings); the connection map lives in #relay. */
+    const view = async (page: Page, name: "overview" | "relay"): Promise<void> => {
+      await page.evaluate((hash) => { location.hash = hash; }, `#${name}`);
+      await page.locator(`.relay-dash[data-dashboard-view="${name}"]`).waitFor();
+    };
     const wire = (page: Page, serverId: string) => page.locator(`path.relay-map-edge[data-pc="${serverId}"]`);
+    /** The map's route list (always drawn, the diagram only at <= 8 PCs and >= 1100px): a PC's hop and its word. */
+    const hop = (page: Page, serverId: string) => page.locator(".relay-map-hop", { has: page.locator(`[data-pc-id="${serverId}"]`) });
+    const stateWord = (page: Page, name: string) => row(page, name).locator(".relay-pc-state-word");
+    /** Without the account, the map may only report this device's own check: live exactly when it answered, never "Seen lately". */
+    const ownCheckOnly = async (page: Page, serverId: string): Promise<string> => {
+      await page.waitForFunction((id) => {
+        const note = document.querySelector(`.relay-map-hop:has([data-pc-id="${id}"]) .relay-map-hop-note`)?.textContent ?? "";
+        return note !== "" && note !== "Checking…";
+      }, serverId);
+      const note = await hop(page, serverId).locator(".relay-map-hop-note").textContent() ?? "";
+      const wired = await wire(page, serverId).getAttribute("data-wire");
+      assert.match(note, /^(Answers · \d+ ms|Paired · not checked|Offline)$/, `the map reports this device's own check only ("${note}")`);
+      assert.equal(wired, note.startsWith("Answers") ? "live" : note === "Offline" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
+      assert.equal(await page.locator(".relay-map-flow, .relay-map-dot").count(), 0, "nothing flows once the check settled");
+      return `${note}, wire ${wired}`;
+    };
+
     const signInScreen = async (page: Page): Promise<void> => {
       await page.getByRole("heading", { name: "Sign in to Ovis" }).waitFor();
       assert.equal(await page.getByRole("button", { name: "Continue with GitHub" }).count(), 1);
@@ -602,28 +637,34 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await a.goto(encodeOffer(pc1.offer, APP));
       await state(a, "confirm").waitFor();
       await a.getByRole("button", { name: "Pair", exact: true }).click();
+      await openFromReady(a);
       await inApp(a);
       await a.goto(`${APP}/`);
       await signInScreen(a);
       await a.getByRole("button", { name: "Continue without an account (1 PC)" }).click();
       await a.locator('.relay-dash[data-dashboard-mode="local"]').waitFor();
       assert.equal(await row(a, "Desk PC").getAttribute("data-pc-state"), "paired");
-      assert.equal(await wire(a, pc1.id).getAttribute("data-wire"), "still");
-      assert.equal(await a.locator('.relay-map-node[data-seen="unknown"] .relay-map-word').textContent(), "Paired · status unknown");
-      assert.equal(await a.locator(".relay-map-flow").count(), 0, "nothing flows for a pairing without an account");
       await capture(a, "local-1440-dark");
-      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / -> Continue without an account (1 PC) -> local dashboard: row paired, wire still, "Paired · status unknown", 0 flows`);
+      await view(a, "relay");
+      assert.equal(await hop(a, pc1.id).getAttribute("data-seen"), "unknown", "no account has seen it");
+      const localMap = await ownCheckOnly(a, pc1.id);
+      await view(a, "overview");
+      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / -> Continue without an account (1 PC) -> local dashboard: row paired; #relay: ${localMap}, seen unknown, 0 flows`);
 
       // signed in: opening the PC lists it in the account and links this device; its mailbox pull is the PC being seen
       await a.locator(".relay-dash-foot").getByRole("button", { name: "Sign in" }).click();
       await signIn(a);
-      await row(a, "Desk PC").getByText("paired by QR · not in the account yet").waitFor();
-      // the header counts the account's PCs, and the directory lists none yet: the QR pairing is a row, not one of them
-      assert.equal(await a.locator(".relay-dash-sub").innerText(), "0 PCs in your account", "the header counts only the PCs the account lists");
+      await row(a, "Desk PC").waitFor();
+      // the directory lists none yet: the QR pairing is a row this device holds, never one the account claims Ready
+      const unlistedWord = await stateWord(a, "Desk PC").innerText();
+      assert.match(unlistedWord, /^(Paired · not checked|Checking…|This device: .+)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
       assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");
       await capture(a, "account-unlisted-1440-dark");
-      log9(`account, before Open: directory [] -> header "0 PCs in your account", row "paired by QR · not in the account yet"`);
-      assert.equal(await wire(a, pc1.id).getAttribute("data-wire"), "still");
+      log9(`account, before Open: directory [] -> row state "${unlistedWord}" (this device's check, not the account's Ready)`);
+      await view(a, "relay");
+      assert.equal(await hop(a, pc1.id).getAttribute("data-seen"), "unknown", "the account has not seen it");
+      log9(`account, before Open: #relay ${await ownCheckOnly(a, pc1.id)}`);
+      await view(a, "overview");
       const listed = accountRequest(`PUT /v1/pcs/${pc1.id}`, "the shell listed Desk PC in the account");
       await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
       await inApp(a);
@@ -637,15 +678,18 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const seenFirst = pc1.lastSeen();
       assert.equal(seenFirst, seenDesk.last_seen_at, "Desk PC's last_seen_at is five minutes ago");
       await a.goto(`${APP}/`);
-      await wire(a, pc1.id).and(a.locator('[data-wire="live"]')).waitFor({ state: "attached" });
-      await row(a, "Desk PC").getByText("in your account", { exact: true }).waitFor();
-      await row(a, "Desk PC").locator(".relay-dash-seen", { hasText: /^\d+ min ago$/ }).waitFor();
+      await stateWord(a, "Desk PC").and(a.getByText("Ready", { exact: true })).waitFor();
+      await row(a, "Desk PC").locator(".relay-pc-cell-seen", { hasText: /^\d+ min ago$/ }).waitFor();
       assert.equal(await row(a, "Desk PC").getAttribute("data-pc-state"), "paired");
-      assert.equal(await a.locator(".relay-map-flow").count(), 1);
-      assert.ok(await a.locator(".relay-map-dot").count() >= 1, "the live wire carries dots");
-      assert.equal(await a.locator('.relay-map-node[data-seen="lately"] .relay-map-word').textContent(), "Seen lately");
       await capture(a, "seen-lately-1440-dark");
-      log9(`account: GitHub sign-in at the fake service, Open -> PUT /v1/pcs/${pc1.id}, PC joined ${ACCT}, mailbox pull -> last_seen_at ${seenFirst} -> wire live, 1 flow, "Seen lately"`);
+      await view(a, "relay");
+      await wire(a, pc1.id).and(a.locator('[data-wire="live"]')).waitFor({ state: "attached" });
+      // a live wire is drawn settled: only a wire this device is checking moves (no particles)
+      assert.equal(await a.locator(".relay-map-flow, .relay-map-dot").count(), 0, "a live wire carries no flow and no dot");
+      assert.equal(await hop(a, pc1.id).locator(".relay-map-hop-note").textContent(), "Seen lately");
+      await capture(a, "seen-lately-map-1440-dark");
+      await view(a, "overview");
+      log9(`account: GitHub sign-in at the fake service, Open -> PUT /v1/pcs/${pc1.id}, PC joined ${ACCT}, mailbox pull -> last_seen_at ${seenFirst} -> row Ready; #relay: wire live, 0 flows, "Seen lately"`);
 
       // the relay stops while the PC keeps coming by the account service: the map reports the mailbox, not the relay
       await relay!.stop();
@@ -657,9 +701,11 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await a.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
       await reread;
       // the answer is applied once the row's Last seen moves from the earlier pull (min ago) to this one
-      await row(a, "Desk PC").locator(".relay-dash-seen", { hasText: /^just now$/ }).waitFor();
-      assert.equal(await wire(a, pc1.id).getAttribute("data-wire"), "live", "the wire still says seen lately");
+      await row(a, "Desk PC").locator(".relay-pc-cell-seen", { hasText: /^just now$/ }).waitFor();
       assert.equal(await row(a, "Desk PC").getAttribute("data-pc-state"), "paired");
+      await view(a, "relay");
+      assert.equal(await wire(a, pc1.id).getAttribute("data-wire"), "live", "the wire still says seen lately");
+      await view(a, "overview");
       assert.deepEqual(A.errors, [], "no page error with the relay gone");
       await capture(a, "relay-stopped-1440-dark");
       await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
@@ -683,7 +729,8 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(put.status, 200, `Mac mini listed itself: ${await put.text()}`);
       assert.equal((await pc2.local("/api/relay/link", { headers: { "x-ovis-local-only": "1" } })).status, 200);
       await a.goto(`${APP}/`);
-      await row(a, "Mac mini").getByText("new in your account").waitFor();
+      await row(a, "Mac mini").locator('[data-pc-action="add"]').waitFor();
+      assert.equal(await row(a, "Mac mini").getAttribute("data-pc-state"), "needs-approval");
       await row(a, "Mac mini").getByRole("button", { name: "Add", exact: true }).click();
       const sheetNew = a.locator('[role=dialog][data-add-pc-mode="new"]');
       await sheetNew.waitFor();
@@ -700,8 +747,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await capture(a, "sheet-typed-1440-dark");
       await typed.fill(asked!.digits);
       await a.locator("[role=dialog]").getByRole("button", { name: "Add this PC" }).click();
-      await a.getByText("Approve this phone on Mac mini to finish.").waitFor();
+      await a.getByText("Approve this device on Mac mini within 90 seconds to finish.").waitFor();
       assert.equal((await pc2.local("/api/relay/pairing", { body: { id: asked!.id, decision: "approve" } })).status, 200);
+      await openFromReady(a);
       await inApp(a);
       await until(pc2.joined, "Mac mini joined the account through this device");
       await pc2.mailbox.pull();
@@ -739,6 +787,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await b.locator("[role=dialog]").getByRole("button", { name: "The numbers match" }).click();
       await prompt.getByRole("radio", { name: shown.split("").join(" ") }).click();
       await prompt.getByRole("button", { name: "Approve" }).click();
+      await openFromReady(b);
       await inApp(b);
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined(), "Desk PC settled after the member's approval");
       await pc1.mailbox.pull();
@@ -755,7 +804,6 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         for (const theme of ["dark", "light"] as const) {
           await page.goto(`${APP}/`);
           await setTheme(page, theme);
-          await wire(page, pc1.id).or(page.locator(`.relay-map-hop[data-seen="lately"]`).first()).first().waitFor({ state: "attached" });
           await row(page, "Desk PC").and(page.locator('[data-pc-state="paired"]')).waitFor();
           await capture(page, `dashboard-${width}-${theme}`);
           await sheetOpen();
@@ -767,37 +815,40 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         }
       }
 
-      // a phone's Tab order follows the page top to bottom: Add a PC first, the sidebar's foot (Sign out, Remove this device) after the table, the tab bar last
+      // a phone's Tab order follows the page top to bottom: Add a PC in the top bar first, the overview and the PC list after it, the tab bar last
       await setTheme(b, "dark");
       await row(b, "Desk PC").and(b.locator('[data-pc-state="paired"]')).waitFor();
-      /** where the focus is after a Tab: the control's words and its place on the page; null once it reached the tab bar or left the page */
+      /** where the focus is after a Tab: the control's name and its place on the page; null once it reached the tab bar or left the page */
       const focused = () => b.evaluate(() => {
         const active = document.activeElement;
         if (!(active instanceof HTMLElement) || active === document.body || active.closest(".relay-dash-tabs") !== null) return null;
-        return { name: active.textContent?.trim() ?? "", top: Math.round(active.getBoundingClientRect().top + window.scrollY), scrollY: Math.round(window.scrollY) };
+        const name = active.getAttribute("aria-label") ?? active.textContent?.trim() ?? "";
+        return { name, top: Math.round(active.getBoundingClientRect().top + window.scrollY), scrollY: Math.round(window.scrollY), bar: active.closest(".relay-dash-brand-bar") !== null };
       });
-      await b.keyboard.press("Tab");
-      const first = await focused();
-      assert.deepEqual({ name: first?.name, scrollY: first?.scrollY }, { name: "Add a PC", scrollY: 0 }, `the first Tab stop at 390 is Add a PC at the top, with no scrolling (${JSON.stringify(first)})`);
-      await capture(b, "first-tab-390-dark");
-      const stops = [first!];
-      for (let presses = 1; presses < 40; presses += 1) {
+      await b.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0); });
+      // the brand link comes before the top bar's Add a PC
+      const stops: { name: string; top: number; scrollY: number; bar: boolean }[] = [];
+      for (let presses = 0; presses < 60; presses += 1) {
         await b.keyboard.press("Tab");
         const stop = await focused();
         if (stop === null) break;
         stops.push(stop);
       }
-      assert.ok(stops.length < 40, `Tab reached the tab bar (${stops.length} stops)`);
+      assert.ok(stops.length < 60, `Tab reached the tab bar (${stops.length} stops)`);
       const names = stops.map((stop) => stop.name);
-      assert.deepEqual(names.slice(-2), ["Sign out", "Remove this device from your account"], `the sidebar's foot comes last before the tab bar (${names.join(" > ")})`);
-      assert.ok(names.lastIndexOf("Open") < names.indexOf("Sign out"), "the table's actions come before the foot");
-      const climbs = stops.filter((stop, index) => index > 0 && stop.top < stops[index - 1]!.top - 1).map((stop) => stop.name);
-      assert.deepEqual(climbs, [], `no Tab stop sits above the one before it (${stops.map((stop) => `${stop.name}@${stop.top}`).join(" > ")})`);
-      log9(`phone Tab order (390): ${stops.map((stop) => `${stop.name}@${stop.top}`).join(" > ")} > tab bar`);
+      const addAt = names.indexOf("Add a PC");
+      assert.ok(addAt >= 0 && stops[addAt]!.bar && stops.slice(0, addAt).every((stop) => stop.bar), `Add a PC in the phone's top bar comes before the page (${names.join(" > ")})`);
+      assert.ok(names.includes("Open"), `the PC list's actions are reached before the tab bar (${names.join(" > ")})`);
+      const page = stops.filter((stop) => !stop.bar);
+      const climbs = page.filter((stop, index) => index > 0 && stop.top < page[index - 1]!.top - 1).map((stop) => stop.name);
+      assert.deepEqual(climbs, [], `no Tab stop on the page sits above the one before it (${page.map((stop) => `${stop.name}@${stop.top}`).join(" > ")})`);
+      await capture(b, "last-tab-390-dark");
+      log9(`phone Tab order (390): ${stops.map((stop) => `${stop.name}@${stop.top}${stop.bar ? "(bar)" : ""}`).join(" > ")} > tab bar`);
 
       // reduced motion: still wires, no running animation, no dot
       await a.emulateMedia({ reducedMotion: "reduce" });
       await setTheme(a, "dark");
+      await view(a, "relay");
       await wire(a, pc1.id).and(a.locator('[data-wire="live"]')).waitFor({ state: "attached" });
       const reduced = await a.evaluate(() => ({
         running: document.getAnimations().filter((animation) => animation.playState === "running").length,
@@ -808,50 +859,49 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       }));
       assert.deepEqual(reduced, { running: 0, dots: 0 }, "reduced motion: nothing runs, no dot shows");
       await capture(a, "reduced-1440-dark");
-      log9(`reduced motion: running animations ${reduced.running}, visible dots and flows ${reduced.dots}`);
+      log9(`reduced motion (#relay): running animations ${reduced.running}, visible dots and flows ${reduced.dots}`);
       await a.emulateMedia({ reducedMotion: "no-preference" });
 
-      // the map's motion, seeked: frames differ by where the dots are
+      // without reduced motion a settled map stays still too: only a wire this device is checking moves
       await a.reload();
       await wire(a, pc1.id).and(a.locator('[data-wire="live"]')).waitFor({ state: "attached" });
-      const positions: string[] = [];
-      for (const [at, name] of [[0, "rest"], [1.2, "mid"], [2.55, "end"]] as const) {
-        const dot = await a.evaluate((at) => {
-          const svg = document.querySelector("svg.relay-map-svg") as SVGSVGElement;
-          svg.pauseAnimations();
-          svg.setCurrentTime(at);
-          for (const animation of document.getAnimations()) { animation.pause(); animation.currentTime = at * 1000; }
-          const box = document.querySelector(".relay-map-dot")!.getBoundingClientRect();
-          return `${Math.round(box.x)},${Math.round(box.y)}`;
-        }, at);
-        positions.push(dot);
-        if (evidence) await a.locator("svg.relay-map-svg").screenshot({ path: join(evidence, `task-9-map-${name}.png`) });
-      }
-      assert.equal(new Set(positions).size, 3, `the first dot moves between t=0, 1.2 and 2.55 s (${positions.join(" ")})`);
-      log9(`map frames t=0/1.2/2.55 s: first dot at ${positions.join(" -> ")}`);
+      const settled = await a.evaluate(() => ({
+        flows: document.querySelectorAll(".relay-map-flow, .relay-map-dot").length,
+        infinite: document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations === Infinity && (animation.effect as KeyframeEffect | null)?.target?.closest?.(".relay-map") != null).length,
+      }));
+      assert.deepEqual(settled, { flows: 0, infinite: 0 }, `a map with no check running draws no flow and runs no endless animation (${JSON.stringify(settled)})`);
+      log9(`map at rest (#relay, motion allowed): ${JSON.stringify(settled)}`);
+      await view(a, "overview");
 
       // the PC stops coming by: past OFFLINE_AFTER_MS on this browser's clock, its wire goes dotted and its row Offline
       pc1.mailbox.stop();
       pc2.mailbox.stop();
       await a.reload();
-      await wire(a, pc1.id).and(a.locator('[data-wire="live"]')).waitFor({ state: "attached" });
+      await row(a, "Desk PC").and(a.locator('[data-pc-state="paired"]')).waitFor();
       const later = accountRequest("GET /v1/pcs", "the dashboard read the directory past the offline mark");
       await a.clock.fastForward(OFFLINE_AFTER_MS + 60_000);
       await a.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
       await later;
-      await wire(a, pc1.id).and(a.locator('[data-wire="off"]')).waitFor({ state: "attached" });
       await row(a, "Desk PC").and(a.locator('[data-pc-state="offline"]')).waitFor();
-      // the map, the needs-attention list and the row's visible state cell all say Offline with the last-seen time
-      const mapWords = await a.locator('.relay-map-node[data-pc-state="offline"] .relay-map-word').allTextContents();
-      assert.ok(mapWords.length > 0 && mapWords.every((word) => word === "Offline"), `the map's offline nodes say Offline (${JSON.stringify(mapWords)})`);
       const offlineCell = await row(a, "Desk PC").locator(".relay-dash-state-cell").innerText();
       const [offlineState, ...offlineNote] = offlineCell.split("\n").map((line) => line.trim()).filter(Boolean);
       assert.match(offlineState ?? "", /^Offline · \d+ min ago$/, `the offline row's state cell says Offline with its last-seen time ("${offlineCell}")`);
       // this device's own check may add that the PC still answered it, never the check's "Answers" in place of Offline
       assert.ok(offlineNote.every((line) => line === "Answered this device's latest check"), `nothing in the offline row's state cell contradicts Offline ("${offlineCell}")`);
-      const attentionText = await a.locator(".relay-dash-attention li", { hasText: "Desk PC" }).locator("small").innerText();
-      assert.equal(offlineState, attentionText, "the row and the needs-attention list say the same");
+      // the needs-attention list names the same onset: its reason (or the caption a reason all its rows share) gives the same minutes
+      const attention = a.locator(".relay-overview-attention-row", { hasText: "Desk PC" });
+      assert.equal(await attention.getAttribute("data-pc-state"), "offline");
+      assert.equal(await attention.locator(".status-dot").getAttribute("data-state"), "offline");
+      const caption = a.locator(".relay-overview-attention-caption");
+      const attentionText = await caption.count() > 0 ? await caption.innerText() : await attention.locator(".relay-overview-attention-why").innerText();
+      assert.equal(/\d+/.exec(attentionText)?.[0], /\d+/.exec(offlineState ?? "")?.[0], `the row ("${offlineState}") and the needs-attention list ("${attentionText}") give the same minutes`);
       await capture(a, "offline-1440-dark");
+      // the map says Offline too, its wire dotted
+      await view(a, "relay");
+      await wire(a, pc1.id).and(a.locator('[data-wire="off"]')).waitFor({ state: "attached" });
+      const mapWords = await a.locator('.relay-map-hop[data-pc-state="offline"] .relay-map-hop-note').allTextContents();
+      assert.ok(mapWords.length > 0 && mapWords.every((word) => word === "Offline"), `the map's offline PCs say Offline (${JSON.stringify(mapWords)})`);
+      await view(a, "overview");
       log9(`offline: mailbox pulls stopped (last_seen_at ${pc1.lastSeen()}), browser clock +${(OFFLINE_AFTER_MS + 60_000) / 60_000} min, visibilitychange -> GET /v1/pcs -> wire dotted (data-wire=off), row data-pc-state=offline, visible state cell "${offlineCell.replace(/\s+/g, " ")}" (= needs attention "${attentionText}"), map words ${JSON.stringify(mapWords)}`);
 
       // signing out goes back to the sign-in screen, the pairings one link away
@@ -905,6 +955,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         url.searchParams.set("view", "terminal");
         await page.goto(url.href);
         await page.getByRole("button", { name: "Pair", exact: true }).click();
+        await openFromReady(page);
         await inApp(page);
         assert.equal(await bounded(preference.promise, "the app consumed the PC's /api/herdr-ui answer"), true);
         assert.deepEqual(nativeApi, [], "/api/herdr-ui never went to the static shell host");
@@ -945,6 +996,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const from = hostRequests.length;
       try {
         await pairFrom(page, await serverOffer());
+        await openFromReady(page);
         await inApp(page);
         await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .pane-select`).first().click();
         await page.locator(".header-files-button").click();
@@ -1063,6 +1115,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       bridge.release.resolve();
       await bounded(socket.assigned, "the relay assigned the connection");
       await bounded(socket.pcAnswered, "the PC answered through the relay");
+      await openFromReady(page);
       await inApp(page);
       await pcConnections(1, "the earlier pages' connections closed");
       assert.equal(service.status().sessions, 1, "the PC counts one relay session");
@@ -1102,7 +1155,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       // revoked on the PC: the session ends with auth_revoked, the app gives way to the screen, the key is gone
       devices.revoke(paired[0]!.id);
       await state(page, "revoked").waitFor();
-      await page.getByRole("heading", { name: "This phone was removed from Desk PC" }).waitFor();
+      await page.getByRole("heading", { name: "This device was removed from Desk PC" }).waitFor();
       assert.equal(await page.locator(".app").count(), 0, "the app is unmounted once the PC turned the phone away");
       assert.equal(await saved(page, ID), null, "the revoked phone forgot its key");
       assert.equal(await page.getByRole("button", { name: "Try again" }).count(), 0, "no retry on a revocation");
@@ -1117,6 +1170,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     {
       const { context, page, bridge } = await open({ clock: true, theme: "light" });
       await pairFrom(page, await serverOffer());
+      await openFromReady(page);
       await inApp(page);
       await bounded(bridge.next(), "the pairing socket");
       // Unload the paired app before stopping the PC, so it cannot race this visit with a reconnect.
@@ -1171,6 +1225,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await restartRelay();
       await page.getByRole("button", { name: "Try again" }).click();
       await state(page, "connecting").waitFor();
+      await openFromReady(page);
       await inApp(page);
       assert.equal(bridge.sockets.length, 2, "Try again opened one more socket");
       note("relay-unreachable (stopped): connection refused -> relay-unreachable; relay restarted, PC reconnected, Try again -> app");
@@ -1216,6 +1271,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await shot(page, "forgotten");
       // a new QR code from the PC itself pairs as a first pairing
       await pairFrom(page, await serverOffer());
+      await openFromReady(page);
       await inApp(page);
       assert.equal(bridge.sockets.length, 1, "the new QR code pairs over one socket");
       note("identity-changed: stale key refused with 0 sockets; Forget this PC -> forgotten, key gone, 0 sockets; a new QR code -> paired -> app");
@@ -1390,10 +1446,12 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const subscribedA = subscribedTo(pushA, fakeA);
       const subscribedB = subscribedTo(pushB, fakeB);
       await pairFrom(pageA, offerA);
+      await openFromReady(pageA);
       await inApp(pageA);
       const pageB = await context.newPage();
       csp.push(await watchCsp(pageB));
       await pairFrom(pageB, offerB);
+      await openFromReady(pageB);
       await inApp(pageB);
       const deviceA = (await saved(pageA, A))!.device_id!;
       const deviceB = (await saved(pageB, B))!.device_id!;
@@ -1596,7 +1654,8 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await page.getByRole("button", { name: "Update now" }).click();
           await bounded(updates.installed, "the PC's update service received the install");
           assert.deepEqual(updates.requests, [{ command: "install", expected_revision: "b".repeat(40) }], "one install of the release on offer, no check first");
-          await page.getByText("Step 4 of 5: Building the app").waitFor();
+          await page.locator(".relay-shell-detail", { hasText: "Step 4 of 5: Building the app" }).waitFor();
+          await page.getByRole("status").filter({ hasText: "Step 4 of 5: Building the app" }).waitFor({ state: "attached" });
           await shot19(page, "update");
           note(`pc-outdated (managed): WELCOME ${below} < ${MIN_SERVER_VERSION} -> update screen; Update now -> POST /api/updates/install over the relay -> fake service recorded ${JSON.stringify(updates.requests)}; progress from GET /api/updates`);
           await context.close();
@@ -1642,7 +1701,14 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           const loads: string[] = [];
           page.on("load", () => loads.push(page.url()));
           await pairFrom(page, pc.offer);
+          // the service worker's update reloads the page mid-pairing; the saved key then reconnects, and only a pairing
+          // the reload did not cut short stops at Ready first
+          const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
+          await ready.or(page.locator(".app")).first().waitFor();
+          const sawReady = await ready.count() > 0;
+          if (sawReady) await openFromReady(page);
           await inApp(page);
+          lines.push(`server ${newer}: ${sawReady ? "Ready, then Open PC" : "the reload reconnected with the saved key, straight to the app"}`);
           assert.equal(loads.length, 2, `the pairing load and exactly one reload (loads: ${JSON.stringify(loads)})`);
           await page.reload();
           await inApp(page);
@@ -1658,6 +1724,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         const loads: string[] = [];
         page.on("load", () => loads.push(page.url()));
         await pairFrom(page, await serverOffer("Same PC"));
+        await openFromReady(page);
         await inApp(page);
         assert.equal(loads.length, 1, `no reload for a server at the shell's own version (loads: ${JSON.stringify(loads)})`);
         lines.push(`server ${shellVersion} (the shell's own version): paired -> app, ${loads.length} page load, no reload, no update screen`);
@@ -1677,6 +1744,13 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     note(`csp: ${csp.length} watched pages, every one served the policy, no violation`);
     keep("task-16-states.txt", `# relay-shell-browser-qa: dist-shell at ${origin} (scripts/pages-static.ts), PC ${base} (createServer, relay ${RELAY} bridged to the Bun relay)\n${report.join("\n")}\n`);
     console.log(report.join("\n"));
+
+    // (o) the dashboard's acceptance matrix on fixture fleets: the same build and browser, no PC behind it
+    if (resolve(tree.dir) === resolve(repo)) {
+      if (!browser) throw new Error("no browser");
+      const matrix = await relayDashboardQa({ browser, origin, evidence: evidence ? join(evidence, "dashboard-matrix") : null });
+      console.log(`dashboard matrix: ${matrix.length} checks passed`);
+    }
   } finally {
     await browser?.close();
     site.stop(true);
