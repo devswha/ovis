@@ -240,14 +240,18 @@ and herdr's default session only.
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
   `no_launcher`, `not_started`, `connect_failed`. When the install fails or is cancelled after the server started by
-  hand was stopped, and nothing runs in its place, that server is started again as it was: just
-  before it is stopped, its command line, environment (its `OVIS_TOKEN` with the rest) and folder
-  are copied from `/proc` into a folder only that account can read, and it is started from that copy
-  with exactly that environment (`env -i`), detached, its output in
-  `~/.local/state/ovis/restored-server.log`. After a cancel a new SSH connection does it, and the PC
-  stays busy until then. The copy is removed once read, or once the new Ovis is installed. Where
-  `/proc` cannot be read (macOS) nothing is copied, and the server is never started again with a
-  guessed environment; the job then says it stays stopped. The words say which happened. These routes are this PC's owner's only, with the
+  hand was stopped, and nothing runs in its place, that server is started again as it was. Just before
+  it is stopped, its program, arguments, environment (its `OVIS_TOKEN` with the rest) and folder are
+  copied from `/proc` into a folder only that account can read; if `/proc` is there but the copy fails,
+  nothing is stopped. To start it again, its own Bun reads that copy and starts the program with exactly
+  that environment, given to the process directly (never on a command line another account could read),
+  in its own session, its output in `~/.local/state/ovis/restored-server.log` (this account's only). A new
+  SSH connection does it, tried twice, and the PC stays busy until then. Not when the stop signal never
+  ended it, and not after a cancel while the installer still ran (a start of its own may be on its way):
+  the copy is then only removed. The copy is removed once read, once the new Ovis answers, or after two
+  hours whatever becomes of the job. Where `/proc` cannot be read (macOS) nothing is copied, and the
+  server is never started again with a guessed environment; the job then says it stays stopped. The
+  words say which happened. These routes are this PC's owner's only, with the
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install or setup runs, no other setup or
   install connects to that PC from here: the same PC as ssh resolves it (`ssh -G`: an alias, or its

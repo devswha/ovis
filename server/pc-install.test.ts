@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
@@ -37,6 +37,10 @@ interface Pc {
   uncapturable?: boolean;
   /** the copied server, started again, never registers */
   restoreFails?: boolean;
+  /** /proc is there, but its server could not be copied */
+  captureFails?: boolean;
+  /** the stop signal does not end the server */
+  killIgnored?: boolean;
   /** its launcher's start fails there, with these words */
   launcherFails?: string;
   /** the installer's SSH command ends without its answer, with these words (a dropped connection, its time up) */
@@ -69,8 +73,8 @@ function fixture(pc: Pc) {
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
     }
     // the copy of a server before it is stopped, its start again, and its removal
-    if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : "/tmp/ovis-restore.Ab12Cd34\n";
-    if (script.includes("xargs -0 -x")) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return ""; }
+    if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : pc.captureFails ? "error\n" : "/tmp/ovis-restore.Ab12Cd34\n";
+    if (script.includes('"$d/exe" -e ')) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return ""; }
     if (script.startsWith("rm -rf '") && script.includes("ovis-restore.")) return "";
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
@@ -84,7 +88,7 @@ function fixture(pc: Pc) {
     if (script.includes("socket=")) return SOCKET;
     if (script.startsWith("ps -o args=")) return pc.command ?? "/home/fx/.bun/bin/bun /home/fx/ovis/server/index.ts";
     if (script.includes("kill -0")) return alive.has(Number(/kill -0 (\d+)/.exec(script)![1])) ? "live" : "";
-    if (script.includes("kill -TERM")) { alive.delete(Number(/kill -TERM (\d+)/.exec(script)![1])); return ""; }
+    if (script.includes("kill -TERM")) { if (!pc.killIgnored) alive.delete(Number(/kill -TERM (\d+)/.exec(script)![1])); return ""; }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
     if (script.includes(" server </dev/null")) { register(); return ""; }
     if (pc.launcherFails && (script.includes("devswha.ovis.start") || script.includes("ovis.service"))) throw new Error(pc.launcherFails);
@@ -347,17 +351,16 @@ describe("installing Ovis on a PC over SSH", () => {
     // copied before it was stopped, and started again from that copy
     const at = (pattern: RegExp) => pc.commands.findIndex((command) => pattern.test(command));
     expect(at(/ovis-restore\.XXXXXXXX/)).toBeLessThan(at(/kill -TERM 4242/));
-    expect(at(/xargs -0 -x/)).toBeGreaterThan(at(/install\.sh -o/));
+    expect(at(/"\$d\/exe" -e /)).toBeGreaterThan(at(/install\.sh -o/));
     expect(pc.alive.has(4243)).toBe(true);
   });
 
-  it("starts the server it stopped again as it was when the install is cancelled, over a new connection", async () => {
-    const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+  it("starts the server it stopped again as it was when the install is cancelled before the new one answers, over a new connection", async () => {
+    // installed, but its Ovis has not answered yet when the install is cancelled
+    const pc = fixture({ descriptors: [descriptor(4242)], neverStarts: true });
     const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
-    await started.promise;
+    await pc.reached("starting");
     pc.installer.cancel(job.id);
-    gate.reject(new Error("Connection cancelled"));
     const ended = await pc.settled(job);
     expect(ended.phase).toBe("cancelled");
     expect(ended.error).toBe("Cancelled. The Ovis started by hand on that PC was stopped for the install, and has been started again as it was.");
@@ -369,7 +372,7 @@ describe("installing Ovis on a PC over SSH", () => {
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(job.phase).toBe("connected");
     expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
-    expect(pc.commands.some((command) => command.includes("xargs -0 -x"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes('"$d/exe" -e '))).toBe(false);
   });
 
   it("starts nothing beside an Ovis that already came up in its place, and says when starting it again fails", async () => {
@@ -383,11 +386,44 @@ describe("installing Ovis on a PC over SSH", () => {
     gate.reject(new Error("Connection cancelled"));
     const ended = await pc.settled(job);
     expect(ended.error).toContain("being installed in its place");
-    expect(pc.commands.some((command) => command.includes("xargs -0 -x"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes('"$d/exe" -e '))).toBe(false);
     // started again, but it never comes up: the job says so
     const failing = fixture({ descriptors: [descriptor(4242)], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer" } });
     const failed = await failing.settled(failing.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(failed.error).toContain("starting it again as it was failed: it did not start within");
+  });
+
+  it("stops nothing when /proc is there but the server could not be copied first", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], captureFails: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "not_stopped", error: expect.stringContaining("could not be copied first") });
+    expect(pc.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
+  });
+
+  it("starts nothing again, but removes the copy, when cancelled while the installer still ran there", async () => {
+    // a start of the installer's own may still be on its way: no second server beside it
+    const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await started.promise;
+    pc.installer.cancel(job.id);
+    gate.reject(new Error("Connection cancelled"));
+    const ended = await pc.settled(job);
+    expect(ended.error).toContain("being installed in its place");
+    expect(pc.commands.some((command) => command.includes('"$d/exe" -e '))).toBe(false);
+    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
+  });
+
+  it("starts nothing again when cancelled while the server it signalled still runs, and removes the copy", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], killIgnored: true });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await pc.reached("stopping");
+    pc.installer.cancel(job.id);
+    const ended = await pc.settled(job);
+    expect(ended.phase).toBe("cancelled");
+    expect(ended.error ?? "").not.toContain("stopped");
+    expect(pc.commands.some((command) => command.includes('"$d/exe" -e '))).toBe(false);
+    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
   });
 
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
@@ -516,18 +552,21 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     return out.trim();
   };
 
-  it("copies a server's command, folder and environment before it is stopped, and starts it again exactly so", async () => {
+  it("copies a server's program, arguments, folder and environment before it is stopped, and starts it again exactly so", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    const home = join(dir, "home"), work = join(dir, "work"), mark = join(dir, "mark");
-    mkdirSync(home); mkdirSync(work);
-    // its token has a space and a quote; it tells who it is, then says it is up
-    const env = { PATH: process.env.PATH!, HOME: home, OVIS_TOKEN: "tok'en with space", MARK: mark };
-    const script = 'printf "%s|%s|%s" "$$" "$OVIS_TOKEN" "$(pwd)" > "$MARK"; printf up; sleep 60; :';
-    const server = Bun.spawn(["sh", "-c", script], { cwd: work, env, stdout: "pipe", stderr: "ignore" });
+    // a folder whose name ends in a newline, and Bun at a path with "=" in it where it can be linked there
+    const home = join(dir, "home"), work = join(dir, "work\n"), mark = join(dir, "mark");
+    mkdirSync(home); mkdirSync(work); mkdirSync(join(dir, "x=y"));
+    let bun = join(dir, "x=y", "bun");
+    try { linkSync(process.execPath, bun); } catch { bun = process.execPath; }
+    // its token has a space and a quote, and its environment is far longer than one command line's argument
+    const env: Record<string, string> = { PATH: process.env.PATH!, HOME: home, OVIS_TOKEN: "tok'en with space", MARK: mark };
+    for (let i = 0; i < 60; i++) env[`OVIS_PAD_${i}`] = "x".repeat(4000);
+    const server = Bun.spawn([bun, "-e", 'require("node:fs").writeFileSync(process.env.MARK, [process.pid, process.env.OVIS_TOKEN, process.cwd()].join("|")); console.log("up"); setInterval(() => {}, 1000);', "--flag=value"], { cwd: work, env, stdout: "pipe", stderr: "ignore" });
     cleanups.push(() => server.kill());
     await server.stdout.getReader().read();
-    const environ = readFileSync(join("/proc", String(server.pid), "environ"));
+    const before = { environ: readFileSync(join("/proc", String(server.pid), "environ")), cmdline: readFileSync(join("/proc", String(server.pid), "cmdline")) };
     const saved = await shell(captureServer(server.pid), { HOME: home, TMPDIR: dir });
     expect(saved).toMatch(SAVED_SERVER);
     expect(statSync(saved).mode & 0o777).toBe(0o700);
@@ -537,14 +576,18 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     rmSync(mark);
     expect(await Bun.spawn(["mkfifo", mark]).exited).toBe(0);
     const told = new Promise<string>((resolve) => { let said = ""; createReadStream(mark).on("data", (chunk) => { said += chunk; }).on("close", () => resolve(said)); });
-    await shell(restoreServer(saved), { HOME: home, XDG_STATE_HOME: join(dir, "state") });
-    const [pid, token, where] = (await told).split("|");
+    const pid = await shell(restoreServer(saved), { HOME: home, XDG_STATE_HOME: join(dir, "state") });
     cleanups.push(() => { try { process.kill(Number(pid)); } catch { /* gone already */ } });
+    const [toldPid, token, where] = (await told).split("|");
+    expect(toldPid).toBe(pid);
     expect(token).toBe("tok'en with space");
     expect(where).toBe(realpathSync(work));
-    // exactly its environment, nothing of the SSH session's added; and the copy holding its token is gone
-    expect(readFileSync(join("/proc", pid!, "environ"))).toEqual(environ);
+    // exactly its environment and arguments, nothing of the SSH session's; the copy holding its token is gone; its log
+    // is this account's alone
+    expect(readFileSync(join("/proc", pid, "environ"))).toEqual(before.environ);
+    expect(readFileSync(join("/proc", pid, "cmdline"))).toEqual(before.cmdline);
     expect(existsSync(saved)).toBe(false);
+    expect(statSync(join(dir, "state", "ovis", "restored-server.log")).mode & 0o077).toBe(0);
   });
 
   it("saves nothing where the server's environment cannot be read, so it is never started again with a guess", async () => {
