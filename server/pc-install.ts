@@ -31,17 +31,18 @@ const STOP_WAIT_MS = 15_000;
  * itself, as the steps shown say). The exit status is printed rather than returned, so the installer's own last words come
  * back either way.
  *
- * A command run over SSH without a terminal keeps running once the connection ends, as a cancel ends it: so a watcher
- * beside the installer writes an empty line to the connection every two seconds, and once it cannot (nobody reads there
- * any more) stops the installer's whole process group. It is stopped itself when the installer ends. Empty lines are no
+ * A command run over SSH without a terminal keeps running once the connection ends, as a cancel ends it: so a watcher,
+ * started before the download, writes an empty line to the connection every two seconds, and once it cannot (nobody reads there
+ * any more) stops the command's whole process group, the download or the installer with it; the command then ends
+ * without starting anything more. It is stopped itself when the installer ends. Empty lines are no
  * output to the reader.
  */
 export const installerRun = (release: string, from = installerAt(release)): string =>
-  `${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; `
-  + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
-  + `OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1 & pid=$!; `
+  `${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT; trap 'exit 143' HUP INT TERM; `
   + `( trap '' PIPE; while printf '\\n' 2>/dev/null; do sleep 2 >/dev/null 2>&1; done; kill -TERM 0 ) </dev/null 2>/dev/null & watch=$!; `
-  + `wait "$pid"; status=$?; kill "$watch" 2>/dev/null; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`;
+  + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then kill "$watch" 2>/dev/null; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
+  + `OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; `
+  + `kill "$watch" 2>/dev/null; printf '\\novis-install-exit=%s\\n' "$status"`;
 /** connects the PC once Ovis answers there (MachineManager.setup, keys only): resolves null once connected, else why not */
 export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; revision?: string; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
 /** what to put right on a PC added here whose own Ovis cannot update itself, and the process that runs it now */

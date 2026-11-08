@@ -749,6 +749,8 @@ describe("a PC whose own Ovis is older than this app", () => {
       // the devices list offers the install over SSH, naming what it does and the very process it stops or restarts
       expect(waiting.ovis_update).toMatchObject({ how: "install", updatable: true, reason: null });
       expect(waiting.ovis_update?.steps?.[0]).toContain("process 4242");
+      // a restart then updates it to the release on offer when it was read: the one its card names, never another
+      if (fix === "restart") expect(waiting.ovis_update?.revision).toBe(OFFERED);
       expect(asked.status).toBe(202);
       const { job_id } = await asked.json() as { job_id: string };
       expect(manager.installJob(job_id)).toMatchObject({ machine_id: MACHINE_ID, mode: fix, target: { destination: "fixture@pc.invalid" } });

@@ -144,7 +144,7 @@ const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which 
 const JOBS_FULL = "Finish or cancel the current connection jobs first";
 /** connection jobs (setups and bridge updates) that may run at once */
 const SETUP_JOBS_AT_ONCE = 4;
-const UNREAD_RELEASE = "That PC's Ovis did not tell which release it would install, so it was not updated from here. Update it from its card.";
+const UNREAD_RELEASE = "That PC's Ovis did not tell which release it would install, so it was not updated from here. Reconnect it, then try again.";
 const NEWER_THAN_APP = "That release is newer than this app, which would then refuse to connect to that PC: update this app first, then this PC.";
 /** this app's own release (package.json), the newest an SSH PC's own Ovis may be updated to from here */
 const APP_VERSION = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
@@ -915,6 +915,7 @@ export class MachineManager {
       runtime.machine.update_error = null;
       // a restart's update installs the release its card showed, or none
       const revision = fix.mode === "restart" ? shown ?? offer.revision ?? undefined : undefined;
+      if (fix.mode === "restart" && !revision) throw new PcUpdateRefused(UNREAD_RELEASE);
       return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid }, ...(revision ? { revision } : {}) });
     }
     const target = validateTarget(request);
@@ -1670,7 +1671,8 @@ export class MachineManager {
     // its supervisor predates the bridge: a restart through its own launcher runs the one that installs by revision
     // restarted, it would install the release its updater offers: only worth it when there is one
     const offered = status.available === true && typeof status.latest_revision === "string" && REVISION.test(status.latest_revision);
-    if (status.revision_bound_install !== true) return { ...answer(status, `That PC's Ovis is too old to take an update asked for from another PC. ${there}`), ...(offered ? { fix: "restart" as const } : {}) };
+    if (status.revision_bound_install !== true) // the release it offers is the one a restart's update installs: kept, so its card and that update name it
+    return { ...answer(status, `That PC's Ovis is too old to take an update asked for from another PC. ${there}`), ...(offered ? { fix: "restart" as const, revision: status.latest_revision as string } : {}) };
     if (status.phase === "checking") return answer(status, OWN_CHECK_RUNNING);
     // one already installing is followed, not asked again (runOwnUpdate)
     if (ownInstallRunning(status)) return answer(status, null);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createReadStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
@@ -340,5 +340,22 @@ describe.skipIf(!Bun.which("setsid") || !Bun.which("curl"))("the installer's run
     cleanups.push(() => run.kill());
     await held;
     await run.exited;
+  }, 20_000);
+
+  it("starts no installer once nobody reads, even when the connection closed while it was still downloading", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-installer-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    // a download that has not ended: the installer comes through a pipe this test keeps open
+    const pipe = join(dir, "install.sh");
+    expect(await Bun.spawn(["mkfifo", pipe]).exited).toBe(0);
+    const download = createWriteStream(pipe).on("error", () => {});
+    download.write("#!/bin/sh\necho ran > " + join(dir, "ran") + "\n");
+    // the reader stands in for SSH, closed at once, as by a cancel while it downloads
+    const run = Bun.spawn(["setsid", "-w", "sh", "-c", 'sh -c "$1" | { IFS= read -r line; }', "ssh", installerRun("v0.5.1", "file://" + pipe)], { stdout: "ignore", stderr: "ignore" });
+    cleanups.push(() => run.kill());
+    await run.exited;
+    // the download ends only now, after the command was stopped: nothing is left to run it
+    download.end();
+    expect(existsSync(join(dir, "ran"))).toBe(false);
   }, 20_000);
 });

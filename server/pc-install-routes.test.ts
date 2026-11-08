@@ -179,6 +179,10 @@ it("restarts a PC's Ovis from its card with the release that card showed, for th
   expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: true, revision: "d".repeat(40) });
   const installer = (manager as unknown as { installer: { start(request: { revision?: string }): { id: string } } }).installer;
   const start = spyOn(installer, "start").mockReturnValue({ id: "install-1" });
+  // no release read for it: no restart, which would then update it to whatever it offers by then
+  runtime.remoteRevision = undefined;
+  expect(() => manager.update(SAVED)).toThrow("did not tell which release");
+  runtime.remoteRevision = "d".repeat(40);
   // another release shown than the one on offer: refused, nothing started
   expect(() => manager.update(SAVED, "e".repeat(40))).toThrow("another release");
   expect(manager.update(SAVED, "d".repeat(40))).toEqual({ job_id: "install-1" });
