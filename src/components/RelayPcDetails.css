@@ -22,6 +22,7 @@
 
 .relay-pc-details-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
@@ -39,7 +40,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex: 1;
+  flex: 1 1 8rem;
   min-width: 0;
 }
 
@@ -49,7 +50,7 @@
   font-size: var(--fs-lg);
   font-weight: var(--fw-semibold);
   line-height: var(--lh-tight);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .relay-pc-details-body {
@@ -90,7 +91,7 @@
   color: var(--text);
   font-size: max(var(--relay-fs-body-min), var(--fs-md));
   line-height: var(--lh-base);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .relay-pc-details-value {
@@ -117,6 +118,12 @@
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   letter-spacing: var(--tracking-code);
+}
+
+@media (max-width: 319px) {
+  .relay-pc-details-key .key-id {
+    grid-template-columns: repeat(2, max-content);
+  }
 }
 
 .relay-pc-details-actions {

@@ -88,7 +88,7 @@
 
 .relay-dash-who {
   display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-h); margin: 0;
-  font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere;
+  font-size: var(--fs-sm); color: var(--text); overflow-wrap: break-word;
 }
 
 .relay-dash-who svg { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--text-dim); }
@@ -133,11 +133,11 @@
   background: var(--bg-panel); border: var(--hairline) solid var(--border); border-radius: var(--radius-lg);
 }
 
-.relay-dash-device-row { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-h); }
+.relay-dash-device-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-height: var(--control-h); }
 .relay-dash-device-icon { flex: none; width: var(--icon-size); height: var(--icon-size); color: var(--text-dim); }
 
 .relay-dash-device-name {
-  flex: 1 1 auto; min-width: 0; font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text-strong); overflow-wrap: anywhere;
+  flex: 1 1 auto; min-width: 0; font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text-strong); overflow-wrap: break-word;
 }
 
 .relay-dash-account-box { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -195,9 +195,16 @@
 
 /* ---- a phone (768px and under) ---- */
 
+html:lang(ja) .relay-dash { word-break: auto-phrase; }
+
 .relay-dash-tabs { display: none; }
 
 @media (max-width: 768px) {
+  html:has(.relay-dash) {
+    scroll-padding-top: calc(max(52px, var(--header-h)) + env(safe-area-inset-top, 0px) + var(--space-2));
+    scroll-padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + var(--space-2));
+  }
+
   .relay-dash {
     --dash-top-h: calc(max(52px, var(--header-h)) + env(safe-area-inset-top, 0px));
     --dash-tabs-h: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
@@ -242,7 +249,7 @@
   }
 
   .relay-dash-tab svg { width: var(--mark-size); height: var(--mark-size); color: currentColor; }
-  .relay-dash-tab > span { max-width: 100%; overflow-wrap: anywhere; }
+  .relay-dash-tab > span { max-width: 100%; white-space: nowrap; }
 
   @media (max-width: 360px) {
     .relay-dash-tabs {
@@ -252,6 +259,26 @@
 
     .relay-dash-tab {
       font-size: var(--relay-fs-min);
+    }
+  }
+
+  /* Below the width where five whole tab labels fit (~280px, including 200% zoom at 390 -> 195 CSS px),
+     the bottom bar shows icons only and keeps each label as a visually-hidden accessible name. */
+  @media (max-width: 280px) {
+    .relay-dash-tab {
+      gap: 0;
+    }
+
+    .relay-dash-tab > span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
     }
   }
 

@@ -37,12 +37,14 @@ export interface DashboardQaOptions {
   readonly evidence: string | null;
 }
 
-type Width = 390 | 1024 | 1100 | 1440 | 1920;
+type Width = 195 | 320 | 390 | 1024 | 1100 | 1440 | 1920;
 interface OpenOptions {
   readonly fleet: FleetName;
   readonly width?: Width;
   readonly theme?: "dark" | "light";
   readonly density?: "comfortable" | "compact";
+  readonly locale?: "en" | "ja" | "ko" | "zh";
+  readonly textScale?: number;
   readonly signedIn?: boolean;
   readonly reducedMotion?: boolean;
   readonly forcedColors?: boolean;
@@ -55,7 +57,8 @@ interface OpenOptions {
 }
 interface Opened { readonly context: BrowserContext; readonly page: Page; readonly fleet: Fleet; readonly sockets: string[]; readonly errors: string[]; readonly account: string[] }
 
-const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1100: 900, 1440: 900, 1920: 1080 };
+const HEIGHT: Record<Width, number> = { 195: 422, 320: 568, 390: 844, 1024: 768, 1100: 900, 1440: 900, 1920: 1080 };
+const LOCALE_TAGS: Record<NonNullable<OpenOptions["locale"]>, string> = { en: "en-US", ja: "ja-JP", ko: "ko-KR", zh: "zh-CN" };
 
 export async function relayDashboardQa({ browser, origin, evidence }: DashboardQaOptions): Promise<string[]> {
   if (evidence) mkdirSync(evidence, { recursive: true });
@@ -72,9 +75,11 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const phone = width < 600;
     const fleet = fleetOf(options.fleet);
     const fake = new FakeAccountService();
+    const locale = options.locale ?? "en";
+    const textScale = options.textScale ?? 1;
     const context = await browser.newContext({
-      viewport: { width, height: HEIGHT[width] }, deviceScaleFactor: phone ? 2 : 1, isMobile: phone, hasTouch: phone,
-      colorScheme: options.theme ?? "dark", reducedMotion: options.reducedMotion ? "reduce" : "no-preference",
+      viewport: { width, height: HEIGHT[width] }, deviceScaleFactor: width === 195 ? 4 : phone ? 2 : 1, isMobile: phone, hasTouch: phone,
+      colorScheme: options.theme ?? "dark", locale: LOCALE_TAGS[locale], reducedMotion: options.reducedMotion ? "reduce" : "no-preference",
       forcedColors: options.forcedColors ? "active" : "none", serviceWorkers: "block",
     });
     contexts.push(context);
@@ -112,9 +117,17 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await route.fulfill({ status: answer.status, headers: { ...Object.fromEntries(answer.headers), ...cors }, body: Buffer.from(await answer.arrayBuffer()) });
     });
     await context.routeWebSocket(/.*/, (ws) => { sockets.push(ws.url()); ws.close(); });
-    await context.addInitScript(({ theme, density }) => {
-      if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, density }));
-    }, { theme: options.theme ?? "dark", density: options.density ?? "comfortable" });
+    await context.addInitScript(({ language, theme, density, scale }) => {
+      if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, density }));
+      if (scale !== 1) {
+        const apply = (): void => {
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(`:root { --ui-scale: ${scale}; }`);
+          document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+        };
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply, { once: true }); else apply();
+      }
+    }, { language: locale, theme: options.theme ?? "dark", density: options.density ?? "comfortable", scale: textScale });
     await options.prepare?.(context);
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
@@ -132,7 +145,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await page.waitForFunction(() => document.querySelectorAll('.status-dot[data-state="checking"]').length === 0, null, { timeout: LOAD_MS });
     };
     if (options.signedIn ?? true) {
-      await page.getByRole("button", { name: "Continue with GitHub" }).click();
+      await page.locator(".account-provider").first().click();
       await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
       if (fleet.seeds.length > 0) {
         await seedPairings(page, fleet.seeds, ACCOUNT);
@@ -633,6 +646,175 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     }
     expect(ringless.length === 0, `Tab stops without a visible, unclipped ring: ${ringless.join(", ")}`);
     return "12 Tab stops, each with a visible ring in view";
+  });
+
+  await check("focus-tab-390", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 390 });
+    await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0); });
+    const obscured: string[] = [];
+    const seen = new Set<string>();
+    for (let stop = 0; stop < 40; stop += 1) {
+      await page.keyboard.press("Tab");
+      const info = await page.evaluate(() => {
+        const active = document.activeElement as HTMLElement | null;
+        if (!active || active === document.body) return null;
+        const style = getComputedStyle(active);
+        const box = active.getBoundingClientRect();
+        const tabBar = document.querySelector<HTMLElement>(".relay-dash-tabs")?.getBoundingClientRect() ?? null;
+        const topBar = document.querySelector<HTMLElement>(".relay-dash-brand-bar")?.getBoundingClientRect() ?? null;
+        const inTabBar = active.closest(".relay-dash-tabs") !== null;
+        const inTopBar = active.closest(".relay-dash-brand-bar") !== null;
+        const visible = (style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0) || style.boxShadow !== "none";
+        const minTop = !inTopBar && !inTabBar && topBar ? topBar.bottom - 0.5 : -0.5;
+        const maxBottom = !inTabBar && tabBar ? tabBar.top + 0.5 : window.innerHeight + 0.5;
+        const clear = box.top >= minTop && box.bottom <= maxBottom && box.left >= -0.5 && box.right <= document.documentElement.clientWidth + 0.5;
+        return {
+          name: (active.getAttribute("aria-label") ?? active.textContent ?? "").trim().slice(0, 30),
+          visible, clear, top: Math.round(box.top), bottom: Math.round(box.bottom),
+          tabBarTop: tabBar ? Math.round(tabBar.top) : null,
+          inTabBar,
+        };
+      });
+      if (!info) break;
+      seen.add(info.name);
+      if (!(info.visible && info.clear)) obscured.push(JSON.stringify(info));
+      if (info.inTabBar && info.name === "Settings") break;
+    }
+    expect(seen.size >= 25, `walked ${seen.size} unique stops at 390, want at least 25`);
+    expect(obscured.length === 0, `390 Tab stops obscured by sticky/fixed bars or missing a ring: ${obscured.join(", ")}`);
+    return `${seen.size} stops walked through Settings tab, every focused rect.bottom <= tab bar top`;
+  });
+
+  await check("reflow-zoom-text", async () => {
+    const inspectSurface = (page: Page, lang: "en" | "ja", expectIconOnlyTabs: boolean) => page.evaluate(({ lang, expectIconOnlyTabs }) => {
+      const seg = new Intl.Segmenter(lang, { granularity: "word" });
+      const splits: string[] = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const parent = node.parentElement;
+        if (!parent || parent.closest(".visually-hidden, [aria-hidden=true], script, style")) continue;
+        const cs = getComputedStyle(parent);
+        if (cs.display === "none" || cs.visibility === "hidden" || cs.whiteSpace === "nowrap" || cs.position === "absolute") continue;
+        const text = node.nodeValue ?? "";
+        if (!text.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        if (range.getClientRects().length <= 1) continue;
+        for (const s of seg.segment(text)) {
+          if (!s.isWordLike || s.segment.trim().length <= 1) continue;
+          range.setStart(node, s.index);
+          range.setEnd(node, s.index + s.segment.length);
+          const rects = [...range.getClientRects()].filter((r) => r.width > 0.5 && r.height > 0.5);
+          const lines: DOMRect[] = [];
+          for (const r of rects) {
+            const prev = lines.at(-1);
+          if (prev === undefined || Math.abs(r.top - prev.top) > 4) lines.push(r);
+          }
+          if (lines.length > 1) {
+            const cls = parent.className ? `.${String(parent.className).trim().split(/\s+/).join(".")}` : "";
+            splits.push(`${parent.tagName.toLowerCase()}${cls} "${s.segment}" in "${text.trim().slice(0, 36)}"`);
+          }
+        }
+      }
+      const vw = document.documentElement.clientWidth;
+      const clipped: string[] = [];
+      for (const el of document.querySelectorAll<HTMLElement>("body *")) {
+        if (el.closest(".visually-hidden, [aria-hidden=true] svg *")) continue;
+        const text = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? "").join("").trim();
+        if (!text) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || cs.position === "absolute" || el.clientWidth <= 1) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cls = el.className ? `.${String(el.className).trim().split(/\s+/).join(".")}` : "";
+        const desc = `${el.tagName.toLowerCase()}${cls} "${text.slice(0, 36)}"`;
+        if (r.right > vw + 1 || r.left < -1) {
+          clipped.push(`${desc} [x=${Math.round(r.left)}..${Math.round(r.right)} vs vw=${vw}]`);
+          continue;
+        }
+        const hidden = (v: string) => v === "hidden" || v === "clip";
+        if ((hidden(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) || (hidden(cs.overflowY) && el.scrollHeight > el.clientHeight + 1)) {
+          const isPcName = el.classList.contains("relay-pc-name-label") || el.classList.contains("relay-overview-attention-name");
+          const titled = el.closest("[title]")?.getAttribute("title")?.trim() ?? "";
+          if (isPcName && cs.textOverflow === "ellipsis" && titled === text) continue;
+          clipped.push(`${desc} [scroll=${el.scrollWidth}x${el.scrollHeight} > client=${el.clientWidth}x${el.clientHeight}]`);
+        }
+      }
+      const disclosureSummary = document.querySelector<HTMLElement>(".relay-overview-map-summary");
+      let disclosureSummaryLines = 0;
+      if (disclosureSummary && disclosureSummary.getClientRects().length > 0) {
+        const range = document.createRange();
+        range.selectNodeContents(disclosureSummary);
+        const lines: DOMRect[] = [];
+        for (const r of range.getClientRects()) {
+          if (r.width <= 0.5 || r.height <= 0.5) continue;
+          const prev = lines.at(-1);
+          if (prev === undefined || Math.abs(r.top - prev.top) > 4) lines.push(r);
+        }
+        disclosureSummaryLines = lines.length;
+      }
+      const tabs = [...document.querySelectorAll<HTMLElement>(".relay-dash-tab")].map((tab) => {
+        const r = tab.getBoundingClientRect();
+        const span = tab.querySelector<HTMLElement>("span");
+        const spanStyle = span ? getComputedStyle(span) : null;
+        return {
+          href: tab.getAttribute("href"),
+          name: (tab.getAttribute("aria-label") ?? tab.textContent ?? "").trim(),
+          height: Math.round(r.height),
+          inViewport: r.left >= -0.5 && r.right <= document.documentElement.clientWidth + 0.5,
+          labelVisuallyHidden: spanStyle !== null && spanStyle.position === "absolute" && spanStyle.width === "1px" && spanStyle.height === "1px",
+        };
+      });
+      const stripCols = document.querySelector<HTMLElement>(".relay-overview-strip");
+      const stripColumns = stripCols ? getComputedStyle(stripCols).gridTemplateColumns.trim().split(/\s+/).length : 0;
+      return {
+        splits,
+        clipped,
+        disclosureSummaryLines,
+        overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        tabsOk: tabs.length === 5 && tabs.every((t) => t.name.length > 0 && t.height >= 44 && t.inViewport && (!expectIconOnlyTabs || t.labelVisuallyHidden)),
+        stripColumns,
+      };
+    }, { lang, expectIconOnlyTabs });
+
+    const problems: string[] = [];
+    for (const locale of ["en", "ja"] as const) {
+      for (const [label, width, textScale, iconOnly] of [
+        ["195px-zoom", 195, 1, true],
+        ["320-text140", 320, 1.4, false],
+      ] as const) {
+        for (const fleet of ["F4", "FREADY"] as const) {
+          const { page } = await open({ fleet, width, locale, textScale });
+          const tag = `${locale} ${label} ${fleet}`;
+          const ov = await inspectSurface(page, locale, iconOnly);
+          if (width === 195 && ov.stripColumns !== 1) problems.push(`${tag} overview: strip columns ${ov.stripColumns}, want 1`);
+          if (ov.splits.length > 0) problems.push(`${tag} overview splits: ${ov.splits.join("; ")}`);
+          if (ov.clipped.length > 0) problems.push(`${tag} overview clipped: ${ov.clipped.join("; ")}`);
+          if (ov.disclosureSummaryLines > 2) problems.push(`${tag} overview disclosure summary wraps to ${ov.disclosureSummaryLines} lines (want <=2)`);
+          if (ov.overflow) problems.push(`${tag} overview horizontal overflow`);
+          if (!ov.tabsOk) problems.push(`${tag} overview tabs failed contract`);
+
+          await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+          await page.locator("[data-pc-details]").waitFor();
+          const det = await inspectSurface(page, locale, iconOnly);
+          if (det.splits.length > 0) problems.push(`${tag} details splits: ${det.splits.join("; ")}`);
+          if (det.clipped.length > 0) problems.push(`${tag} details clipped: ${det.clipped.join("; ")}`);
+          if (det.overflow) problems.push(`${tag} details horizontal overflow`);
+          if (!det.tabsOk) problems.push(`${tag} details tabs failed contract`);
+
+          if (fleet === "FREADY") {
+            for (const [href, view] of [["#overview", "overview"], ["#pcs", "pcs"], ["#devices", "devices"], ["#relay", "relay"], ["#settings", "settings"]] as const) {
+              await page.locator(`.relay-dash-tabs a[href="${href}"]`).click();
+              await page.locator(`.relay-dash[data-dashboard-view="${view}"]`).waitFor();
+            }
+          }
+          await page.context().close();
+        }
+      }
+    }
+    expect(problems.length === 0, problems.join(" | "));
+    return "195px zoom and 320 +40% text in en/ja (F4 & FREADY): 0 mid-word splits, 0 clipped/off-viewport text, disclosure summary <=2 lines, 1-col strip at 195px, 5 reachable >=44px tabs";
   });
 
   // ---- the Add a PC sheet (todo 5) ----
