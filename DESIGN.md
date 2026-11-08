@@ -4426,21 +4426,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`<meta name="ovis-account-service">`, account.ovis.sh unless the build names another) and, in a
   browser, it is app.ovis.sh, the one page a sign-in comes back to; otherwise the front page is the
   saved-PC list above, unchanged.
-- Sign-in: an unboxed column `--relay-signin-w` (368 px) wide on `--bg`, no card. The sheep mark,
-  **Sign in to Ovis** (the page's one `h1`) and a line on what the relay is for; when this device
-  holds pairings, **Continue without an account (N PCs)** comes next, above the divider, because
-  the PCs already here are the shortest way back. Then a hairline divider and the providers,
-  **Continue with GitHub** and **Continue with Apple**: equal neutral `.btn`s, `--touch-target`
-  (44 px) tall, each with its brand mark at a fixed inset (App Review 4.8 wants Apple wherever
-  another provider is, and neither is the one to pick). A `--fs-xs` dim line says what the account
-  service learns, and **Pair with a QR or code** is a quiet link at the foot. Continuing without
-  an account opens the dashboard in local mode (this device's own pairings,
-  `data-dashboard-mode="local"`, the nav's foot offering the sign-in).
+- Sign-in (RelayShellScreens.tsx, AccountPcs.tsx): an unboxed column `--relay-signin-w` (368 px)
+  wide on `--bg`, no card, in this order: the sheep mark; **Sign in to Ovis** (the page's one
+  `h1`); one provider button for each provider the account service lists, in the order GitHub,
+  Google, Apple (production lists GitHub and Google), equal neutral `.btn`s `--touch-target`
+  (44 px) tall with the provider's mark at a fixed inset; then, only when this device holds
+  pairings, **Continue without an account (N PCs)**; a hairline divider; **Pair with a QR or
+  code**, a quiet ghost button; and last a `--fs-xs` dim line, "The account only lists your PCs.
+  Sessions stay end-to-end encrypted." Continuing without an account opens the dashboard in local
+  mode (this device's own pairings, `data-dashboard-mode="local"`, the nav's foot offering the
+  sign-in).
 - Routes: the dashboard is one page with five hash routes, `#overview` (the default), `#pcs`,
-  `#devices`, `#relay` and `#settings`; Back and a reload keep the view. Devices lists this device
+  `#devices`, `#relay` and `#settings`. Devices lists this device
   and the account's others, with Sign out and Remove this device; Relay lists each relay host with
   its PCs and holds the connection map open; Settings is a real page (theme, density, interface
-  font size, language), the same rows as the app's own settings.
+  font size, language) built from the app's own settings rows.
 - Frame: on a desktop a left nav `--relay-sidebar-w` (240 px) wide on `--bg-panel`, the five places
   with Overview and PCs carrying their counts, the current one on `--bg-elevated`, and the provider
   and **Sign out** at its foot. The content column stops at `--relay-content-w` (1280 px). A top
@@ -4451,8 +4451,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Overview: a strip of three cells with hairlines between them, **Ready** | **Needs you** |
   **Relays in use**, each a state dot, its word and one `--fs-xl` numeral. Needs you counts every
   PC that wants something, offline ones included, and says so on a dim line under the numeral
-  ("incl. 1 offline"), so the cells add up to the PCs listed. The first two cells filter the table
-  below (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count and
+  ("incl. 1 offline"), so the cells add up to the PCs listed. A pressed cell filters the table below
+  (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count and
   regional or global; a chip filters the table to that relay. Then the attention list: PCs that
   need you, most urgent first, at most three rows of name and relay, with **View all N** below.
   When the rows share one reason it's said once as a caption above them ("Add window closed · an
