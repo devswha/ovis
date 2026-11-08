@@ -411,9 +411,15 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
     if (!peerRecordReach.procFd && !before.at(-1)!.startsWith(`${found.dev}:`)) return true;
     // a record that is not a plain file, or too large to read, may name the conversation: it claims
     if (!readable) return true;
+    // a record rewritten in place while it was read (a short read, or a new size or time) is not what was read: it claims
+    const after = await record.stat({ bigint: true });
+    if (bytesRead !== buffer.length || after.size !== found.size || after.mtimeNs !== found.mtimeNs) return true;
     const opened = lettaOpenedSessions(buffer.subarray(0, bytesRead).toString("utf8"));
     return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
-  } catch (error) { return !absent(error); } finally { for (const handle of held) await handle.close().catch(() => {}); }
+  } catch (error) {
+    // gone only for a moment (moved away and back, or a file in its place) is no absence: only a record still gone claims nothing
+    return !absent(error) || await lstat(path).then(() => true, (again: unknown) => !absent(again));
+  } finally { for (const handle of held) await handle.close().catch(() => {}); }
 }
 
 /** Each folder from the root down to `dir`, by device and inode; null when one is not a plain folder (a link, or nothing). */

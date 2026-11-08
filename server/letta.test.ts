@@ -592,6 +592,84 @@ describe("Letta conversation binding", () => {
     expect(swaps).toBe(1);
   });
 
+  peerTest("a peer's .letta gone just as it is opened, or a file in its place, and back at once, is still a claim", async () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const other = join(root, "other");
+    mkdirSync(join(other, ".letta"), { recursive: true });
+    writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
+    const silent = pane("w1:p1", null, owner.cwd);
+    const peer = pane("w2:p1", "local-conv-9", other);
+    expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull();
+    // the open finds nothing (ENOENT), or a file where the folder was (ENOTDIR), and the .letta is back right after it
+    for (const stand of ["nothing", "file"] as const) {
+      let swaps = 0;
+      const { open } = fsp;
+      const opening = spyOn(fsp, "open").mockImplementation((async (path: fs.PathLike, ...rest: [never]) => {
+        const at = String(path);
+        if (swaps > 0 || !(at.endsWith(".letta") || at.endsWith("settings.local.json"))) return open(path, ...rest);
+        swaps++;
+        renameSync(join(other, ".letta"), join(root, "moved"));
+        if (stand === "file") writeFileSync(join(other, ".letta"), "");
+        try { return await open(path, ...rest); } finally {
+          rmSync(join(other, ".letta"), { force: true });
+          renameSync(join(root, "moved"), join(other, ".letta"));
+        }
+      }) as typeof fsp.open);
+      try {
+        expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull();
+      } finally { opening.mockRestore(); }
+      expect(swaps).toBe(1);
+    }
+    // one still gone after the open claims nothing
+    rmSync(join(other, ".letta"), { recursive: true });
+    expect(await lettaTranscriptFor(silent, [silent, peer], owner)).not.toBeNull();
+  });
+
+  peerTest("a peer's record rewritten in place while it is read is still a claim: a short read, a new size or a new mtime", async () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const other = join(root, "other");
+    const record = join(other, ".letta", "settings.local.json");
+    mkdirSync(join(other, ".letta"), { recursive: true });
+    const names = (conversation: string, pad = ""): string => JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: conversation } } }) + pad;
+    const written = (now - 30_000) / 1000;
+    const silent = pane("w1:p1", null, owner.cwd);
+    const peer = pane("w2:p1", "local-conv-9", other);
+    // the peer's Letta rewrites its record in place (same file) while it is read: what was read is not what it names now
+    const rewrites: Record<string, (read: () => Promise<unknown>) => Promise<unknown>> = {
+      // read while truncated, then the same bytes and mtime again: only the short read shows it
+      short: async (read) => {
+        writeFileSync(record, "");
+        try { return await read(); } finally { writeFileSync(record, names("local-conv-1")); utimesSync(record, written, written); }
+      },
+      // the old record read whole, then one naming the conversation, longer, at the same mtime
+      size: async (read) => {
+        try { return await read(); } finally { writeFileSync(record, names("local-conv-1", " ")); utimesSync(record, written, written); }
+      },
+      // the old record read whole, then one naming the conversation, as long, at a later mtime
+      mtime: async (read) => {
+        try { return await read(); } finally { writeFileSync(record, names("local-conv-1")); utimesSync(record, written + 1, written + 1); }
+      },
+    };
+    for (const [shape, rewrite] of Object.entries(rewrites)) {
+      writeFileSync(record, shape === "short" ? names("local-conv-1") : names("local-conv-9"));
+      utimesSync(record, written, written);
+      if (shape !== "short") expect(await lettaTranscriptFor(silent, [silent, peer], owner)).not.toBeNull();
+      let rewritten = 0;
+      const { open } = fsp;
+      const opening = spyOn(fsp, "open").mockImplementation((async (path: fs.PathLike, ...rest: [never]) => {
+        const handle = await open(path, ...rest);
+        if (rewritten > 0 || !String(path).endsWith("settings.local.json")) return handle;
+        const read = handle.read.bind(handle) as (...args: unknown[]) => Promise<unknown>;
+        Object.assign(handle, { read: (...args: unknown[]) => { rewritten++; return rewrite(() => read(...args)); } });
+        return handle;
+      }) as typeof fsp.open);
+      try {
+        expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull();
+      } finally { opening.mockRestore(); }
+      expect([shape, rewritten]).toEqual([shape, 1]);
+    }
+  });
+
   test("a record Letta cannot rewrite binds nothing: its switch would fail and leave the old one standing", async () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const target = pane("w1:p1", "local-conv-1", owner.cwd);
