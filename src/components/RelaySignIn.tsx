@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef } from "react";
+
 import { useT } from "../lib/i18n.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import type { AccountSession } from "../lib/account/store.ts";
@@ -26,7 +28,22 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
 export function RelaySignIn({ service, onSignedIn }: { service: string; onSignedIn: (session: AccountSession) => void }) {
   const t = useT();
   const { state, start, cancel } = useLinkPageSignIn(service, onSignedIn);
-  if (state.kind === "signed-in") return <p className="connect-signin-lead" role="status">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[state.session.provider] })}</p>;
+  const signInButton = useRef<HTMLButtonElement>(null);
+  const signInPage = useRef<HTMLAnchorElement>(null);
+  const previous = useRef(state.kind);
+  useLayoutEffect(() => {
+    const before = previous.current;
+    previous.current = state.kind;
+    switch (state.kind) {
+      case "waiting": signInPage.current?.focus(); break;
+      case "idle": if (before !== "idle") signInButton.current?.focus(); break;
+      case "failed": signInButton.current?.focus(); break;
+      case "starting":
+      case "signed-in": break;
+      default: state satisfies never;
+    }
+  }, [state.kind]);
+  if (state.kind === "signed-in") return <p className="connect-signin-lead">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[state.session.provider] })}</p>;
   if (state.kind === "waiting") {
     const { provider, userCode, verificationUri, verificationUriComplete } = state.started;
     const page = verificationUriComplete ?? verificationUri;
@@ -40,7 +57,7 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
         <output className="account-device-code" aria-live="polite">{userCode}</output>
         <p className="settings-description" role="status">{provider === "ovis" ? t("Waiting for the sign-in…") : t("Waiting for {provider}…", { provider: PROVIDER_NAMES[provider] })}</p>
         <div className="account-device-actions">
-          <a className={state.opened ? "btn" : "btn btn-primary"} href={page} target="_blank" rel="noopener noreferrer">
+          <a ref={signInPage} className={state.opened ? "btn" : "btn btn-primary"} href={page} target="_blank" rel="noopener noreferrer">
             {provider === "ovis" ? t("Open the sign-in page") : t("Open {provider}", { provider: PROVIDER_NAMES[provider] })}
           </a>
           <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
@@ -52,7 +69,7 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
   return (
     <>
       <p className="settings-description">{t("Connect from anywhere through your Ovis account.")}</p>
-      <button type="button" className="btn btn-primary connect-signin-button" disabled={state.kind === "starting"} onClick={start}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
+      <button ref={signInButton} type="button" className="btn btn-primary connect-signin-button" aria-disabled={state.kind === "starting"} onClick={() => { if (state.kind !== "starting") start(); }}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
       {failure !== null && <p className="account-error" role="alert">{failure}</p>}
     </>
   );

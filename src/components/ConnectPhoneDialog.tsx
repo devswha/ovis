@@ -7,6 +7,7 @@ import "./DevicesPanel.css";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
+import type { AccountSession } from "../lib/account/store.ts";
 import { ApiError, findSshCandidates, findTailnetPcs, requestRelayOffer, startPairing, type SshCandidate } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -18,6 +19,7 @@ import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { announcePairingCode, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
@@ -312,6 +314,8 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
 }) {
   const t = useT();
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
+  const signInStatus = <p key="sign-in-status" className="visually-hidden" role="status" aria-live="polite">{signedInProvider === null ? null : t("Signed in with {provider}", { provider: PROVIDER_NAMES[signedInProvider] })}</p>;
   const on = relayOn(relay);
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
   const switchable = relay.status?.blocked === null;
@@ -336,11 +340,13 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
   );
   if (!signedIn) return (
     <div className="connect-signin" data-testid="connect-signin">
-      <RelaySignIn service={account.service} onSignedIn={account.onSignedIn} />
+      {signInStatus}
+      <RelaySignIn service={account.service} onSignedIn={(session) => { setSignedInProvider(session.provider); account.onSignedIn(); }} />
     </div>
   );
   return (
     <div className="connect-signin" data-testid="connect-signin">
+      {signInStatus}
       {joinBySignIn ? <p className="connect-signin-lead">{t("On the new device, sign in to the same Ovis account.")}</p> : (
         <>
           {switchable && <p className="settings-description">{t("Turn on the relay, then add this PC to your account.")}</p>}

@@ -4,6 +4,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
+import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
@@ -33,6 +34,10 @@ describe("the relay tab's Sign in", () => {
   let polls: AbortSignal[];
   let firstPoll: Promise<void>;
   let settings: string[];
+  let focusTargets: string[];
+  let startGate: Promise<void>;
+  let failStart: boolean;
+  let linkPageAvailable: boolean;
 
   beforeEach(() => {
     fake = new FakeAccountService();
@@ -44,6 +49,10 @@ describe("the relay tab's Sign in", () => {
     userCode = null;
     polls = [];
     settings = [];
+    focusTargets = [];
+    startGate = Promise.resolve();
+    failStart = false;
+    linkPageAvailable = true;
     const sent = Promise.withResolvers<string>();
     navigated = sent.promise;
     const polled = Promise.withResolvers<void>();
@@ -79,13 +88,18 @@ describe("the relay tab's Sign in", () => {
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+      if (url.pathname === "/v1/signin/ovis/device" && !linkPageAvailable) return Response.json({ error: { code: "not_found", message: "no link page" } }, { status: 404 });
+      if (url.pathname.startsWith("/v1/signin/")) {
+        await startGate;
+        if (failStart) return Response.json({ error: { code: "invalid_request", message: "refused" } }, { status: 400 });
+      }
       if (url.pathname === "/v1/token") {
         if (init?.signal) polls.push(init.signal);
         if (approveOnPoll && userCode !== null) fake.approveOnLinkPage(userCode, "acct_one", "github");
         polled.resolve();
       }
       const answer = await fake.fetch(input, init);
-      if (url.pathname !== "/v1/signin/ovis/device" || !answer.ok) return answer;
+      if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
       const started = await answer.json() as Record<string, unknown>;
       userCode = String(started["user_code"]);
       // the first poll comes at once rather than after the service's five seconds
@@ -109,7 +123,11 @@ describe("the relay tab's Sign in", () => {
   const mount = async (onSignedIn: () => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => { settings.push("account"); }, onSignedIn };
     await act(async () => {
-      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
+      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>, {
+        createNodeMock: ({ props }) => ({ focus() {
+          if (typeof props === "object" && props !== null && "children" in props && typeof props.children === "string") focusTargets.push(props.children);
+        } }),
+      });
     });
   };
   const signIn = async () => {
@@ -117,6 +135,84 @@ describe("the relay tab's Sign in", () => {
     expect(found).toHaveLength(1);
     await act(async () => { found[0]!.props.onClick(); });
   };
+
+  it.each(["starting", "waiting", "cancel", "failure"])("keeps keyboard focus usable after %s", async (phase) => {
+    const gate = Promise.withResolvers<void>();
+    startGate = gate.promise;
+    failStart = phase === "failure";
+    await mount();
+    await signIn();
+    if (phase === "starting") {
+      const starting = renderer?.root.findByProps({ className: "btn btn-primary connect-signin-button" });
+      expect(starting?.props.disabled).not.toBe(true);
+      expect(starting?.props["aria-disabled"]).toBe(true);
+      await act(async () => { starting?.props.onClick(); });
+      expect(opened).toEqual(["about:blank"]);
+    }
+    await act(async () => { gate.resolve(); });
+    if (phase === "starting") return;
+    if (phase === "failure") {
+      expect(renderer?.root.findByProps({ role: "alert" })).toBeDefined();
+      expect(focusTargets.at(-1)).toBe("Sign in to Ovis");
+      expect(tab?.closed).toBe(true);
+      return;
+    }
+    await act(async () => { await firstPoll; });
+    if (phase === "cancel") {
+      await act(async () => { renderer?.root.findAllByType("button").find((node) => text(node) === "Cancel")?.props.onClick(); });
+    }
+    expect(focusTargets.at(-1)).toBe(phase === "waiting" ? "Open the sign-in page" : "Sign in to Ovis");
+  });
+
+  it.each([
+    ["starting", "cancel"], ["starting", "restart"], ["starting", "unmount"],
+    ["waiting", "cancel"], ["waiting", "restart"], ["waiting", "unmount"],
+  ] as const)("cleans up a %s attempt on %s, closing only an unsent tab", async (phase, action) => {
+    let actions: ReturnType<typeof useLinkPageSignIn> | undefined;
+    const gate = Promise.withResolvers<void>();
+    if (phase === "starting") startGate = gate.promise;
+    function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined); return null; }
+    await act(async () => { renderer = create(<SignInHarness />); });
+    await act(async () => { actions?.start(); });
+    if (phase === "waiting") await act(async () => { await firstPoll; });
+    const abandoned = tab;
+    await act(async () => {
+      switch (action) {
+        case "cancel": actions?.cancel(); break;
+        case "restart": actions?.start(); break;
+        case "unmount": renderer?.unmount(); renderer = undefined; break;
+        default: action satisfies never;
+      }
+    });
+    expect(abandoned?.closed).toBe(phase === "starting");
+    if (phase === "waiting") expect(polls[0]?.aborted).toBe(true);
+    await act(async () => { actions?.cancel(); gate.resolve(); });
+    if (phase === "starting") expect(abandoned?.location.href).toBe("about:blank");
+  });
+
+  it("announces completion in the same polite region after the account replaces the sign-in", async () => {
+    approveOnPoll = true;
+    const finished = Promise.withResolvers<void>();
+    await mount(() => finished.resolve());
+    const before = renderer?.root.findAllByProps({ "aria-live": "polite" });
+    await signIn();
+    await act(async () => { await finished.promise; });
+    const account = { service: SERVICE, onOpen() {}, onSignedIn() {} };
+    await act(async () => { renderer?.update(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn joinBySignIn={false} account={account} phone={false} /></SettingsProvider>); });
+    const after = renderer?.root.findAllByProps({ "aria-live": "polite" }) ?? [];
+    expect(after.map(text)).toContain("Signed in with GitHub");
+    expect(after[0]).toBe(before?.[0]);
+  });
+
+  it("uses the offered Google device page when the link page is unavailable", async () => {
+    fake.offer(["google"], ["google"]);
+    linkPageAvailable = false;
+    await mount();
+    await signIn();
+    await act(async () => { await firstPoll; });
+    expect(tab?.location.href).toBe("https://www.google.com/device");
+    expect(renderer?.root.findAllByType("a").map(text)).toEqual(["Open Google"]);
+  });
 
   it("opens the link page with its code filled in, in a new tab, and comes back signed in here", async () => {
     approveOnPoll = true;
@@ -132,6 +228,9 @@ describe("the relay tab's Sign in", () => {
     await act(async () => { await signedIn.promise; });
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_one");
     expect(text(renderer!.root)).toContain("Signed in with GitHub");
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    expect(tab?.closed).toBe(false);
   });
 
   it("shows the link page and its code here when the browser blocks the new tab", async () => {

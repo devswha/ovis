@@ -5,11 +5,13 @@
  * takes it, and pointed at the page once the service named it; in the desktop app that blank window
  * hands the page to the system browser (app/electron/src/main.ts, guard). A blocked tab leaves the
  * page and its code to open from here. Unmounting ends a sign-in still waiting, as Settings' does.
+ * A sent tab stays open (no opener by design); after cancellation its old code never completes here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { deviceLabel, deviceOs } from "../phone.ts";
-import { startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
+import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
+import { offeredProviders } from "./service.ts";
 import { indexedAccountStore, type AccountSession } from "./store.ts";
 
 export type LinkPageSignInState =
@@ -40,25 +42,34 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     // the sign-in page gets no handle on this one
     if (tab !== null) tab.opener = null;
     const controller = new AbortController();
+    let sent = false;
+    controller.signal.addEventListener("abort", () => { if (!sent) tab?.close(); }, { once: true });
     running.current = controller;
     setState({ kind: "starting" });
-    let sent = false;
     void (async () => {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
-      // the link page busy or missing: GitHub's own device page, as Settings falls back to before it knows the service's list
-      const started = await startLinkPageSignIn({ service, store: indexedAccountStore, requester }, "github");
+      // As in Settings, discovery supplies GitHub only when the service's offer is unknown.
+      const offer = await offeredProviders(service, ["github"]);
+      controller.signal.throwIfAborted();
+      const options = { service, store: indexedAccountStore, requester };
+      const fallback = offer.device[0];
+      const started = fallback === undefined
+        ? await startDeviceSignIn({ ...options, provider: "ovis" })
+        : await startLinkPageSignIn(options, fallback);
       controller.signal.throwIfAborted();
       if (tab !== null) tab.location.href = started.verificationUriComplete ?? started.verificationUri;
       sent = true;
       setState({ kind: "waiting", started, opened: tab !== null });
       const session = await started.finish(controller.signal);
+      controller.signal.throwIfAborted();
+      // The account re-read may unmount us inside the callback; a finished page stays open.
+      running.current = null;
       setState({ kind: "signed-in", session });
       signedIn.current(session);
     })().catch((error: unknown) => {
-      // a blank tab no page was sent to goes with the sign-in
-      if (!sent) tab?.close();
       // cancelled, or the sheet closed: it already moved on
       if (controller.signal.aborted) return;
+      if (!sent) tab?.close();
       console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);
       setState({ kind: "failed", error });
     }).finally(() => { if (running.current === controller) running.current = null; });
