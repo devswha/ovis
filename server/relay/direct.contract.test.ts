@@ -482,6 +482,29 @@ describe("signed-in sessions over every way in", () => {
     expect(closed).toEqual(["c-keep", "a-keep2"]);
   });
 
+  it("close no other device's carrier for a newcomer that would still be turned away", () => {
+    // Given nine sessions: a device at its share with one unused carrier, and one below its share with one
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (let index = 1; index <= 4; index++) sessions.admit("a", () => closed.push(`a${index}`));
+    for (let index = 1; index <= 3; index++) sessions.admit("b", () => closed.push(`b${index}`));
+    sessions.candidate("b", () => closed.push("b-keep"));
+    sessions.candidate("a", () => closed.push("a-keep"));
+    // When a third device below its share signs in: giving way would not make room for it
+    sessions.candidate("c", () => closed.push("c-new"));
+    // Then only it is turned away
+    expect(closed).toEqual(["c-new"]);
+  });
+
+  it("turn a newcomer below its share away while every place holds a session in use, leaving the carriers past them be", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    sessions.candidate("a", () => closed.push("a-c1"));
+    sessions.candidate("c", () => closed.push("c-new"));
+    expect(closed).toEqual(["c-new"]);
+  });
+
   it("turn a device below its share away while every place is in use, leaving other devices' carriers be", () => {
     const sessions = new SignedInSessions(8, 4, 3);
     const closed: string[] = [];

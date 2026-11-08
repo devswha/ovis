@@ -71,7 +71,9 @@ export class SignedInSessions {
       const used = [...this.entries].filter((other) => other.chosen).length;
       const spare = [...this.entries].filter((other) => !other.chosen && other.deviceId !== deviceId && this.chosenOf(other.deviceId) >= this.perDevice)
         .sort((left, right) => left.order - right.order);
-      for (const oldest of used < this.max ? spare.slice(0, this.entries.size - this.max) : []) {
+      // all or nothing: carriers give way only when that gets the newcomer in, never for one turned away anyway
+      const need = this.entries.size - this.max;
+      for (const oldest of used < this.max && spare.length >= need ? spare.slice(0, need) : []) {
         this.entries.delete(oldest);
         oldest.close();
       }
