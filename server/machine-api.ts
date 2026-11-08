@@ -4,7 +4,7 @@ import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
-import { MachineManager, PcUpdateRefused } from "./machines.ts";
+import { MachineActionRequired, MachineManager, PcUpdateRefused } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
@@ -351,7 +351,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (!isJsonObject(body) || shown !== undefined && typeof shown !== "string") return fail("invalid_body", "Expected nothing, or { revision } of the offer shown", 400);
       try { return jsonResponse(manager.update(id, shown as string | undefined) satisfies PcUpdateStarted, 202); }
       catch (error) {
-        if (error instanceof PcUpdateRefused) return fail("update_unavailable", error.message, 409);
+        // one that cannot run now, whatever stopped it, is told the same way (docs/remote-pcs.md)
+        if (error instanceof PcUpdateRefused || error instanceof MachineActionRequired) return fail("update_unavailable", error.message, 409);
         throw error;
       }
     }

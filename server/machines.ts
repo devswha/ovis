@@ -593,11 +593,13 @@ export class MachineManager {
    */
   private updateOffer(runtime: Runtime): PcUpdateOffer | null {
     const machine = runtime.machine;
-    if (machine.kind === "hc") return null;
+    // a disabled PC is not this app's to touch: updating it would connect it again (setup enables what it connects)
+    if (machine.kind === "hc" || !machine.enabled) return null;
     if (machine.state === "connected") return runtime.ownOffer ? { ...runtime.ownOffer, revision: runtime.offerRevision ?? null } : null;
     const own = machine.remote_ovis;
     if (machine.kind === "ssh" && own) return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable, reason: own.reason };
     if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
+      if (!this.mayConnect(runtime)) return { how: "bridge", current_version: null, latest_version: null, updatable: false, reason: "Connect this PC first: it was added from herdr, and connecting it here was not approved yet." };
       const approved = this.mayManageBridge(runtime);
       return { how: "bridge", current_version: null, latest_version: null, updatable: approved, reason: approved ? null : "Review the bridge update in this PC's dialog first: it was added from herdr without approving this app's bridge." };
     }
@@ -890,7 +892,10 @@ export class MachineManager {
       refused: () => !same() ? "This PC was removed or moved to another address, so its update is no longer followed." : runtime.machine.state === "error" ? runtime.machine.error ?? "This PC stopped reconnecting." : null,
       signal: abort.signal, onStep: show,
       pollMs: this.ownUpdatePollMs, startMs: this.ownUpdateStartMs, checkMs: this.ownUpdateCheckMs,
-    }).then(() => { runtime.ownOffer = null; }, (error: unknown) => {
+    }).then(() => {
+      // the release it now runs is no longer on offer; a newer one a read since has found stays
+      if (runtime.offerRevision === revision) { runtime.ownOffer = null; runtime.offerRevision = undefined; }
+    }, (error: unknown) => {
       if (!abort.signal.aborted && !this.stopped) runtime.machine.update_error = error instanceof Error ? error.message : String(error);
     }).finally(() => {
       if (runtime.ownJob?.id !== id) return;

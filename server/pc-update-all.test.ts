@@ -84,7 +84,7 @@ it("takes a PC out of the queue on cancel, or when it is disabled or removed, an
   expect(await cancelled.json()).toEqual({ cancelled: true });
   expect(pc(B).updating ?? null).toBeNull();
   ends.get(A)!();
-  await Promise.resolve();
+  await until(() => !pc(A).updating);
   expect(asked).toEqual([A]);
   // again, with B removed while it waits
   Object.assign(pc(A), { state: "error", action_required: "update_bridge" });
@@ -117,4 +117,14 @@ it("ends the wait of a running own update on cancel, with no failure told", asyn
   expect(await (await request(`${A}/update`, "DELETE")).json()).toEqual({ cancelled: true });
   await until(() => !pc(A).updating);
   expect(pc(A).update_error ?? null).toBeNull();
+});
+
+it("leaves a disabled PC out of Update all and its badge, so it is never connected again by it", async () => {
+  const { manager, asked, pc, request } = fixture();
+  manager.patch(B, { enabled: false });
+  expect(pc(B).ovis_update ?? null).toBeNull();
+  expect(await (await request("update-all")).json() as PcUpdateAll).toEqual({ started: [], queued: [A], skipped: [] });
+  const refused = await request(`${B}/update`);
+  expect(refused.status).toBe(409);
+  expect(asked.includes(B)).toBe(false);
 });
