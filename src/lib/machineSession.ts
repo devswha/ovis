@@ -27,7 +27,7 @@ export class MachineSession {
   private currentConnection: string | null = null;
   private currentEpoch = 0;
   private announcedLifetime: string | undefined;
-  /** the least (this page's clock less the PC's) any frame carrying server_time gave: delay only raises it */
+  /** the least (this page's clock less the PC's) any frame of this connection carrying server_time gave: delay only raises it */
   private offset: number | undefined;
   private noteClock(serverTime: unknown): void {
     if (typeof serverTime !== "number" || !Number.isFinite(serverTime)) return;
@@ -57,6 +57,8 @@ export class MachineSession {
       if (this.closed) return;
       if (message.type === "features") {
         this.announcedLifetime = message.herdr_lifetime; setPasteFolder(this.machineId, message.paste_dir);
+        // each connection reckons the PC's clock afresh: a clock that moved since an earlier one does not carry over
+        this.offset = undefined;
         this.noteClock(message.server_time);
       }
       if (message.type === "pending-messages") this.noteClock(message.server_time);

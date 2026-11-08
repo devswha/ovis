@@ -128,6 +128,18 @@ describe("PC connection ownership", () => {
       socket.receive(named("clock-herdr"));
       socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
       expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // the PC's clock had run ten minutes ahead on an earlier connection and is right again on this one:
+      // that earlier offset does not end this connection's fresh receipt at once
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c3", herdr_lifetime: "clock-herdr", server_time: now + 10 * 60 * 1000 });
+      socket.receive(named("clock-herdr"));
+      socket.disconnect();
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c4", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
       session.close();
     } finally { clock.mockRestore(); }
   });
