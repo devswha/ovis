@@ -4473,22 +4473,25 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
   on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
   **State** (the specific word below, plus a separate enrollment line `data-pc-enrollment` when
-  account enrollment is pending "Adding it to your account…" or failed "This PC could not be listed
-  in your account. Try again.", and a dim subline for a fresh Add countdown "new · {n} min
+  account enrollment is pending "Adding it to your account…" or failed "Account setup is incomplete.
+  Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
+  setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
   closed Add window also shows "Add window closed · an account member must approve", which is the
   state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
   host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
-  allows (Open, Add, Join, Update, Details; a failed or pending enrollment keeps the PC's state word
-  and its **Open** action, which reopens the PC's scope at the Ready checkpoint to retry enrollment). Selecting a
+  allows (Open, Add, Join, Update, Details; a pending enrollment keeps "Ready · not in the account
+  yet" while a listed, unlinked failed enrollment shows "Ready", and both keep **Open**, which
+  reopens the PC's scope at the Ready checkpoint to retry enrollment). Selecting a
   row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the list as a
   `--relay-detail-w` (360 px) side panel at 1100 px and wider, sitting beside the two-line narrow
   list from 1100 to 1391 px (`NARROW_SPLIT_TABLE_QUERY`) and beside the four-column table (dropping
   **Last seen** so rows stay on one line) at 1392 px and wider; below 1100 px the details replace the list as a full view with **Back**,
   moving focus to the details heading and returning it to the PC's row on close (including browser Back). Details holds
-  seven labelled rows (state, route, relay, last seen, this device, key ID, version) and the PC's
+  seven labelled rows (state, with an "Account setup is incomplete." subline when enrollment failed;
+  route; relay; last seen; this device; key ID; version) and the PC's
   actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot.
 - Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
   by the same network or Tailscale draws its wire straight from this device and skips the hub; a
@@ -4519,18 +4522,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
   `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes, it
   shows "In your account" (plus " · Devices added: {count}" when `state` is `{ state: "complete",
-  admitted }`, or "In your account" alone when `state === "complete"`); if enrollment fails or times
-  out (`"failed"`), the checkpoint stays on Ready and shows "Ready · not in the account yet" with
-  **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
+  admitted }`, keeping earlier admissions across enrollment and introduction retries, or "In your
+  account" alone when `state === "complete"`); if enrollment fails or times
+  out (`"failed"`), the checkpoint stays on Ready and `EnrollmentStatus` shows "Account setup is
+  incomplete." with **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
   background if the user opens the PC or closes the checkpoint before enrollment settles; on the
-  dashboard row, a paired PC whose enrollment is pending or failed keeps its own state word and
-  **Open** action and adds a separate enrollment line ("Adding it to your account…" or "This PC
-  could not be listed in your account. Try again.").
-- Status vocabulary: one state word per PC, specific to what's true: Ready, Ready · not in the
-  account yet, Needs approval, Needs update, Updating, Checking…, Offline (or Offline · {when}), or
+  dashboard row, a paired PC whose enrollment is pending or failed keeps **Open** (which retries
+  enrollment at the Ready checkpoint), shows "Ready · not in the account yet" only while listed,
+  not linked, and not failed (a failed enrollment shows "Ready"), and adds a separate enrollment
+  line ("Adding it to your account…", "Account setup is incomplete. Open it to try again." when
+  `paired` or `unchecked`, or "Account setup is incomplete." otherwise). In `AddPcSheet` and
+  `PairQrDialog`, phone dialog and sheet footers (`SHEET_QUERY`, 640 px and under) render the
+  primary action first in DOM markup and stack vertically, putting the primary action first in both
+  visual and Tab order.
+- Status vocabulary: one state word per PC, specific to what's true: Ready (including when listed
+  and account enrollment failed), Ready · not in the account yet (only when listed, not linked, and
+  enrollment is not failed), Needs approval, Needs update, Updating, Checking…, Offline (or Offline · {when}), or
   for a paired PC in local mode or not listed in the account (`unchecked`), Paired · not checked,
   Answers, or No answer (with pending or failed account enrollment shown on its own line under the
-  state: "Adding it to your account…" or "This PC could not be listed in your account. Try again.");
+  state: "Adding it to your account…", "Account setup is incomplete. Open it to try again." on a
+  `paired` or `unchecked` row, or "Account setup is incomplete." otherwise);
   the strip groups them as Ready, Needs you and Offline. The summary, the filters,
   the attention list, the table, Details and the map all read one model (`dashboardModel` and
   `dashboardState()` in lib/relay/dashboard.ts: a live answer from this device beats a stale
