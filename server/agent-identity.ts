@@ -37,6 +37,18 @@ function fileName(word: string, platform: CatalogPlatform | null, program: boole
   return program ? name.toLowerCase().replace(/\.(?:exe|cmd)$/, "") : name.toLowerCase();
 }
 
+/** Interpreter options after which the next word is code or a module, not a script file. */
+const NOT_A_SCRIPT = new Set(["-e", "--eval", "-p", "--print", "-c", "-m", "-"]);
+
+/** The script an interpreter runs: the first word after its own options; null for code or a module given inline. */
+function scriptOf(argv: readonly string[]): string | null {
+  for (const word of argv.slice(1)) {
+    if (NOT_A_SCRIPT.has(word) || word === "--") return null;
+    if (!word.startsWith("-")) return word;
+  }
+  return null;
+}
+
 /**
  * The catalog agent a foreground process is: one of its detect binaries run directly, or the
  * extensionless script by that name an interpreter runs (npm's bin, a Python entry point), never
@@ -45,7 +57,7 @@ function fileName(word: string, platform: CatalogPlatform | null, program: boole
  */
 export function processAgent(argv: readonly string[], platform: CatalogPlatform | null): string | null {
   const first = fileName(argv[0] ?? "", platform, true);
-  const program = INTERPRETERS.has(first) ? fileName(argv[1] ?? "", platform, false) : first;
+  const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !(platform && candidate.detect.unreliable_on?.[platform]));
   return entry?.id ?? null;
