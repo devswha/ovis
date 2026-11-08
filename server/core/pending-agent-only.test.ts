@@ -27,8 +27,9 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
     return { pane_id: "p", shell_pid: 41000, foreground_processes: [{ argv: [shown.name], ...shown }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>;
   });
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
-  spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
-  const hooks: { paste?: () => void; enter?: () => void } = {};
+  const hooks: { paste?: () => void; enter?: () => void; read?: () => void } = {};
+  // `hooks.read`: runs once a read has taken its screen, as herdr's answer is still on its way
+  spyOn(herdr, "paneRead").mockImplementation(async () => { const text = screen; hooks.read?.(); return { text } as Awaited<ReturnType<typeof herdr.paneRead>>; });
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); hooks.paste?.(); if (afterPaste !== undefined) screen = afterPaste; });
   spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); hooks.enter?.(); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
@@ -62,6 +63,43 @@ it("tries a queued message refused under a Codex list again once the pane draws 
   d.screenChanged();
   await entered;
   expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+});
+
+const PERMISSIONS = "Update Model Permissions\n› 1. Read Only\n  2. Auto\n\n  enter select · esc back\n";
+const COMPOSER = "› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n";
+
+it("tries a queued message again when the list closes while the read that refused it is still on its way", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen(PERMISSIONS);
+  // the read takes the list; the close is drawn before its answer is back, so before the refusal is recorded
+  d.hooks.read = () => { d.hooks.read = undefined; d.screen(COMPOSER); d.screenChanged(); };
+  const entered = new Promise<void>((resolve) => { d.hooks.enter = resolve; });
+  d.setStatus("idle");
+  await entered;
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+});
+
+it("pastes nothing into a Codex list that opened after the queued message's first look", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen(COMPOSER);
+  // the first look finds the composer; /permissions is up for every look after it
+  d.hooks.read = () => { d.hooks.read = undefined; d.screen(PERMISSIONS); };
+  d.setStatus("idle");
+  await d.settled();
+  expect(d.writes).toEqual([]);
+});
+
+it("sends no Enter into a Codex list that opened after the paste's own look", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen(COMPOSER);
+  // the paste goes in; the look before its Enter still finds the composer, and the list is up for the last one
+  d.hooks.paste = () => { d.hooks.read = () => { d.hooks.read = undefined; d.screen(PERMISSIONS); }; };
+  d.setStatus("idle");
+  await d.settled();
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~"]);
 });
 
 // #511: herdr can keep naming an agent that has exited; the pane's own shell in front is no agent for a message

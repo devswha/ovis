@@ -283,20 +283,23 @@ const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|mediu
  * agents view and the transcript view (live in 0.166). herdr reports the pane at rest under all of them,
  * so agent.prompt pastes into them: the paste is dropped, and its Enter takes the row under the cursor,
  * which saves a model as the default for every new session, or in the transcript view rewinds the
- * conversation. Each draws its key hints last on the screen, with its last two rows at most (/resume),
- * so only whole hints there count: the composer's rows hold a draft, and under it a folder and a thread's name.
- * With the composer's own footer last (`? for shortcuts`) nothing holds it, whatever a wrapped status row
- * above says; and rows between the composer's mark and its status row are its draft, so only rows under
- * that status row count (the transcript view and /statusline draw their keys there).
+ * conversation. Read by the composer's own layout, never by what a row merely says: its mark (`›`, `»`),
+ * then its draft, then its status row (model and effort first). Without that layout under the last mark
+ * (a list hides the composer), each screen draws its key hints last, in its last two rows at most
+ * (/resume), so a whole hint there holds the input, also over a footer-shaped last row. With it, only a
+ * row of several hints under the status row holds it (the transcript view, /statusline): a single
+ * `esc back` there is a wrapped folder or thread name, and the draft above the status row is the user's.
  */
 export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
-  if (/\? for shortc/.test(rows.at(-1) ?? "")) return false;
+  const hints = (row: string): string[] => row.split(/\s+·\s+|\s{2,}/);
   const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
-  const status = findLastIndex(rows, (row) => !/^[›»]/.test(row) && CODEX_STATUS_ROW_RE.test(row));
-  const from = Math.max(rows.length - 2, composer >= 0 && status > composer ? status + 1 : 0);
-  return rows.slice(from).some((row) => !/^[›»]/.test(row) && !CODEX_STATUS_ROW_RE.test(row)
-    && row.split(/\s+·\s+|\s{2,}/).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
+  const status = composer < 0 ? -1 : rows.findIndex((row, index) => index > composer && CODEX_STATUS_ROW_RE.test(row));
+  if (status < 0) return rows.slice(-2).some((row) => !/^[›»]/.test(row) && hints(row).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
+  return rows.slice(status + 1).some((row) => {
+    const parts = hints(row);
+    return parts.length > 1 && parts.some((hint) => CODEX_HOLD_HINT_RE.test(hint));
+  });
 }
 
 function parseCodexModel(screen: string): ParsedPrompt | null {

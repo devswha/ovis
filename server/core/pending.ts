@@ -100,7 +100,8 @@ const FIRST_MESSAGE_RECEIPTS = 8;
 
 /** agent_blocked for what the screen alone shows while herdr reports the agent at rest (`status`), as under Codex's own lists */
 class ScreenHeldError extends HerdrError {
-  constructor(readonly status: "idle" | "done") { super("agent_blocked", "The agent is waiting for an answer in the terminal"); }
+  /** `drawn`: the pane's output count (screenChanged) when the refusing screen was read */
+  constructor(readonly status: "idle" | "done", readonly drawn: number) { super("agent_blocked", "The agent is waiting for an answer in the terminal"); }
 }
 
 /**
@@ -176,6 +177,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   // a queued message refused for what the screen alone shows: no status event comes when that screen closes, so the
   // pane's next output tries it again, under the status herdr reported at the refusal (screenChanged)
   const screenHeld = new Map<string, { status: "idle" | "done"; mark: number }>();
+  // the outputs each pane drew while its drain runs: one drawn after the refusing read began may have closed that
+  // screen before screenHeld was set, and is then taken for the close (dispatchPendingText's refusal)
+  const drawn = new Map<string, number>();
   const pendingRequests = new WeakMap<Client, PendingRequestBook<SubmitReply>>();
   // the last input_draft refusal per pane: its named draft (Clear it and send), or none (Send anyway)
   const draftConfirmations = new WeakMap<Client, Map<string, { draft: string | null; identity: PendingIdentity; box?: string | null }>>();
@@ -554,6 +558,24 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
     await sameStart(pinned);
   }
+  /**
+   * noMaskedPrompt's look, the last before the paste and before its Enter, also for what holds the agent's input
+   * on the screen alone (registry.holdsInput, as pendingContext reads it): one of Codex's own lists that opened
+   * after the earlier reads gets no paste and no Enter.
+   */
+  async function freeForWrite(paneId: string, look: { cols: number | undefined; pinned: PendingIdentity | null; agent: string | null }): Promise<void> {
+    const seen = drawn.get(paneId) ?? 0;
+    const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+    if (secretPrompt(screen, look.cols) !== null) {
+      throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
+    }
+    if (look.agent && registry.holdsInput(look.agent, screen)) {
+      const status = pending.current(paneId);
+      if (status === "idle" || status === "done") throw new ScreenHeldError(status === "idle" ? "idle" : "done", seen);
+      throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+    }
+    await sameStart(look.pinned);
+  }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
     authorizePending(owner, paneId, lease);
     let { pane, identity: current, processes, held: holder, recognized } = await currentIdentity(paneId, identity?.processPid ?? null);
@@ -578,6 +600,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
     // the live screen, not the viewport: a pane scrolled into its history still draws its next
     // menu or password prompt at the bottom (server/prompt.ts liveScreen)
+    const seen = drawn.get(paneId) ?? 0;
     const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
     if (secretPrompt(screen, lease.sighting.facts().cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
@@ -592,7 +615,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // as the card's own reader decides it: Claude's grey text under a hint left behind is no held message
     const waits = prompt !== null && !(pasted && isClaudeHeld(prompt)) && !(await claudeHeldIsGrey(paneId, prompt));
     if (current.agent && (waits || registry.holdsInput(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
-      if (pane.agent_status === "idle" || pane.agent_status === "done") throw new ScreenHeldError(pane.agent_status === "idle" ? "idle" : "done");
+      if (pane.agent_status === "idle" || pane.agent_status === "done") throw new ScreenHeldError(pane.agent_status === "idle" ? "idle" : "done", seen);
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
@@ -665,7 +688,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
       await stillInFront(paneId, context.identity.processPid, identity, agentOnly);
-      await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
+      await freeForWrite(paneId, { cols: lease.sighting.facts().cols, pinned: identity, agent: context.identity.agent });
       // the last reads awaited too: a message past its deadline is not typed
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
@@ -738,7 +761,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
       if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
-      await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
+      await freeForWrite(paneId, { cols: lease.sighting.facts().cols, pinned: identity, agent: beforeEnter.identity.agent }).catch(enterRefused);
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
       committing(steering);
@@ -779,7 +802,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
       if (automatic && !wrote && fault.code === "agent_blocked") {
         pending.observe(paneId, "blocked", mark);
-        if (error instanceof ScreenHeldError) screenHeld.set(paneId, { status: error.status, mark });
+        if (error instanceof ScreenHeldError) {
+          screenHeld.set(paneId, { status: error.status, mark });
+          // output drawn since that read began found nothing held to try again: it may have been the close
+          if ((drawn.get(paneId) ?? 0) !== error.drawn) screenChanged(paneId);
+        }
       }
       // a queued request typed at once is refused as an immediate send is: with the draft (or box) its actions need
       if (queued && !wrote && error instanceof InputDraftError && error.identity) return { ok: false, ...fault, refusal: { draft: error.draft, box: error.box, identity: error.identity } };
@@ -815,6 +842,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /** The pane drew output: a message refused for its screen alone (ScreenHeldError) is tried again, unless a status event came since. */
   function screenChanged(paneId: string): void {
+    if (pendingDrains.has(paneId)) drawn.set(paneId, (drawn.get(paneId) ?? 0) + 1);
     const held = screenHeld.get(paneId);
     if (held === undefined) return;
     screenHeld.delete(paneId);
@@ -855,6 +883,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       await dispatchPending(item, true, arrivedAt, false, by);
     }).catch((error) => console.warn("pending message:", pendingFault(error).code)).finally(() => {
       pendingDrains.delete(paneId);
+      drawn.delete(paneId);
       const again = drainAgain.delete(paneId);
       if (dispatched || again) drainPending(paneId);
     });

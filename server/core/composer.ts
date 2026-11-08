@@ -377,6 +377,14 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     const mayType = (): boolean => {
       try { authorize(); return true; } catch (error) { refused = error; return false; }
     };
+    /** Codex's own lists and fields take a paste while herdr reports it at rest (codexInputHeld): read right before a write. */
+    const codexScreenFree = async (target: string): Promise<void> => {
+      const held = registry.holdsInput("codex", (await paneRead({ paneId: target, source: "detection", format: "text" })).text);
+      inTime();
+      if (held) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+    };
+    /** typed past a collapsed Codex queue (blockedOnlyByCodexQueue): the raw paste reads the screen once more first */
+    let pastCodexQueue = false;
     /** A write mayType stopped fails with the sender's own refusal (read_only, device_revoked), not herdr's `cancelled`. */
     const refusal = (error: unknown): never => { throw refused ?? error; };
     const typed = Date.now() - (lastTyped.get(paneId) ?? 0);
@@ -526,13 +534,6 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           // the last look waited on herdr: the device may have lost its access meanwhile
           inTime();
         }
-        // herdr reports Codex at rest under its own lists and fields, so agent.prompt would paste into them, and
-        // its Enter would take a row (codexInputHeld): refused as a menu herdr does report is, the message kept
-        if (agent === "codex") {
-          const held = registry.holdsInput(agent, (await paneRead({ paneId, source: "detection", format: "text" })).text);
-          inTime();
-          if (held) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
-        }
         if (pane) command = prepareCommandSend(pane, text, beforeScreen);
         // where that screen sits in the history (outcome.ts scrolledAnchor): the row read before the screen, kept
         // once a read after it agrees, so nothing scrolled in between. That read only records the send, so it runs
@@ -614,6 +615,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
         }
+        // herdr reports Codex at rest under its own lists and fields, so agent.prompt would paste into them, and
+        // its Enter would take a row (codexInputHeld): refused as a menu herdr does report is, the message kept.
+        // The last read before the write, after every other await, so a list opened meanwhile is seen
+        if (agent === "codex") await codexScreenFree(paneId);
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {
           inTime();
@@ -635,6 +640,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           // nor typed past a collapsed queue: herdr cannot type only if the agent still runs, and Codex may exit first
           const queuedOnly = !agentOnly && error.code === "agent_blocked" && await blockedOnlyByCodexQueue(paneId);
           if (error.code !== "agent_not_found" && error.code !== "agent_not_ready" && !queuedOnly) throw error;
+          pastCodexQueue = queuedOnly;
         }
       }
       // one long line from the input line: herdr's agent.prompt pastes it in the agent's own paste mode and
@@ -658,6 +664,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       // asked only for such a block, so a one-line message never waits on it.
       const shaped = await mirrorInput(closeMention(payload), async () => await terminalAttach() ? null : await paneAgentOf(paneId));
       inTime();
+      // typed past a collapsed Codex queue: a list opened since blockedOnlyByCodexQueue's read gets nothing
+      if (pastCodexQueue) await codexScreenFree(paneId);
       await paneSendText(paneId, shaped, undefined, mayType).catch(refusal);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);

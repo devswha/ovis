@@ -4,6 +4,7 @@ import type { HerdrPane } from '../../shared/protocol.ts';
 import { createSubmitText } from './composer.ts';
 import { codexInputHeld } from '../dialogs/codex.ts';
 import { registry } from '../dialogs/registry.ts';
+import * as opencode from '../opencode-native.ts';
 
 // herdr reports Codex at rest under its own lists and fields, so a message for its composer would be pasted into them: the
 // paste is dropped, and the Enter after it takes the row under the cursor (saving a model as the default for every new
@@ -44,7 +45,10 @@ const FREE: Record<string, string[]> = {
   'a blank screen': [''],
   'a draft whose last line reads as keys, the footer gone': ['» Please follow these steps', '  enter select · esc back', STATUS],
   'a status row wrapped onto a thread named as a key': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  esc back', ROWS],
+  'such a wrapped row, the footer gone': ['› a draft', '  GPT-6-Astra ultra · /fixture ·', '  esc back'],
 };
+// a list's screen whose last row reads as the composer's footer: the footer is the composer's only under its status row
+HELD['a list over a footer-shaped row'] = [...HELD['/permissions']!, ROWS];
 const screen = (rows: string[]) => ['  >_ OpenAI Codex (v0.166.0)', '     /fixture', '', ...rows, '', ''].join('\n');
 
 describe('codexInputHeld', () => {
@@ -106,6 +110,20 @@ describe('a message sent to a Codex pane', () => {
       .mockResolvedValue({ text: screen([...queue, ...HELD['the transcript view']!]) } as Awaited<ReturnType<typeof client.paneRead>>);
     const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
     expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+    expect(typed).not.toHaveBeenCalled();
+    expect(keys).not.toHaveBeenCalled();
+  });
+
+  it('reads the screen last: a list opened during the other awaits of the send gets nothing', async () => {
+    const { read, prompt, typed, keys } = spies(FREE['its composer']!);
+    // /permissions opens while the send waits on its other lookups, after any earlier look at the screen
+    spyOn(opencode, 'openCodeSkillsToType').mockImplementation(async (_pane, sent) => {
+      read.mockResolvedValue({ text: screen(HELD['/permissions']!) } as Awaited<ReturnType<typeof client.paneRead>>);
+      return { sent, skills: [] };
+    });
+    const failed = await submitter()(pane.pane_id, 'hello', 'hello', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+    expect(prompt).not.toHaveBeenCalled();
     expect(typed).not.toHaveBeenCalled();
     expect(keys).not.toHaveBeenCalled();
   });
