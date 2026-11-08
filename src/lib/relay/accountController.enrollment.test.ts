@@ -17,7 +17,7 @@ import { memoryAccountStore } from "../account/store.ts";
 import { AccountService } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
-import { translate } from "../i18n.ts";
+import { setCurrentLanguage, translate } from "../i18n.ts";
 import { createAccountController } from "./accountController.ts";
 import { enrollmentOf, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
@@ -28,8 +28,15 @@ import { forgetSavedPc } from "./updateFlow.ts";
 describe("account enrollment ownership", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   const transports: RelayTransport[] = [];
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-  afterEach(() => { for (const transport of transports.splice(0)) transport.close(); browser.dispose(); });
+  afterEach(() => {
+    for (const transport of transports.splice(0)) transport.close();
+    browser.dispose();
+    if (savedNavigator) Object.defineProperty(globalThis, "navigator", savedNavigator);
+    else delete (globalThis as Record<string, unknown>)["navigator"];
+    setCurrentLanguage("en");
+  });
 
   async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch } = {}) {
     const identity = generateKeyPair();
