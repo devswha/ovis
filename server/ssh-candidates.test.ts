@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import { join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
+import { wildcardIncludesRead } from "./ssh-include.ts";
 import { resolver, sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
 /** `tailscale status --json` with this PC as user 1 and the named peers online, of the same login */
@@ -69,7 +70,7 @@ it("reads an Include inside a Host block as part of that block", async () => {
   ]);
 });
 
-it("reads the hosts of the files an Include names, in their place", async () => {
+it.skipIf(!wildcardIncludesRead)("reads the hosts of the files an Include names, in their place", async () => {
   const dir = sshDir({
     config: "Host first\n  HostName one.example\nHost *\nInclude conf.d/*\nHost last\n",
     "conf.d/b": "Host from-b\n",

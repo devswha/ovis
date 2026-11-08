@@ -56,7 +56,7 @@ const inside = (path: string, roots: readonly string[]): boolean => roots.some((
 
 /** whether the object open at `handle`, opened as `path`, really is inside `roots` */
 async function openedInside(handle: FileHandle, path: string, roots: readonly string[]): Promise<boolean> {
-  if (process.platform === "linux") return inside(await readlink(`/proc/self/fd/${handle.fd}`), roots);
+  if ((includeHooks.platform ?? process.platform) === "linux") return inside(await readlink(`/proc/self/fd/${handle.fd}`), roots);
   const real = await realpath(path);
   const [opened, named] = await Promise.all([handle.stat({ bigint: true }), stat(real, { bigint: true })]);
   return inside(real, roots) && opened.dev === named.dev && opened.ino === named.ino;
@@ -83,8 +83,11 @@ const getdents: Getdents | null = (() => {
   try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
 })();
 
-/** tests stand in for getdents64 here: a fake one, or null for a platform without it */
-export const includeHooks: { getdents?: Getdents | null } = {};
+/** whether a wildcard Include's folders can be listed here at all (getdents64); without it every one is left unread */
+export const wildcardIncludesRead = getdents !== null;
+
+/** tests stand in for getdents64 here (a fake one, or null for a platform without it) and for the platform openedInside checks on */
+export const includeHooks: { getdents?: Getdents | null; platform?: NodeJS.Platform } = {};
 
 /**
  * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
@@ -105,6 +108,8 @@ function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
       const end = buffer.indexOf(0, at + 19);
       if (length < 20 || at + length > got || end <= at + 19 || end >= at + length) return "unread";
       const name = buffer.toString("utf8", at + 19, end);
+      // a name whose bytes are not UTF-8 cannot be opened by the name decoded: what that file sets is unknown
+      if (!Buffer.from(name).equals(buffer.subarray(at + 19, end))) return "unread";
       at += length;
       if (name === "." || name === "..") continue;
       if (budget.entries-- <= 0) return "unread";
