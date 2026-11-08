@@ -10,6 +10,8 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord } from "../../../shared/account-records.ts";
+import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { AccountService } from "../account/service.ts";
@@ -29,7 +31,7 @@ describe("account enrollment ownership", () => {
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => { for (const transport of transports.splice(0)) transport.close(); browser.dispose(); });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean } = {}) {
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -74,7 +76,13 @@ describe("account enrollment ownership", () => {
       }
       override async fetch(path: string) { if (path === heldPath) { requested.resolve(); return response.promise; } return answer(path); }
     }
-    const open = async () => { const transport = new Admitted(offer); transports.push(transport); return transport; };
+    class Peer extends RelayTransport {
+      override async fetch(path: string, init?: RequestInit) {
+        if (options.peerFetch === undefined) throw new TypeError("Unexpected peer request");
+        return options.peerFetch(path, init);
+      }
+    }
+    const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
     const controller = () => createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.invalid", renderApp: () => { throw new TypeError("No app here"); },
       store, accountStore, accountService: "https://account.invalid", accountProviders: ["github"], open,
@@ -118,6 +126,30 @@ describe("account enrollment ownership", () => {
     release.resolve();
     await pending;
     expect(await run.store.get(introduced.server_id)).toBeUndefined();
+  });
+
+  it.each(["cancel", "forget"] as const)("stops multi-key peer introductions after source %s during the first request", async (action) => {
+    const requested = Promise.withResolvers<void>();
+    const response = Promise.withResolvers<Response>();
+    const delivered: unknown[] = [];
+    const run = await fixture("unused", { peerFetch: async (path, init) => {
+      if (path === "/api/account/status?fresh=1") return Response.json({ account: "account", fresh: true, removals: [], adds: [], blocked: [] });
+      if (path !== "/api/account/introduce") throw new TypeError("Unexpected peer request: " + path);
+      delivered.push(JSON.parse(String(init?.body)));
+      if (delivered.length === 1) { requested.resolve(); return response.promise; }
+      return Response.json({});
+    } });
+    const identity = generateKeyPair();
+    const peer = { ...run.original, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey) };
+    await run.store.update(peer.server_id, () => peer);
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await requested.promise;
+    if (action === "cancel") run.controller.cancelEnrollment(run.original.server_id);
+    else { run.otherController.cancelEnrollment(run.original.server_id); await forgetSavedPc(run.original.server_id, run.store); }
+    response.resolve(Response.json({}));
+    expect(await pending).toBeInstanceOf(DOMException);
+    expect(delivered).toEqual([{ key: run.records[0]?.key, pcs: [{ server_id: run.original.server_id, server_public_key: run.original.server_public_key, relay: run.original.relay, name: "Desk" }] }]);
+    expect((await run.accountStore.get("enrolls"))?.[run.original.server_id]?.introduce?.to).toEqual([peer.server_id]);
   });
 
   it.each(["en", "ja", "ko", "zh"] as const)("keeps all enrollment surfaces truthful after listing succeeds and setup fails in %s", async (language) => {

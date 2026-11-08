@@ -235,7 +235,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
             const timer = setTimeout(() => controller.abort(), PEER_STATUS_MS);
             const peer = await open(offerOf(other), { store, label, signal: controller.signal }).finally(() => clearTimeout(timer));
             peers.push(peer);
-            return { serverId: other.server_id, fetch: (path: string, init?: RequestInit) => peer.fetch(path, init) };
+            return { serverId: other.server_id, fetch: async (path: string, init?: RequestInit) => {
+              assertPairing(await store.get(serverId));
+              const response = await peer.fetch(path, init);
+              assertPairing(await store.get(serverId));
+              return response;
+            } };
           }));
           const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
           // PCs the directory lists that this device cannot read: their removals are unknown here
