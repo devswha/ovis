@@ -35,14 +35,16 @@ export const LETTA_MESSAGES_BYTES = 4 * 1024 * 1024;
 const MESSAGES_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
 /**
- * Whether `path` (`<store>/conversations/<key>/messages.jsonl`) is a regular file in its own conversation
- * folder: no link for the file or for the folder, so it is never another conversation's.
+ * Whether `path` (`<store>/conversations/<key>/messages.jsonl`) is a regular file at exactly that place
+ * under its store's real path: no link for the file, its folder or any folder up to the store, so it is
+ * never another conversation's or another store's.
  */
 function ownMessagesFile(path: string): boolean {
   try {
     if (!lstatSync(path).isFile()) return false;
     const folder = dirname(path);
-    return realpathSync(folder) === join(realpathSync(dirname(folder)), basename(folder));
+    const store = dirname(dirname(folder));
+    return realpathSync(path) === join(realpathSync(store), "conversations", basename(folder), basename(path));
   } catch { return false; }
 }
 
@@ -120,13 +122,15 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
     if (tracks(pane.pane_id)) {
       // the messages file speaks, but shows a call waiting for the user's approval only as a call: the title says it waits
       if (pane.agent_status === "working" || pane.agent_status === "idle" || pane.agent_status === "done") {
-        const asking = titleStatus(pane.agent, pane.terminal_title) === "blocked";
-        const status: AgentStatus = asking ? "blocked" : pane.agent_status === "working" ? "working" : "idle";
+        const said = titleStatus(pane.agent, pane.terminal_title);
+        const asking = said === "blocked";
+        // approved, the call runs and the title spins: the file may still end at an answer from before the wait
+        const status: AgentStatus = asking ? "blocked" : last.get(pane.pane_id) === "blocked" && said === "working" ? "working" : pane.agent_status === "working" ? "working" : "idle";
         const before = last.get(pane.pane_id);
         // only the approval's start and end are the title's to tell; the file tells its own turns
         // a first look at an approval wait is told too, as one at work is: the user is waited on
         if (before === undefined ? status === "blocked" : before !== status && (status === "blocked" || before === "blocked")) changed.push({ paneId: pane.pane_id, status });
-        if (asking) pane.agent_status = "blocked";
+        if (asking || status === "working") pane.agent_status = status;
         // what the file said is where the title goes on from if the file stops
         last.set(pane.pane_id, status);
         titled.add(pane.pane_id);

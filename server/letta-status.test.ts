@@ -55,6 +55,14 @@ describe("a Letta pane's status from its local messages", () => {
       expect(file.stat(join(linkedFolder, "messages.jsonl"))).toBeNull();
       symlinkSync(folder, join(dir, "conversations", "folder-link"));
       expect(file.stat(join(dir, "conversations", "folder-link", "messages.jsonl"))).toBeNull();
+      // nor does a link for a folder above it, here the store's conversations folder pointing into another store
+      const otherStore = join(dir, "other-store");
+      mkdirSync(join(otherStore, "conversations", "key"), { recursive: true });
+      writeFileSync(join(otherStore, "conversations", "key", "messages.jsonl"), turn.join("\n"));
+      const linkedStore = join(dir, "linked-store");
+      mkdirSync(linkedStore);
+      symlinkSync(join(otherStore, "conversations"), join(linkedStore, "conversations"));
+      expect(file.stat(join(linkedStore, "conversations", "key", "messages.jsonl"))).toBeNull();
       // a FIFO is never waited on
       const fifoFolder = join(dir, "conversations", "fifo");
       mkdirSync(fifoFolder);
@@ -100,6 +108,16 @@ describe("a Letta pane's status from its local messages", () => {
     expect(waiting[0]!.agent_status).toBe("blocked");
     // approved: the call runs, and its file says working again
     expect(lettaTitleStatus({ panes: [titled("t1", "working", "⠙ Tutor")] }, () => true, last)).toEqual([{ paneId: "t1", status: "working" }]);
+  });
+
+  it("takes the spinner after an approval over an older rest the file read while it waited", () => {
+    const titled = (id: string, status: HerdrPane["agent_status"], title: string) => ({ ...pane(id, "letta", status), terminal_title: title } as HerdrPane);
+    const last = new Map<string, HerdrPane["agent_status"]>();
+    lettaTitleStatus({ panes: [titled("t1", "working", "[ ! ] Action Required | Tutor")] }, () => true, last);
+    // approved, the call runs and the title spins, while the file still ends at an older answer
+    const after = [titled("t1", "idle", "⠋ Tutor")];
+    expect(lettaTitleStatus({ panes: after }, () => true, last)).toEqual([{ paneId: "t1", status: "working" }]);
+    expect(after[0]!.agent_status).toBe("working");
   });
 
   it("finds a pane again early when its title's name or its spinner changes, not on every spinner frame", () => {
