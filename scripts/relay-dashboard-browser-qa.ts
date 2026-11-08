@@ -24,6 +24,7 @@ import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { ACCOUNT, directoryOf, fleetOf, LONG_NAME, seedPairings } from "./relay-dashboard-fixtures.ts";
+import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 import type { Fleet, FleetName } from "./relay-dashboard-fixtures.ts";
 
 const APP = "https://app.ovis.sh";
@@ -87,13 +88,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const errors: string[] = [];
     const account: string[] = [];
     await context.route(/.*/, async (route) => { errors.push(`unexpected request ${route.request().url()}`); await route.abort(); });
-    let closing = false;
-    context.on("close", () => { closing = true; });
-    await context.route(/^https:\/\/app\.ovis\.sh\//, async (route) => {
+    await context.route(/^https:\/\/app\.ovis\.sh\//, whileOpen(context, async (route) => {
       const url = new URL(route.request().url());
-      // a check that closes its context while the page still loads ends this request with it
-      await route.fulfill({ response: await route.fetch({ url: `${origin}${url.pathname}${url.search}` }) }).catch((error: unknown) => { if (!closing) throw error; });
-    });
+      await route.fulfill({ response: await route.fetch({ url: `${origin}${url.pathname}${url.search}` }) });
+    }));
     let directory: OpenOptions["directory"] | null = null;
     await context.route(/^https:\/\/account\.ovis\.sh\//, async (route) => {
       const request = route.request();
@@ -178,7 +176,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       report.push(`FAIL ${name}: ${message}`);
     } finally {
       opened.splice(0);
-      for (const context of contexts.splice(0)) await context.close().catch(() => undefined);
+      for (const context of contexts.splice(0)) await closeMarked(context).catch(() => undefined);
     }
     console.log(report.at(-1));
   };
@@ -272,11 +270,11 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const { page } = await open({
       fleet: "F0", entry: "screen",
       prepare: async (context) => {
-        await context.route(/^https:\/\/app\.ovis\.sh\/(index\.html)?(\?.*)?$/, async (route) => {
+        await context.route(/^https:\/\/app\.ovis\.sh\/(index\.html)?(\?.*)?$/, whileOpen(context, async (route) => {
           const url = new URL(route.request().url());
           const response = await route.fetch({ url: `${origin}${url.pathname}${url.search}` });
           await route.fulfill({ response, body: (await response.text()).replace(/<meta name="ovis-account-service"[^>]*>/, "") });
-        });
+        }));
       },
     });
     expect(await page.locator(".account-provider").count() === 0, "no sign-in provider without an account service");
@@ -367,7 +365,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       expect(cut.length === 0, `${width}: names cut without their full name to hand ${JSON.stringify(cut)}`);
       expect(await page.locator(`[title="${LONG_NAME}"]`).count() > 0, `${width}: the long name is in a title`);
       await shot(page, `dashboard-FLONG-${width}-dark`, true);
-      await page.context().close();
+      await closeMarked(page.context());
     }
     return results.join("; ");
   });
@@ -469,7 +467,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const wide = await open({ fleet: "F20", width: 1920 });
     const content = await wide.page.locator(".relay-dash-content").evaluate((element) => element.getBoundingClientRect().width);
     expect(Math.round(content) === 1280, `content ${content}px at 1920, want the 1280 cap`);
-    await wide.context.close();
+    await closeMarked(wide.context);
     const { page } = await open({ fleet: "F20", width: 390 });
     const gutter = await page.locator(".relay-dash-content").evaluate((element) => getComputedStyle(element).paddingLeft);
     expect(gutter === "16px", `phone gutter ${gutter}, want 16px`);
@@ -809,7 +807,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
               await page.locator(`.relay-dash[data-dashboard-view="${view}"]`).waitFor();
             }
           }
-          await page.context().close();
+          await closeMarked(page.context());
         }
       }
     }
@@ -1127,7 +1125,7 @@ if (import.meta.main) {
   try {
     await relayDashboardQa({ browser, origin: `http://127.0.0.1:${site.port}`, evidence: process.env["UI_EVIDENCE_DIR"] || null });
   } finally {
-    await browser.close();
+    await closeMarked(browser);
     await site.stop(true);
     rmSync(shellDir, { recursive: true, force: true });
   }
