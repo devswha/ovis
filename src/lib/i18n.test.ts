@@ -183,7 +183,7 @@ const PART_FILES: Record<string, string[]> = {
   setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
   guide: ["components/SetupGuide.tsx"],
   relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
-  dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx", "components/RelayPcTable.tsx", "components/RelayPcDetails.tsx", "components/RelayOverview.tsx", "components/relayMapLayout.ts"],
+  dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx", "components/RelayPcTable.tsx", "components/RelayPcDetails.tsx", "components/RelayOverview.tsx", "components/relayMapLayout.ts", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
 };
 

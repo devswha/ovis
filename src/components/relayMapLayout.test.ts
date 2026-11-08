@@ -192,11 +192,15 @@ describe("wire, status, and relay RTT helpers", () => {
         pc("f-approval", "needs-approval", GLOBAL, "2026-11-07T00:00:00Z"),
         pc("g-update", "needs-update", GLOBAL, "2026-11-07T00:00:00Z"),
         pc("h-offline", "offline", GLOBAL, "2026-11-01T00:00:00Z", true),
+        pc("i-offlineAnswered", "offline", GLOBAL, "2026-11-01T00:00:00Z", true),
+        { ...pc("j-updateAnswered", "needs-update", GLOBAL, "2026-11-07T00:00:00Z"), paired: true, linked: true },
       ],
       new Map<string, PcStatus>([
         ["c-checking", { kind: "checking" }],
         ["d-answeredLocal", { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 31 }],
         ["e-failedCheck", { kind: "offline", reason: "pc" }],
+        ["i-offlineAnswered", { kind: "answered", route: "lan", rttMs: 4 }],
+        ["j-updateAnswered", { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 40 }],
       ]),
     ).hubs[0];
     if (!hub) throw new Error("missing hub");
@@ -220,6 +224,11 @@ describe("wire, status, and relay RTT helpers", () => {
     expect(nodeStatusDotState(requireNode(nodes, "g-update"))).toBe("needs-you");
     expect(nodeWireState(requireNode(nodes, "h-offline"))).toBe("off");
     expect(nodeStatusDotState(requireNode(nodes, "h-offline"))).toBe("offline");
+    // a live answer beats the directory's stale Offline: reachable now, so live and ready; Needs update keeps its glyph with a live wire
+    expect(nodeWireState(requireNode(nodes, "i-offlineAnswered"))).toBe("live");
+    expect(nodeStatusDotState(requireNode(nodes, "i-offlineAnswered"))).toBe("ready");
+    expect(nodeWireState(requireNode(nodes, "j-updateAnswered"))).toBe("live");
+    expect(nodeStatusDotState(requireNode(nodes, "j-updateAnswered"))).toBe("needs-you");
   });
 
   it("aggregates hub wire state and shows the fastest answer through this relay across multiple measured PCs", () => {

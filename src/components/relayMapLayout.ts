@@ -1,5 +1,6 @@
 import { REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import { relayHost, type dashboardModel } from "../lib/relay/dashboard.ts";
+import { liveState } from "./relayPcState.tsx";
 import type { StatusDotState } from "./StatusDot.tsx";
 
 export type RelayMapModel = ReturnType<typeof dashboardModel>["map"];
@@ -93,11 +94,12 @@ export function hubRoutedNodes(hub: RelayMapHub): RelayMapNode[] {
   return hub.nodes.filter((node) => !isDirectRoute(node));
 }
 
+/** A live answer from this device beats the directory's stale Offline: the wire is live, as the PC is reachable now. */
 export function nodeWireState(node: RelayMapNode): WireState {
   if (node.check?.kind === "checking") return "checking";
+  if (node.check?.kind === "answered") return "live";
   if (node.state === "offline" || node.check?.kind === "offline") return "off";
-  if (node.check?.kind === "answered" || node.seen === "lately") return "live";
-  return "still";
+  return node.seen === "lately" ? "live" : "still";
 }
 
 export function hubWireState(nodes: readonly RelayMapNode[]): WireState {
@@ -109,7 +111,7 @@ export function hubWireState(nodes: readonly RelayMapNode[]): WireState {
 
 export function nodeStatusDotState(node: RelayMapNode): StatusDotState {
   if (node.check?.kind === "checking") return "checking";
-  switch (node.state) {
+  switch (liveState(node)) {
     case "needs-approval":
     case "needs-update":
       return "needs-you";

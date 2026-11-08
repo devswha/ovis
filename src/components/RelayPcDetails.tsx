@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, pcDotState, routeNode, type DashboardRow } from "./RelayPcTable.tsx";
+import { formatAbsoluteTime, formatProbeLine, liveState, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -32,7 +32,8 @@ export interface RelayPcDetailsProps {
   readonly onOpenPc?: (pc: MyPc) => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
   readonly onForget?: (serverId: string) => Promise<void> | void;
-  readonly onCheckPcs?: () => void;
+  /** Check now: this PC alone, never the fleet's rotating sweep */
+  readonly onCheckPc?: (serverId: string) => void;
 }
 
 function checkCauseText(check: PcStatus | null, t: ReturnType<typeof useT>): string | null {
@@ -52,7 +53,7 @@ export function RelayPcDetails({
   onOpenPc,
   onOpenSheet,
   onForget,
-  onCheckPcs,
+  onCheckPc,
 }: RelayPcDetailsProps) {
   const t = useT();
   const fullView = useMediaQuery(NARROW_DETAILS_QUERY);
@@ -70,17 +71,17 @@ export function RelayPcDetails({
 
   const dot = pcDotState(pc, updating, mode);
   const fresh = newPcs([pc], now).length > 0;
-  const stateLabel = updating
-    ? t("Updating")
-    : mode === "local" || !pc.listed
-      ? pc.check === null
-        ? t("Paired · not checked")
-        : (formatProbeLine(pc.check, t) ?? t("Paired · not checked"))
-      : pc.state === "paired"
-        ? pc.linked ? t("Ready") : t("Ready · not in the account yet")
-        : pc.state === "offline"
-          ? t("Offline")
-          : pc.state === "needs-approval" ? t("Needs approval") : t("Needs update");
+  const stateLabel = ((): string => {
+    if (updating) return t("Updating");
+    switch (liveState(pc)) {
+      case "needs-approval": return t("Needs approval");
+      case "needs-update": return t("Needs update");
+      case "offline": return t("Offline");
+      case "paired":
+        if (mode === "local" || !pc.listed) return localStateWord(pc.check, t);
+        return pc.linked ? t("Ready") : t("Ready · not in the account yet");
+    }
+  })();
 
   const stateReason = updating
     ? null
@@ -220,8 +221,8 @@ export function RelayPcDetails({
               {fresh ? t("Add") : t("Join")}
             </button>
           )}
-          {pc.paired && onCheckPcs && (
-            <button type="button" className="btn" onClick={onCheckPcs}>
+          {pc.paired && onCheckPc && (
+            <button type="button" className="btn" data-action="check-pc" onClick={() => onCheckPc(pc.server_id)}>
               {pc.check?.kind === "checking" ? t("Checking…") : t("Check now")}
             </button>
           )}

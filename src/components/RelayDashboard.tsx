@@ -25,7 +25,7 @@ const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
 export interface RelayDashboardProps {
   pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
   error?: string | null; pcStatus?: ReadonlyMap<string, PcStatus>; observedVersions?: ReadonlyMap<string, ObservedVersion>;
-  onCheckPcs?: () => void; onRefreshAccount?: () => void; onAddPc: () => void; onPairByQr?: () => void;
+  onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void; onRefreshAccount?: () => void; onAddPc: () => void; onPairByQr?: () => void;
   onOpenSheet: (pc: MyPc, mode: "new" | "join") => void; onForgetPc?: (serverId: string) => Promise<void> | void;
   onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
 }
@@ -99,7 +99,7 @@ function SettingsSection() {
 
 export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
-  onCheckPcs, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
+  onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
 }: RelayDashboardProps) {
   const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
@@ -178,7 +178,7 @@ export function RelayDashboard({
         )}
         {selectedRow && (
           <RelayPcDetails pc={selectedRow} observedVersion={observedVersions?.get(selectedRow.server_id) ?? null} mode={mode}
-            onClose={closeDetails} onOpenSheet={onOpenSheet} {...(onForgetPc ? { onForget: onForgetPc } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} />
+            onClose={closeDetails} onOpenSheet={onOpenSheet} {...(onForgetPc ? { onForget: onForgetPc } : {})} {...(onCheckPc ? { onCheckPc } : {})} />
         )}
       </div>
     </section>

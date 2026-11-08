@@ -235,24 +235,28 @@ describe("the dashboard", () => {
     expect(actionsOf(rowOf(html, "Home server"))).toEqual(["Details"]);
     expect(rowOf(html, "Home server")).not.toContain(`href="/s/${ids.home}/"`);
     expect(text(rowOf(html, "Home server"))).toContain("20 h ago");
-    const hosts = [...html.matchAll(/<td class="relay-dash-relay relay-pc-cell-relay"><code class="relay-pc-relay-chip">([^<]+)<\/code><\/td>/g)].map(([, host]) => host);
-    expect(hosts).toEqual(["relay-ap.ovis.sh", "relay.ovis.sh", "relay-ap.ovis.sh", "relay-ap.ovis.sh"]);
+    // the Relay cell: the directory's relay for the PC this device cannot check, Not checked for the paired ones until a check ran
+    const routes = [...html.matchAll(/<td class="relay-dash-relay relay-pc-cell-relay">([\s\S]*?)<\/td>/g)].map(([, cell]) => text(cell ?? ""));
+    expect(routes).toEqual(["relay-ap.ovis.sh", "Not checked", "Not checked", "Not checked"]);
     // an offline PC this device is not paired with offers Details when it has no join route, and the directory's relay wins over the pairing's
     const unpaired = render(signedIn([pc(ids.home, "Home server", "offline")], { directoryRelays: [{ server_id: ids.home, relay: AP }] }));
     expect(actionsOf(rowOf(unpaired, "Home server"))).toEqual(["Details"]);
     expect(rowOf(unpaired, "Home server")).toContain("relay-ap.ovis.sh");
   });
 
-  it("says Offline in the row of a PC the directory has not seen lately, as the strip and the map do, and shows the probe result only after explicit Check now", () => {
+  it("keeps Offline in the row of a PC the directory has not seen lately until this device's own check answers, which reads Ready with its route, and shows the probe line only after explicit Check now", () => {
     const answered = { kind: "answered", route: "relay", rttMs: 13 } as const;
     const html = render(signedIn(four(), { pcStatus: new Map([[ids.home, answered], [ids.desk, answered]]), onCheckPcs: none }));
     const cell = (name: string) => /<td class="relay-dash-state-cell[^"]*">([\s\S]*?)<\/td>/.exec(rowOf(html, name))?.[1] ?? "";
-    expect(rowOf(html, "Home server")).toContain('<svg class="status-dot" data-state="offline"');
-    expect(text(cell("Home server"))).toBe("Offline · 20 h ago");
+    // a live answer beats the directory's stale Offline: the PC is reachable now
+    expect(rowOf(html, "Home server")).toContain('<svg class="status-dot" data-state="ready"');
+    expect(text(cell("Home server"))).toBe("Ready");
+    expect(text(/<td class="relay-dash-relay relay-pc-cell-relay">([\s\S]*?)<\/td>/.exec(rowOf(html, "Home server"))?.[1] ?? "")).toBe("Relay · 13 ms");
     expect(cell("Home server")).not.toContain("connection-line");
-    // automatic probes do not replace Ready or add a second line until Check now
+    // automatic probes add no second line until Check now
     expect(text(cell("Desk PC"))).toBe("Ready");
     const down = render(signedIn(four(), { pcStatus: new Map([[ids.home, { kind: "offline", reason: "pc" }]] as const), onCheckPcs: none }));
+    expect(rowOf(down, "Home server")).toContain('<svg class="status-dot" data-state="offline"');
     const downCell = /<td class="relay-dash-state-cell[^"]*">([\s\S]*?)<\/td>/.exec(rowOf(down, "Home server"))?.[1] ?? "";
     expect(text(downCell)).toBe("Offline · 20 h ago");
   });

@@ -33,6 +33,8 @@ export interface RelayShellProps {
   pcStatus?: ReadonlyMap<string, PcStatus>;
   /** Check now: probe the saved PCs again */
   onCheckPcs?: () => void;
+  /** Details' Check now: one PC, not the fleet sweep */
+  onCheckPc?: (serverId: string) => void;
   /** Explicit directory retry; independent of the liveness probe sweep. */
   onRefreshAccount?: () => void;
   /** Admission succeeded; only this action hands the scoped page to the PC app. */
@@ -195,7 +197,7 @@ export function ReadyCheckpoint({ open, cancel }: { readonly open: () => void; r
  * sheet over the dashboard frame across a scoped join, and the pairing/recovery screens.
  */
 export function RelayShell(props: RelayShellProps) {
-  const { state, pcStatus, onCheckPcs, onRefreshAccount, observedVersions, scoped, onPair, onRetry, onCancel, onBack, onForgetPc, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, continuedAccount, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel } = props;
+  const { state, pcStatus, onCheckPcs, onCheckPc, onRefreshAccount, observedVersions, scoped, onPair, onRetry, onCancel, onBack, onForgetPc, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, continuedAccount, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel } = props;
   const t = useT();
   const [cachedAccount, setCachedAccount] = useState<AccountView | null>(null);
   const rawAccount: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
@@ -229,6 +231,7 @@ export function RelayShell(props: RelayShellProps) {
         {...(pcStatus ? { pcStatus } : {})}
         {...(observedVersions ? { observedVersions } : {})}
         {...(onCheckPcs ? { onCheckPcs } : {})}
+        {...(onCheckPc ? { onCheckPc } : {})}
         {...(onRefreshAccount ? { onRefreshAccount } : {})}
         onAddPc={() => setSheet({ pc: null, mode: "add" })}
         onPairByQr={() => { setSheet(null); setAddingPc(true); }}

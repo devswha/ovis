@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -314,15 +313,25 @@ describe("RelayOverview", () => {
     expect(filters).toEqual(["needs"]);
   });
 
-  it("lets a strip label wrap instead of cutting the control's name, while attention names still ellipsise, and gives the local strip's labels two lines on a phone", () => {
-    const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
-    const block = (selector: string) => new RegExp(selector.replace(/[.*+?^${}()|[\]\\>]/g, "\\$&") + "\\s*\\{([^}]*)\\}").exec(css)?.[1] ?? "";
-    expect(block(".relay-overview-strip-label > span")).toContain("overflow-wrap: anywhere");
-    expect(block(".relay-overview-strip-label > span")).not.toMatch(/white-space:\s*nowrap|text-overflow/);
-    expect(block(".relay-overview-attention-name")).toMatch(/text-overflow:\s*ellipsis/);
-    expect(css).toMatch(/\.relay-overview-strip\[data-local\] \.relay-overview-strip-label\s*\{[^}]*min-height:\s*calc\(2 \* var\(--lh-tight\)/);
-    // PF-2: the overview's major sections sit a group apart
-    expect(css).toMatch(/\.relay-overview,\s*\.relay-overview-loading\s*\{[^}]*gap:\s*var\(--space-6\)/);
+  it("renders each strip label whole in its own span under the strip, the local strip marked for its two-line labels, and every major section as a direct child of the overview in reading order", () => {
+    // the rendered hooks the stylesheet's wrap and spacing rules attach to; the browser QA measures the result (overview-section-spacing: 24px between these children; the capture matrix: no clipped label at 390)
+    const local = renderMarkup({ pcs: localPcs(), mode: "local", defaultRelay: GLOBAL, now: NOW });
+    expect(local).toContain('<section class="relay-overview-strip" data-local="" aria-label="Summary">');
+    expect([...local.matchAll(/<span class="relay-overview-strip-label"><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/span>/g)].map(([, label]) => label)).toEqual(["Paired with this device", "Relays"]);
+    expect(local).not.toMatch(/relay-overview-strip-label[^>]*title=/);
+    const account = renderMarkup({ pcs: f20Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW, children: createElement("section", { id: "relay-dash-pcs" }) });
+    // a cut attention name keeps its full name to hand; a strip label never needs one
+    expect(account).toMatch(/<span class="relay-overview-attention-name" title="Backup NAS">Backup NAS<\/span>/);
+    const overview = /<div class="relay-overview" data-overview-mode="account">([\s\S]*)<\/div>$/.exec(account)?.[1] ?? "";
+    // the overview's direct children, by class or id: a wrapper around any section would break the spacing rule that keys on them
+    const topLevel: string[] = [];
+    let depth = 0;
+    for (const [, closing, attrs, selfClosing] of overview.matchAll(/<(\/?)[a-zA-Z][\w-]*([^>]*?)(\/?)>/g)) {
+      if (closing) { depth -= 1; continue; }
+      if (depth === 0) topLevel.push(/class="([^"]+)"/.exec(attrs ?? "")?.[1] ?? `#${/id="([^"]+)"/.exec(attrs ?? "")?.[1] ?? ""}`);
+      if (!selfClosing) depth += 1;
+    }
+    expect(topLevel).toEqual(["visually-hidden", "relay-overview-strip", "relay-overview-connectivity", "relay-overview-attention-section", "#relay-dash-pcs", "relay-overview-map-disclosure"]);
   });
 
 
@@ -340,9 +349,13 @@ describe("RelayOverview", () => {
     const mixed = renderMarkup({ pcs: freadyPcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
     expect(mixed).not.toContain("relay-overview-attention-caption");
     expect(mixed).toContain('<span class="relay-overview-attention-why">new · 8 min left</span>');
-    // no tinted band behind the approval or update rows: the state dot carries the state
-    const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
-    expect(css).not.toContain("notice-tint");
+    // the state is the dot's alone: every row renders as the plain row with its glyph, no state class or tint hook on the row itself
+    const mixedRows = [...mixed.matchAll(/<li class="([^"]+)" data-pc-state="([^"]+)"><svg class="status-dot" data-state="([^"]+)"/g)].map(([, className, state, dot]) => [className, state, dot]);
+    expect(mixedRows).toEqual([
+      ["relay-overview-attention-row", "needs-approval", "needs-you"],
+      ["relay-overview-attention-row", "needs-approval", "needs-you"],
+      ["relay-overview-attention-row", "offline", "offline"],
+    ]);
   });
 
   it("explains fresh Add countdowns, closed Add windows, available updates, and offline durations across locales without duplicated suffixes, and triggers Details without opening a connection", async () => {
