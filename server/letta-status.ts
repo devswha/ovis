@@ -39,22 +39,25 @@ const MESSAGES_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (const
  * under its store's real path: no link for the file, its folder or any folder up to the store, so it is
  * never another conversation's or another store's.
  */
-function ownMessagesFile(path: string): boolean {
+function ownMessagesFile(path: string): { dev: number; ino: number } | null {
   try {
-    if (!lstatSync(path).isFile()) return false;
+    const stat = lstatSync(path);
+    if (!stat.isFile()) return null;
     const folder = dirname(path);
     const store = dirname(dirname(folder));
-    return realpathSync(path) === join(realpathSync(store), "conversations", basename(folder), basename(path));
-  } catch { return false; }
+    return realpathSync(path) === join(realpathSync(store), "conversations", basename(folder), basename(path)) ? { dev: stat.dev, ino: stat.ino } : null;
+  } catch { return null; }
 }
 
 /** The reader of Letta's messages files for the tracker: its own regular file only, read from its last `cap` bytes when read anew. */
 export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
   const open = (path: string): number | null => {
-    if (!ownMessagesFile(path)) return null;
+    const checked = ownMessagesFile(path);
+    if (checked === null) return null;
     let fd: number;
     try { fd = openSync(path, MESSAGES_FLAGS); } catch { return null; }
-    try { if (fstatSync(fd).isFile()) return fd; } catch { /* gone */ }
+    // a folder above it swapped for a link between the check and the open opens another file: the same one must be open
+    try { const opened = fstatSync(fd); if (opened.isFile() && opened.dev === checked.dev && opened.ino === checked.ino) return fd; } catch { /* gone */ }
     closeSync(fd);
     return null;
   };
