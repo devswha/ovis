@@ -11,8 +11,8 @@ export type Token = { kind: "char"; char: string } | { kind: "one" } | { kind: "
 /** both ends of a range a digit, a lowercase or an uppercase ASCII letter alike: ordered the same in every locale */
 const plainRange = (from: string, to: string): boolean => [/[0-9]/, /[a-z]/, /[A-Z]/].some((kind) => kind.test(from) && kind.test(to)) && from <= to;
 
-/** a bracket expression from just after its `[`: the token and the index after its `]`, or null */
-function bracket(chars: string[], start: number): { token: Token; next: number } | null {
+/** a bracket expression from just after its `[`: the token and the index after its `]`; "open" when no `]` closes it; null */
+function bracket(chars: string[], start: number): { token: Token; next: number } | "open" | null {
   let index = start;
   const negate = chars[index] === "!";
   if (negate) index++;
@@ -28,7 +28,7 @@ function bracket(chars: string[], start: number): { token: Token; next: number }
       index += 3;
     } else { ranges.push([char, char]); index++; }
   }
-  return null;
+  return "open";
 }
 
 /** a component's literal name when it holds no wildcard, else its tokens; null for what is not matched exactly here */
@@ -45,6 +45,8 @@ export function parseComponent(raw: string, escapes: boolean): { name: string } 
     else if (char === "[") {
       const found = bracket(chars, index + 1);
       if (found === null) return null;
+      // glibc's glob reads a `[` no `]` closes as itself (a home folder named `alice[work`)
+      if (found === "open") { tokens.push({ kind: "char", char }); index++; continue; }
       tokens.push(found.token);
       index = found.next;
     } else { tokens.push({ kind: "char", char }); index++; }
@@ -72,10 +74,14 @@ export function matchComponent(tokens: readonly Token[], name: string, budget: {
   const text = Array.from(name);
   const head = tokens[0];
   if (text[0] === "." && (head?.kind !== "char" || head.char !== ".")) return false;
+  // what one `?` or bracket stands for in a name beyond ASCII (a byte, or a character) is ssh's locale's to say
+  if (/[^\x00-\x7f]/.test(name) && tokens.some((token) => token.kind === "one" || token.kind === "class")) return null;
   let [at, from, star, starFrom] = [0, 0, -1, 0];
   while (from < text.length) {
-    if (--budget.steps < 0) return null;
     const token = tokens[at];
+    // a bracket costs a step for each range it tries
+    budget.steps -= token?.kind === "class" ? Math.max(1, token.ranges.length) : 1;
+    if (budget.steps < 0) return null;
     if (token?.kind === "star") { [star, starFrom] = [at++, from]; continue; }
     if (token !== undefined && fits(token, text[from]!)) { at++; from++; continue; }
     if (star < 0) return false;

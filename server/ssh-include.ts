@@ -9,7 +9,7 @@
  */
 import { constants } from "node:fs";
 import { open, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 
 import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.ts";
@@ -65,7 +65,10 @@ async function openedInside(handle: FileHandle, path: string, roots: readonly st
 /** `path` opened, links followed as ssh does, when what was opened is inside `roots`; null when nothing is there */
 async function openInside(path: string, roots: readonly string[], flags: number): Promise<FileHandle | "refused" | null> {
   let handle: FileHandle;
-  try { handle = await open(path, flags); } catch { return null; }
+  try { handle = await open(path, flags); } catch (error) {
+    // only a path that is not there is nothing, as for ssh; one it could not open (EACCES, EMFILE, ELOOP) is unread
+    return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR") ? null : "refused";
+  }
   if (await openedInside(handle, path, roots).catch(() => false)) return handle;
   await handle.close();
   return "refused";
@@ -140,7 +143,8 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
     // ssh expands `%` tokens, `${VAR}` and `~user` in an Include, which this offline reading does not
     if (/%|\$\{/.test(pattern) || (pattern.startsWith("~") && !pattern.startsWith("~/") && pattern !== "~")) return [null];
     const allowed = (await roots).filter((root): root is string => root !== null);
-    const expanded = pattern === "~" || pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern);
+    // put together, never normalized: `*/..` and a trailing `/` are glob(3)'s to read, through the folders matched
+    const expanded = pattern === "~" || pattern.startsWith("~/") ? `${home}${sep}${pattern.slice(2)}` : isAbsolute(pattern) ? pattern : `${sshDir}${sep}${pattern}`;
     const parts = expanded.split(escapes ? "/" : /[\\/]/).map((part) => part === "" ? { name: "" } : parseComponent(part, escapes));
     if (parts.includes(null)) return [null];
     const components = parts.filter((part): part is { name: string } | { tokens: Token[] } => part !== null);
@@ -155,20 +159,20 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
       for (const component of components.slice(first)) {
         const next: string[] = [];
         for (const dir of level) {
-          if ("name" in component) { next.push(join(dir, component.name)); continue; }
+          if ("name" in component) { next.push(`${dir}${sep}${component.name}`); continue; }
           const names = await listInside(dir, allowed, budget);
           if (names === "unread") { scanCut = true; continue; }
           for (const name of names ?? []) {
             const matched = matchComponent(component.tokens, name, budget);
             if (matched === null || (matched && next.length >= budget.files)) { scanCut = true; break; }
-            if (matched) next.push(join(dir, name));
+            if (matched) next.push(`${dir}${sep}${name}`);
           }
         }
         level = next;
       }
-      // ssh reads the files glob(3) returns, sorted by their spelling; a folder among them is no config
+      // ssh reads the files glob(3) returns, sorted by their spelling's bytes (strcmp); a folder among them is no config
       const folders = await Promise.all(level.map((path) => stat(path).then((found) => found.isDirectory(), () => false)));
-      paths = level.filter((_, at) => !folders[at]).sort();
+      paths = level.filter((_, at) => !folders[at]).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
     }
     const texts: (string | null)[] = [];
     for (const path of paths) {

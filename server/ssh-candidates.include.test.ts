@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdirSync, type PathLike, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, type PathLike, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { basename, join } from "node:path";
 
@@ -133,7 +133,8 @@ it.skipIf(process.platform === "win32")("never reads a file swapped for a link o
   const restore = swapAfterFirstLook(file, () => { renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); });
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });
-    expect(candidates.map((candidate) => candidate.name)).toEqual(["own"]);
+    // Linux reads the file it opened; elsewhere the path, resolved again once open, names another file: left unread
+    expect(candidates.map((candidate) => candidate.name)).toEqual(process.platform === "linux" ? ["own"] : []);
   } finally { restore(); }
 });
 
@@ -235,4 +236,30 @@ it.skipIf(process.platform === "win32")("lists no folder without getdents64, lea
     expect(listed).not.toContain("evil");
     expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
   } finally { delete includeHooks.getdents; for (const spy of spies) spy.mockRestore(); }
+});
+
+/** the rows of a config whose Include may set `box`, beside a `box` host at 100.64.0.1 after it */
+async function rowsOf(files: Record<string, string>): Promise<(string | undefined)[][]> {
+  const dir = sshDir(files);
+  return (await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers })).map((candidate) => [candidate.name, candidate.tailnet]);
+}
+const unclaimed = [["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("claims nothing for a host an included file it cannot open may set", async () => {
+  const dir = sshDir({ "locked.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include locked.conf\nHost box\n  HostName 100.64.0.1\n" });
+  chmodSync(join(dir, "locked.conf"), 0);
+  expect((await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers })).map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
+});
+
+it("reads `..` after a wildcard only through the folders it matched, as glob(3) does", async () => {
+  expect(await rowsOf({ "conf.d/hosts": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*/../hosts\nHost box\n  HostName 100.64.0.1\n" })).toEqual(unclaimed);
+});
+
+it("matches only folders with a wildcard Include's trailing slash", async () => {
+  expect(await rowsOf({ "conf.d/file": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*/\nHost box\n  HostName 100.64.0.1\n" })).toEqual(unclaimed);
+});
+
+it.skipIf(process.platform === "win32")("reads the files a wildcard matches in the order of their names' bytes, as glob(3) in the C locale", async () => {
+  const files = { "conf.d/\uE000.conf": "Host box\n  HostName 100.64.0.1\n", "conf.d/\u{10000}.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*\n" };
+  expect(await rowsOf(files)).toEqual(unclaimed);
 });
