@@ -1,4 +1,5 @@
-import { noInstalledNotes, noUpdateNotes, readInstalledNotes, readUpdateNotes, REVISION, unmanagedUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
+import { INSTALL_ID, noInstalledNotes, noUpdateNotes, readInstalledNotes, readUpdateNotes, REVISION, unmanagedUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 
@@ -69,8 +70,8 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
     installed: () => installed,
     // an install goes as a message an older supervisor does not know, never as its unbound `install`
     request: (request) => supervisor?.send(request.command === "install"
-      ? { type: "update-install-revision", expected_revision: request.expected_revision }
-      : request.command === "cancel" ? { type: "update-cancel" } : { type: "update-command", command: "check" }),
+      ? { type: "update-install-revision", expected_revision: request.expected_revision, ...(request.install_id ? { install_id: request.install_id } : {}) }
+      : request.command === "cancel" ? { type: "update-cancel", install_id: request.install_id } : { type: "update-command", command: "check" }),
     // the supervisor starts the bridge in the directory it serves: the release's, or the source checkout
     ...(managed ? { servedRevision: servedRevision(process.cwd()) } : {}),
   };
@@ -105,6 +106,18 @@ const INSTALL_BODY_LIMIT = 1024;
 
 /** The revision an install asks for, from a JSON body of at most INSTALL_BODY_LIMIT bytes; null when it names none. */
 async function expectedRevision(request: Request): Promise<string | null> {
+  const revision = (await smallBody(request))?.["expected_revision"];
+  return typeof revision === "string" && REVISION.test(revision) ? revision : null;
+}
+
+/** The install a cancel names (its install_id, as its 202 gave it); null when it names none. */
+async function cancelledInstall(request: Request): Promise<string | null> {
+  const id = (await smallBody(request))?.["install_id"];
+  return typeof id === "string" && INSTALL_ID.test(id) ? id : null;
+}
+
+/** A JSON object body of at most INSTALL_BODY_LIMIT bytes, or null. */
+async function smallBody(request: Request): Promise<Record<string, unknown> | null> {
   if (!request.body) return null;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -118,8 +131,7 @@ async function expectedRevision(request: Request): Promise<string | null> {
   }
   try {
     const body: unknown = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
-    const revision = isJsonObject(body) ? body["expected_revision"] : null;
-    return typeof revision === "string" && REVISION.test(revision) ? revision : null;
+    return isJsonObject(body) ? body : null;
   } catch { return null; }
 }
 
@@ -153,12 +165,16 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
   if (!service || !status.managed) return fail("updates_unmanaged", status.blocked_reason ?? "Updates unavailable", 409);
   const busy = () => fail("update_busy", "An update operation is already running.", 409);
   // stops an install while it builds; one restarting onto its new release is past stopping
+  // only by the one that asked for that install: it names the install_id its 202 gave
   if (pathname.endsWith("/cancel")) {
-    if (status.install_cancellable !== true) return fail("update_restart_required", "Restart the app before cancelling an update from here.", 409);
-    // building, or still checking what it installs: stopped before anything is built
-    if (status.phase !== "building" && status.phase !== "checking") return fail("update_not_cancellable", "No update is building that could be cancelled.", 409);
-    service.request({ command: "cancel" });
-    return reply({ accepted: true }, 202);
+    return cancelledInstall(request).then((id) => {
+      if (id === null) return fail("invalid_update_cancel", "Name the install_id of the install to cancel.", 400);
+      if (status.install_cancellable !== true) return fail("update_restart_required", "Restart the app before cancelling an update from here.", 409);
+      // building, or still checking what it installs: stopped before anything is built (the supervisor stops only that install)
+      if (status.phase !== "building" && status.phase !== "checking") return fail("update_not_cancellable", "No update is building that could be cancelled.", 409);
+      service.request({ command: "cancel", install_id: id });
+      return reply({ accepted: true }, 202);
+    });
   }
   if (pathname.endsWith("/check")) {
     if (running(status)) return busy();
@@ -173,7 +189,9 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     if (now.revision_bound_install !== true) return fail("update_restart_required", "Restart the app before installing an update from here.", 409);
     if (now.blocked_reason || !now.available) return fail("update_unavailable", now.blocked_reason ?? "No update is available. Check again first.", 409);
     if (now.latest_revision !== expected) return fail("update_offer_changed", "A different update is on offer now. Review it, then update again.", 409);
-    service.request({ command: "install", expected_revision: expected });
-    return reply({ accepted: true }, 202);
+    // its own id, for a cancel by the one that asked for it
+    const id = randomUUID();
+    service.request({ command: "install", expected_revision: expected, install_id: id });
+    return reply({ accepted: true, install_id: id }, 202);
   });
 }

@@ -1553,10 +1553,12 @@ it("cancels an install while it builds: nothing is installed, its offer stays, a
   await watched.initialize();
   try {
     // nothing to cancel before an install runs
-    expect(watched.cancel()).toBe(false);
-    const install = watched.request("install");
+    expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(false);
+    const install = watched.request("install", true, undefined, "11111111-2222-4333-8444-555555555555");
     await building.promise;
-    expect(watched.cancel()).toBe(true);
+    // another's id (another device's install, or this PC's own Settings') never stops it
+    expect(watched.cancel("99999999-2222-4333-8444-555555555555")).toBe(false);
+    expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(true);
     await install;
     expect(watched.status).toMatchObject({ phase: "error", error_code: "update_cancelled", current_revision: running, available: true, install_cancellable: true });
     expect(existsSync(join(stateDir, "failed.json"))).toBe(false);
@@ -1577,12 +1579,12 @@ it("stops an install cancelled while it still checks what is on offer, before an
   const watched: Updater = new Updater({ ...updater.options, publish(status) {
     seen.push(status.step ?? null);
     // asked as soon as the run starts checking
-    if (status.phase === "checking" && !asked) asked = watched.cancel();
+    if (status.phase === "checking" && !asked) asked = watched.cancel("11111111-2222-4333-8444-555555555555");
   } });
   let asked = false;
   await watched.initialize();
   try {
-    await watched.request("install");
+    await watched.request("install", true, undefined, "11111111-2222-4333-8444-555555555555");
     expect(asked).toBe(true);
     expect(watched.status).toMatchObject({ phase: "error", error_code: "update_cancelled", available: true });
     expect(seen).not.toContain("build");

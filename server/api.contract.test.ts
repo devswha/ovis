@@ -831,7 +831,9 @@ describe("update API", () => {
       status = { ...status, latest_revision: offered };
       const accepted = await install(JSON.stringify({ expected_revision: offered }));
       expect(accepted.status).toBe(202);
-      expect(requests).toEqual([{ command: "install", expected_revision: offered }]);
+      // with its own id, which only its 202 tells: a cancel must name it
+      const { install_id } = await accepted.json() as { install_id: string };
+      expect(requests).toEqual([{ command: "install", expected_revision: offered, install_id }]);
       // a release that moves after the 202 is told by the status, not by the request that finished
       status = { ...status, phase: "error", latest_revision: moved, error_code: "update_offer_changed", error: "A different release is on offer than the one asked for, so nothing was installed. Review it, then update again." };
       expect(await (await fetch(`${origin}/api/updates`)).json()).toMatchObject({ phase: "error", error_code: "update_offer_changed", latest_revision: moved });
@@ -842,7 +844,7 @@ describe("update API", () => {
       expect(await code(older)).toBe("update_restart_required");
       // a check stays bodyless
       expect((await fetch(`${origin}/api/updates/check`, { method: "POST", headers: { "x-herdr-update": "1" } })).status).toBe(202);
-      expect(requests).toEqual([{ command: "install", expected_revision: offered }, { command: "check" }]);
+      expect(requests).toEqual([{ command: "install", expected_revision: offered, install_id }, { command: "check" }]);
     } finally { managed.stop(); rmSync(managedState, { recursive: true, force: true }); }
   });
 
@@ -889,14 +891,18 @@ describe("update API", () => {
       // the install still names the offer, as from the app's own controls
       expect((await call("/api/updates/install", `Bearer ${bridge}`, "{}")).status).toBe(400);
       expect(requests).toEqual([]);
-      expect((await call("/api/updates/install", `Bearer ${bridge}`, JSON.stringify({ expected_revision: offered }))).status).toBe(202);
-      expect(requests).toEqual([{ command: "install", expected_revision: offered }]);
+      const granted = await call("/api/updates/install", `Bearer ${bridge}`, JSON.stringify({ expected_revision: offered }));
+      expect(granted.status).toBe(202);
+      const { install_id } = await granted.json() as { install_id: string };
+      expect(requests).toEqual([{ command: "install", expected_revision: offered, install_id }]);
       // and stop that install while it builds (POST /api/updates/cancel), once its supervisor can
       status.phase = "building";
-      expect((await call("/api/updates/cancel", `Bearer ${bridge}`, "")).status).toBe(409);
+      expect((await call("/api/updates/cancel", `Bearer ${bridge}`, JSON.stringify({ install_id }))).status).toBe(409);
       status.install_cancellable = true;
-      expect((await call("/api/updates/cancel", `Bearer ${bridge}`, "")).status).toBe(202);
-      expect(requests.at(-1)).toEqual({ command: "cancel" });
+      // a cancel that names no install is refused; the one it names is passed on, for the supervisor to stop that one only
+      expect((await call("/api/updates/cancel", `Bearer ${bridge}`, "{}")).status).toBe(400);
+      expect((await call("/api/updates/cancel", `Bearer ${bridge}`, JSON.stringify({ install_id }))).status).toBe(202);
+      expect(requests.at(-1)).toEqual({ command: "cancel", install_id });
       status.phase = "idle";
       requests.splice(1);
       // a wrong bridge token is refused like any other, and the token opens no other update route

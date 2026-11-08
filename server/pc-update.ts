@@ -1,5 +1,5 @@
 import type { PcUpdateOffer } from "../shared/machines.ts";
-import { REVISION, type UpdateStatus } from "../shared/update.ts";
+import { REVISION, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 
 /**
@@ -68,11 +68,12 @@ export interface OwnUpdateOptions {
  * it did, "continues" when it could not (an older Ovis that cannot, or one restarting onto the new release already),
  * "none" when no update had started there. Never followed out of the tunnel, and bounded in time.
  */
-export async function cancelOwnUpdate(endpoint: Endpoint | undefined, last: Partial<UpdateStatus> | null, started: boolean, confirmMs = 10_000): Promise<"stopped" | "continues" | "none"> {
-  if (!started) return "none";
-  if (!endpoint || last?.install_cancellable !== true) return "continues";
+export async function cancelOwnUpdate(endpoint: Endpoint | undefined, last: Partial<UpdateStatus> | null, installId: string | null, confirmMs = 10_000): Promise<"stopped" | "continues" | "none"> {
+  // only the install this app asked for, by the id its 202 gave: without it (its answer cut off, an older Ovis) nothing is asked
+  if (!endpoint || last?.install_cancellable !== true || !installId) return "continues";
   try {
-    const response = await fetch(`${endpoint.url}/api/updates/cancel`, { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1" }, signal: AbortSignal.timeout(BRIDGE_ANSWER_MS) });
+    const response = await fetch(`${endpoint.url}/api/updates/cancel`, { method: "POST", redirect: "manual", body: JSON.stringify({ install_id: installId }),
+      headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1", "content-type": "application/json" }, signal: AbortSignal.timeout(BRIDGE_ANSWER_MS) });
     await discard(response);
     if (response.status !== 202) return "continues";
     // a 202 is only asked: stopped once its own status says so, within a bounded wait
@@ -84,6 +85,11 @@ export async function cancelOwnUpdate(endpoint: Endpoint | undefined, last: Part
     }
     return "continues";
   } catch { return "continues"; }
+}
+/** the id a PC's 202 gave the install this app asked for (POST /api/updates/install), or null */
+export async function installIdOf(response: Response): Promise<string | null> {
+  const body = await readCappedJson<{ install_id?: unknown } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null);
+  return typeof body?.install_id === "string" && INSTALL_ID.test(body.install_id) ? body.install_id : null;
 }
 /** an update cancelled here, with what became of it there: "continues" when it may still finish there */
 export class OwnUpdateCancelled extends Error {
@@ -100,15 +106,15 @@ export const cancelledWords = (there: "stopped" | "continues" | "none"): string 
  * A cancel ends only the waiting: an install that started there runs to its end. Throws in plain words.
  */
 export async function followOwnUpdate(options: OwnUpdateOptions): Promise<void> {
-  const state = { last: null as Partial<UpdateStatus> | null, asked: false };
+  const state = { last: null as Partial<UpdateStatus> | null, asked: false, installId: null as string | null };
   try { await followOwn(options, state); }
   catch (error) {
     // cancelled once the install was asked for (its answer may have been cut off too): that PC is asked to stop it
-    if (options.signal.aborted && state.asked && options.cancelled?.() === true) throw new OwnUpdateCancelled(await cancelOwnUpdate(options.endpoint(), state.last, true));
+    if (options.signal.aborted && state.asked && options.cancelled?.() === true) throw new OwnUpdateCancelled(await cancelOwnUpdate(options.endpoint(), state.last, state.installId));
     throw error;
   }
 }
-async function followOwn(options: OwnUpdateOptions, state: { last: Partial<UpdateStatus> | null; asked: boolean }): Promise<void> {
+async function followOwn(options: OwnUpdateOptions, state: { last: Partial<UpdateStatus> | null; asked: boolean; installId: string | null }): Promise<void> {
   const { signal } = options;
   const pollMs = options.pollMs ?? 2000, startMs = options.startMs ?? 60_000, checkMs = options.checkMs ?? 30_000;
   const pause = () => new Promise<void>((resolve) => {
@@ -153,7 +159,7 @@ async function followOwn(options: OwnUpdateOptions, state: { last: Partial<Updat
     try { response = await fetch(`${endpoint.url}/api/updates/install`, { method: "POST", redirect: "manual", body: JSON.stringify({ expected_revision: revision }),
       headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1", "content-type": "application/json" },
       signal: AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]) }); } catch (error) { if (signal.aborted) state.asked = true; throw error; }
-    if (response.status === 202) { state.asked = true; await discard(response); break; }
+    if (response.status === 202) { state.asked = true; state.installId = await installIdOf(response); break; }
     const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
     if (refusal?.code === "update_offer_changed") throw new Error(CHANGED);
     // busy: an install of it runs there already (its own Settings, another app), which is followed; or a check

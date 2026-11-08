@@ -219,6 +219,8 @@ export class Updater {
   private cancelledRevision: string | null = null;
   /** a cancel asked for while the run still checked: honoured before anything is built */
   private cancelPending = false;
+  /** the id the install running now was asked for with, or null (the timer's, or no id given) */
+  private runId: string | null = null;
   private timer?: ReturnType<typeof setInterval>;
   private initialTimer?: ReturnType<typeof setTimeout>;
   private sourceRevision = "";
@@ -467,8 +469,12 @@ export class Updater {
     return run(this.options.root, ["git", "fetch", "--no-tags", "--unshallow", "origin"], this.controller.signal, timeout);
   }
 
-  /** Stops the install that is building now: true when there was one to stop. Once it restarts, false. */
-  cancel(): boolean {
+  /**
+   * Stops the install running now, only when `installId` names it (the id its install request carried): true when it did.
+   * Another's install (another device's, or this PC's own Settings') is never stopped. Once it restarts, false.
+   */
+  cancel(installId: string): boolean {
+    if (!this.runId || installId !== this.runId) return false;
     if (this.installing && this.status.phase === "building") { this.installing.abort(new Error("Update cancelled")); return true; }
     // asked while it still checks what is on offer: it stops before it builds anything
     if (this.busy && this.status.phase === "checking") { this.cancelPending = true; return true; }
@@ -479,9 +485,11 @@ export class Updater {
    * from the 5-minute timer; only the timer waits a failed unshallow fetch's backoff out.
    * `expectedRevision`: the release a manual install was offered; the install goes ahead only
    * while the check it starts with still offers exactly that one. */
-  async request(command: UpdateCommand, byUser = false, expectedRevision?: string): Promise<void> {
+  async request(command: UpdateCommand, byUser = false, expectedRevision?: string, installId?: string): Promise<void> {
     if (this.busy || !this.status.managed || this.controller.signal.aborted) return;
     this.busy = true;
+    // the id of the install this run is (its request's): what a cancel must name
+    this.runId = command === "install" ? installId ?? null : null;
     let stage: string | null = null;
     let attempted: string | null = null;
     let checked = false;
@@ -595,6 +603,7 @@ export class Updater {
       if (stage) rmSync(stage, { recursive: true, force: true });
       this.installing = null;
       this.cancelPending = false;
+      this.runId = null;
       this.busy = false;
     }
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { noInstalledNotes, noUpdateNotes, readUpdateIpcRequest, unmanagedUpdateStatus, type UpdateCommand, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
+import { noInstalledNotes, noUpdateNotes, readUpdateIpcRequest, unmanagedUpdateStatus, type UpdateCommand, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
 import { connectUpdater, handleUpdateRequest } from "./update-api.ts";
 
 // The bridge and the supervisor that runs it, over a stand-in for their IPC channel. Messages go
@@ -64,12 +64,14 @@ describe("the update IPC between the bridge and its supervisor", () => {
     current.tell(offer(A));
     expect(current.bridge.status().revision_bound_install).toBe(true);
     expect(await post(current.bridge, A)).toEqual({ status: 202, code: null });
-    expect(current.requests).toEqual([{ command: "install", expected_revision: A }]);
+    expect(current.requests).toEqual([{ command: "install", expected_revision: A, install_id: expect.stringMatching(INSTALL_ID) }]);
     // what an older bridge sends for its Update: no revision, so no install
     expect(readUpdateIpcRequest({ type: "update-command", command: "install" })).toBeNull();
     expect(readUpdateIpcRequest({ type: "update-command", command: "check" })).toEqual({ command: "check" });
     // a cancel goes as a type of its own, which an older supervisor ignores
-    expect(readUpdateIpcRequest({ type: "update-cancel" })).toEqual({ command: "cancel" });
+    // naming the install it stops; one that names none, or not an id, is no cancel
+    expect(readUpdateIpcRequest({ type: "update-cancel", install_id: "11111111-2222-4333-8444-555555555555" })).toEqual({ command: "cancel", install_id: "11111111-2222-4333-8444-555555555555" });
+    for (const install_id of [undefined, "", "x", 7]) expect(readUpdateIpcRequest({ type: "update-cancel", install_id })).toBeNull();
   });
 
   it("reads only a full lowercase commit id, and nothing from a message out of shape", () => {
@@ -92,7 +94,7 @@ describe("the update IPC between the bridge and its supervisor", () => {
     expect(current.requests).toEqual([]);
     // the second tab rendered B and installs B, by name
     expect(await post(current.bridge, B)).toEqual({ status: 202, code: null });
-    expect(current.requests).toEqual([{ command: "install", expected_revision: B }]);
+    expect(current.requests).toEqual([{ command: "install", expected_revision: B, install_id: expect.stringMatching(INSTALL_ID) }]);
     // under an older supervisor neither tab installs anything
     const older = olderSupervisor();
     older.tell(offer(A));

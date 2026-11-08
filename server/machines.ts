@@ -28,7 +28,7 @@ import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "..
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
 import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
-import { followOwnUpdate, offerFromStatus, readOwnStatus , cancelledWords, cancelOwnUpdate, OwnUpdateCancelled } from "./pc-update.ts";
+import { followOwnUpdate, offerFromStatus, readOwnStatus, cancelledWords, cancelOwnUpdate, installIdOf, OwnUpdateCancelled } from "./pc-update.ts";
 import { appRelease, INSTALLER, installPlanFor, PcInstaller, samePc, type InstallConnect, type InstallPlan } from "./pc-install.ts";
 import { warmSshAddresses } from "./ssh-address.ts";
 import { readMoveOffer } from "./remote-move.ts";
@@ -1000,8 +1000,12 @@ export class MachineManager {
         // without a card's revision (a replacement, or a fresh install that found an older Ovis there), the release shown was
         // this app's own: its update installs that release only, never another one the PC offers by now
         if (!request.revision && !sameRelease(result.remote_ovis?.latest_version, APP_VERSION)) return `That PC offers another release now (${result.remote_ovis?.latest_version ? `v${result.remote_ovis.latest_version}` : "none it names"}) than the one shown (v${APP_VERSION}). Look at it again, then update.`;
-        const revision = request.revision ?? this.jobs.get(current.id)?.offeredRevision;
-        if (!revision) return UNREAD_RELEASE;
+        // the build shown is this app's own (its revision): another build of that version the PC offers is never adopted
+        const offered = this.jobs.get(current.id)?.offeredRevision;
+        if (!offered) return UNREAD_RELEASE;
+        const revision = request.revision ?? (process.env["OVIS_REVISION"] || undefined);
+        if (!revision) return "This app is not a release build, so it cannot tell which build of its release it showed; update that PC from its own Settings → Updates.";
+        if (!request.revision && offered !== revision) return `That PC offers another build of v${APP_VERSION} than this app's, the one shown. Look at it again, then update.`;
         current = start(true, revision); request.onJob?.(current.id); result = await ended(current);
         followed = true;
       }
@@ -1019,7 +1023,8 @@ export class MachineManager {
       }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
-    return { job_id: current.id, cancel: () => { cancelled = true; this.cancelJob(current.id); own?.abort.abort(); }, finished };
+    // the person's cancel of the install: its follow-up update there is asked to stop as well
+    return { job_id: current.id, cancel: () => { cancelled = true; this.cancelJob(current.id, false, true); if (own) own.asked = true; own?.abort.abort(); }, finished };
   };
   /** an install for a PC added here shows on its card as its update does */
   private showInstall(job: PcInstallJob): void {
@@ -1816,9 +1821,11 @@ export class MachineManager {
       // that closes (cancelJob); never an install its own Settings started, which a refusal says
       // armed before it is asked (a cancel while its answer is on its way may follow an install already accepted);
       // disarmed by a refusal: an install the PC's own Settings started (update_busy) is never this one to stop
-      job.ownCancel = async () => cancelledWords(await cancelOwnUpdate(endpoint, seen, true));
+      // the id its 202 gives: a cancel names it, so only this install is stopped there (none when the answer was cut off)
+      let installId: string | null = null;
+      job.ownCancel = async () => cancelledWords(await cancelOwnUpdate(endpoint, seen, installId));
       const response = await updates(revision);
-      if (response.status === 202) { await discard(response); break; }
+      if (response.status === 202) { installId = await installIdOf(response); break; }
       job.ownCancel = undefined;
       const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
       // busy: an install of it (its own Settings, another app) runs, and is followed; or a check that

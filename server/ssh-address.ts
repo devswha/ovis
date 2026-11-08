@@ -77,9 +77,13 @@ export async function warmSshAddresses(targets: SshTarget[]): Promise<void> {
 }
 const RESOLVE_MS = 3000;
 
-/** The resolver, replaceable in tests with one that reads a config file of their own. Killed outright (SIGKILL) at the limit. */
-export const sshAddresses = {
-  async resolve(target: SshTarget, config?: string): Promise<string | null> {
+/** The resolver, replaced in tests (scripts/test-herdr.ts): never the account's ssh or its config there. */
+export const sshAddresses: { resolve(target: SshTarget, config?: string): Promise<string | null> } = {
+  resolve: (target, config) => resolveWithSsh(target, config),
+};
+/** ssh -G itself, killed outright (SIGKILL) at the limit, its output read no longer than that */
+export async function resolveWithSsh(target: SshTarget, config?: string): Promise<string | null> {
+  {
     try {
       const run = Bun.spawn(sshArgs(target, config), { stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true });
       // the read ends at the limit too: a child ssh left running (a Match exec, say) may hold its output open after it is killed
@@ -88,8 +92,8 @@ export const sshAddresses = {
       const done = Promise.all([new Response(run.stdout).text(), run.exited]).then(([output, code]) => code === 0 ? parseResolved(output) : null);
       try { return await Promise.race([done, limit]); } finally { clearTimeout(timer); }
     } catch { return null; }
-  },
-};
+  }
+}
 
 export function literalAddress(target: SshTarget): string {
   const at = target.destination.lastIndexOf("@");

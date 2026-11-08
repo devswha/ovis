@@ -184,8 +184,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
- *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
- *  POST   /api/updates/cancel            -> 202 { accepted: true }: stops the install that builds (install_cancellable); 409 update_not_cancellable or update_restart_required
+ *  POST   /api/updates/install           -> 202 { accepted: true, install_id }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/cancel            -> 202 { accepted: true }; { install_id } JSON body, as the install's 202 gave it: stops that
+ *                                            install only, while it checks or builds (install_cancellable); 400 invalid_update_cancel,
+ *                                            409 update_not_cancellable or update_restart_required
  *                                            (the bridge token may cancel any install that builds there, as it may start one: it is this
  *                                            PC owner's own connection server, which asks only for an install it requested)
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,

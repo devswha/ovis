@@ -82,7 +82,12 @@ export const REVISION = /^[0-9a-f]{40,64}$/;
  * What the bridge asks of the update service: a check, or the install of the exact revision the
  * person saw offered. A manual install never goes without its revision.
  */
-export type UpdateRequest = { command: "check" } | { command: "install"; expected_revision: string } | { command: "cancel" };
+export type UpdateRequest = { command: "check" } | { command: "install"; expected_revision: string; install_id?: string } | { command: "cancel"; install_id: string };
+/**
+ * An install's own id, given in its 202 (POST /api/updates/install) to whoever asked for it: a cancel names it, so only the one
+ * that asked for an install can stop it, never another device's or the PC's own Settings'.
+ */
+export const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * The supervisor's reading of a bridge's IPC message. `update-command` carries only a check: an
@@ -91,13 +96,13 @@ export type UpdateRequest = { command: "check" } | { command: "install"; expecte
  * running it as an install of whatever its own check finds.
  */
 export function readUpdateIpcRequest(message: unknown): UpdateRequest | null {
-  const value = message as { type?: unknown; command?: unknown; expected_revision?: unknown } | null | undefined;
+  const value = message as { type?: unknown; command?: unknown; expected_revision?: unknown; install_id?: unknown } | null | undefined;
   if (typeof value !== "object" || value === null) return null;
   if (value.type === "update-command" && value.command === "check") return { command: "check" };
   // a cancel travels as a type an older supervisor does not know, and so ignores
-  if (value.type === "update-cancel") return { command: "cancel" };
+  if (value.type === "update-cancel") return typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { command: "cancel", install_id: value.install_id } : null;
   if (value.type === "update-install-revision" && typeof value.expected_revision === "string" && REVISION.test(value.expected_revision)) {
-    return { command: "install", expected_revision: value.expected_revision };
+    return { command: "install", expected_revision: value.expected_revision, ...(typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { install_id: value.install_id } : {}) };
   }
   return null;
 }
