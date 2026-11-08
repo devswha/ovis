@@ -238,6 +238,8 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
     deferred.unsettled = true;
     throw new Error("transcript revision left to settleTranscriptRevision");
   }
+  // a growth whose first bytes were not checked may be a rewrite that also grew: the next poll checks them
+  if (read && reads.mode === "none" && next.prefix !== undefined && next.size > next.prefix.at) throw new ConversationReadPending();
   remember(transcriptRevisions, path, next, 64);
   return next.generation ? `-${next.generation}` : "";
 }
@@ -303,7 +305,10 @@ async function settleTranscriptRevision({ path, checkWindow, live }: RevisionTar
   } catch { /* a stat that fails digests nothing */ } finally { await handle.close().catch(() => {}); }
 }
 
-/** How many times readSettled settles a transcript before its read takes what it finds without reading. */
+/**
+ * How many times readSettled settles a transcript before its read takes what it finds without reading;
+ * a transcript reached through a link, which no settle opens, takes it at once.
+ */
 const REVISION_SETTLES = 3;
 
 /**
@@ -322,7 +327,7 @@ async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ 
   for (let settles = 1; ; settles++) {
     await settleTranscriptRevision(target, authorized);
     if (!(target.live?.() ?? true)) return null;
-    const reads = settles < REVISION_SETTLES ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
+    const reads = settles < REVISION_SETTLES && authorized?.link !== true ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
     revisionReads = reads;
     try {
       if (!stillAuthorized(target.path, authorized)) throw refuse();
@@ -2758,8 +2763,8 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
     applyHistoryBoundary(path, stream, source);
   } catch (error) {
     // a branch that cannot be walked says so; a file that went unreadable mid-read has
-    // one answer, and an unreadable branch has its own
-    if (error instanceof ConversationUnavailable) throw error;
+    // one answer, and an unreadable branch has its own; a revision left unchecked is pending
+    if (error instanceof ConversationUnavailable || error instanceof ConversationReadPending) throw error;
     throw new ConversationUnavailable("transcript_missing");
   }
   // an older page never changes while its file and the rollouts before it stay the same

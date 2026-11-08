@@ -3016,6 +3016,35 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(parses).toHaveBeenCalledTimes(1);
   });
 
+  it("never answers the old history for a transcript rewritten in place and grown that keeps growing through every settle", async () => {
+    const base = await paneConversation(pane.pane_id);
+    // rewritten in place (same inode), its first bytes changed, and longer than before
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "HELLO, rewritten"));
+    const { open } = fsp;
+    let writes = 0;
+    restores.push(
+      // each settle's last stat of the transcript: an append lands right after it, so no settle records
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : `w${writes - 1}`, "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(writes).toBe(3);
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+    for (const spy of restores.splice(3)) spy.mockRestore();
+    // the next poll checks the first bytes and finds the rewrite
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base.history_id);
+  });
+
   it("never digests another agent's transcript that a folder swapped in after authorization puts at the path", async () => {
     const project = join(root, "project");
     const elsewhere = join(root, "elsewhere");
@@ -3283,6 +3312,28 @@ describe("a page read that settles its transcript's revision off the event loop"
     // its digest is never read, so a touch counts as a rewrite
     expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base);
     expect(opened).not.toContain(path);
+  });
+
+  it.skipIf(!linksRefused)("settles a transcript reached through a link once per read, not once per settle it may take", async () => {
+    // each settle pass stats the path to check it still names the authorized file, before and after its page read
+    const { statSync } = fs;
+    let checks = 0;
+    restores.push(spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+      if (args[0] === path) checks++;
+      return statSync(...args);
+    }) as typeof fs.statSync));
+    await paneConversation(pane.pane_id);
+    checks = 0;
+    await paneConversation(pane.pane_id);
+    const pass = checks;
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    await paneConversation(pane.pane_id);
+    checks = 0;
+    await paneConversation(pane.pane_id);
+    // one pass, and the stat that follows the link to authorize it
+    expect(checks).toBe(pass + 1);
   });
 });
 
