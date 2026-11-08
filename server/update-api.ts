@@ -71,7 +71,7 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
     // an install goes as a message an older supervisor does not know, never as its unbound `install`
     request: (request) => supervisor?.send(request.command === "install"
       ? { type: "update-install-revision", expected_revision: request.expected_revision, ...(request.install_id ? { install_id: request.install_id } : {}) }
-      : request.command === "cancel" ? { type: "update-cancel", install_id: request.install_id } : { type: "update-command", command: "check" }),
+      : request.command === "cancel" ? { type: "update-cancel-v2", install_id: request.install_id } : { type: "update-command", command: "check" }),
     // the supervisor starts the bridge in the directory it serves: the release's, or the source checkout
     ...(managed ? { servedRevision: servedRevision(process.cwd()) } : {}),
   };
@@ -135,6 +135,9 @@ async function smallBody(request: Request): Promise<Record<string, unknown> | nu
   } catch { return null; }
 }
 
+/** the install_id of the install each update service was last asked for here: the only one a cancel may name */
+const issued = new WeakMap<UpdateService, string>();
+
 const running = (status: UpdateStatus) => ["checking", "building", "restarting"].includes(status.phase);
 
 /**
@@ -170,8 +173,9 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     return cancelledInstall(request).then((id) => {
       if (id === null) return fail("invalid_update_cancel", "Name the install_id of the install to cancel.", 400);
       if (status.install_cancellable !== true) return fail("update_restart_required", "Restart the app before cancelling an update from here.", 409);
-      // building, or still checking what it installs: stopped before anything is built (the supervisor stops only that install)
-      if (status.phase !== "building" && status.phase !== "checking") return fail("update_not_cancellable", "No update is building that could be cancelled.", 409);
+      // only the install this server was last asked for, while it still checks or builds: a wrong or expired id is refused
+      // exactly as when no update runs, so the answer tells nothing of another's install (the supervisor checks the id too)
+      if (id !== issued.get(service) || (status.phase !== "building" && status.phase !== "checking")) return fail("update_not_cancellable", "No update asked for with that install_id is running here.", 409);
       service.request({ command: "cancel", install_id: id });
       return reply({ accepted: true }, 202);
     });
@@ -191,6 +195,7 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     if (now.latest_revision !== expected) return fail("update_offer_changed", "A different update is on offer now. Review it, then update again.", 409);
     // its own id, for a cancel by the one that asked for it
     const id = randomUUID();
+    issued.set(service, id);
     service.request({ command: "install", expected_revision: expected, install_id: id });
     return reply({ accepted: true, install_id: id }, 202);
   });

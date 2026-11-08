@@ -62,14 +62,19 @@ const answer = async (response: Response | Promise<Response>) => {
 
 describe("a cancel", () => {
   it("stops only an install that builds, and only where its supervisor can", async () => {
-    let status = offer({ phase: "building", install_cancellable: true });
+    let status = offer();
     const updates = service(() => status);
-    const cancel = (id: string | null = "11111111-2222-4333-8444-555555555555") => answer(handleUpdateRequest(install(id === null ? "{}" : JSON.stringify({ install_id: id })), "/api/updates/cancel", updates));
+    // the install it may cancel: the one this server was asked for, by the id its 202 gave
+    const granted = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", updates);
+    const { install_id: issued } = await granted.json() as { install_id: string };
+    updates.requests.splice(0);
+    status = offer({ phase: "building", install_cancellable: true });
+    const cancel = (id: string | null = issued) => answer(handleUpdateRequest(install(id === null ? "{}" : JSON.stringify({ install_id: id })), "/api/updates/cancel", updates));
     // only by naming the install it stops (its 202's install_id): never another's
     for (const id of [null, "not-an-id", "ABCDEF11-2222-4333-8444-555555555555"]) expect(await cancel(id)).toEqual({ status: 400, code: "invalid_update_cancel" });
     expect(updates.requests).toEqual([]);
     expect(await cancel()).toEqual({ status: 202, code: null });
-    expect(updates.requests).toEqual([{ command: "cancel", install_id: "11111111-2222-4333-8444-555555555555" }]);
+    expect(updates.requests).toEqual([{ command: "cancel", install_id: issued }]);
     // nothing building (restarting onto the new release, or idle): past or nothing to stop
     // still checking what it installs: stopped before it builds
     status = offer({ phase: "checking", install_cancellable: true });
@@ -80,6 +85,29 @@ describe("a cancel", () => {
     status = offer({ phase: "building" });
     expect(await cancel()).toEqual({ status: 409, code: "update_restart_required" });
     expect(updates.requests).toHaveLength(1);
+  });
+});
+
+describe("a cancel by its install's id", () => {
+  it("refuses a wrong or expired id exactly as it refuses one when no update runs", async () => {
+    let status = offer();
+    const updates = service(() => status);
+    const granted = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", updates);
+    const { install_id } = await granted.json() as { install_id: string };
+    const cancel = async (id: string) => { const response = await handleUpdateRequest(install(JSON.stringify({ install_id: id })), "/api/updates/cancel", updates); return { status: response.status, body: await response.json() }; };
+    // its install builds: another id is refused, as if no update ran
+    status = offer({ phase: "building", install_cancellable: true });
+    const wrong = await cancel("99999999-2222-4333-8444-555555555555");
+    status = offer({ phase: "idle", install_cancellable: true });
+    const none = await cancel("99999999-2222-4333-8444-555555555555");
+    const expired = await cancel(install_id);
+    expect(wrong).toEqual(none);
+    expect(expired).toEqual(none);
+    expect(none.status).toBe(409);
+    // only its own id, while it runs, is passed on
+    status = offer({ phase: "building", install_cancellable: true });
+    expect((await cancel(install_id)).status).toBe(202);
+    expect(updates.requests.filter((request) => request.command === "cancel")).toEqual([{ command: "cancel", install_id }]);
   });
 });
 

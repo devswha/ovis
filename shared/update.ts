@@ -99,8 +99,8 @@ export function readUpdateIpcRequest(message: unknown): UpdateRequest | null {
   const value = message as { type?: unknown; command?: unknown; expected_revision?: unknown; install_id?: unknown } | null | undefined;
   if (typeof value !== "object" || value === null) return null;
   if (value.type === "update-command" && value.command === "check") return { command: "check" };
-  // a cancel travels as a type an older supervisor does not know, and so ignores
-  if (value.type === "update-cancel") return typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { command: "cancel", install_id: value.install_id } : null;
+  // a cancel travels as a type no older supervisor knows (one that cancelled without an id knew "update-cancel"), and so ignores
+  if (value.type === "update-cancel-v2") return typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { command: "cancel", install_id: value.install_id } : null;
   if (value.type === "update-install-revision" && typeof value.expected_revision === "string" && REVISION.test(value.expected_revision)) {
     return { command: "install", expected_revision: value.expected_revision, ...(typeof value.install_id === "string" && INSTALL_ID.test(value.install_id) ? { install_id: value.install_id } : {}) };
   }

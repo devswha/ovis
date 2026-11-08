@@ -70,8 +70,10 @@ describe("the update IPC between the bridge and its supervisor", () => {
     expect(readUpdateIpcRequest({ type: "update-command", command: "check" })).toEqual({ command: "check" });
     // a cancel goes as a type of its own, which an older supervisor ignores
     // naming the install it stops; one that names none, or not an id, is no cancel
-    expect(readUpdateIpcRequest({ type: "update-cancel", install_id: "11111111-2222-4333-8444-555555555555" })).toEqual({ command: "cancel", install_id: "11111111-2222-4333-8444-555555555555" });
-    for (const install_id of [undefined, "", "x", 7]) expect(readUpdateIpcRequest({ type: "update-cancel", install_id })).toBeNull();
+    expect(readUpdateIpcRequest({ type: "update-cancel-v2", install_id: "11111111-2222-4333-8444-555555555555" })).toEqual({ command: "cancel", install_id: "11111111-2222-4333-8444-555555555555" });
+    for (const install_id of [undefined, "", "x", 7]) expect(readUpdateIpcRequest({ type: "update-cancel-v2", install_id })).toBeNull();
+    // the name a supervisor that cancels without an id might know: never read as a cancel
+    expect(readUpdateIpcRequest({ type: "update-cancel", install_id: "11111111-2222-4333-8444-555555555555" })).toBeNull();
   });
 
   it("reads only a full lowercase commit id, and nothing from a message out of shape", () => {
