@@ -234,6 +234,29 @@ describe("RelayPcDetails", () => {
     expect(closed).toBe(2);
   });
 
+  it("names the route this device reaches the PC by in its own labelled row: the way and the round trip, No answer, Not checked, or nothing for an unpaired PC", () => {
+    const routeOf = (html: string) => /<dt>Route<\/dt><dd[^>]*>([\s\S]*?)<\/dd>/.exec(html)?.[1] ?? "";
+    const text = (cell: string) => cell.replace(/<[^>]+>/g, "");
+    expect(text(routeOf(renderHtml({ pc: makeRow({ state: "paired" }, { kind: "answered", route: "lan", rttMs: 4 }), onClose: none })))).toBe("Same network · 4 ms");
+    expect(text(routeOf(renderHtml({ pc: makeRow({ state: "paired" }, { kind: "answered", route: "tailscale", rttMs: 18 }), onClose: none })))).toBe("Tailscale · 18 ms");
+    const relayed = routeOf(renderHtml({ pc: makeRow({ state: "paired" }, { kind: "answered", route: "relay", relay: "wss://relay-ap.ovis.sh", rttMs: 62 }), onClose: none }));
+    expect(relayed).toContain('<code class="relay-pc-relay-chip">relay-ap.ovis.sh</code>');
+    expect(text(relayed)).toBe("relay-ap.ovis.sh · 62 ms");
+    expect(text(routeOf(renderHtml({ pc: makeRow({}, { kind: "offline", reason: "relay" }), onClose: none })))).toBe("No answer");
+    expect(text(routeOf(renderHtml({ pc: makeRow({ state: "paired" }), onClose: none })))).toBe("Not checked");
+    expect(text(routeOf(renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false }), onClose: none })))).toBe("—");
+  });
+
+  it("names the specific state the table names, Needs approval or Needs update, never the Needs you group word", () => {
+    const stateOf = (html: string) => /<dt>State<\/dt><dd><span class="relay-pc-details-value">([^<]+)<\/span>/.exec(html)?.[1];
+    const approval = renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false, join: { server_public_key: "k", relay: GLOBAL } }), onClose: none, onOpenSheet: none });
+    expect(stateOf(approval)).toBe("Needs approval");
+    const update = renderHtml({ pc: makeRow({ state: "needs-update" }), onClose: none });
+    expect(stateOf(update)).toBe("Needs update");
+    expect(update).toContain("Update Ovis on it");
+    expect(approval + update).not.toContain("Needs you");
+  });
+
   it("renders an explicit Not checked observation time when observedVersion has no observedAt", () => {
     const html = renderHtml({ pc: makeRow(), observedVersion: { version: "0.5.0", outdated: false }, onClose: none });
     const versionField = /<dt>Version<\/dt>([\s\S]*?)<\/dd>/.exec(html)?.[1] ?? "";

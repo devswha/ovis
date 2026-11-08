@@ -239,23 +239,21 @@ describe("RelayOverview", () => {
     expect(renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW }, "ko")).toContain("오프라인 1대 포함");
   });
 
-  it("shows Paired with this device N and Relays in local mode without Ready or Offline columns, and keeps Paired · not checked until a check returns", () => {
+  it("shows Paired with this device N and Relays in local mode without Ready or Offline columns, and lists no PC of its own: the table below carries each PC's state and route", () => {
     const pcs = localPcs();
-    const uncheckedHtml = renderMarkup({ pcs, mode: "local", defaultRelay: GLOBAL, now: NOW });
-    const cells = [...uncheckedHtml.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, count]) => [cell, Number(count)]);
-    expect(cells).toEqual([["paired", 4], ["relays", 2]]);
-    expect(uncheckedHtml).toContain("Paired with this device");
-    expect(uncheckedHtml).toContain("Paired · not checked");
-    expect(uncheckedHtml).not.toContain('data-strip-cell="ready"');
-    expect(uncheckedHtml).not.toContain('data-strip-cell="offline"');
-
-    const status = new Map<string, PcStatus>([
-      ["id_studio", { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 38 }],
-      ["id_work", { kind: "offline", reason: "pc" }],
-    ]);
-    const checkedHtml = renderMarkup({ pcs, mode: "local", defaultRelay: GLOBAL, pcStatus: status, now: NOW });
-    expect(checkedHtml).toContain("This device: answered · 38 ms");
-    expect(checkedHtml).toContain("This device: no answer");
+    const checks = new Map<string, PcStatus>([["id_studio", { kind: "answered", route: "lan", rttMs: 38 }], ["id_work", { kind: "offline", reason: "pc" }]]);
+    for (const html of [renderMarkup({ pcs, mode: "local", defaultRelay: GLOBAL, now: NOW }), renderMarkup({ pcs, mode: "local", defaultRelay: GLOBAL, pcStatus: checks, now: NOW })]) {
+      const cells = [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, count]) => [cell, Number(count)]);
+      expect(cells).toEqual([["paired", 4], ["relays", 2]]);
+      expect(html).toContain("Paired with this device");
+      expect(html).not.toContain(">Ready<");
+      expect(html).not.toContain("Offline");
+      // PF-6: no second list of the same PCs under the strip
+      expect(html).not.toContain("relay-overview-local");
+      expect(html).not.toContain("This device:");
+      expect(html).not.toContain("Studio desktop");
+    }
+    expect(renderMarkup({ pcs, mode: "local", defaultRelay: GLOBAL, pcStatus: checks, now: NOW })).toContain('data-reachable-direct="1" data-reachable-relay="0" data-reachable-none="1"');
   });
 
   it("reports measured relay latency only after a check answers through that relay and never fabricates latency", () => {
@@ -278,6 +276,25 @@ describe("RelayOverview", () => {
     expect(probedHtml).toContain("29 ms");
   });
 
+  it("sums how many PCs this device reaches right now, directly, through a relay or not at all, and says nothing before a check finished", () => {
+    const pcs = freadyPcs();
+    const checks = new Map<string, PcStatus>([
+      ["id_studio", { kind: "answered", route: "lan", rttMs: 4 }],
+      ["id_work", { kind: "answered", route: "tailscale", rttMs: 18 }],
+      ["id_nuc", { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 62 }],
+      ["id_home", { kind: "offline", reason: "pc" }],
+    ]);
+    const html = renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, pcStatus: checks, now: NOW });
+    const line = /<p class="relay-overview-reach"[^>]*>([^<]*)<\/p>/.exec(html);
+    expect(line?.[1]).toBe("Reachable now: 2 direct · 1 via relay · 1 no answer");
+    expect(html).toContain('data-reachable-direct="2" data-reachable-relay="1" data-reachable-none="1"');
+    // a check under way and a PC never checked count nowhere, so the line waits for the first finished check
+    expect(renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, now: NOW })).not.toContain("relay-overview-reach");
+    expect(renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, pcStatus: new Map([["id_studio", { kind: "checking" }]]), now: NOW })).not.toContain("relay-overview-reach");
+    const partial = renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, pcStatus: new Map<string, PcStatus>([["id_studio", { kind: "checking" }], ["id_work", { kind: "answered", route: "tailscale", rttMs: 18 }]]), now: NOW });
+    expect(partial).toContain('data-reachable-direct="1" data-reachable-relay="0" data-reachable-none="0"');
+  });
+
   it("caps visible attention items at three on Overview and shows View all N with the complete Needs you count", async () => {
     const pcs = f20Pcs();
     const filters: DashboardFilter[] = [];
@@ -297,12 +314,26 @@ describe("RelayOverview", () => {
     expect(filters).toEqual(["needs"]);
   });
 
+  it("lets a strip label wrap instead of cutting the control's name, while attention names still ellipsise, and gives the local strip's labels two lines on a phone", () => {
+    const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
+    const block = (selector: string) => new RegExp(selector.replace(/[.*+?^${}()|[\]\\>]/g, "\\$&") + "\\s*\\{([^}]*)\\}").exec(css)?.[1] ?? "";
+    expect(block(".relay-overview-strip-label > span")).toContain("overflow-wrap: anywhere");
+    expect(block(".relay-overview-strip-label > span")).not.toMatch(/white-space:\s*nowrap|text-overflow/);
+    expect(block(".relay-overview-attention-name")).toMatch(/text-overflow:\s*ellipsis/);
+    expect(css).toMatch(/\.relay-overview-strip\[data-local\] \.relay-overview-strip-label\s*\{[^}]*min-height:\s*calc\(2 \* var\(--lh-tight\)/);
+    // PF-2: the overview's major sections sit a group apart
+    expect(css).toMatch(/\.relay-overview,\s*\.relay-overview-loading\s*\{[^}]*gap:\s*var\(--space-6\)/);
+  });
+
+
   it("says a reason shared by every shown attention row once, as the list caption, keeps those rows to name and relay or last seen, and draws them on the plain surface", () => {
     const html = renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
     const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
     const reason = "Add window closed · an account member must approve";
     expect(section.match(new RegExp(reason, "g"))).toHaveLength(1);
     expect(section).toContain(`<p class="relay-overview-attention-caption">${reason}</p>`);
+    // PF-1: the shared reason and View all share one head row above the list, so the head costs the table no second line
+    expect(section).toMatch(/<div class="relay-overview-attention-head"><p class="relay-overview-attention-caption">[^<]+<\/p><button[^>]*data-action="view-all-attention"[^>]*>[^<]+<\/button><\/div><ol class="relay-overview-attention">/);
     const rows = [...section.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
     expect(rows).toEqual([["Old MacBook", "relay-ap.ovis.sh"], ["Studio desktop", "relay.ovis.sh"], ["Work laptop", "relay-ap.ovis.sh"]]);
     // rows with different reasons keep each reason on its row, with no caption

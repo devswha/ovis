@@ -7,9 +7,10 @@ import { relayHost } from "../lib/relay/dashboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
+import { routeText } from "./RelayPcTable.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 import {
-  checkingWirePaths, clip, hubWireState, isRegionalRelay, layoutRelayMap,
+  checkingWirePaths, clip, hubRoutedNodes, hubWireState, isDirectRoute, isRegionalRelay, layoutRelayMap,
   nodeStatusDotState, nodeWireState, placeLabel, relayHandshake, relayHandshakeMs, wire,
 } from "./relayMapLayout.ts";
 import type { LabelSide, PlacedHub, PlacedPc, RelayHandshake, RelayMapLayout, RelayMapModel, RelayMapNode, WireState } from "./relayMapLayout.ts";
@@ -28,16 +29,17 @@ export interface RelayMapProps {
 function wordOf(node: RelayMapNode, t: Translate): string {
   if (node.check?.kind === "checking") return t("Checking…");
   if (node.state === "offline") return t("Offline");
-  if (node.state === "needs-approval" || node.state === "needs-update") return t("Needs you");
+  if (node.state === "needs-approval") return t("Needs approval");
+  if (node.state === "needs-update") return t("Needs update");
   if (node.check?.kind === "offline") return t("Offline");
-  if (node.check?.kind === "answered") return `${t("Answers")} · ${t("{n} ms", { n: node.check.rttMs })}`;
+  if (node.check?.kind === "answered") return routeText(node.check, t);
   return node.seen === "lately" ? t("Seen lately") : t("Paired · not checked");
 }
 
 function detailOf(node: RelayMapNode, t: Translate): string {
   switch (node.state) {
-    case "needs-approval": return `${t("Needs you")} · ${t("Needs approval")}`;
-    case "needs-update": return `${t("Needs you")} · ${t("Update Ovis on it")}`;
+    case "needs-approval": return t("Needs approval");
+    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}`;
     case "offline": return t("Offline");
     case "paired": return wordOf(node, t);
   }
@@ -59,6 +61,19 @@ function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonl
           : t("Last seen: unknown")}
       </span>
     </span>
+  );
+}
+
+/** One PC in the route list: its glyph, name and route word, with the tooltip; a fan item under its hub, or a route of its own when reached directly. */
+function PcHop({ node, selected, onSelectPc, t }: { readonly node: RelayMapNode; readonly selected: boolean; readonly onSelectPc?: (serverId: string) => void; readonly t: Translate }) {
+  const detailWord = detailOf(node, t);
+  return (
+    <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
+      <StatusDot state={nodeStatusDotState(node)} />
+      <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
+      <small className="relay-map-hop-note">{wordOf(node, t)}</small>
+      <NodeTooltip node={node} detail={detailWord} t={t} />
+    </button>
   );
 }
 
@@ -155,11 +170,12 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
         <div className="relay-map-diagram">
           <svg ref={svg} className="relay-map-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} role="img" aria-label={summary} aria-hidden="true" focusable="false" data-paused={paused ? "" : undefined}>
             {layout.hubs.map((hub) => (
-              <path key={hub.origin} className="relay-map-edge" data-wire={hubWireState(map.hubs[hub.hub]?.nodes ?? [])} data-hub={hub.origin} d={wire(layout.me, hub)} />
+              <path key={hub.origin} className="relay-map-edge" data-wire={hubWireState(hubRoutedNodes(map.hubs[hub.hub] ?? { origin: hub.origin, nodes: [] }))} data-hub={hub.origin} d={wire(layout.me, hub)} />
             ))}
             {layout.pcs.flatMap((pc) => {
-              const hub = layout.hubs[pc.hub];
-              return hub ? [<path key={pc.node.server_id} className="relay-map-edge" data-wire={nodeWireState(pc.node)} data-pc={pc.node.server_id} d={wire(hub, pc)} />] : [];
+              // a PC reached directly is wired from this device itself: no relay hub lies on its way
+              const from = pc.via === "direct" ? layout.me : layout.hubs[pc.hub];
+              return from ? [<path key={pc.node.server_id} className="relay-map-edge" data-wire={nodeWireState(pc.node)} data-pc={pc.node.server_id} d={wire(from, pc)} data-via={pc.via} />] : [];
             })}
             {checkingWires.map((d, i) => <path key={i} className="relay-map-flow" d={d} />)}
           </svg>
@@ -213,13 +229,21 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
             <span className="relay-map-hop-name" title={map.me.label}>{map.me.label}</span>
           </div>
         </li>
+        {/* a PC reached directly is a route of its own, before the relays: this device, then the PC */}
+        {nodes.filter(isDirectRoute).map((node) => (
+          <li key={node.server_id} className="relay-map-route" data-route="direct">
+            <div className="relay-map-link" data-wire={nodeWireState(node)} data-live="" aria-hidden="true" />
+            <div className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}><PcHop node={node} selected={selectedPcId === node.server_id} {...(onSelectPc ? { onSelectPc } : {})} t={t} /></div>
+          </li>
+        ))}
         {map.hubs.map((hub) => {
           const host = relayHost(hub.origin);
           const scopeText = isRegionalRelay(hub.origin) ? t("regional") : t("global");
           const countText = hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length });
           const hs = relayHandshake(hub);
           const hsText = hs !== null ? `${t("Fastest PC handshake")} · ${t("{n} ms", { n: hs.rttMs })}` : null;
-          const linkWire = hubWireState(hub.nodes);
+          const routedNodes = hubRoutedNodes(hub);
+          const linkWire = hubWireState(routedNodes);
           return (
             <li key={hub.origin} className="relay-map-route">
               <div className="relay-map-link" data-wire={linkWire} data-live={linkWire === "live" ? "" : undefined} aria-hidden="true" />
@@ -235,22 +259,11 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
                   </span>
                 </button>
               </div>
-              <ul className="relay-map-fan">
-                {hub.nodes.map((node) => {
-                  const detailWord = detailOf(node, t);
-                  const selected = selectedPcId === node.server_id;
-                  return (
-                    <li key={node.server_id} className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}>
-                      <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
-                        <StatusDot state={nodeStatusDotState(node)} />
-                        <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
-                        <small className="relay-map-hop-note">{wordOf(node, t)}</small>
-                        <NodeTooltip node={node} detail={detailWord} t={t} />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              {routedNodes.length > 0 && (
+                <ul className="relay-map-fan">
+                  {routedNodes.map((node) => <li key={node.server_id} className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}><PcHop node={node} selected={selectedPcId === node.server_id} {...(onSelectPc ? { onSelectPc } : {})} t={t} /></li>)}
+                </ul>
+              )}
             </li>
           );
         })}

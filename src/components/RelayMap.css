@@ -371,13 +371,13 @@
   min-width: 0;
 }
 
+/* the host keeps its own width: a relay's name is short, and a pill that may clip measures as cut inside the collapsed route list */
 .relay-map-host {
-  max-width: 100%;
-  overflow: hidden;
+  flex: none;
+  width: max-content;
   font-family: var(--font-mono);
   font-size: max(var(--relay-fs-min), var(--fs-xs));
   color: var(--text);
-  text-overflow: ellipsis;
 }
 
 .relay-map-hop-meta {

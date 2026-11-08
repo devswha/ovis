@@ -343,18 +343,21 @@ describe("RelayPcTable", () => {
     expect(manualReadyRow).toContain("Ready");
     expect(manualReadyRow).toContain("This device: answered · 42 ms");
 
-    // Local mode: says "Paired · not checked" until checked, then "This device: answered · 42 ms" or "This device: no answer", never "Ready"
+    // Local mode: says "Paired · not checked" until checked, then Answers or No answer (the Relay cell carries the way and the round trip), never "Ready"
     const localPc = makePc(IDS.local, "Desk NUC", "paired", { listed: false, linked: false, last_seen_at: null });
     const uncheckedLocal = renderHtml(buildProps([localPc], { mode: "local" }));
     expect(uncheckedLocal).toContain("Paired · not checked");
     expect(uncheckedLocal).not.toContain(">Ready<");
 
-    const answeredLocal = renderHtml(buildProps([localPc], { mode: "local" }, new Map([[IDS.local, { kind: "answered", route: "relay", rttMs: 31 }]])));
-    expect(answeredLocal).toContain("This device: answered · 31 ms");
+    const answeredLocal = renderHtml(buildProps([localPc], { mode: "local" }, new Map([[IDS.local, { kind: "answered", route: "lan", rttMs: 31 }]])));
+    expect(answeredLocal).toContain('<span class="relay-pc-state-word" title="Answers">Answers</span>');
+    expect(answeredLocal).toContain("Same network · 31 ms");
+    expect(answeredLocal).not.toContain("This device: answered");
     expect(answeredLocal).not.toContain(">Ready<");
 
     const noAnswerLocal = renderHtml(buildProps([localPc], { mode: "local" }, new Map([[IDS.local, { kind: "offline", reason: "pc" }]])));
-    expect(noAnswerLocal).toContain("This device: no answer");
+    expect(noAnswerLocal).toContain('<span class="relay-pc-state-word" title="No answer">No answer</span>');
+    expect(noAnswerLocal).not.toContain("This device: no answer");
   });
 
   it("renders a semantic <ul> of two-line rows on phones (<=768px) or when narrow, keeping glyph, name, action, state, relay and last seen", async () => {
@@ -419,6 +422,17 @@ describe("RelayPcTable", () => {
     expect(uncheckedRow).toContain("Not checked");
   });
 
+  it("keeps a Join row's State cell to one line by putting the closed-window reason in the state word's title (while the phone list keeps the line), so rows stay 44px without clipping (PF-1)", async () => {
+    const html = renderHtml(buildProps());
+    const joinRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.join}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
+    expect(joinRow).toContain('<span class="relay-pc-state-word" title="Needs approval · Add window closed · an account member must approve">Needs approval</span>');
+    expect(joinRow).not.toContain("relay-pc-probe-line");
+    phoneMatches = true;
+    await mount(buildProps());
+    const joinPhone = rootOf(renderer).find((n) => n.type === "li" && n.props["data-pc-id"] === IDS.join);
+    expect(textOf(joinPhone)).toContain("Add window closed · an account member must approve");
+  });
+
   it("names the specific state in the State cell (Needs approval, Needs update, Offline · when, Ready) with the full text in a title, while the filter chip keeps Needs you", () => {
     const html = renderHtml(buildProps());
     const stateOf = (id: string) => /<span class="relay-pc-state-word" title="([^"]+)">([^<]+)<\/span>/.exec(new RegExp(`<tr[^>]*data-pc-id="${id}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "")?.slice(1);
@@ -429,6 +443,49 @@ describe("RelayPcTable", () => {
     expect(html).not.toContain(">Needs you</span>");
     const chips = /<div class="segmented"[\s\S]*?<\/div>/.exec(html)?.[0] ?? "";
     expect(chips).toContain(">Needs you</button>");
+  });
+
+  it("shows in the Relay cell the route this device reached each PC by, with its round trip, and keeps the assigned relay's chip until a check ran", async () => {
+    const studio = makePc(IDS.ready, "Studio desktop", "paired", { relay: GLOBAL });
+    const laptop = makePc(IDS.update, "Work laptop", "needs-update", { relay: AP });
+    const nuc = makePc(IDS.local, "Lab NUC", "paired", { relay: GLOBAL, listed: false, linked: false, last_seen_at: null });
+    const home = makePc(IDS.offlinePaired, "Home server", "offline", { paired: true, linked: true });
+    const unchecked = makePc(IDS.join, "Render node", "paired", { relay: AP });
+    const unpaired = makePc(IDS.fresh, "New mini PC", "needs-approval", { paired: false, linked: false, join: { server_public_key: "k1", relay: GLOBAL } });
+    const status = new Map<string, PcStatus>([
+      [IDS.ready, { kind: "answered", route: "lan", rttMs: 4 }],
+      [IDS.update, { kind: "answered", route: "tailscale", rttMs: 18 }],
+      [IDS.local, { kind: "answered", route: "relay", relay: AP, rttMs: 62 }],
+      [IDS.offlinePaired, { kind: "offline", reason: "pc" }],
+    ]);
+    const html = renderHtml(buildProps([studio, laptop, nuc, home, unchecked, unpaired], {}, status));
+    const cellOf = (id: string) => /<td class="relay-dash-relay relay-pc-cell-relay">([\s\S]*?)<\/td>/.exec(new RegExp(`<tr[^>]*data-pc-id="${id}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "")?.[1] ?? "";
+    const text = (cell: string) => cell.replace(/<[^>]+>/g, "");
+    // one label per route kind, the round trip beside it; the state colour stays on the dot, so the cell carries no state class
+    expect(cellOf(IDS.ready)).toContain('data-route="lan"');
+    expect(text(cellOf(IDS.ready))).toBe("Same network · 4 ms");
+    expect(cellOf(IDS.update)).toContain('data-route="tailscale"');
+    expect(text(cellOf(IDS.update))).toBe("Tailscale · 18 ms");
+    expect(cellOf(IDS.local)).toContain('data-route="relay"');
+    expect(cellOf(IDS.local)).toContain('<code class="relay-pc-relay-chip">relay-ap.ovis.sh</code>');
+    expect(text(cellOf(IDS.local))).toBe("relay-ap.ovis.sh · 62 ms");
+    expect(cellOf(IDS.offlinePaired)).toContain('data-route="offline"');
+    expect(text(cellOf(IDS.offlinePaired))).toBe("No answer");
+    expect(html).not.toMatch(/relay-pc-route[^>]*data-state=/);
+    // the full label is the cell's title, since the cell keeps one line
+    expect(cellOf(IDS.local)).toContain('title="relay-ap.ovis.sh · 62 ms"');
+    // no check yet: the relay the PC is assigned, as before; a PC this device is not paired with has no check to show either
+    expect(cellOf(IDS.join)).toBe('<code class="relay-pc-relay-chip">relay-ap.ovis.sh</code>');
+    expect(cellOf(IDS.fresh)).toBe('<code class="relay-pc-relay-chip">relay.ovis.sh</code>');
+    expect(html).toContain('<th scope="col" class="relay-pc-head-relay">Relay</th>');
+    // the phone row says the same in its summary line
+    phoneMatches = true;
+    await mount(buildProps([studio, laptop, nuc, home], {}, status));
+    const list = rootOf(renderer).find((n) => n.type === "ul" && n.props["data-pc-list"] === "phone");
+    const metaOf = (id: string) => textOf(list.find((n) => n.type === "li" && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-phone-meta"));
+    expect(metaOf(IDS.ready)).toBe("Ready·Same network · 4 ms·just now");
+    expect(metaOf(IDS.update)).toBe("Needs update·Tailscale · 18 ms·just now");
+    expect(metaOf(IDS.offlinePaired)).toBe("Offline · just now·No answer·just now");
   });
 
   it("drops the Last seen column when asked (Details open beside it) and rebalances the remaining four columns", () => {

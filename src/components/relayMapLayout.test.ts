@@ -6,7 +6,9 @@ import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import {
   clip,
   DIAGRAM_MAX_PCS,
+  hubRoutedNodes,
   hubWireState,
+  isDirectRoute,
   layoutRelayMap,
   nodeStatusDotState,
   nodeWireState,
@@ -118,6 +120,63 @@ describe("relayMapLayout threshold and tiers", () => {
       expect(Math.abs(Math.hypot(sx - hub.x, sy - hub.y) - hub.r)).toBeLessThanOrEqual(1.5);
       expect(Math.abs(Math.hypot(ex - item.x, ey - item.y) - item.r)).toBeLessThanOrEqual(1.5);
     }
+  });
+});
+
+describe("a PC this device reaches directly", () => {
+  const fleet = modelOf(
+    [
+      pc("Studio desktop", "paired", GLOBAL, "2026-11-07T00:00:00Z"),
+      pc("Work laptop", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
+      pc("Home server", "offline", GLOBAL, "2026-11-01T00:00:00Z", true),
+      pc("Lab NUC", "paired", GLOBAL, null),
+      pc("Old MacBook", "needs-approval", REGIONAL, null),
+    ],
+    new Map<string, PcStatus>([
+      ["Studio desktop", { kind: "answered", route: "lan", rttMs: 4 }],
+      ["Work laptop", { kind: "answered", route: "tailscale", rttMs: 18 }],
+      ["Home server", { kind: "offline", reason: "pc" }],
+      ["Lab NUC", { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 62 }],
+    ]),
+  );
+
+  it("is one the check answered on the same network or over Tailscale, never through a relay", () => {
+    const nodes = fleet.hubs.flatMap((hub) => hub.nodes);
+    expect(nodes.filter(isDirectRoute).map((node) => node.name)).toEqual(["Studio desktop", "Work laptop"]);
+    const [global, regional] = fleet.hubs;
+    if (!global || !regional) throw new Error("expected two hubs");
+    expect(hubRoutedNodes(global).map((node) => node.name)).toEqual(["Home server", "Lab NUC"]);
+    expect(hubRoutedNodes(regional).map((node) => node.name)).toEqual(["Old MacBook"]);
+    // a relay nobody goes through from this device right now has no live wire, however its members answer
+    expect(hubWireState(hubRoutedNodes(regional))).toBe("still");
+    expect(hubWireState(hubRoutedNodes(global))).toBe("live");
+  });
+
+  it("sits in the hub column with its wire from this device, so no relay hub lies on its way, while the hubs centre on the PCs behind them", () => {
+    const layout = requireLayout(fleet);
+    const direct = layout.pcs.filter((item) => item.via === "direct");
+    const behind = layout.pcs.filter((item) => item.via === "hub");
+    expect(direct.map((item) => item.node.name)).toEqual(["Studio desktop", "Work laptop"]);
+    expect(behind.map((item) => item.node.name)).toEqual(["Home server", "Lab NUC", "Old MacBook"]);
+    const [global, regional] = layout.hubs;
+    if (!global || !regional) throw new Error("expected two hubs");
+    for (const item of direct) {
+      expect(item.x).toBe(global.x);
+      const match = /^M(-?\d+) (-?\d+) /.exec(wire(layout.me, item));
+      if (!match) throw new Error("invalid path");
+      expect(Math.abs(Math.hypot(Number(match[1]) - layout.me.x, Number(match[2]) - layout.me.y) - layout.me.r)).toBeLessThanOrEqual(1.5);
+    }
+    for (const item of behind) expect(item.x).toBeGreaterThan(global.x);
+    // above the hubs, a hub's step below the last of them, nothing overlapping
+    const lastDirect = direct[direct.length - 1];
+    if (!lastDirect) throw new Error("expected direct PCs");
+    expect(global.y - lastDirect.y).toBeGreaterThanOrEqual(76);
+    expect(regional.y - global.y).toBeGreaterThanOrEqual(76);
+    const all = boxes(layout);
+    expect(all.flatMap((a, i) => all.slice(i + 1).filter((b) => overlaps(a, b)).map((b) => `${a.of} / ${b.of}`))).toEqual([]);
+    // with every PC behind its hub the layout is the one it always was
+    const plain = requireLayout(modelOf([pc("Desk PC", "paired", GLOBAL, "2026-11-07T00:00:00Z"), pc("Lab box", "paired", REGIONAL, "2026-11-07T00:00:00Z")]));
+    expect(plain.pcs.map((item) => item.via)).toEqual(["hub", "hub"]);
   });
 });
 
