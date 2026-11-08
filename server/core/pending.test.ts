@@ -226,6 +226,8 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       if (scenario === "held after reattach") delivery.pending.settle(item, { code: "disconnected", message: "The pending message's connection closed" }, false);
       // its own field: a client that predates it reads any resumed removal as settled
       expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
+      // with how long the bridge keeps each: its whole window, as nothing waited since the close
+      for (const id of heldIds(resumed)) expect(frames.get(resumed)!.some((frame) => frame.type === "pending-messages" && frame.held_ms?.[id] === 10 * 60 * 1000)).toBe(true);
       expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired"].includes(scenario)
         ? [item.message.id] : []);
       if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry" || scenario === "attach during resend after closed-owner expiry" || scenario === "replayed resend after its record expired") {

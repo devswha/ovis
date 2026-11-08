@@ -335,6 +335,9 @@ describe("resumable follow-up receipts (#2421)", () => {
       await f.state("idle", resender);
       const heldReplay = await f.removed(row.id, "held", resender);
       expect(heldReplay.held).toContain(row.id);
+      // and how long the bridge keeps that receipt, within its ten minutes
+      expect(heldReplay.held_ms?.[row.id]).toBeGreaterThan(0);
+      expect(heldReplay.held_ms?.[row.id]).toBeLessThanOrEqual(10 * 60 * 1000);
       resender.send({ type: "ping", id: 987 });
       await resender.wait((frame) => frame.type === "pong" && frame.id === 987);
       expect(retained.store.list(retained.owner, f.pane)).toContainEqual(expect.objectContaining({ id: row.id, state: "held" }));
@@ -388,7 +391,11 @@ describe("resumable follow-up receipts (#2421)", () => {
     const resumed = await f.another(false);
     await resumed.attach(f.pane, false, token);
     const replay = await f.removed(row.id, outcome, resumed);
-    if (outcome === "held") expect(replay.held).toEqual([row.id]);
+    if (outcome === "held") {
+      expect(replay.held).toEqual([row.id]);
+      expect(replay.held_ms?.[row.id]).toBeGreaterThan(0);
+      expect(replay.held_ms?.[row.id]).toBeLessThanOrEqual(10 * 60 * 1000);
+    }
     else expect(replay.removed).toContainEqual({ id: row.id, outcome, resumed: true });
     expect(f.bytes()).toBe(bytes);
   }, 20_000);

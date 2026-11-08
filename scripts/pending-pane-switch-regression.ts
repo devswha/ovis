@@ -421,6 +421,20 @@ try {
   swallowResend = false;
   await unproven(ambiguous.text, "ambiguous send");
 
+  // (e) a page left open past the bridge's receipt window: its proven copy is uncertain again. The page's clock moves
+  // (a tab that slept, or a clock that jumped): no timer has to fire, the next render reads the row past its time.
+  const leftOpen = await queue("held, then the page stays open past its window");
+  since = received.length;
+  await lostConnection();
+  const openRow = rows().filter({ hasText: leftOpen.text });
+  await until(async () => await openRow.getAttribute("data-state") === "held", "the copy is proven held while the page is open");
+  assert.equal(heldReceipt(leftOpen.id, since), true, "held on the bridge's receipt");
+  assert.equal(await openRow.locator(".pending-message-send").count(), 1, "a proven copy offers Send now within its window");
+  await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
+  await report("idle");
+  await until(async () => await openRow.getAttribute("data-state") === "uncertain", "past the bridge's window the page's proof has ended");
+  await unproven(leftOpen.text, "a page left open past the window");
+
   await report("idle"); await noBytes(delivered, "no unproven copy was ever typed");
   assert.deepEqual(errors, []);
   await context.close();

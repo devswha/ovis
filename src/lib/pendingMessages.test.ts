@@ -121,6 +121,47 @@ describe("pending message ownership", () => {
     tab.refresh("p");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["sent", "uncertain"]]);
   });
+  it("ends a receipt's held copy with the bridge's receipt: uncertain once its time passes, one timer to it, cleared on discard", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const timers: Array<{ run: () => void; ms: number; cleared: boolean }> = [];
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const set = spyOn(globalThis, "setTimeout").mockImplementation(((run: () => void, ms: number) => {
+      const timer = { run, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    }) as unknown as typeof setTimeout);
+    const clear = spyOn(globalThis, "clearTimeout").mockImplementation(((timer: { cleared: boolean } | undefined) => { if (timer) timer.cleared = true; }) as unknown as typeof clearTimeout);
+    const active = () => timers.filter((timer) => !timer.cleared);
+    try {
+      const port = storage(), tab = new PendingMessageStore(() => port);
+      let told = 0;
+      tab.subscribe(() => { told++; });
+      for (const id of ["read", "timed", "discarded"]) tab.accept("p", message(id), "old");
+      tab.suspendScope("old");
+      tab.publish("p", [], [{ id: "read", outcome: "held", resumed: true, ms: 60_000 }, { id: "timed", outcome: "held", resumed: true, ms: 90_000 },
+        { id: "discarded", outcome: "held", resumed: true, ms: 120_000 }], "new");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["read", "held"], ["timed", "held"], ["discarded", "held"]]);
+      // one timer, to the first proof's end
+      expect(active().map(({ ms }) => ms)).toEqual([60_000]);
+      now += 59_999;
+      expect(tab.read("p")[0]!.state).toBe("held");
+      // past it, the next read (a render, or the Send now press reading the row) finds it uncertain, timer or not
+      now += 1;
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["read", "uncertain"], ["timed", "held"], ["discarded", "held"]]);
+      // the timer ends the next one when its time comes, and tells the page
+      now += 30_000;
+      const before = told;
+      for (const timer of active()) { timer.cleared = true; timer.run(); }
+      expect(told).toBeGreaterThan(before);
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["read", "uncertain"], ["timed", "uncertain"], ["discarded", "held"]]);
+      expect(active().map(({ ms }) => ms)).toEqual([30_000]);
+      // a discarded copy's timer goes with it
+      tab.removeCopy("p", "discarded");
+      expect(active()).toEqual([]);
+      // the saved copies were never held
+      expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["read", "uncertain"], ["timed", "uncertain"]]);
+    } finally { clock.mockRestore(); set.mockRestore(); clear.mockRestore(); }
+  });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
     tab.accept("p", message("saved"), "old");

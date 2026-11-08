@@ -1018,14 +1018,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
           ...mine.flatMap(({ id, outcome }) => outcome === "held" ? [] : [{ id, outcome, resumed: true as const }]),
         ];
-        const held = mine.flatMap(({ id, outcome }) => outcome === "held" ? [id] : []);
-        if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? { held } : {}) });
+        const held = mine.filter(({ outcome }) => outcome === "held");
+        if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? heldPart(held) : {}) });
       } catch { /* failed authorization cannot resume even presentation */ }
     }
     return rebound;
   }
+  /** held receipts as a frame tells them: their IDs, and how long the bridge keeps each (the page's proof ends with it) */
+  function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number> } {
+    return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, Math.max(0, at + PI_RESUME_MS - Date.now())])) };
+  }
   /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
-  function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | { held: string[] }): void {
+  function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | ReturnType<typeof heldPart>): void {
     for (const successor of clients) {
       if (successor === owner || !livePiOwner(successor) || !successor.data.attached.has(paneId)
         || resumeKey(successor, paneId) !== kept || connectionOf(successor).mode === "observe") continue;
@@ -1059,8 +1063,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // tab told it is held could offer it again after that send's outcome became uncertain
       if (livePiOwner(owner)) continue;
       if (existing >= 0) completed.splice(existing, 1);
-      completed.push({ paneId, key: kept, id: message.id, outcome: "held", at: Date.now() });
-      pushResumed(owner, paneId, kept, { held: [message.id] });
+      const at = Date.now();
+      completed.push({ paneId, key: kept, id: message.id, outcome: "held", at });
+      pushResumed(owner, paneId, kept, heldPart([{ id: message.id, at }]));
     }
     for (const item of removed ?? []) {
       const kept = keys.get(item.id);
