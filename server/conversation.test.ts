@@ -3190,6 +3190,24 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(await output).toBeNull();
   });
 
+  it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
+    const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old file");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    writeFileSync(`${path}.next`, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "new file" }] } }) + "\n");
+    renameSync(`${path}.next`, path);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
   it("answers nothing from a herdr session left while its transcript settled", async () => {
     const stat = holdFirstStat();
     const read = paneConversation(pane.pane_id);

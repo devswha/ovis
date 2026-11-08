@@ -2428,7 +2428,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (settled === null) throw new ConversationUnavailable("no_session_id");
     answer = settled.value ?? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
   } catch (error) {
-    if (resolved.source !== "copilot-transcript" || prefix === null || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
+    if (resolved.source !== "copilot-transcript" || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
+    // refused before its read (readSettled: the path names another file than the one authorized, as
+    // after a replacement by rename): the history is the one the path names now, as a read beginning
+    // now would bind it, and a cursor from another one has changed history
+    if (prefix === null) {
+      try { history = copilotHistoryIdentity(resolved.path); } catch { throw error; }
+      prefix = copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path);
+      copilotPage(page, prefix);
+    }
     const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
     // Unpaged refreshes otherwise carry no proof of which history is on screen: older
     // clients without it keep their fail-closed fallback, with no recheck to wait on.
@@ -3525,7 +3533,10 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   let output: string | null;
   // the sources whose lookup digests the transcript (transcriptGeneration) read that off the event loop first
   if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") {
-    const settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup);
+    let settled: { value: string | null } | null;
+    // a transcript the path no longer names (replaced while it settled) has not this output
+    try { settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup); }
+    catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
     // a pane bound to another transcript while this settled (another OmO session) has not this output:
     // one seen bound elsewhere is refused at once, any other resolved again. Copilot's is checked below.
     if (settled === null || rebound(paneId, transcript)) return null;
