@@ -143,7 +143,7 @@ export function RelayDashboard({
         <div className="relay-dash-pcs-list">
           <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
             relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
-            selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet}
+            selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null}
             {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
         </div>
         {selectedRow && (

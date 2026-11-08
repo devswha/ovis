@@ -299,11 +299,15 @@ describe("RelayDashboard frame and routes", () => {
         .map((r) => textOf(r.find((n) => n.props.className === "relay-pc-name-label")));
     expect(rows()).toEqual(["Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(1);
+    // with Details open beside it the table drops Last seen, so its cells stay on one line
+    const headers = () => renderer!.root.findAll((n) => n.type === "th").map(textOf);
+    expect(headers()).toEqual(["Name", "State", "Relay", "Action"]);
 
     // Back to Needs you filter without selection
     await navigateHash("#pcs?filter=needs", "popstate");
     expect(rows()).toEqual(["Mac mini", "Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
+    expect(headers()).toEqual(["Name", "State", "Relay", "Last seen", "Action"]);
 
     // Missing PC id in route renders no details panel
     await navigateHash("#pcs?pc=missing_pc_id", "popstate");
@@ -402,12 +406,11 @@ describe("RelayDashboard frame and routes", () => {
     ]);
     await mount(baseProps({ pcs: fleet, pcStatus: liveStatus, onCheckPcs: () => {} }));
 
-    // 1. Overview shows strip (Ready 2, Needs you 4 · 1 offline), at most 3 attention rows, the PC table, and the 44px map disclosure
+    // 1. Overview shows strip (Ready 2, Needs you 4 incl. 1 offline, Relays in use 2), at most 3 attention rows, the PC table, and the 44px map disclosure
     const stripBtns = renderer!.root.findAll((n) => n.type === "button" && typeof n.props["data-strip-cell"] === "string");
     expect(stripBtns.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], textOf(b)])).toEqual([
       ["ready", 2, "Ready2"],
-      ["needs", 4, "Needs you · 1 offline4"],
-      ["offline", 1, "Offline1"],
+      ["needs", 4, "Needs you4incl. 1 offline"],
       ["relays", 2, "Relays in use2"],
     ]);
     const attentionRows = renderer!.root.findAll((n) => n.type === "li" && n.props.className === "relay-overview-attention-row");
@@ -440,7 +443,8 @@ describe("RelayDashboard frame and routes", () => {
     expect(window.location.hash).toContain(`pc=${IDS.desk}`);
     expect(renderer!.root.find((n) => n.props["data-pc-details"] === IDS.desk)).toBeDefined();
 
-    // 5. Local mode shows no account-availability words (Ready/Needs you/Offline)
+    // 5. Local mode's Overview shows no account-availability words (Ready/Needs you/Offline)
+    window.location.hash = "#overview";
     const localHtml = renderStatic(baseProps({
       account: null,
       pcs: dashboardPcs([pc(IDS.desk, "Desk PC", "paired", { listed: false, linked: false })], [{ server_id: IDS.desk, relay: AP }]),

@@ -1,7 +1,8 @@
 /*
  * Overview and feedback for the hosted relay app (RelayOverview.tsx):
- * four-column filter strip on --bg parted by --divider hairlines in --space-6 gutters,
- * bounded attention list, directory error banner, static skeleton loading, empty state,
+ * three-cell filter strip (Ready, Needs you with its offline note, Relays in use) on --bg parted by
+ * --divider hairlines in --space-6 gutters, bounded attention list on the plain surface with a
+ * caption for a reason its rows share, directory error banner, static skeleton loading, empty state,
  * and the 44px connection map disclosure. Tokens only; no cards or resting shadows.
  */
 
@@ -43,7 +44,7 @@
 
 .relay-overview-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   min-height: calc(2 * var(--space-8));
   border-top: var(--hairline) solid var(--divider);
   border-bottom: var(--hairline) solid var(--divider);
@@ -104,6 +105,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* the offline count under the Needs you numeral: its own line, never clipped */
+.relay-overview-strip-note {
+  display: block;
+  max-width: 100%;
+  color: var(--text-dim);
+  font-size: max(var(--relay-fs-min), var(--fs-xs));
+  line-height: var(--lh-tight);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .relay-overview-relays {
   display: flex;
   flex-wrap: wrap;
@@ -140,6 +152,7 @@
 
 .relay-overview-relay-rtt { color: var(--text); font-variant-numeric: tabular-nums; }
 .relay-overview-attention-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.relay-overview-attention-caption { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); line-height: var(--lh-base); overflow-wrap: anywhere; }
 
 .relay-overview-attention,
 .relay-overview-local-checks,
@@ -166,7 +179,6 @@
 }
 
 .relay-overview-local-row { grid-template-columns: auto minmax(0, 1fr) auto; }
-.relay-overview-attention-row:is([data-pc-state="needs-approval"], [data-pc-state="needs-update"]) { background: var(--notice-tint); }
 .relay-overview-attention-name, .relay-overview-map-title { color: var(--text-strong); font-weight: var(--fw-medium); }
 .relay-overview-attention-why { min-width: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); font-variant-numeric: tabular-nums; }
 .relay-overview-attention-act { display: flex; align-items: center; justify-content: flex-end; }
@@ -225,10 +237,10 @@
   .relay-overview-attention-row, .relay-overview-local-row, .relay-overview-skeleton-row { min-height: var(--touch-target); }
 }
 
+/* narrower: Ready and Needs you side by side (they partition the PCs), Relays in use on a full-width row under them */
 @media (max-width: 1100px) {
   .relay-overview-strip:not([data-local]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .relay-overview-strip:not([data-local]) .relay-overview-strip-btn:nth-child(3) { border-inline-start: 0; }
-  .relay-overview-strip:not([data-local]) .relay-overview-strip-btn:nth-child(n + 3) { border-top: var(--hairline) solid var(--divider); }
+  .relay-overview-strip:not([data-local]) .relay-overview-strip-btn:nth-child(3) { grid-column: 1 / -1; border-inline-start: 0; border-top: var(--hairline) solid var(--divider); }
 }
 
 @media (max-width: 768px) {

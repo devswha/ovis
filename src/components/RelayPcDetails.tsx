@@ -94,7 +94,6 @@ export function RelayPcDetails({
             : t("{name} has not approved this device yet.", { name: pc.name })
         : null;
 
-  const sourceLabel = pc.source === "directory" ? t("Account directory") : t("Paired with this device");
   const probeLine = formatProbeLine(pc.check, t) ?? t("Not checked");
   const probeCause = checkCauseText(pc.check, t);
 
@@ -132,7 +131,6 @@ export function RelayPcDetails({
             <dt>{t("State")}</dt>
             <dd>
               <span className="relay-pc-details-value">{stateLabel}</span>
-              <small className="relay-pc-details-sub">{sourceLabel}</small>
               {stateReason !== null && <small className="relay-pc-details-sub">{stateReason}</small>}
             </dd>
           </div>

@@ -189,7 +189,7 @@ describe("the dashboard", () => {
     // IS-FRAME-06: no subtitle in the page header (the count lives in the strip and sidebar)
     expect(html).not.toContain("relay-dash-sub");
     const counts = [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"[\s\S]*?<span class="relay-overview-strip-label"><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/span>/g)].map(([, cell, n, label]) => [cell, label, Number(n)]);
-    expect(counts).toEqual([["ready", "Ready", 2], ["needs", "Needs you · 1 offline", 2], ["offline", "Offline", 1], ["relays", "Relays in use", 2]]);
+    expect(counts).toEqual([["ready", "Ready", 2], ["needs", "Needs you", 2], ["relays", "Relays in use", 2]]);
     const relays = [...html.matchAll(/<button type="button" class="pill relay-overview-relay-chip">([^<]+)<\/button><span class="relay-overview-relay-count">([^<]+)<\/span><span class="relay-overview-relay-scope">([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
     expect(relays).toEqual([["relay-ap.ovis.sh", "3 PCs", "regional"], ["relay.ovis.sh", "1 PC", "global"]]);
     const attention = [...html.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
@@ -284,13 +284,13 @@ describe("the dashboard", () => {
     expect(text(rowOf(alone, "MacBook"))).toContain("Paired · not checked");
     expect(text(rowOf(alone, "MacBook"))).not.toContain("in your account");
     expect(alone).toContain('<span class="relay-dash-nav-count">1</span>');
-    expect(countsOf(alone)).toEqual([["ready", 1], ["needs", 0], ["offline", 0], ["relays", 1]]);
+    expect(countsOf(alone)).toEqual([["ready", 1], ["needs", 0], ["relays", 1]]);
     // one listed in the account + one listed but paired by QR alone: only the unlinked row says "Ready · not in the account yet"
     const both = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: true, linked: false })]));
     expect(text(rowOf(both, "Desk PC"))).toContain("Ready");
     expect(text(rowOf(both, "MacBook"))).toContain("Ready · not in the account yet");
     expect(both).toContain('<span class="relay-dash-nav-count">2</span>');
-    expect(countsOf(both)).toEqual([["ready", 2], ["needs", 0], ["offline", 0], ["relays", 1]]);
+    expect(countsOf(both)).toEqual([["ready", 2], ["needs", 0], ["relays", 1]]);
   });
 
   it("says who is signed in at the sidebar's foot with Sign out, while keeping device removal in Devices", () => {

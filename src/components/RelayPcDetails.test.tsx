@@ -134,7 +134,7 @@ describe("RelayPcDetails", () => {
     });
   };
 
-  it("renders a 44px location bar with StatusDot glyph, PC name and Close/Back, plus state, source, relay, absolute last seen, check result, grouped key ID and observed version without opening a socket", () => {
+  it("renders a 44px location bar with StatusDot glyph, PC name and Close/Back, plus state (no source line under it), relay, absolute last seen, check result, grouped key ID and observed version without opening a socket", () => {
     const row = makeRow({}, { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 });
     const html = renderHtml({
       pc: row,
@@ -145,7 +145,9 @@ describe("RelayPcDetails", () => {
     expect(html).toContain('data-pc-details="0123456789abcdef0123456789abcdef"');
     expect(html).toContain("Home server");
     expect(html).toContain("Offline");
-    expect(html).toContain("Account directory");
+    // the State field says the state alone: no "Account directory" line under it
+    expect(html).not.toContain("Account directory");
+    expect(/<dt>State<\/dt><dd>([\s\S]*?)<\/dd>/.exec(html)?.[1]).toBe('<span class="relay-pc-details-value">Offline</span>');
     expect(html).toContain("relay.ovis.sh");
     expect(html).toContain('dateTime="2026-11-08T10:00:00.000Z"');
     expect(html).toContain("This device: answered · 42 ms");

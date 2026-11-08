@@ -1,7 +1,8 @@
 /*
  * The PC list (RelayPcTable.tsx): a semantic 5-column table on desktop (colgroup 36/18/22/12/12,
- * 36px sticky header, --table-row-h rows) and a semantic <ul> of two-line rows on phones (<=768px)
- * or narrowed containers (<720px). Tokens only; no colour literals and no resting shadows.
+ * 36px sticky header, --table-row-h rows; 4 columns of 40/24/22/14 without Last seen beside an open
+ * Details pane) and a semantic <ul> of two-line rows on phones (<=768px) or narrowed containers
+ * (<720px). Tokens only; no colour literals and no resting shadows.
  */
 
 .relay-pc-list-region { min-width: 0; }
@@ -37,6 +38,9 @@
 .relay-pc-col-relay { width: 22%; }
 .relay-pc-col-seen { width: 12%; }
 .relay-pc-col-act { width: 12%; }
+.relay-pc-table.is-without-seen .relay-pc-col-name { width: 40%; }
+.relay-pc-table.is-without-seen .relay-pc-col-state { width: 24%; }
+.relay-pc-table.is-without-seen .relay-pc-col-act { width: 14%; }
 
 .relay-pc-table thead th {
   position: sticky;
@@ -128,6 +132,8 @@
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums;
 }
+/* one line in the table cell; the full text is the span's title */
+.relay-pc-table .relay-pc-state-word { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relay-pc-probe-line {
   display: block;
   margin: 0;

@@ -36,6 +36,8 @@ export interface RelayPcTableProps {
   readonly mode?: "account" | "local";
   readonly narrow?: boolean;
   readonly showToolbar?: boolean;
+  /** false drops the Last seen column, so the rows keep one line beside an open Details pane (it stays in Details) */
+  readonly showLastSeen?: boolean;
   readonly now?: number;
 }
 
@@ -74,7 +76,7 @@ function matchesFilter(row: DashboardRow, filter: DashboardFilter, filters?: Rea
 export function RelayPcTable({
   rows, attention = [], filters, filter = "all", onFilter, relayFilter = null, onClearRelayFilter,
   selectedPcId = null, onSelect, onOpenSheet, onOpenPc, pcStatus, onCheckPcs, checkedByUser = false,
-  updatingIds, mode = "account", narrow = false, showToolbar = true, now = Date.now(),
+  updatingIds, mode = "account", narrow = false, showToolbar = true, showLastSeen = true, now = Date.now(),
 }: RelayPcTableProps) {
   const t = useT();
   const compactList = useMediaQuery(PHONE_QUERY) || narrow;
@@ -91,9 +93,15 @@ export function RelayPcTable({
     }
     switch (row.state) {
       case "paired": return row.linked ? t("Ready") : t("Ready · not in the account yet");
-      case "needs-approval": case "needs-update": return t("Needs you");
+      case "needs-approval": return t("Needs approval");
+      case "needs-update": return t("Needs update");
       case "offline": return row.last_seen_at === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(row.last_seen_at, now) });
     }
+  };
+  /** The state word beside the dot, its full text in a title since the cell keeps one line. */
+  const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
+    const word = stateHeadline(row, updating);
+    return <span className="relay-pc-state-word" title={word}>{word}</span>;
   };
 
   const stateSubline = (row: DashboardRow, updating: boolean): string | null => {
@@ -182,7 +190,7 @@ export function RelayPcTable({
                     <span className="relay-dash-act relay-pc-act" onClick={(event) => event.stopPropagation()}>{renderAction(row)}</span>
                   </div>
                   <div className="relay-pc-phone-meta">
-                    <span className="relay-pc-state-word">{stateHeadline(row, updating)}</span><span aria-hidden="true">·</span>
+                    {stateWord(row, updating)}<span aria-hidden="true">·</span>
                     {row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : <span>—</span>}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
                   </div>
@@ -193,11 +201,11 @@ export function RelayPcTable({
           })}
         </ul>
       ) : (
-        <table className="relay-dash-table relay-pc-table" data-pc-list="table">
+        <table className={showLastSeen ? "relay-dash-table relay-pc-table" : "relay-dash-table relay-pc-table is-without-seen"} data-pc-list="table">
           <caption className="visually-hidden">{t("PCs")}</caption>
-          <colgroup><col className="relay-pc-col-name" /><col className="relay-pc-col-state" /><col className="relay-pc-col-relay" /><col className="relay-pc-col-seen" /><col className="relay-pc-col-act" /></colgroup>
+          <colgroup><col className="relay-pc-col-name" /><col className="relay-pc-col-state" /><col className="relay-pc-col-relay" />{showLastSeen && <col className="relay-pc-col-seen" />}<col className="relay-pc-col-act" /></colgroup>
           <thead>
-            <tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col">{t("Relay")}</th><th scope="col">{t("Last seen")}</th><th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr>
+            <tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col">{t("Relay")}</th>{showLastSeen && <th scope="col">{t("Last seen")}</th>}<th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr>
           </thead>
           <tbody>
             {filtered.map((row) => {
@@ -219,12 +227,12 @@ export function RelayPcTable({
                   </td>
                   <td className="relay-dash-state-cell relay-pc-cell-state">
                     <div className="relay-pc-state-stack">
-                      <span className="relay-pc-state-word">{stateHeadline(row, updating)}</span>
+                      {stateWord(row, updating)}
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>
                   </td>
                   <td className="relay-dash-relay relay-pc-cell-relay">{row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : "—"}</td>
-                  <td className="relay-dash-seen relay-pc-cell-seen">{renderSeen(row)}</td>
+                  {showLastSeen && <td className="relay-dash-seen relay-pc-cell-seen">{renderSeen(row)}</td>}
                   <td className="relay-dash-act relay-pc-cell-act" onClick={(event) => event.stopPropagation()}>{renderAction(row)}</td>
                 </tr>
               );
