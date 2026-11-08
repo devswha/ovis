@@ -358,8 +358,10 @@ export class Updater {
   private async discover(byUser = false) {
     const channel = this.channel();
     // an offer already made stays up while this check runs, and changes only with its answer: the
-    // page polls this status, and an offer withdrawn for the check's length blinks its line (#3325)
-    this.patch({ phase: "checking", error: this.options.notice ?? null, error_code: null, blocked_reason: null, channel });
+    // page polls this status, and an offer withdrawn for the check's length blinks its line (#3325).
+    // An offer made on another channel is not this one's: it goes at once
+    const kept = channel === this.status.channel ? {} : { available: false };
+    this.patch({ phase: "checking", error: this.options.notice ?? null, error_code: null, blocked_reason: null, channel, ...kept });
     const reason = await this.sourceBlock();
     if (reason) { this.patch({ blocked_reason: reason, checked_at: new Date().toISOString(), available: false }); return; }
     // Only published releases update installs: commits pushed to main without a tag stay put. The

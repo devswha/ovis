@@ -382,6 +382,25 @@ describe("managed source updates with real Git repositories and builds", () => {
     watched.stop();
   });
 
+  it("never shows an offer under a channel it was not made on while the check runs (#3325)", async () => {
+    const appState = join(directory, "app-state");
+    mkdirSync(appState);
+    writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "beta\n");
+    const published: Array<{ phase: string; channel: string | undefined; available: boolean }> = [];
+    const switched = new Updater({ root, stateDir, autoUpdate: false, activate: async (_next, persist) => persist(),
+      publish(status) { published.push({ phase: status.phase, channel: status.channel, available: status.available }); },
+      channel: () => updateChannel({}, appState) });
+    await switched.initialize();
+    await release("beta", "beta/v0.2.0-beta.1");
+    await switched.request("check");
+    expect(switched.status).toMatchObject({ channel: "beta", available: true });
+    writeFileSync(join(appState, UPDATE_CHANNEL_FILE), "stable\n");
+    published.length = 0;
+    await switched.request("check");
+    expect(published.filter((status) => status.channel === "stable" && status.available)).toEqual([]);
+    switched.stop();
+  });
+
   it("tells what an update brings from the release's own changelog, every release since the running one", async () => {
     const manifest = JSON.parse(readFileSync(join(upstream, "package.json"), "utf8")) as Record<string, unknown>;
     writeFileSync(join(upstream, "package.json"), JSON.stringify({ ...manifest, version: "0.1.0" }));
