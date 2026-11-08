@@ -1694,7 +1694,8 @@ export class MachineManager {
     // the last status that told where it answers: a later read that fails does not take it back
     let located = "status" in told ? told.status : null;
     // and so is a first one not begun yet: an updater just started (after its restart) has not checked, and offers nothing so far
-    const unchecked = (status: Partial<UpdateStatus> | null | undefined) => status?.phase === "checking" || (status?.managed === true && !status.checked_at && status.available !== true);
+    // (one whose check failed has no check time either, and is not waited for: it may never reach its releases)
+    const unchecked = (status: Partial<UpdateStatus> | null | undefined) => status?.phase === "checking" || (status?.managed === true && !status.checked_at && status.available !== true && status.phase !== "error");
     for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && unchecked(told.status) && Date.now() < until && !signal?.aborted;) {
       await this.pause(signal);
       told = await read();

@@ -634,6 +634,14 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(installs).toEqual([{ expected_revision: OFFERED }]);
   });
 
+  it("does not wait on an updater whose check failed, as one that cannot reach its releases never gets a check time", async () => {
+    // a wait would last 10 s, longer than this test waits for the PC's state
+    const failed = managedOffer({ phase: "error", error: "fetch failed", checked_at: null, available: false, latest_revision: null, latest_version: null });
+    const { until } = pc({ status: failed }, { ownUpdate: { pollMs: 5, checkMs: 10_000 } });
+    const waiting = await until((machine) => machine.action_required === "setup");
+    expect(waiting.remote_ovis?.updatable).toBe(false);
+  });
+
   it("tries again on its own, not waiting for a tap, when a check for releases there outlasts its wait", async () => {
     const { installs, until } = pc({ status: managedOffer(), beforeInstall: Array.from({ length: 10_000 }, () => checking) }, { ownUpdate: { pollMs: 5, checkMs: 20 } });
     const waiting = await until((machine) => machine.state === "reconnecting" && /still checking for updates/.test(machine.error ?? ""));

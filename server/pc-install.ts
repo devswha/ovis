@@ -282,7 +282,9 @@ export class PcInstaller {
         // run with nothing on stdin, on herdr (a herdr plugin that updates itself, as the steps shown say). The exit
         // status is printed rather than returned, so the installer's own last words come back either way
         if (stopped) replaced = "maybe";
-        const out = await ssh.run(installerRun(release), undefined, INSTALL_TIMEOUT_MS);
+        // a dropped connection, or the run's time up, is told as one, with its code
+        let out: string;
+        try { out = await ssh.run(installerRun(release), undefined, INSTALL_TIMEOUT_MS); } catch (error) { if (abort.signal.aborted) throw error; throw sshFailure(error); }
         const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
         if (lines.at(-1) !== "ovis-install-exit=0") {
           // it ended, failed: nothing was started in its place

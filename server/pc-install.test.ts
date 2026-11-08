@@ -35,6 +35,8 @@ interface Pc {
   neverStarts?: boolean;
   /** its launcher's start fails there, with these words */
   launcherFails?: string;
+  /** the installer's SSH command ends without its answer, with these words (a dropped connection, its time up) */
+  installerDrops?: string;
   /** the installer's command holds until this settles, and tells when it starts */
   installerHeld?: { started(): void; gate: Promise<void> };
   descriptors?: Descriptor[];
@@ -65,6 +67,7 @@ function fixture(pc: Pc) {
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
       if (pc.installerHeld) { pc.installerHeld.started(); await pc.installerHeld.gate; }
+      if (pc.installerDrops) throw new Error(pc.installerDrops);
       const answer = pc.installer ?? { exit: 0, output: "Ovis: installing the herdr plugin" };
       if (answer.exit === 0 && pc.herdrRunning !== false) register();
       return `${answer.output}\novis-install-exit=${answer.exit}\n`;
@@ -280,6 +283,12 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(job).toMatchObject({ phase: "connected", error: null });
     // the Ovis the launcher started is never stopped as one left beside it
     expect(pc.commands.some((command) => /kill -TERM 5555/.test(command))).toBe(false);
+  });
+
+  it("fails with a code when the installer's SSH command ends without its answer", async () => {
+    const pc = fixture({ installerDrops: "Connection to lab.invalid closed by remote host." });
+    const job = await pc.settled(pc.installer.start({ target }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "ssh_unreachable", error: expect.stringContaining("closed by remote host") });
   });
 
   it("fails in plain words, with its code, when the launcher's start fails there", async () => {
