@@ -8,6 +8,7 @@ import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
 import type { Attempt, PcUpdate, RelayShellState } from "./shellState.ts";
 import type { RelayTransport } from "./transport.ts";
+import { indexedDeviceStore, type RelayDeviceStore } from "./device.ts";
 
 const UPDATE_MS = 15 * 60_000;
 /** How often the shell reads the PC's update status while it installs. */
@@ -48,6 +49,15 @@ export function observedVersions(): ReadonlyMap<string, ObservedVersion> {
     return new Map(entries);
   } catch { return new Map(); }
 }
+
+/** Forget discards this PC's pairing and its tab-local admission observations together. */
+export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
+  await store.remove(serverId);
+  const versions = new Map(observedVersions());
+  versions.delete(serverId);
+  try { sessionStorage.setItem(VERSION_KEY, JSON.stringify([...versions])); } catch { /* tab storage may be unavailable */ }
+}
+
 export function createUpdateFlow(shellVersion: string, view: {
   readonly show: (state: RelayShellState) => void;
   readonly accepted: (opened: RelayTransport, attempt: Attempt) => void;

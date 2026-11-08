@@ -1,9 +1,17 @@
 import { afterEach, expect, it } from "bun:test";
-import { RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
+import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { RelayTransport } from "./transport.ts";
 import { createUpdateFlow, observedVersions } from "./updateFlow.ts";
 import type { Attempt, RelayShellState } from "./shellState.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
+import { isValidElement, type ReactNode } from "react";
+import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
+import { createShellTestPage } from "./shell.test.tsx";
+import { forgetSavedPc, mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import { encodeOffer } from "../../../shared/relay-offer.ts";
+import type { RelayDevice } from "./device.ts";
 
 const descriptor = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 afterEach(() => {
@@ -71,4 +79,92 @@ it("never installs after cancellation while an update-status read was pending", 
     expect(writes).toEqual([]);
     expect(states).toHaveLength(count);
   } finally { flow.cancel(); opened.close(); }
+});
+
+/** Captures the actual controller/view boundary; transports below supply only PC responses. */
+function shellFixture() {
+  const browser = createShellTestPage();
+  const devices = new Map<string, RelayDevice>();
+  const pair = generateKeyPair();
+  const offer = { v: 1 as const, server_id: deriveServerId(pair.publicKey), server_public_key: exportPublicKey(pair.publicKey), relay: "wss://relay.ovis.sh" };
+  let shown: RelayShellProps | undefined;
+  let apps = 0;
+  const mount: RelayShellMount = {
+    container: document.documentElement, entryUrl: encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", label: "Phone",
+    accountService: null, pendingPush: { get: async () => undefined, clear: async () => {} },
+    store: {
+      get: async (id) => devices.get(id), list: async () => [...devices.values()],
+      remove: async (id) => { devices.delete(id); },
+      update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
+    },
+    renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+    createRoot: () => ({ render(node: ReactNode) {
+      let element = node;
+      while (isValidElement<{ children: ReactNode }>(element) && element.type !== RelayShell) element = element.props.children;
+      if (!isValidElement<RelayShellProps>(element) || element.type !== RelayShell) throw new Error("Expected the relay shell view");
+      shown = element.props;
+    }, unmount() {} }),
+  };
+  return { browser, offer, mount, devices, apps: () => apps, view: () => {
+    if (shown === undefined) throw new Error("The shell has not rendered");
+    return shown;
+  } };
+}
+
+it.each(["retry", "disconnect"] as const)("keeps Ready pending through %s after a fresh outdated admission until Open PC", async (recovery) => {
+  const fixture = shellFixture();
+  class Admitted extends RelayTransport {
+    version = "0.0.1";
+    override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL }; }
+    override async fetch() { return Response.json({ managed: false }); }
+  }
+  const first = new Admitted(fixture.offer), next = new Admitted(fixture.offer);
+  next.version = "1.0.0";
+  let attempts = 0;
+  let fatal: ((error: Error) => void) | undefined;
+  try {
+    await mountRelayShell({ ...fixture.mount, open: async (_offer, options) => { fatal = options?.onFatal; return ++attempts === 1 ? first : next; } });
+    fixture.view().onPair();
+    for (let i = 0; i < 500; i++) await Promise.resolve();
+    expect(fixture.view().state).toMatchObject({ kind: "outdated", update: { phase: "manual" } });
+    if (recovery === "disconnect") fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
+    fixture.view().onRetry();
+    for (let i = 0; i < 500; i++) await Promise.resolve();
+    expect(fixture.apps()).toBe(0);
+    expect(fixture.view().state.kind).toBe("ready");
+    fixture.view().onOpenPc?.();
+    expect(fixture.apps()).toBe(1);
+    fatal?.(new MuxProtocolError("timeout", "fixture disconnected"));
+    fixture.view().onRetry();
+    for (let i = 0; i < 500; i++) await Promise.resolve();
+    expect(fixture.apps()).toBe(2);
+  } finally { first.close(); next.close(); fixture.browser.dispose(); }
+});
+
+it.each(["settings", "shell"] as const)("clears only the forgotten PC's admitted version through %s", async (path) => {
+  const fixture = shellFixture();
+  const otherId = "ab".repeat(16);
+  class Outdated extends RelayTransport {
+    override get server() { return { version: "0.0.1", relayProtocol: RELAY_PROTOCOL }; }
+    override async fetch() { return Response.json({ managed: false }); }
+  }
+  const opened = new Outdated(fixture.offer);
+  try {
+    fixture.browser.sessionStore.set("ovis-relay-versions", JSON.stringify([[otherId, { version: "0.0.2", outdated: true }]]));
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    fixture.devices.set(fixture.offer.server_id, { ...fixture.offer, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" });
+    await mountRelayShell({ ...fixture.mount, entryUrl: `https://app.ovis.sh/s/${fixture.offer.server_id}/`, open: async () => opened });
+    expect(observedVersions().has(fixture.offer.server_id)).toBe(true);
+    switch (path) {
+      case "settings": await forgetSavedPc(fixture.offer.server_id, fixture.mount.store); break;
+      case "shell":
+        fixture.view().onForget();
+        for (let i = 0; i < 500; i++) await Promise.resolve();
+        expect(fixture.view().state.kind).toBe("forgotten");
+        break;
+    }
+    expect(fixture.devices.has(fixture.offer.server_id)).toBe(false);
+    expect(observedVersions().has(fixture.offer.server_id)).toBe(false);
+    expect(observedVersions().get(otherId)).toEqual({ version: "0.0.2", outdated: true });
+  } finally { opened.close(); fixture.browser.dispose(); }
 });
