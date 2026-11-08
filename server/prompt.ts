@@ -23,7 +23,7 @@ import { registry } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
-import { LETTA_SEARCH_MAX, lettaSearchShown } from "./dialogs/letta.ts";
+import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
@@ -607,7 +607,7 @@ const answerTurns = new Map<string, number>();
  */
 function asked(paneId: string, prompt: InteractivePrompt | null, turns: number): InteractivePrompt | null {
   let asking = askings.get(paneId);
-  if (prompt !== null && asking?.picked === prompt.id) return null;
+  if (prompt !== null && asking?.picked !== undefined && asking.picked === lettaPick(parsedByPublicPrompt.get(prompt))) return null;
   if (!answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
     if (asking) asking.picked = undefined;
     if (prompt === null) {
@@ -2128,7 +2128,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (committed && (answeredCard?.responder === "letta-model" || answeredCard?.responder === "letta-effort") && body.option_index !== undefined
           && answeredCard.optionSteps?.[body.option_index]?.at(-1)?.keys?.[0] === KEY.enter) {
           const asking = askings.get(body.pane_id);
-          if (asking) asking.picked = answeredCard.id;
+          if (asking) asking.picked = lettaPick(answeredCard);
         }
         // sent or dropped from its card: the same words in the box after this are a new message
         if (committed && parsedByPublicPrompt.get(target)?.responder === "claude-held") heldCandidates.delete(body.pane_id);

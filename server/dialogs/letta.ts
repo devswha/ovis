@@ -108,6 +108,8 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
   // step one tab, so the tabs beside the one shown are offered
   const tabs = lines[search - 2]?.trim().split(/\s{2,}/).map((tab) => tab.match(LETTA_TAB_RE)) ?? [];
   const shown = LETTA_TAB_OF[lines[search - 1]?.trim() ?? ""];
+  // a tab known by its line alone: a line two tabs share (a free tier's Letta API tabs) tells them apart from no card
+  if (shown === undefined) return null;
   const names = tabs.every((tab) => tab !== null) ? tabs.map((tab) => tab![1]!) : [];
   const at = shown === undefined ? -1 : names.indexOf(shown);
   const beside = at < 0 || names.length < 2 ? [] : [...new Set([(at + 1) % names.length, (at - 1 + names.length) % names.length])]
@@ -136,7 +138,7 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
   }, {
     responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search", "cancel"], selectedIndex, lettaSearch: typed,
     // the tab shown, by the line Letta draws under the tabs (their counts follow the search), and the tabs drawn
-    lettaTab: shown ?? lines[search - 1]?.trim() ?? "", lettaTabs: names,
+    lettaTab: shown, lettaTabs: names,
     checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: cancelIndex,
     optionSteps: [
       ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
@@ -191,8 +193,19 @@ function parseLettaEffort(screen: string): ParsedPrompt | null {
  * that tab no more): a tab still drawn but not shown is a switch from somewhere else, where the search would not go.
  */
 export function lettaSearchShown(shown: ParsedPrompt | null | undefined, card: ParsedPrompt, search: string): boolean {
+  const tabs = shown?.lettaTabs ?? [];
   return shown?.responder === "letta-model" && shown.lettaSearch === search.trimEnd()
-    && (shown.lettaTab === card.lettaTab || !(shown.lettaTabs ?? []).includes(card.lettaTab ?? ""));
+    && (shown.lettaTab === card.lettaTab || (tabs.length > 0 && tabs[0] === shown.lettaTab && !tabs.includes(card.lettaTab ?? "")));
+}
+
+/**
+ * What a Letta picker picked with Enter is, however Letta redraws it until it moves on (another count, a refresh):
+ * the model list by the row under its cursor on its tab and search, the reasoning step by its model and level.
+ */
+export function lettaPick(parsed: ParsedPrompt | undefined): string | undefined {
+  if (parsed?.responder === "letta-model") return `model\n${parsed.lettaTab}\n${parsed.lettaSearch}\n${parsed.menuLabels[parsed.selectedIndex]}`;
+  if (parsed?.responder === "letta-effort") return `effort\n${parsed.menuLabels[0]}`;
+  return undefined;
 }
 
 export const readers: readonly DialogReader[] = [

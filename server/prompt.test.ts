@@ -5805,6 +5805,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       });
     });
 
+    test("holds the picked list when Letta redraws it with other counts before the next step", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      // a refresh of the catalog under the answer: another tab's count, the same row under the cursor
+      const refreshed = lettaModels("").replace("Recommended [12]", "Recommended [13]");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let reads = 0;
+        pane.onRead = () => { if (++reads === 2) pane.screen = refreshed; };
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["enter"]);
+        expect(await card(), "the list the Enter went to, redrawn, is no new asking").toBeNull();
+        pane.screen = effort;
+        expect((await card())?.question).toStartWith("Select reasoning level");
+      });
+    });
+
     test("stops a search once the picker shows another tab", async () => {
       const recommended = readFileSync(new URL("./fixtures/letta/model-recommended-0.34.31.txt", import.meta.url), "utf8");
       await withPane("letta", "idle", lettaModels(""), async (pane) => {

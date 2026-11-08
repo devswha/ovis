@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
+import { lettaSearchShown } from "./letta.ts";
 import { registry } from "./registry.ts";
 import { KEY, parsedByPublicPrompt } from "./shared.ts";
 
@@ -106,6 +107,30 @@ describe("Letta Code's /model", () => {
     const prompt = parseInteractivePrompt("letta", screen("model-recents"))!;
     expect(answerKeys(prompt, { custom_text: "a".repeat(40) })).toHaveLength(40);
     expect(() => answerKeys(prompt, { custom_text: "a".repeat(41) })).toThrow();
+  });
+
+  it("lets a search go on only on its own tab, or the first one Letta moved to when the search emptied it", () => {
+    const recents = screen("model-recents");
+    const card = parsedByPublicPrompt.get(parseInteractivePrompt("letta", recents)!)!;
+    const on = (bar: string, tab: string) => parsedByPublicPrompt.get(parseInteractivePrompt("letta",
+      recents.replace("(type to filter)", "o").replace(/Recents \[5\].*All models \[21\]/, bar).replace("Models you've recently used", tab))!)!;
+    const recommended = "Recommended models currently available for this account";
+    const all = "All models currently available for this account";
+    expect(lettaSearchShown(on("Recents [2]    Recommended [3]    All models [4]", "Models you've recently used"), card, "o")).toBe(true);
+    // Recents still drawn: someone else switched
+    expect(lettaSearchShown(on("Recents [2]    Recommended [3]    All models [4]", recommended), card, "o")).toBe(false);
+    // Recents emptied: Letta moves to the first tab left, never another
+    expect(lettaSearchShown(on("Recommended [3]    All models [4]", recommended), card, "o")).toBe(true);
+    expect(lettaSearchShown(on("Recommended [3]    All models [4]", all), card, "o")).toBe(false);
+    // a search matching nothing anywhere draws no tabs, and Letta stays on its tab
+    const lines = recents.replace("(type to filter)", "o").replace("Models you've recently used", recommended).replace(/Recents \[5\].*All models \[21\]/, "").split("\n");
+    const noMatch = [...lines.slice(0, lines.findIndex((line) => line.includes("Search: ")) + 1), "", "  No models match your search."].join("\n");
+    expect(lettaSearchShown(parsedByPublicPrompt.get(parseInteractivePrompt("letta", noMatch)!)!, card, "o")).toBe(false);
+  });
+
+  it("offers no card on a tab it cannot name", () => {
+    // free tier: both Letta API tabs are drawn with this one line under them
+    expect(parseInteractivePrompt("letta", screen("model-recents").replace("Models you've recently used", "Upgrade your account to access more models"))).toBeNull();
   });
 
   it("reads no picker once output follows it, nor another agent's screen", () => {
