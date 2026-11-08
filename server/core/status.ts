@@ -26,6 +26,7 @@ import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service
 import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
+import { createLettaStatus, lettaPanes } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
 import { resolveAgent } from "../pane-context.ts";
@@ -148,6 +149,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest),
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
+  /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
+  const letta = createLettaStatus({
+    discover: (panes) => lettaPanes(panes),
+    snapshot: omoSnapshot,
+    onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "letta"),
+    onFound: (paneId) => completions.adopt(paneId, "letta", []),
+  });
   /** Claude panes whose turn ended while work it started runs in the background (server/background-wait.ts) */
   const waits = new BackgroundWait(options.statusNow ?? Date.now, options.backgroundWait);
   /** the pane whose status event is reading its background work now: that event sends the one frame and alert of it */
@@ -285,7 +293,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const read = opencodeAgents.beginRead();
     const snapshot = await omoSnapshot();
     await gjc.refresh(snapshot.panes);
-    const named = gjc.apply(omo.apply(snapshot));
+    await letta.refresh(snapshot.panes);
+    const named = letta.apply(gjc.apply(omo.apply(snapshot)));
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
@@ -415,9 +424,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * form has had its answer. gjc keeps no background records to count, so a change is always a
    * turn, and an idle read after work is the finish — one ended in an error is not (#687).
    */
-  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined): void {
+  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
-    const status = turn ? completions.observe(paneId, derived, "gjc", rest) : completions.current(paneId) ?? completions.observe(paneId, derived, "gjc");
+    const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     broadcastAll(paneStatus(paneId, status));
     if (turn) push.onStatus(paneId, status).catch(logPushError);
@@ -486,10 +495,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     } finally { settling = was; }
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, read));
     gjc.poll();
+    letta.poll();
     // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
     // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change;
     // a GJC pane's may be a provider child's while gjc's own transcript is tracked
-    if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || !completions.replayed(paneId, raw, replay))) return;
+    if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId) || !completions.replayed(paneId, raw, replay))) return;
     // Native OmO discovery owns the pane even when herdr names its provider child.
     if (reconcileProviderStatus(omo, gjc, { pane_id: paneId, agent })) completions.forget(paneId);
     // the frame below names no agent: one herdr names anew is read into the roster now. An OmO
@@ -504,7 +514,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // a GJC one while its transcript is tracked: their own status stands, and no Claude turn waits there
     // (an OmO pane's wait on its background tasks is omoChanged's)
     if (omo.tracks(paneId)) return;
-    if (gjc.tracks(paneId)) {
+    if (gjc.tracks(paneId) || letta.tracks(paneId)) {
       waits.forget(paneId);
       return;
     }
@@ -551,6 +561,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function paneGone(paneId: string): void {
     omo.ended(paneId);
     gjc.ended(paneId);
+    letta.ended(paneId);
     options.openCodeState?.forget(paneId);
     releaseOpenCodePane(paneId);
     finishes.ended(paneId);
@@ -659,6 +670,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   } });
   omo.start();
   gjc.start();
+  letta.start();
   claudeAgents.start();
   opencodeAgents.start();
   const waitTimer = setInterval(waitsRanOut, 1000);
@@ -679,5 +691,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer };
 }

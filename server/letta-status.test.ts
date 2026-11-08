@@ -1,0 +1,41 @@
+import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { HerdrPane } from "../shared/protocol.ts";
+import { lettaPanes, lettaTurnAfter } from "./letta-status.ts";
+import { noTurn } from "./omo-status.ts";
+
+// One turn of letta-code 0.34.44's local backend (old-desktop, 2026-11-08): the prompt, a Bash call, its result, the answer
+const turn = readFileSync(join(import.meta.dir, "fixtures", "letta", "messages-turn-0.34.44.jsonl"), "utf8").trim().split("\n");
+
+const pane = (id: string, agent: string | null, status: HerdrPane["agent_status"]): HerdrPane => ({
+  pane_id: id, workspace_id: "w1", tab_id: "w1:t1", focused: false, cwd: "/p", foreground_cwd: "/p", agent, agent_status: status,
+} as HerdrPane);
+
+describe("a Letta pane's status from its local messages", () => {
+  it("works from the prompt through each tool call and its result, and rests on the answer", () => {
+    const seen: (string | null)[] = [];
+    let state = noTurn();
+    for (const line of turn) { state = lettaTurnAfter(state, { text: line }); seen.push(state.status); }
+    expect(seen).toEqual(["working", "working", "working", "idle"]);
+    expect(state.at).toBe(Date.parse("2026-11-08T02:29:09.323Z"));
+  });
+
+  it("finds only Letta panes no report gives a status, with the messages file of the conversation it shows", async () => {
+    const found = await lettaPanes([pane("t1", "letta", "unknown"), pane("t2", "letta", "working"), pane("t3", "claude", "unknown"), pane("t4", "letta", "unknown")], {
+      resolve: async (target) => target.pane_id === "t1"
+        ? { store: "/h/.letta/lc-local-backend", agent: "agent-local-a", conversation: "default", startedAt: 1000 }
+        : null,
+    });
+    expect([...found]).toEqual([
+      ["t1", { path: join("/h/.letta/lc-local-backend", "conversations", Buffer.from("default:agent-local-a").toString("base64url"), "messages.jsonl"), startedAt: 1000 }],
+      // a pane whose conversation cannot be told keeps its status unknown
+      ["t4", { path: null, startedAt: null }],
+    ]);
+  });
+
+  it("keeps a cloud conversation, whose messages are on the server, without a file", async () => {
+    const found = await lettaPanes([pane("t1", "letta", "unknown")], { resolve: async () => ({ store: "/s", agent: "agent-a", conversation: "conv-123", startedAt: 5 }) });
+    expect(found.get("t1")).toEqual({ path: null, startedAt: 5 });
+  });
+});
