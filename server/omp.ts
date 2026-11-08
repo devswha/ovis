@@ -398,7 +398,7 @@ async function darwinOpenFiles(pids: readonly number[], sampled: ReadonlyMap<num
   for (const line of Buffer.concat(chunks).toString("latin1").split("\n")) {
     if (line.startsWith("p")) { fresh.set(current = Number(line.slice(1)), []); device = inode = null; }
     else if (line.startsWith("f")) device = inode = null;
-    else if (line.startsWith("D") && /^0x[0-9a-f]+$/i.test(line.slice(1))) device = String(Number.parseInt(line.slice(3), 16));
+    else if (line.startsWith("D") && /^0x[0-9a-f]+$/i.test(line.slice(1))) device = BigInt(line.slice(1)).toString();
     else if (line.startsWith("i") && /^\d+$/.test(line.slice(1))) inode = line.slice(1);
     else if (line.startsWith("n") && current !== undefined) {
       // a name that cannot be read may be the very session: nothing is proved for this process then
@@ -418,9 +418,9 @@ async function darwinOpenFiles(pids: readonly number[], sampled: ReadonlyMap<num
   return sameStarts(open, identities);
 }
 
-/** The `dev:ino` a path names now, or null. */
+/** The `dev:ino` a path names now, or null; read as bigints, as lsof prints them, past 2^53 too. */
 function fileId(path: string): string | null {
-  try { const stat = statSync(path); return `${stat.dev}:${stat.ino}`; } catch { return null; }
+  try { const stat = statSync(path, { bigint: true }); return `${stat.dev}:${stat.ino}`; } catch { return null; }
 }
 
 /**

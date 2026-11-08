@@ -829,6 +829,43 @@ describe("an omp pane's chat", () => {
       } finally { now.mockRestore(); }
     });
 
+    it("binds nothing for a held subagent file whose parent transcript is a link", async () => {
+      storeTranscript(pane.cwd!, "2026-10-01_A.jsonl");
+      const parentB = storeTranscript(pane.cwd!, "2026-10-01_B.jsonl");
+      const parentA = parentB.replace("_B.jsonl", "_A.jsonl");
+      // A's own subagent directory is real, but A's transcript is a link to B's
+      fs.rmSync(parentA);
+      symlinkSync(parentB, parentA);
+      mkdirSync(parentA.replace(/\.jsonl$/, ""));
+      const task = join(parentA.replace(/\.jsonl$/, ""), "task.jsonl");
+      writeFileSync(task, "");
+      listing = listed([task]);
+      expect(await held()).toBeNull();
+    });
+
+    it("binds nothing when the held session's cwd and the pane's are the same directory that is gone", async () => {
+      const removed = join(home, "removed");
+      const session = storeTranscript(removed);
+      listing = listed([session]);
+      clock += 10_000;
+      expect(await ompHeldTranscript(pane.pane_id, removed, true)).toBeNull();
+    });
+
+    it("checks a held file's inode as lsof prints it, past 2^53", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      // an inode a double cannot hold: a numeric stat rounds it to ...992
+      const inode = 9_007_199_254_740_993n;
+      listing = `p${pid}\nfcwd\nn${pane.cwd}\nf23\nD0x1\ni${inode}\nn${continued}\n`;
+      const realStat = fs.statSync;
+      const stat = spyOn(fs, "statSync").mockImplementation(((path: fs.PathLike, options?: { bigint?: boolean }) => {
+        const real = realStat(path, options as never);
+        if (path !== continued || real === undefined) return real;
+        const big = options?.bigint === true;
+        return Object.assign(Object.create(Object.getPrototypeOf(real) as object) as object, real, { dev: big ? 1n : 1, ino: big ? inode : Number(inode) });
+      }) as unknown as typeof fs.statSync);
+      try { expect(await held()).toBe(continued); } finally { stat.mockRestore(); }
+    });
+
     it("binds nothing when a held session's header cannot be read as one", async () => {
       const continued = storeTranscript(pane.cwd!);
       const malformed = storeTranscript(pane.cwd!, "2026-10-02_bad.jsonl");

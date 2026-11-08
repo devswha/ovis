@@ -315,13 +315,14 @@ function listedSession(roots: StoreRoots, root: string, entry: string): string |
       if (!lstatSync(join(base, ...parts.slice(0, at))).isDirectory()) return "unproved";
     }
     if (!lstatSync(entry).isFile()) return "unproved";
+    // a subagent's parent transcript that is a link may name any session of the store
+    if (parts.length === roots.depth + 1 && !lstatSync(join(base, ...parts.slice(0, -2), `${parts.at(-2)!}.jsonl`)).isFile()) return "unproved";
   } catch { return "unproved"; }
   return gjcSessionFile(root, join(root, ...parts), nodePath, roots.depth);
 }
 
-/** Whether a header's cwd is the pane's, links followed on both; null when either does not resolve. */
+/** Whether a header's cwd is the pane's, links followed on both; null when either does not resolve (the same spelling too). */
 function sameCwd(header: string, cwd: string): boolean | null {
-  if (header === cwd) return true;
   try { return realpathSync(header) === realpathSync(cwd); } catch { return null; }
 }
 
