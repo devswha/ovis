@@ -1,6 +1,6 @@
 import "./RelayShell.css";
 
-import { useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 
@@ -17,9 +17,11 @@ import { AddPcSheet, type AddPcSheetMode } from "./AddPcSheet.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
+import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { useFocusTrap } from "../lib/useFocusTrap.ts";
 
 export interface RelayShellProps {
   state: RelayShellState;
@@ -27,6 +29,14 @@ export interface RelayShellProps {
   pcStatus?: ReadonlyMap<string, PcStatus>;
   /** Check now: probe the saved PCs again */
   onCheckPcs?: () => void;
+  /** Explicit directory retry; independent of the liveness probe sweep. */
+  onRefreshAccount?: () => void;
+  /** Admission succeeded; only this action hands the scoped page to the PC app. */
+  onOpenPc?: () => void;
+  /** Reloaded independently after a scope navigation, never copied into session storage. */
+  continuedAccount?: AccountView | null;
+  /** Versions from admitted sessions only; a liveness probe never supplies one. */
+  observedVersions?: ReadonlyMap<string, ObservedVersion>;
   /** on a PC's own page (`/s/<id>/`), where Back leads to the front page; the front page has no Back */
   scoped: boolean;
   /** an iPhone or iPad browser tab, where the pairing may not survive a week unvisited */
@@ -47,7 +57,7 @@ export interface RelayShellProps {
   /** `typed`: added as a PC new in the account, so this device types the number that PC shows; `sheet`: the Add-a-PC sheet asked, in that mode, and goes on over the PC's own page */
   onJoin?: (pc: MyPc, options?: { typed?: boolean; sheet?: "new" | "join" }) => void;
   /** on a PC's own page: the join the dashboard's sheet started for this PC, which the sheet takes up again over the pairing screens */
-  sheetJoin?: { mode: "new" | "join"; server_id: string } | null;
+  sheetJoin?: { mode: "new" | "join"; server_id: string; returnHash?: string } | null;
   onSignOut?: () => void;
   onLeave?: () => void;
   /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
@@ -150,13 +160,34 @@ function KeyIds({ mismatch, named }: { mismatch: KeyMismatch; named: "link" | "p
 export const INSTALLER_COMMAND = "curl -fsSL https://ovis.sh/install.sh | sh";
 export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin action invoke devswha.ovis.stop\nherdr plugin action invoke devswha.ovis.start";
 
+/** A completed pairing owns its transport until Open PC or Cancel, including in continued scope. */
+function ReadyCheckpoint({ open, cancel }: { open: () => void; cancel: () => void }) {
+  const t = useT();
+  const title = useId();
+  const surface = useFocusTrap<HTMLDivElement>(true);
+  useEffect(() => {
+    const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") { event.preventDefault(); cancel(); } };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, [cancel]);
+  return <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
+    <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={title} tabIndex={-1} data-add-pc-phase="ready">
+      <header className="modal-header"><h2 id={title} className="modal-title" role="status">{t("Ready")}</h2></header>
+      <footer className="modal-footer">
+        <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
+        <button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button>
+      </footer>
+    </div>
+  </div>;
+}
+
 /**
  * The hosted shell's screens before the app: the saved PCs to pick from, the question before a
  * new PC is paired, the wait for the connection, and why one did not come up, each named in
  * `data-relay-state` for scripts. One card in the token gate's frame (AccessGate.css), so a phone
  * that pairs through the relay and one that pairs with a code see the same room.
  */
-export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, accountProviders, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel }: RelayShellProps) {
+export function RelayShell({ state, pcStatus, onCheckPcs, onRefreshAccount, observedVersions, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, continuedAccount, onSignIn, onJoin, sheetJoin = null, onSignOut, onLeave, accountProviders, directoryRelays = [], defaultRelay = GLOBAL_RELAY, meLabel }: RelayShellProps) {
   const t = useT();
   const account: AccountView | null = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
   const signIn = account?.kind === "signed-out" && onSignIn ? <AccountSignIn onSignIn={onSignIn} error={account.error} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
@@ -185,8 +216,9 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
     const signedIn = account.kind === "signed-in" ? account : null;
     return (
       <main className="relay-dash-screen" data-relay-state={stateName} data-account-state={account.kind}>
+        {signedIn?.error && onRefreshAccount && <button type="button" className="btn" onClick={onRefreshAccount}>{t("Try again")}</button>}
         <RelayDashboard
-          pcs={signedIn ? (signedIn.pcs === null ? null : dashboardPcs(signedIn.pcs, devices, directoryRelays)) : dashboardPcs(myPcs([], devices, { now: Date.now() }), devices)}
+          pcs={signedIn ? (signedIn.pcs === null ? null : dashboardPcs(signedIn.pcs, devices, directoryRelays)) : dashboardPcs(myPcs([], devices, { now: Date.now(), outdated: new Set([...(observedVersions ?? [])].filter(([, value]) => value.outdated).map(([id]) => id)) }), devices)}
           account={signedIn ? { provider: signedIn.provider } : null}
           defaultRelay={defaultRelay}
           meLabel={meLabel ?? t("This device")}
@@ -213,13 +245,21 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
   // how that PC's join failed; a PC with a new identity keeps the shell's own screen, whose ids and Forget the sheet does not carry
   const continued = scoped && sheetJoin !== null && (state.kind === "confirm" ? state.offer.server_id === sheetJoin.server_id
     : state.kind === "failed" ? state.server_id === sheetJoin.server_id && state.failure !== "identity-changed"
-    : state.kind === "connecting" || state.kind === "compare");
+    : state.kind === "connecting" || state.kind === "compare" || state.kind === "ready");
   if (continued) {
-    const joining: MyPc = { server_id: sheetJoin.server_id, name: pc, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false };
+    const joining: MyPc = (continuedAccount?.kind === "signed-in" ? continuedAccount.pcs?.find((row) => row.server_id === sheetJoin.server_id) : undefined)
+      ?? { server_id: sheetJoin.server_id, name: pc, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false };
     return (
-      <main className="relay-shell-screen" data-relay-state={stateName}>
-        <div className="relay-shell account-centered"><img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="relay-shell-mark" /></div>
-        <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onRetry={onRetry} onCancel={onCancel} onClose={onBack} onPairByQr={onCodeStart} />
+      <main className="relay-dash-screen" data-relay-state={stateName}>
+        {continuedAccount !== undefined && <div inert>
+          <RelayDashboard pcs={continuedAccount?.kind === "signed-in" && continuedAccount.pcs !== null ? dashboardPcs(continuedAccount.pcs, [], directoryRelays) : null}
+            account={continuedAccount?.kind === "signed-in" ? { provider: continuedAccount.provider } : null}
+            defaultRelay={defaultRelay} meLabel={meLabel ?? t("This device")} error={continuedAccount?.kind === "signed-in" ? continuedAccount.error : null}
+            onAddPc={onBack} onOpenSheet={onBack} />
+        </div>}
+        {state.kind === "ready" && onOpenPc
+          ? <ReadyCheckpoint open={onOpenPc} cancel={onCancel} />
+          : <AddPcSheet mode={sheetJoin.mode} pc={joining} state={state} onJoin={() => {}} onPair={onPair} onMatch={onMatch} onRetry={onRetry} onCancel={onCancel} onClose={onBack} onPairByQr={onCodeStart} />}
       </main>
     );
   }
@@ -227,6 +267,7 @@ export function RelayShell({ state, pcStatus, onCheckPcs, scoped, iosTab, onPair
     <main className="relay-shell-screen" data-relay-state={stateName} {...(account ? { "data-account-state": account.kind } : {})}>
       <div className={signInFirst || state.kind === "compare" ? "relay-shell account-centered" : "relay-shell"}>
         <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="relay-shell-mark" />
+        {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} />}
         {account?.kind === "signing-in" && (
           <>
             <h1 className="relay-shell-title">{t("Signing in…")}</h1>

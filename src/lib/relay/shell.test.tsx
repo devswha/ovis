@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import type { ReactElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import { memoryAccountStore } from "../account/store.ts";
+import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
+import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
 const AP = "wss://relay-ap.ovis.sh";
 const SERVICE = "https://account.ovis.sh";
@@ -18,28 +20,18 @@ const keyFor = () => { const pair = generateKeyPair(); return { server_id: deriv
 
 /** Spins the microtask queue until `holds`, or fails naming `what`: the shell's reads are promises alone, so no clock takes part. */
 async function until(holds: () => boolean, what: string): Promise<void> {
-  for (let turn = 0; turn < 10_000; turn++) {
-    if (holds()) return;
-    await Promise.resolve();
-  }
+  for (let turn = 0; turn < 10_000; turn++) { if (holds()) return; await Promise.resolve(); }
   throw new Error(`gave up waiting for ${what}`);
 }
 /** Enough turns for any read the shell wrongly started to reach the fetch (a read takes a few dozen). */
 const drain = async (): Promise<void> => { for (let turn = 0; turn < 500; turn++) await Promise.resolve(); };
 
-describe("the hosted shell's front page", () => {
+/** An isolated browser boundary shared by the controller suites; no production seam. */
+export function createShellTestPage() {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let visibility: "visible" | "hidden";
-  let page: EventTarget;
-  let sessionStore: Map<string, string>;
-  /** every element the shell asked its root to draw, in order */
-  let rendered: ReactElement[];
-
-  beforeEach(() => {
-    visibility = "visible";
-    page = new EventTarget();
-    sessionStore = new Map();
-    rendered = [];
+  let visibility: "visible" | "hidden" = "visible";
+  const page = new EventTarget();
+  const sessionStore = new Map<string, string>();
     for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "matchMedia"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const storage = (store: Map<string, string>) => ({ getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() });
     const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
@@ -60,16 +52,20 @@ describe("the hosted shell's front page", () => {
       querySelector: () => null,
       addEventListener: page.addEventListener.bind(page), removeEventListener: page.removeEventListener.bind(page), dispatchEvent: page.dispatchEvent.bind(page),
     } });
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
+  return { page, sessionStore, setVisibility: (next: typeof visibility) => { visibility = next; }, dispose: () => {
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
     descriptors.clear();
-  });
+  } };
+}
+
+describe("the hosted shell's front page", () => {
+  let browser: ReturnType<typeof createShellTestPage>;
+  let rendered: ReactElement[];
+  beforeEach(() => { browser = createShellTestPage(); rendered = []; });
+  afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
   const deviceStore = (devices: RelayDevice[]): RelayDeviceStore => ({
     async get(serverId) { return devices.find((device) => device.server_id === serverId); },
@@ -94,195 +90,150 @@ describe("the hosted shell's front page", () => {
   };
   const last = (): RelayShellProps => shellProps(rendered.at(-1)!);
   const account = () => { const { state } = last(); if ((state.kind !== "list" && state.kind !== "empty") || state.account?.kind !== "signed-in") throw new Error(`not the signed-in front page: ${state.kind}`); return state.account; };
-  const rows = (): number => renderToStaticMarkup(rendered.at(-1)!).match(/<tr data-pc-state="/g)?.length ?? 0;
-  const visible = (next: typeof visibility): void => { visibility = next; page.dispatchEvent(new Event("visibilitychange")); };
 
-  it("reads the directory again when the page comes into view and every 60 s while it stays there, never while hidden, and keeps the rows through a failed read", async () => {
-    jest.useFakeTimers();
-    const desk = keyFor(), mini = keyFor(), nuc = keyFor();
-    const now = Date.now();
-    const seen = new Date(now - 60_000).toISOString();
-    const directory = [
-      { server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: seen, public_key: null, relay: AP },
-      { server_id: mini.server_id, label: "Mac mini", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: seen, public_key: null, relay: AP },
-      { server_id: nuc.server_id, label: "nuc", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: seen, public_key: null, relay: "wss://relay.ovis.sh" },
-    ];
-    type Answer = { status: number; ok: boolean; json: () => Promise<unknown> };
-    const ok = (): Answer => ({ status: 200, ok: true, json: async () => ({ pcs: directory }) });
-    const down = (): Answer => ({ status: 500, ok: false, json: async () => ({ error: { code: "down" } }) });
-    let answer: () => Answer = ok;
-    let reads = 0;
-    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
-      reads += 1;
-      return answer() as unknown as Response;
-    };
-    const accountStore = memoryAccountStore();
-    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
-    const paired: RelayDevice = { server_id: desk.server_id, device_id: "0".repeat(16), private_key: {} as CryptoKey, public_spki: "spki", label: "Test phone", server_public_key: "k", relay: AP, name: "Desk PC" };
-
-    // Given the page is opened in the background
-    visibility = "hidden";
-    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([paired]) }));
-    await until(() => reads === 1 && rendered.length > 0 && account().pcs !== null, "the first read drawn");
-    expect(rows()).toBe(3);
-    expect(account().pcs!.map((pc) => [pc.name, pc.state])).toEqual([["Desk PC", "paired"], ["Mac mini", "needs-approval"], ["nuc", "needs-approval"]]);
-
-    // Then nothing is read again while it stays hidden, however long
-    visible("hidden");
-    jest.advanceTimersByTime(180_000);
+  it("starts a fresh typed challenge after wrong digits and ignores repeated pending submissions", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    const challenges: RelayTransportOptions[] = [];
+    browser.sessionStore.set("ovis-typed-join", offer.server_id);
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]),
+      open: async (_offer, options = {}) => {
+        challenges.push(options);
+        await options.compare?.(challenges.length === 1 ? "123456" : "654321");
+        throw new MuxProtocolError("auth_failed", "fixture declined");
+      },
+    }));
+    last().onPair();
+    await until(() => last().state.kind === "compare", "first challenge");
+    last().onPair();
     await drain();
-    expect(reads).toBe(1);
-
-    // When it comes into view: one read at once
-    visible("visible");
-    await until(() => reads === 2, "the read on coming into view");
-    const drawn = rendered.length;
-    await until(() => rendered.length > drawn, "that read drawn");
-    expect(rows()).toBe(3);
-
-    // then one every 60 s, not before
-    jest.advanceTimersByTime(59_999);
-    await drain();
-    expect(reads).toBe(2);
-    jest.advanceTimersByTime(1);
-    await until(() => reads === 3, "the read at 60 s");
-    jest.advanceTimersByTime(60_000);
-    await until(() => reads === 4, "the read at 120 s");
-
-    // a read that fails keeps the rows and says so under them
-    answer = down;
-    const before = rendered.length;
-    jest.advanceTimersByTime(60_000);
-    await until(() => reads === 5 && rendered.length > before, "the failed read drawn");
-    expect(rows()).toBe(3);
-    expect(account().pcs).toHaveLength(3);
-    expect(account().error).toContain("could not be reached");
-    answer = ok;
-
-    // hidden again: the timer stops with it
-    visible("hidden");
-    jest.advanceTimersByTime(600_000);
-    await drain();
-    expect(reads).toBe(5);
-
-    // back in view: read again, and the failure's line goes
-    const shown = rendered.length;
-    visible("visible");
-    await until(() => reads === 6 && rendered.length > shown, "the read on coming back drawn");
-    expect(account().error).toBeNull();
-    expect(rows()).toBe(3);
+    expect(challenges).toHaveLength(1);
+    last().onMatch("000000");
+    expect(challenges[0]?.signal?.aborted).toBe(true);
+    last().onRetry();
+    await until(() => challenges.length === 2 && last().state.kind === "compare", "fresh challenge");
+    expect(last().state).toMatchObject({ kind: "compare", typed: true, confirmed: false });
+    expect(JSON.stringify(last().state)).not.toContain("654321");
+    expect([...browser.sessionStore.values()].join()).not.toMatch(/123456|654321|000000/);
+    last().onMatch("123456");
+    expect(challenges[1]?.signal?.aborted).toBe(true);
   });
 
-  it("reads nothing again while the first read is still out, so an older answer never lands over a newer one", async () => {
-    const desk = keyFor();
-    const now = Date.now();
-    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
-    let reads = 0;
-    let answer: () => void = () => {};
-    const held = new Promise<void>((resolve) => { answer = resolve; });
-    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
-      reads += 1;
-      if (reads === 1) await held;
-      return { status: 200, ok: true, json: async () => ({ pcs: directory }) } as unknown as Response;
-    };
-    const accountStore = memoryAccountStore();
-    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
-
-    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
-    await until(() => reads === 1 && rendered.length > 0 && account().pcs === null, "the loading dashboard with its first read out");
-    visible("visible");
+  it("suppresses a cancelled failure even when its saved-key lookup finishes late", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    const held = Promise.withResolvers<RelayDevice | undefined>();
+    const store = deviceStore([]);
+    let reading = false;
+    store.get = () => { reading = true; return held.promise; };
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store, navigate() {},
+      open: async () => { throw new MuxProtocolError("auth_revoked", "fixture revoked"); },
+    }));
+    last().onPair();
+    await until(() => reading, "revocation lookup");
+    last().onCancel();
+    const count = rendered.length;
+    held.resolve(undefined);
     await drain();
-    expect(reads).toBe(1);
-
-    answer();
-    await mounted;
-    await until(() => account().pcs !== null, "the first read drawn");
-    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+    expect(rendered).toHaveLength(count);
   });
 
-  it("keeps a code being typed when the first read lands under it", async () => {
-    let answer: () => void = () => {};
-    const held = new Promise<void>((resolve) => { answer = resolve; });
-    let reads = 0;
-    const accountFetch = async (): Promise<Response> => {
-      reads += 1;
-      await held;
-      return { status: 200, ok: true, json: async () => ({ pcs: [] }) } as unknown as Response;
-    };
+  it("keeps an admitted pairing Ready until Open PC", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+    }
+    const opened = new Admitted(offer);
+    let apps = 0;
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), shellVersion: "1.0.0",
+      open: async () => opened,
+      renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+      pendingPush: { get: async () => undefined, clear: async () => {} },
+    }));
+    last().onPair();
+    await drain();
+    expect(apps).toBe(0);
+    expect(last().state.kind).toBe("ready");
+    last().onOpenPc?.();
+    last().onOpenPc?.();
+    expect(apps).toBe(1);
+    opened.close();
+  });
+
+  it("returns admitted version observations to the dashboard and clears outdated on newer admission", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    const store = deviceStore([{ ...offer, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" }]);
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+    class Admitted extends RelayTransport {
+      version = "0.0.1";
+      override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL }; }
+      override async fetch() { return Response.json({ managed: false }); }
+    }
+    const transport = new Admitted(offer);
+    const front = mountFor({ store, accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }) });
+    await mountRelayShell(front);
+    expect(account().pcs?.[0]?.state).toBe("paired");
+    await mountRelayShell(mountFor({ store, entryUrl: `https://app.ovis.sh/s/${offer.server_id}/`, shellVersion: "1.0.0", open: async () => transport }));
+    await mountRelayShell(front);
+    expect(account().pcs?.[0]?.state).toBe("needs-update");
+    expect(last().observedVersions?.get(offer.server_id)?.version).toBe("0.0.1");
+    transport.version = "1.0.0";
+    await mountRelayShell(mountFor({ store, entryUrl: `https://app.ovis.sh/s/${offer.server_id}/`, shellVersion: "1.0.0", open: async () => transport,
+      renderApp: () => ({ render() {}, unmount() {} }), pendingPush: { get: async () => undefined, clear: async () => {} } }));
+    await mountRelayShell(front);
+    expect(account().pcs?.[0]?.state).toBe("paired");
+    transport.close();
+  });
 
-    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
-    await until(() => reads === 1 && rendered.length > 0 && account().pcs === null, "the loading dashboard with its first read out");
-    // Add a PC, Pair with a QR or code, Pair with a code
+  it("closes an admitted result that arrives after Cancel without rendering it", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+    const result = Promise.withResolvers<RelayTransport>();
+    const began = Promise.withResolvers<void>();
+    let closed = false;
+    class Late extends RelayTransport { override close() { closed = true; super.close(); } }
+    const opened = new Late(offer);
+    await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]),
+      navigate() {}, open: async () => { began.resolve(); return result.promise; } }));
+    last().onPair();
+    await began.promise;
+    last().onCancel();
+    const count = rendered.length;
+    result.resolve(opened);
+    await drain();
+    expect(closed).toBe(true);
+    expect(rendered).toHaveLength(count);
+  });
+
+  it("continues a confirmed typed-code offer in scope once without retaining its code", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, code: "123456" };
+    const paths: string[] = [];
+    const settings = mountFor({ store: deviceStore([]), navigate: (path) => paths.push(path), findByCode: async () => offer });
+    await mountRelayShell(settings);
+    last().onCodeStart(); last().onCodeSubmit("typed-secret");
+    await until(() => last().state.kind === "code-compare", "code comparison");
+    last().onCodeMatch(); last().onCodeMatch();
+    expect(paths).toHaveLength(1);
+    expect([...browser.sessionStore.values()].join()).not.toMatch(/typed-secret|123456/);
+    let attempts = 0;
+    await mountRelayShell({ ...settings, entryUrl: paths[0] ?? "", open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "spent"); } });
+    await drain();
+    expect(attempts).toBe(1);
+    await mountRelayShell({ ...settings, entryUrl: paths[0] ?? "" });
+    expect(last().state.kind).toBe("confirm");
+  });
+
+  it("returns from code entry in place without discarding the caller's view", async () => {
+    const paths: string[] = [];
+    await mountRelayShell(mountFor({ store: deviceStore([]), navigate: (path) => paths.push(path) }));
     last().onCodeStart();
-    await until(() => last().state.kind === "code-entry", "the code entry");
-
-    answer();
-    await mounted;
+    last().onCancel();
     await drain();
-    expect(last().state.kind).toBe("code-entry");
-  });
-
-  it("signs the page out when a read again finds the sign-in gone, rather than keeping the account's rows", async () => {
-    const desk = keyFor();
-    const now = Date.now();
-    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
-    const accountFetch = async (): Promise<Response> => ({ status: 200, ok: true, json: async () => ({ pcs: directory }) }) as unknown as Response;
-    const accountStore = memoryAccountStore();
-    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
-
-    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
-    await until(() => rendered.length > 0 && account().pcs !== null, "the first read drawn");
-
-    // another tab signed out: the session is gone from the shared store
-    await accountStore.set("session", undefined);
-    visible("visible");
-    await until(() => { const { state } = last(); return (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-out"; }, "the signed-out front page");
-  });
-
-  it("starts one read when two reasons to read again land in the same moment", async () => {
-    jest.useFakeTimers();
-    const desk = keyFor();
-    const now = Date.now();
-    const directory = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: new Date(now - 60_000).toISOString(), public_key: null, relay: AP }];
-    let reads = 0;
-    /** holds every read after the first open until the test lets it answer, so the triggers below overlap it */
-    let answer: () => void = () => {};
-    const held = new Promise<void>((resolve) => { answer = resolve; });
-    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
-      const url = new URL(input instanceof Request ? input.url : String(input));
-      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
-      reads += 1;
-      if (reads > 1) await held;
-      return { status: 200, ok: true, json: async () => ({ pcs: directory }) } as unknown as Response;
-    };
-    const accountStore = memoryAccountStore();
-    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
-
-    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
-    await until(() => reads === 1 && rendered.length > 0 && account().pcs !== null, "the first read drawn");
-
-    // two visibility changes in one tick (a tab switched away and back), then the 60 s tick while that read is out
-    visible("visible");
-    visible("visible");
-    await until(() => reads >= 2, "the read on coming into view");
-    await drain();
-    expect(reads).toBe(2);
-    jest.advanceTimersByTime(60_000);
-    await drain();
-    expect(reads).toBe(2);
-
-    const drawn = rendered.length;
-    answer();
-    await until(() => rendered.length > drawn, "the read drawn");
-    await drain();
-    expect(reads).toBe(2);
-    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+    expect(last().state.kind).toBe("empty");
+    expect(paths).toEqual([]);
   });
 
   it("takes up the dashboard's sheet on the PC's page only for the PC the join was for, once", async () => {
@@ -290,7 +241,7 @@ describe("the hosted shell's front page", () => {
     const other = keyFor();
     const entryUrl = encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.server_public_key, relay: AP, name: "Desk PC" }, "https://app.ovis.sh");
     const arriveWith = async (marker: unknown): Promise<RelayShellProps> => {
-      if (marker !== undefined) sessionStore.set(SHEET_JOIN, typeof marker === "string" ? marker : JSON.stringify(marker));
+      if (marker !== undefined) browser.sessionStore.set(SHEET_JOIN, typeof marker === "string" ? marker : JSON.stringify(marker));
       rendered = [];
       await mountRelayShell(mountFor({ entryUrl }));
       expect(last().state.kind).toBe("confirm");
@@ -300,11 +251,15 @@ describe("the hosted shell's front page", () => {
     // a marker for another PC is not this page's join
     expect((await arriveWith({ mode: "new", server_id: other.server_id })).sheetJoin).toBeNull();
     // whatever the marker, the page took it: a later plain visit shows the screens alone
-    expect(sessionStore.has(SHEET_JOIN)).toBe(false);
+    expect(browser.sessionStore.has(SHEET_JOIN)).toBe(false);
     // this PC's join goes on in the sheet, in its mode
     expect((await arriveWith({ mode: "join", server_id: pc.server_id })).sheetJoin).toEqual({ mode: "join", server_id: pc.server_id });
-    expect(sessionStore.has(SHEET_JOIN)).toBe(false);
+    expect(browser.sessionStore.has(SHEET_JOIN)).toBe(false);
     expect((await arriveWith({ mode: "new", server_id: pc.server_id })).sheetJoin).toEqual({ mode: "new", server_id: pc.server_id });
+    expect((await arriveWith({ mode: "new", server_id: pc.server_id, returnHash: "#pcs?filter=needs", code: "secret", access_token: "token" })).sheetJoin)
+      .toEqual({ mode: "new", server_id: pc.server_id, returnHash: "#pcs?filter=needs" });
+    expect((await arriveWith({ mode: "join", server_id: pc.server_id, returnHash: "#code=secret&state=private" })).sheetJoin)
+      .toEqual({ mode: "join", server_id: pc.server_id });
     // no marker, a mode that is no join, or a marker that does not parse: the screens alone
     expect((await arriveWith(undefined)).sheetJoin).toBeNull();
     expect((await arriveWith({ mode: "add", server_id: pc.server_id })).sheetJoin).toBeNull();

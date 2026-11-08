@@ -1,3 +1,11 @@
+import type { Root } from "react-dom/client";
+import type { PendingPushStore } from "../push.ts";
+import type { AccountStore } from "../account/store.ts";
+import type { RelayDeviceStore } from "./device.ts";
+import { indexedDeviceStore } from "./device.ts";
+import type { openRelayTransport } from "./transport.ts";
+import type { checkPc } from "./pcStatus.ts";
+import type { offerFromCode } from "./pairCode.ts";
 /**
  * What the hosted shell shows before the app: the screens between opening app.ovis.sh and a
  * connected PC, and which one a failed connection lands on. Pure, so the mapping from the
@@ -69,7 +77,7 @@ export type PcUpdate =
  */
 export type AccountView =
   | { kind: "signed-out"; error: string | null }
-  | { kind: "signing-in" }
+  | { kind: "signing-in"; provider?: AccountProvider }
   | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
 
 export type RelayShellState =
@@ -78,13 +86,14 @@ export type RelayShellState =
   | { kind: "empty"; account?: AccountView | null }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }
+  | { kind: "ready"; name: string | null; server_id: string }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
   /** a typed code found a PC: its full ID to compare with the PC's screen before anything is paired */
   | { kind: "code-compare"; offer: RelayOffer }
   /** pairing without a code: the digits to compare with the PC's screen; `confirmed` once this phone said they match */
-  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean }
+  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean; /** Changes only when a fresh comparison arrives, so the view clears old digits. */ challenge?: number }
   /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
@@ -173,4 +182,104 @@ export function forgetsDevice(failure: RelayFailure): boolean {
 export function iosBrowserTab(env: { userAgent: string; maxTouchPoints: number; standalone: boolean | undefined }): boolean {
   const ios = /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
   return ios && env.standalone !== true && !inNativeApp();
+}
+
+export interface RelayShellMount {
+  container: HTMLElement;
+  /** the address the page loaded with, offer fragment included (boot.ts took it off the address bar) */
+  entryUrl: string;
+  /** mounts the app on the container once the transport is set; what it returns is unmounted should the PC turn this phone away later */
+  renderApp: () => Root;
+  /** draws the shell's screens on the container: react-dom's root by default; tests hand in their own */
+  createRoot?: (container: HTMLElement) => Root;
+  store?: RelayDeviceStore;
+  pendingPush?: PendingPushStore;
+  open?: typeof openRelayTransport;
+  navigate?: (path: string) => void;
+  /** who this phone is, for a new pairing; the browser's user agent by default */
+  label?: string;
+  /** this shell's package.json version; the build's by default */
+  shellVersion?: string;
+  /** brings in a newer shell: the worker checks for one, then the page reloads */
+  reload?: () => Promise<void>;
+  /** finds a PC by a typed code (pairCode.ts); tests hand in their own */
+  findByCode?: typeof offerFromCode;
+  /** this client's account key and sign-in; the `ovis-account` database by default */
+  accountStore?: AccountStore;
+  /** the account service's origin; the page's `ovis-account-service` meta by default (shellAccountServiceOf), and no sign-in without one */
+  accountService?: string | null;
+  /** the sign-ins offered; the page's `ovis-account-providers` meta by default */
+  accountProviders?: readonly AccountProvider[];
+  accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
+  /** takes the page to the provider's sign-in; the return comes back to the front page */
+  openSignIn?: (url: string) => void;
+  /** probes a saved PC for the front page's list (pcStatus.ts); tests hand in their own */
+  checkPc?: typeof checkPc;
+}
+
+
+export interface Attempt {
+  offer: RelayOffer;
+  typed?: boolean;
+  code: boolean;
+  paired: boolean;
+  /** the attempt showed digits to compare: the PC took the pairing without a code */
+  compared?: boolean;
+  /** opened from a link without a code, to pair by comparing digits */
+  codeless?: boolean;
+  /** a saved key the PC refused was already dropped for this link (shellState.ts pairsAgainWithoutKey) */
+  refreshed?: boolean;
+  /** this attempt paired just now: the PC has not seen the key prove itself on this session yet */
+  fresh?: boolean;
+  /** this attempt already tried the key of a link whose answer was lost */
+  retriedPending?: boolean;
+}
+
+
+/** Non-secret navigation context only; no labels, offers, keys or input values cross the load here. */
+export interface SheetJoin {
+  readonly mode: "new" | "join";
+  readonly server_id: string;
+  readonly returnHash?: string;
+}
+export function dashboardHash(hash: string): string {
+  return /^#(?:relay-dash-(?:overview|pcs|devices|device|relay|relays|settings)|(?:overview|pcs|devices|relay|settings))(?:[?&]filter=(?:all|ready|needs|offline))?$/.test(hash) ? hash : "";
+}
+export function sheetContext(serverId?: string): SheetJoin | null {
+  try {
+    const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-add-pc-sheet") ?? "null");
+    sessionStorage.removeItem("ovis-add-pc-sheet");
+    if (typeof kept !== "object" || kept === null || !("mode" in kept) || !("server_id" in kept)) return null;
+    if ((kept.mode !== "new" && kept.mode !== "join") || kept.server_id !== serverId || typeof kept.server_id !== "string") return null;
+    const returnHash = "returnHash" in kept && typeof kept.returnHash === "string" ? dashboardHash(kept.returnHash) : "";
+    return { mode: kept.mode, server_id: kept.server_id, ...(returnHash ? { returnHash } : {}) };
+  } catch { return null; }
+}
+export function keepSheetContext(join: SheetJoin): void {
+  try { sessionStorage.setItem("ovis-add-pc-sheet", JSON.stringify({ mode: join.mode, server_id: join.server_id, returnHash: dashboardHash(join.returnHash ?? "") })); }
+  catch { /* unavailable tab storage leaves the normal standalone confirmation */ }
+}
+export function typedJoin(serverId: string): boolean {
+  try { return sessionStorage.getItem("ovis-typed-join") === serverId; } catch { return false; }
+}
+export function keepTypedJoin(serverId: string | null): void {
+  try { if (serverId === null) sessionStorage.removeItem("ovis-typed-join"); else sessionStorage.setItem("ovis-typed-join", serverId); }
+  catch { /* the ordinary comparison remains available without tab storage */ }
+}
+
+/** Settings' Forget this PC drops only this device's saved pairing. */
+export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
+  await store.remove(serverId);
+}
+
+/** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */
+export function keepConfirmedPc(serverId: string): void {
+  try { sessionStorage.setItem("ovis-confirmed-pc", serverId); } catch { /* ask again if consent cannot cross the load */ }
+}
+export function takeConfirmedPc(): string | null {
+  try {
+    const serverId = sessionStorage.getItem("ovis-confirmed-pc");
+    sessionStorage.removeItem("ovis-confirmed-pc");
+    return serverId;
+  } catch { return null; }
 }
