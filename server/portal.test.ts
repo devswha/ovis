@@ -200,11 +200,16 @@ describe("what Portal is given and says", () => {
     expect(shortReadyUrl("WRN relay operation failed (short URL: https://x.example:443)")).toBeNull();
   });
 
-  it("compares versions by number", () => {
+  it("compares versions by number, a pre-release below its release and an unreadable suffix below any", () => {
     expect(atLeast("v2.6.1", "v2.6.1")).toBe(true);
     expect(atLeast("v2.10.0", "v2.6.1")).toBe(true);
     expect(atLeast("v2.6.0", "v2.6.1")).toBe(false);
     expect(atLeast("devel", "v2.6.1")).toBe(false);
+    expect(atLeast("v2.7.3-rc.1", "v2.7.3")).toBe(false);
+    expect(atLeast("v2.7.3-dirty", "v2.7.3")).toBe(false);
+    expect(atLeast("v2.7.4-rc.1", "v2.7.3")).toBe(true);
+    expect(atLeast("v2.7.3+linux.amd64", "v2.7.3")).toBe(true);
+    expect(atLeast("v2.7.4~dev", "v2.7.3")).toBe(false);
   });
 });
 
@@ -976,13 +981,21 @@ describe("the proof of a Portal with a sign-in", () => {
     expect(status.error).toContain("a sign-in needs v2.7.3");
     expect(old.pids()).toEqual([]);
 
+    const candidate = standIn({ version: "v2.7.3-rc.1" });
+    const early = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: candidate.path, fetch: relay() });
+    early.start({ relay: RELAY, port: 7317, auth: credential(), ...open });
+    expect((await until(early, (s) => s.phase !== "starting", "the start ended")).error).toContain("a sign-in needs v2.7.3");
+    expect(candidate.pids()).toEqual([]);
+
     const plain = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn({ version: "v2.6.1" }).path, fetch: relay() });
     await started(plain, undefined);
     await bounded(plain.shutdown(), "Portal shutdown settled");
 
-    const current = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn().path, fetch: relay("v2.6.1") });
-    await started(current, credential());
-    await bounded(current.shutdown(), "Portal shutdown settled");
+    for (const version of ["v2.7.3", "v2.7.4"]) {
+      const current = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: standIn({ version }).path, fetch: relay("v2.6.1") });
+      await started(current, credential());
+      await bounded(current.shutdown(), "Portal shutdown settled");
+    }
   });
 
   it("is a new one for each launch, and the one before stops counting", async () => {

@@ -116,18 +116,19 @@ export interface PortalServiceOptions {
   recheckMs?: number;
 }
 
-/** "v2.6.1" → [2, 6, 1]; null for anything else. */
-function parseVersion(text: string): [number, number, number] | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(text.trim());
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+/** "v2.6.1" → [2, 6, 1], and whether it is a pre-release ("v2.7.3-rc.1"); null for anything else, a suffix semver does not allow included. */
+function parseVersion(text: string): { readonly core: readonly [number, number, number]; readonly preRelease: boolean } | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(text.trim());
+  return match ? { core: [Number(match[1]), Number(match[2]), Number(match[3])], preRelease: match[4] !== undefined } : null;
 }
 
+/** Whether `version` is `minimum`, a release, or later. A pre-release comes before its release (it may predate the fix the minimum stands for), and a version this cannot read counts as too old. */
 export function atLeast(version: string, minimum: string): boolean {
   const have = parseVersion(version);
   const need = parseVersion(minimum);
   if (have === null || need === null) return false;
-  for (let i = 0; i < 3; i++) if (have[i] !== need[i]) return have[i]! > need[i]!;
-  return true;
+  for (let i = 0; i < 3; i++) if (have.core[i] !== need.core[i]) return have.core[i]! > need.core[i]!;
+  return !have.preRelease;
 }
 
 /** A relay as the user gave it, as an https origin; null for anything with a path, a query, credentials or a second host. */
