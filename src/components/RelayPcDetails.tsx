@@ -1,6 +1,6 @@
 import "./RelayPcDetails.css";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, X } from "lucide-react";
 
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
@@ -58,6 +58,16 @@ export function RelayPcDetails({
   const t = useT();
   const fullView = useMediaQuery(NARROW_DETAILS_QUERY);
   const [confirmForget, setConfirmForget] = useState(false);
+  const panel = useRef<HTMLElement>(null);
+
+  // The confirmation is portalled to <body>, so its trap alone leaves the dashboard behind it reachable: the dashboard
+  // goes inert while it is up, as RelayShell's sheets make it. Cancel's focus hand-back waits for this to lift.
+  useLayoutEffect(() => {
+    const behind = confirmForget ? panel.current?.closest<HTMLElement>(".relay-dash") ?? panel.current : null;
+    if (!behind) return;
+    behind.inert = true;
+    return () => { behind.inert = false; };
+  }, [confirmForget]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -105,6 +115,7 @@ export function RelayPcDetails({
 
   return (
     <aside
+      ref={panel}
       className={fullView ? "relay-pc-details is-full-view" : "relay-pc-details"}
       data-pc-details={pc.server_id}
       aria-label={pc.name}
