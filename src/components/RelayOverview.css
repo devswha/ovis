@@ -40,7 +40,7 @@
   min-width: 0;
   max-width: 65ch;
   margin: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .relay-overview-strip {
@@ -92,7 +92,7 @@
   line-height: var(--lh-tight);
 }
 
-.relay-overview-strip-label > span { min-width: 0; overflow-wrap: anywhere; }
+.relay-overview-strip-label > span { min-width: 0; overflow-wrap: break-word; }
 
 .relay-overview-attention-name {
   min-width: 0;
@@ -117,7 +117,7 @@
   font-size: max(var(--relay-fs-min), var(--fs-xs));
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* the relays and how many PCs this device reaches share one row under the strip */
@@ -169,7 +169,7 @@
 .relay-overview-attention-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 /* one head row: the reason the shown rows share at the start, View all at the end */
 .relay-overview-attention-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); min-width: 0; }
-.relay-overview-attention-caption { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); line-height: var(--lh-base); overflow-wrap: anywhere; }
+.relay-overview-attention-caption { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); line-height: var(--lh-base); overflow-wrap: break-word; }
 
 .relay-overview-attention,
 .relay-overview-skeleton-table {
@@ -264,6 +264,33 @@
   .relay-overview-attention-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .relay-overview-attention-why { grid-column: 2; }
   .relay-overview-attention-act { grid-row: 1 / span 2; grid-column: 3; }
+}
+
+/* Under 320px (e.g. 200% zoom on a 390 phone = 195 CSS px), stack strip cells to one column and give the attention reason the full row width so words never split. */
+@media (max-width: 319px) {
+  .relay-overview-strip,
+  .relay-overview-strip:not([data-local]),
+  .relay-overview-strip[data-local] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relay-overview-strip .relay-overview-strip-btn + .relay-overview-strip-btn {
+    border-inline-start: 0;
+    border-top: var(--hairline) solid var(--divider);
+  }
+
+  .relay-overview-strip[data-local] .relay-overview-strip-label {
+    min-height: 0;
+  }
+
+  .relay-overview-attention-why {
+    grid-column: 1 / -1;
+  }
+
+  .relay-overview-attention-act {
+    grid-row: 1;
+    grid-column: 3;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
