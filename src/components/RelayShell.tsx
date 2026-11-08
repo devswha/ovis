@@ -18,6 +18,7 @@ import { AddPcSheet, type AddPcSheetMode } from "./AddPcSheet.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
+import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import {
   INSTALLER_COMMAND,
   PLUGIN_COMMANDS,
@@ -166,7 +167,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
 }
 
 /** A completed pairing owns its transport until Open PC or Cancel, including in continued scope. */
-export function ReadyCheckpoint({ open, cancel }: { readonly open: () => void; readonly cancel: () => void }) {
+export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open: () => void; readonly cancel: () => void; readonly state?: Extract<RelayShellState, { kind: "ready" }>; readonly retry?: () => void }) {
   const t = useT();
   const title = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -179,6 +180,7 @@ export function ReadyCheckpoint({ open, cancel }: { readonly open: () => void; r
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
       <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={title} tabIndex={-1} data-add-pc-phase="ready">
         <header className="modal-header"><h2 id={title} className="modal-title" role="status">{t("Ready")}</h2></header>
+        {state && <div className="modal-body"><p className="relay-shell-copy">{t("{name} is ready to open on this device.", { name: state.name ?? t("this PC") })}</p><EnrollmentStatus state={state.enrollment} {...(retry ? { retry } : {})} /></div>}
         <footer className="modal-footer">
           <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
           <button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button>

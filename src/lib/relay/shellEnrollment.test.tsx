@@ -5,9 +5,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
-import { addPcPhase } from "../../components/AddPcSheet.tsx";
-import { relayFailureText } from "../../components/relayFailureText.ts";
-import { t } from "../i18n.ts";
+import { myPcs } from "../account/myPcs.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
@@ -15,8 +13,8 @@ import { mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 
-async function until(holds: () => boolean): Promise<void> {
-  for (let turn = 0; turn < 10_000; turn++) { if (holds()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
+async function until(holds: () => boolean | Promise<boolean>): Promise<void> {
+  for (let turn = 0; turn < 10_000; turn++) { if (await holds()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
   throw new Error("Enrollment did not reach the expected state");
 }
 
@@ -41,9 +39,12 @@ describe("account pairing completion", () => {
     let requested = false, linked = false, apps = 0;
     let response = enrollment.promise;
     class Admitted extends RelayTransport {
+      closed = false;
+      override close() { this.closed = true; super.close(); }
       override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
       override async renew() {}
       override async fetch(path: string) {
+        if (this.closed) throw new TypeError("Enrollment connection was closed");
         switch (path) {
           case "/api/account/status": return Response.json({ account: linked ? "acct-test" : null, unlinked: [], removals: [], enrolling: true });
           case "/api/account/link": linked = true; return Response.json({});
@@ -66,50 +67,62 @@ describe("account pairing completion", () => {
       container: Object.create(null), entryUrl: encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh", accountFetch: async () => Response.json({ pcs: [] }),
       createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; return { render() {}, unmount() {} }; },
-      pendingPush: { get: async () => undefined, clear: async () => {} }, navigate() {},
+      pendingPush: { get: async () => undefined, clear: async () => {} }, navigate() {}, checkPc: async () => ({ kind: "offline", reason: "relay" }),
       open: async () => { const opened = new Admitted(offer); transports.push(opened); return opened; },
     });
     current().onPair();
-    await until(() => requested || current().state.kind === "ready");
-    return { current, enrollment, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
+    await until(() => requested);
+    const rows = async () => myPcs([], await store.list(), { now: Date.now(), accountKey: key.public_spki, account: "acct-test" });
+    return { current, enrollment, rows, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
   }
 
-  it("waits for account enrollment before Ready and opens only on request", async () => {
+  it("shows Ready and opens the PC while account enrollment is pending", async () => {
     const run = await pairing();
-    expect(run.current().state.kind).toBe("connecting");
+    const pending = run.current().state;
     run.current().onOpenPc?.();
-    expect(run.apps()).toBe(0);
     run.enrollment.resolve(Response.json({ results: [] }));
-    await until(() => run.current().state.kind === "ready");
-    run.current().onOpenPc?.();
+    expect(pending).toMatchObject({ kind: "ready", enrollment: "pending" });
     expect(run.apps()).toBe(1);
+    await until(async () => (await run.rows())[0]?.enrollment === "complete");
   });
 
-  it("shows filtered failure and retries enrollment without Ready on rejection", async () => {
+  it("reports account completion only after enrollment resolves", async () => {
+    const run = await pairing();
+    run.enrollment.resolve(Response.json({ results: [] }));
+    await until(() => { const state = run.current().state; return state.kind === "ready" && state.enrollment === "complete"; });
+    expect(run.current().state).toMatchObject({ kind: "ready", enrollment: "complete" });
+    expect(run.apps()).toBe(0);
+  });
+
+  it("keeps the local pairing Ready on failure and retries enrollment", async () => {
     const run = await pairing();
     run.enrollment.resolve(Response.json({ error: { code: "account_unavailable", message: "private enrollment diagnostic" } }, { status: 503 }));
-    await until(() => run.current().state.kind === "failed" || run.current().state.kind === "ready");
+    await until(() => { const state = run.current().state; return state.kind === "failed" || state.kind === "ready" && state.enrollment === "failed"; });
     const state = run.current().state;
-    expect(state.kind).toBe("failed");
-    if (state.kind !== "failed") throw new TypeError("Expected enrollment failure");
-    expect(state.detail).toBeNull();
-    expect(relayFailureText(t, state.failure, "Desk", state.detail).retry).toBe(true);
-    expect(addPcPhase({ server_id: state.server_id ?? "", name: "Desk", state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false }, state)).toBe("failed");
+    expect(state).toMatchObject({ kind: "ready", enrollment: "failed" });
     expect(JSON.stringify(state)).not.toContain("private enrollment diagnostic");
     run.retrySuccess();
     run.current().onRetry();
-    await until(() => run.current().state.kind === "ready");
+    await until(() => { const current = run.current().state; return current.kind === "ready" && current.enrollment === "complete"; });
     expect(run.apps()).toBe(0);
   });
 
-  it("does not restore Ready after cancellation during enrollment", async () => {
+  it.each(["open", "close"] as const)("reports a late failure on the dashboard row after %s", async (leave) => {
     const run = await pairing();
-    expect(run.current().state.kind).toBe("connecting");
+    if (leave === "open") run.current().onOpenPc?.(); else run.current().onCancel();
+    run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
+    await until(async () => (await run.rows())[0]?.enrollment === "failed");
+    expect((await run.rows())[0]).toMatchObject({ paired: true, linked: false, enrollment: "failed" });
+    expect(run.apps()).toBe(leave === "open" ? 1 : 0);
+    if (leave === "close") await until(() => run.current().state.kind === "list");
+  });
+
+  it("finishes enrollment after closing without reopening the checkpoint", async () => {
+    const run = await pairing();
     run.current().onCancel();
-    const before = run.current();
     run.enrollment.resolve(Response.json({ results: [] }));
-    for (let turn = 0; turn < 1000; turn++) await Promise.resolve();
-    expect(run.current()).toBe(before);
+    await until(async () => (await run.rows())[0]?.enrollment === "complete");
+    await until(() => run.current().state.kind === "list");
     expect(run.apps()).toBe(0);
   });
 });

@@ -8,7 +8,16 @@ export type { RelayDevice, RelayDeviceStore } from "../../../shared/relay-device
 /** The version a PC's last admission named, and whether it was older than this shell accepts. */
 export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
 /** A saved PC as this browser keeps it: the shared record plus the version its last admission named (updateFlow.ts). */
-export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion };
+export type EnrollmentState = "pending" | "complete" | "failed";
+export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion; readonly account_enrollment?: { readonly account: string; readonly state: EnrollmentState } };
+
+export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentState | undefined {
+  if (!("account_enrollment" in device)) return undefined;
+  const value: unknown = device.account_enrollment;
+  if (typeof value !== "object" || value === null || !("account" in value) || !("state" in value)) return undefined;
+  if (typeof value.account !== "string" || (account !== undefined && account !== value.account)) return undefined;
+  return value.state === "pending" || value.state === "complete" || value.state === "failed" ? value.state : undefined;
+}
 
 /** The version kept on a saved record, if a well-formed one is there (the record is read back from IndexedDB). */
 export function observedVersionOf(device: RelayDevice): ObservedVersion | undefined {

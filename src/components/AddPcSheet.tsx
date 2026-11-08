@@ -13,6 +13,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { relayFailureText } from "./relayFailureText.ts";
+import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 
 export type AddPcSheetMode = "new" | "join" | "add";
 export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "ready" | "failed";
@@ -97,7 +98,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
 
   useLayoutEffect(() => { const node = surface.current; if (node !== null && !node.contains(document.activeElement)) node.focus({ preventScroll: true }); }, [phase]);
 
-  const close = (): void => { if (phase !== null && phase !== "start" && phase !== "failed") onCancel(); onClose(); };
+  const close = (): void => { if (phase !== null && phase !== "start" && phase !== "failed" && phase !== "ready") onCancel(); onClose(); };
   const latestClose = useRef(close);
   latestClose.current = close;
   useSheetSwipe(surface, close);
@@ -195,7 +196,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         actions = cancel;
         break;
       case "ready":
-        body = <p className="relay-shell-copy" role="status">{t("{name} is ready to open on this device.", { name })}</p>;
+        body = <><p className="relay-shell-copy" role="status">{t("{name} is ready to open on this device.", { name })}</p><EnrollmentStatus state={state.kind === "ready" ? state.enrollment : undefined} {...(onRetry ? { retry: onRetry } : {})} /></>;
         actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => (onOpenPc ?? onClose)()}>{t("Open PC")}</button></>;
         break;
       case "failed": {
@@ -224,7 +225,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     [t("{name} signed in", { name }), t("It asked to join your account")],
     [t("Type the number {name} shows", { name }), t("Proves you are looking at that PC")],
     [t("Approve on {name}", { name }), t("The PC decides who gets in, not the account")],
-    [t("Ready"), t("Every device of your account can open it")],
+    [t("Ready"), t("This device can open {name}", { name })],
   ] : [
     [t("Ask to join"), t("Through your account, with this device's key")],
     [approver ? t("Check the number on {approver}", { approver }) : t("Check the number on another of your devices"), t("It shows three; pick the one this device shows")],

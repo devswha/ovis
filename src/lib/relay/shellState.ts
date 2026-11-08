@@ -1,7 +1,7 @@
 import type { Root } from "react-dom/client";
 import type { PendingPushStore } from "../push.ts";
 import type { AccountStore } from "../account/store.ts";
-import type { RelayDeviceStore } from "./device.ts";
+import type { EnrollmentState, RelayDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
 import type { offerFromCode } from "./pairCode.ts";
@@ -86,7 +86,7 @@ export type RelayShellState =
   | { kind: "empty"; account?: AccountView | null }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }
-  | { kind: "ready"; name: string | null; server_id: string }
+  | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
@@ -231,6 +231,8 @@ export interface Attempt {
   refreshed?: boolean;
   /** this attempt paired just now: the PC has not seen the key prove itself on this session yet */
   fresh?: boolean;
+  accountEnrollment?: boolean;
+  retryEnrollment?: boolean;
   /** this attempt already tried the key of a link whose answer was lost */
   retriedPending?: boolean;
 }

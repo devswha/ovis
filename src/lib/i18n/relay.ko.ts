@@ -3,6 +3,7 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
+  "Adding it to your account…": "계정에 추가하는 중…",
   "Your PCs": "내 PC",
   "Unnamed PC": "이름 없는 PC",
   "To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).": "다른 PC를 추가하려면 그 PC의 기기와 PC(이전 Ovis에서는 폰 및 기기) 화면에 나오는 QR 코드를 스캔하세요.",

@@ -15,7 +15,7 @@ import { onLazyChunkFailure } from "../lazyChunk.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
-import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
+import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, dashboardHash, keepConfirmedPc, takeConfirmedPc } from "./shellState.ts";
 import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
@@ -43,6 +43,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
   let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
   let challenge = 0, checked = false;
+  const enrolling = new Set<RelayTransport>();
   const directSocket = nativeDirectSocket();
   const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -64,7 +65,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const frontUp = (): boolean => app === null && (sheetJoin !== null || shown === null || shown.kind === "list" || shown.kind === "empty");
   const account = createAccountController(mount, { active: frontUp, changed: async () => { if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); } }, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket } : {}) });
-  const toFront = (): void => { cancelAttempt(); navigate("/" + (sheetJoin?.returnHash ?? "")); };
+  const toFront = (): void => {
+    if (shown?.kind === "ready") {
+      const returnHash = sheetJoin?.returnHash ?? "";
+      cancelAttempt(); sheetJoin = null; entry = { serverId: null, offer: null, damaged: false };
+      window.history.replaceState(null, "", "/" + returnHash);
+      void account.load(null).then(showFront);
+      return;
+    }
+    cancelAttempt(); navigate("/" + (sheetJoin?.returnHash ?? ""));
+  };
   const show = (state: RelayShellState): void => {
     shown = state;
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
@@ -132,6 +142,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     let opened: RelayTransport;
     try {
       const prepared = await account.prepare(attempt.offer, controller.signal);
+      attempt.accountEnrollment = prepared.accountKey !== undefined;
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...prepared,
@@ -159,11 +170,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return;
     }
     if (controller.signal.aborted) { opened.close(); return; }
+    opening = null;
     comparison = null;
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, ...(!attempt.paired || attempt.fresh ? { fresh: true } : {}) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(!attempt.paired || attempt.fresh ? { fresh: true } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -179,29 +191,32 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     last = { ...attempt, fresh: false };
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
+  const enroll = (opened: RelayTransport, attempt: Attempt): void => {
+    enrolling.add(opened);
+    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true).then((enrollment) => {
+      if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
+    }, (error: unknown) => {
+      console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
+      if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });
+    }).finally(() => { enrolling.delete(opened); if (transport !== opened) opened.close(); });
+  };
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),
     accepted: (opened, attempt) => {
       if (transport !== opened) return;
-      const checkpoint = attempt.fresh || sheetJoin;
-      if (checkpoint) { last = attempt; show({ kind: "connecting", name: attempt.offer.name ?? null }); }
+      const checkpoint = attempt.fresh || sheetJoin || attempt.retryEnrollment;
+      if (checkpoint) { last = attempt; show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id, enrollment: attempt.accountEnrollment ? "pending" : "local" }); }
       else enterApp(opened, attempt);
-      void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true).then(() => {
-        if (!checkpoint || last !== attempt || transport !== opened) return;
-        last = { ...attempt, fresh: false };
-        show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id });
-      }, async (error: unknown) => {
-        console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
-        if (checkpoint && transport === opened) await failed(error, attempt);
-      });
+      enroll(opened, attempt);
     },
   }, store);
   const pair = (): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
     void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id) });
   };
-  const cancelAttempt = (): void => { comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); transport?.close(); transport = null; };
+  const cancelAttempt = (): void => { comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
   const retry = (): void => {
+    if (shown?.kind === "ready" && shown.enrollment === "failed" && transport && last) { show({ ...shown, enrollment: "pending" }); enroll(transport, last); return; }
     if (last === null || !(shown?.kind === "failed" || shown?.kind === "outdated" || shown?.kind === "compare" && shown.wrong)) return;
     updates.cancel(); transport?.close(); transport = null;
     void connect({ ...last, compared: false });
@@ -231,6 +246,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const codeMatch = (): void => { const offer = codeOffer; codeOffer = null; if (offer) { keepConfirmedPc(offer.server_id); navigate(encodeOffer(offer, window.location.origin)); } };
   const cancel = (): void => {
+    if (shown?.kind === "ready") { toFront(); return; }
     cancelAttempt(); keepTypedJoin(null); codeOffer = null;
     if (scoped) toFront(); else void showFront();
   };
@@ -279,7 +295,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (saved === undefined) show({ kind: "empty" });
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
-    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null });
+    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed" || enrollmentOf(saved) === "pending" });
     return;
   }
 
