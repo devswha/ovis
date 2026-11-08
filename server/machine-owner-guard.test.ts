@@ -8,6 +8,7 @@ import { createServer } from "./index.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
+import { SshConnection } from "./ssh.ts";
 
 // Every change to this PC's PCs goes through one rule: the owner, from any device he signed in or paired himself, from
 // this app's own page. One table: each management route against each kind of access. Isolated state, port 0, no PC.
@@ -49,8 +50,10 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 function manager() {
   const dir = mkdtempSync(join(tmpdir(), "ovis-owner-guard-"));
   const reconnect = spyOn(MachineManager.prototype as unknown as { reconnect(): Promise<void> }, "reconnect").mockImplementation(async () => {});
+  // a setup the owner gets through starts no real ssh: its connection refuses at once
+  const ssh = spyOn(SshConnection.prototype, "start").mockImplementation(async () => { throw new Error("isolated: no SSH"); });
   const made = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
-  cleanups.push(() => { made.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+  cleanups.push(() => { made.stop(); reconnect.mockRestore(); ssh.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
   return made;
 }
 
@@ -72,11 +75,12 @@ describe("every change to this PC's PCs", () => {
 });
 
 describe("this PC's own update routes", () => {
-  it("take the same rule: an open-LAN visitor is refused, a sign-in on this PC is let through", async () => {
+  it("take the same rule: an open-LAN visitor is refused, a sign-in on this PC is let through (install, check, herdr)", async () => {
     const state = mkdtempSync(join(tmpdir(), "ovis-owner-guard-server-"));
     const open = createServer({ port: 0, hostname: "127.0.0.1", stateDir: state, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false });
     cleanups.push(() => { open.stop(); rmSync(state, { recursive: true, force: true }); });
-    for (const [path, body] of [["/api/updates/install", { expected_revision: "a".repeat(40) }], ["/api/herdr/update", undefined]] as const) {
+    // a check installs too where OVIS_AUTO_UPDATE=1, so it takes the same rule
+    for (const [path, body] of [["/api/updates/install", { expected_revision: "a".repeat(40) }], ["/api/herdr/update", undefined], ["/api/updates/check", undefined]] as const) {
       const post = (headers: Record<string, string>) => fetch(`http://127.0.0.1:${open.port}${path}`, { method: "POST", headers: { "x-herdr-update": "1", "content-type": "application/json", ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
       const visitor = await post({ "x-forwarded-for": "192.168.0.20" });
       expect([path, visitor.status]).toEqual([path, 403]);

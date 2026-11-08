@@ -831,6 +831,8 @@ export class MachineManager {
     if (!this.mayManageBridge(runtime)) throw new MachineActionRequired("Review the bridge update for this machine", "update_bridge");
     // the user's own Update bridge takes back an earlier Cancel; a scheduled one does not
     if (!scheduled) runtime.updateCancelled = false;
+    // its own Ovis on a release newer than this app would be refused by it afterwards, cut off from here (updateOffer)
+    if (newerThanThisApp(runtime.machine.remote_ovis?.latest_version)) throw new PcUpdateRefused(NEWER_THAN_APP);
     // the release its card shows (the offer its last connect read), when the caller names none
     const revision = expectedRevision ?? runtime.remoteRevision;
     return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true, ...(revision ? { expectedRevision: revision } : {}) });

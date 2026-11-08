@@ -289,3 +289,14 @@ it("leaves a setup slot free: SSH own updates through setup run fewer at once th
   expect(all.started.map((entry) => entry.machine_id)).toEqual([A]);
   expect(all.queued).toEqual([B]);
 });
+
+it("refuses an update-bridge of an SSH PC's own Ovis to a release newer than this app, as its card does", async () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "999.0.0", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  (manager.updateBridge as unknown as { mockRestore(): void }).mockRestore();
+  const setup = spyOn(manager, "setup");
+  expect(() => manager.updateBridge(A)).toThrow("newer than this app");
+  expect(setup).not.toHaveBeenCalled();
+});

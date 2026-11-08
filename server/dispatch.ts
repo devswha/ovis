@@ -483,9 +483,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     } catch (error) { return errorResponse(error); }
   }
 
-  // installing an update on this PC (Ovis or herdr) is the owner's, as changing its PCs is (machine-api.ts): from any device
+  // installing an update on this PC (Ovis or herdr; a check installs too where OVIS_AUTO_UPDATE=1) is the owner's, as changing its PCs is (machine-api.ts): from any device
   // he signed in or paired himself. The connection server's bridge token asks its own install by revision (bridgeUpdatePath)
-  if (request.method === "POST" && (pathname === "/api/updates/install" || pathname === "/api/herdr/update") && !ownerAccess(access) && !(bridgeAuthorized && bridgeUpdatePath)) {
+  if (request.method === "POST" && (pathname === "/api/updates/install" || pathname === "/api/updates/check" || pathname === "/api/herdr/update") && !ownerAccess(access) && !(bridgeAuthorized && bridgeUpdatePath)) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "forbidden", message: "Only the owner's own signed-in or paired devices can update this PC, from this app's own page." } }, 403);
   }
