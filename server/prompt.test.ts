@@ -2976,6 +2976,10 @@ Which approach?
       // the model the row names is still part of the card
       expect(ompId(underStatus(before)), name).not.toBe(ompId(underStatus(before.replace(/(Approval|Shape) fixture/, "Other model"))));
     }
+    // the default preset with the user's context segment turned off: a braille frame and a time still tick, with no gauge
+    const bare = (lead: string) => ` ${lead} · ⬢ Ask fixture · 🗑 …/home/fixture`;
+    expect(ompId(underStatus(bare("⠋ 6m 0s")))).toBe(ompId(underStatus(bare("⠙ 6m 1s"))));
+    expect(ompId(underStatus(bare("⠋ 6m 0s")))).not.toBe(ompId(underStatus(bare("⠋ 6m 0s").replace("Ask fixture", "Other model"))));
     // a question that only looks like a frame and a time is read as written: it has no context gauge
     for (const [before, after] of [["- 5s delay before production?", "- 30s delay before production?"], ["| 5s timeout", "| 30s timeout"]]) {
       expect(ompId(underStatus(before!)), before).not.toBe(ompId(underStatus(after!)));
