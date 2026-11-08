@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
+import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -1024,5 +1024,15 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     // and it tells the started process's birth, as server/process-owner.ts records it
     const reading = readProcessBirth(Number(pid));
     expect(reading.state === "identified" ? reading.birth.value : null).toBe(birth!);
+  });
+
+  it("reads a process's birth now only on the platform it was recorded on, as server/process-owner.ts records it", async () => {
+    const reading = readProcessBirth(process.pid);
+    if (reading.state !== "identified") throw new Error("no birth here");
+    expect(await shell(birthNow(process.pid, "linux"), {})).toBe(reading.birth.value);
+    // a macOS birth is never read on Linux (ps's start time there would differ from it, and prove nothing)
+    expect(await shell(birthNow(process.pid, "darwin"), {})).toBe("");
+    // no process at that pid: nothing read
+    expect(await shell(birthNow(2 ** 22 + 1, "linux"), {})).toBe("");
   });
 });

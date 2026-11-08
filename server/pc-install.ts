@@ -97,8 +97,9 @@ export const registeredAs = (pid: number, descriptor: { birth?: unknown; token: 
   descriptor.birth === undefined ? startedBeforeRegistration(pid, descriptor.token) : parseBirth(descriptor.birth) ? bornAs(pid, parseBirth(descriptor.birth)!) : "false";
 /** prints the birth of the process at that pid now, in the form a registration records it on that platform; nothing when it cannot be read */
 export const birthNow = (pid: number, platform: string | undefined): string =>
-  platform === "darwin" ? `LC_ALL=C TZ=UTC ps -o lstart= -p ${pid} 2>/dev/null | sed 's/^ *//;s/ *$//;s/  */ /g' | tr -d '\\n'`
-  : platform === undefined || platform === "linux" ? `[ -r /proc/${pid}/stat ] && printf '%s:%s' "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" "$(sed 's/.*) //' /proc/${pid}/stat 2>/dev/null | cut -d' ' -f20)" || true`
+  // only on the platform the birth was recorded on (macOS has no /proc), and only when every part of it reads
+  platform === "darwin" ? `[ -d /proc/self ] || LC_ALL=C TZ=UTC ps -o lstart= -p ${pid} 2>/dev/null | sed 's/^ *//;s/ *$//;s/  */ /g' | tr -d '\\n'`
+  : platform === undefined || platform === "linux" ? `if [ -d /proc/self ]; then b=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); k=$(sed 's/.*) //' /proc/${pid}/stat 2>/dev/null | cut -d' ' -f20); [ -n "$b" ] && [ -n "$k" ] && printf '%s:%s' "$b" "$k"; fi; true`
   : "true";
 /** a shell test that a process runs at that pid, and has not ended (a zombie, not yet reaped, serves nothing) */
 export const runs = (pid: number): string => `[ -n "$(ps -o stat= -p ${pid} 2>/dev/null | grep -v '^ *Z')" ]`;
@@ -304,9 +305,9 @@ export class PcInstaller {
       // the servers registered on this herdr socket, managed or not, on any port, that may still serve it: every one whose pid
       // runs (not a zombie) unless its recorded birth, in its shape, shows another process took that pid since. One whose
       // identity cannot be told (no birth, or one out of its shape) counts as there: fail closed, never a second server (#3385)
-      const serving = async (): Promise<{ pid: number; birth: unknown; token: string }[]> => {
+      const serving = async (listed?: Awaited<ReturnType<typeof posixHost.descriptors>>): Promise<{ pid: number; birth: unknown; token: string }[]> => {
         const live: { pid: number; birth: unknown; token: string }[] = [];
-        for (const d of await posixHost.descriptors(at)) {
+        for (const d of listed ?? await posixHost.descriptors(at)) {
           if (d.socket_path !== socket || !Number.isSafeInteger(d.pid) || d.pid <= 0) continue;
           const birth = parseBirth(d.birth);
           // its birth now: unread (or of a platform this PC is not) is no proof it is gone, only a birth read and different is
@@ -317,12 +318,13 @@ export class PcInstaller {
         }
         return live;
       };
-      // one already there: never a second server for the same socket
-      if ((await serving()).length > 0) return await forgotten("replaced");
+      // one listing, for both: one already there (never a second server for the same socket), and every registration on the
+      // socket before the launch, live or not, none of which is ever taken for the server about to start
+      const snapshot = await posixHost.descriptors(at);
+      if ((await serving(snapshot)).length > 0) return await forgotten("replaced");
+      const listedBefore = new Set(snapshot.filter((d) => d.socket_path === socket).map((d) => d.token));
       // this app stopping meanwhile: nothing is started
       if (this.stopping) return await forgotten("forgotten");
-      // every registration already on the socket, live or not: one of them is never taken for the server about to start
-      const listedBefore = new Set((await posixHost.descriptors(at)).filter((d) => d.socket_path === socket).map((d) => d.token));
       // its address taken (in use): a live server is there, its replacement say, and nothing is started beside it
       const launched = (await at.run(restoreServer(saved, port))).trim();
       if (launched === "taken") return "replaced";
