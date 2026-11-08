@@ -54,7 +54,7 @@ function lookupOnce(resolve: Resolve, name: string): NameLookup {
     listings: 1, start: slot.resolve,
     addresses: slot.promise.then(async () => {
       try { return await resolve(name); } catch { return []; } finally {
-        state.pending.delete(name);
+        if (state.pending.get(name) === lookup) state.pending.delete(name);
         // the slot goes straight to the next waiting lookup
         const next = state.waiting.shift();
         if (next === undefined) state.running--; else next.start();
@@ -66,14 +66,18 @@ function lookupOnce(resolve: Resolve, name: string): NameLookup {
   return lookup;
 }
 
-/** a listing stops waiting on a lookup; one still waiting for a slot that no listing waits on any more is dropped */
+/**
+ * A listing stops waiting on a lookup. One no listing waits on any more is offered to no later listing, which looks the
+ * name up afresh rather than take an answer from before it asked; still waiting for a slot, it is dropped, and running,
+ * it keeps its slot until its resolver answers.
+ */
 function leave(resolve: Resolve, name: string, lookup: NameLookup): void {
   lookup.listings -= 1;
   const state = lookupsOf.get(resolve);
-  const queued = state?.waiting.indexOf(lookup) ?? -1;
-  if (state === undefined || lookup.listings > 0 || queued < 0) return;
-  state.waiting.splice(queued, 1);
-  state.pending.delete(name);
+  if (state === undefined || lookup.listings > 0) return;
+  if (state.pending.get(name) === lookup) state.pending.delete(name);
+  const queued = state.waiting.indexOf(lookup);
+  if (queued >= 0) state.waiting.splice(queued, 1);
 }
 
 /** the addresses each name resolves to, waiting `timeoutMs` at most for all of them; a name that fails or is late is left out */

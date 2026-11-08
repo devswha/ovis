@@ -71,41 +71,45 @@ const inside = (path: string, root: string): boolean => {
 /**
  * The files an Include pattern names: relative to `sshDir` as ssh reads the user config, `~` for the home folder.
  * Only files that really are inside the home or ssh folder are read (after links and `..`), since their hosts reach
- * the response; and every Include of one config shares one budget of files and bytes.
+ * the response; and every Include of one config shares one budget of files and bytes. A file ssh would read that is
+ * left unread (out of those folders, past the budget, not a regular file of at most the size cap) comes back as null,
+ * so what it might set stays unknown; a file that is not there is nothing, as for ssh.
  */
-function includer(sshDir: string, home: string): (pattern: string) => Promise<string[]> {
+function includer(sshDir: string, home: string): (pattern: string) => Promise<(string | null)[]> {
   const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
   const budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES };
   return async (pattern) => {
-    if (budget.files <= 0 || budget.bytes <= 0) return [];
+    if (budget.files <= 0 || budget.bytes <= 0) return [null];
     const allowed = (await roots).filter((root): root is string => root !== null);
     // ssh's glob(3) has no `**`: it is one `*`, which also keeps a scan to the pattern's own depth
     const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
     const paths: string[] = [];
+    let truncated = false;
     const wildcard = expanded.search(/[*?[]/);
     if (wildcard >= 0) {
       // the folder before the first wildcard is scanned only inside the home or ssh folder
       const literal = expanded.slice(0, wildcard);
       const base = await realpath(literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1) || ".").catch(() => null);
-      if (base === null || !allowed.some((root) => inside(base, root))) return [];
+      if (base === null) return [];
+      if (!allowed.some((root) => inside(base, root))) return [null];
       for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true })) {
+        if (paths.length >= budget.files) { truncated = true; break; }
         paths.push(path);
-        if (paths.length >= budget.files) break;
       }
       paths.sort();
     } else paths.push(expanded);
-    const texts: string[] = [];
+    const texts: (string | null)[] = [];
     for (const path of paths) {
-      if (budget.files <= 0 || budget.bytes <= 0) break;
+      if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }
       const real = await realpath(path).catch(() => null);
-      if (real === null || !allowed.some((root) => inside(real, root))) continue;
+      if (real === null) continue;
+      if (!allowed.some((root) => inside(real, root))) { texts.push(null); continue; }
       budget.files--;
       const text = await readCapped(real, Math.min(MAX_FILE_BYTES, budget.bytes));
-      if (text === null) continue;
-      budget.bytes -= Buffer.byteLength(text);
+      if (text !== null) budget.bytes -= Buffer.byteLength(text);
       texts.push(text);
     }
-    return texts;
+    return truncated ? [...texts, null] : texts;
   };
 }
 
