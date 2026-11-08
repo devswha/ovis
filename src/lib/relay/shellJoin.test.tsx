@@ -44,7 +44,8 @@ describe("explicit dashboard pairing consent", () => {
       renderApp: () => { throw new TypeError("Pairing has not finished"); },
       navigate: (path) => { paths.push(path); },
       open: async (_offer, options) => {
-        const pending = options.compare?.("123456");
+        if (!options?.compare) throw new TypeError("Pairing must require a PC comparison");
+        const pending = options.compare("123456");
         compared.resolve();
         await pending;
         throw new TypeError("The test must not approve the comparison");
