@@ -81,6 +81,19 @@ export function reportedStatus(state: string | null | undefined): AgentStatus {
   }
 }
 
+/** Letta Code's terminal title while a turn runs: a braille spinner frame, then its agent's name ("⠋ Tutor"; at rest "Tutor"; letta-code 0.34.44). */
+const LETTA_BUSY_TITLE = /^[\u2800-\u28FF] /;
+
+/**
+ * The status an agent's own terminal title says, for an agent known to set one: Letta's spinner
+ * prefix while it works. The program writes the title itself; nothing is read off the screen. Null
+ * for another agent or no title.
+ */
+export function titleStatus(agent: string | null, title: string | null | undefined): "working" | "idle" | null {
+  if (agent !== "letta" || typeof title !== "string" || title === "") return null;
+  return LETTA_BUSY_TITLE.test(title) ? "working" : "idle";
+}
+
 /** What a runtime tells about which conversation a pane's agent shows. */
 export interface SessionFacts {
   /** the sessions the agent named as busy while it ran here (OpenCode's OSC 7501 records), the newest last */

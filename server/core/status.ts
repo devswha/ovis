@@ -26,7 +26,7 @@ import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service
 import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
-import { createLettaStatus, lettaPanes } from "../letta-status.ts";
+import { createLettaStatus, lettaPanes, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
 import { resolveAgent } from "../pane-context.ts";
@@ -295,6 +295,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     await gjc.refresh(snapshot.panes);
     await letta.refresh(snapshot.panes);
     const named = letta.apply(gjc.apply(omo.apply(snapshot)));
+    lettaTitleStatus(named.panes, (paneId) => letta.tracks(paneId));
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;

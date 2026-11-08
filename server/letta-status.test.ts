@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { lettaPanes, lettaTurnAfter } from "./letta-status.ts";
+import { lettaPanes, lettaTitleStatus, lettaTurnAfter } from "./letta-status.ts";
 import { noTurn } from "./omo-status.ts";
 
 // One turn of letta-code 0.34.44's local backend (old-desktop, 2026-11-08): the prompt, a Bash call, its result, the answer
@@ -32,6 +32,13 @@ describe("a Letta pane's status from its local messages", () => {
       // a pane whose conversation cannot be told keeps its status unknown
       ["t4", { path: null, startedAt: null }],
     ]);
+  });
+
+  it("takes Letta's own title where no report and no tracked messages file gave a status", () => {
+    const titled = (id: string, status: HerdrPane["agent_status"], title: string, agent = "letta") => ({ ...pane(id, agent, status), terminal_title: title } as HerdrPane);
+    const panes = [titled("t1", "unknown", "⠋ Tutor"), titled("t2", "unknown", "Tutor"), titled("t3", "unknown", "⠋ Tutor"), titled("t4", "blocked", "⠋ Tutor"), titled("t5", "unknown", "⠋ x", "claude")];
+    lettaTitleStatus(panes, (paneId) => paneId === "t3");
+    expect(panes.map((p) => p.agent_status)).toEqual(["working", "idle", "unknown", "blocked", "unknown"]);
   });
 
   it("keeps a cloud conversation, whose messages are on the server, without a file", async () => {
