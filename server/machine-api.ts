@@ -344,7 +344,12 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (readOnly) return fail("read_only", "this device can only watch", 403);
       if (request.method === "DELETE") return jsonResponse({ cancelled: manager.cancelUpdate(id) });
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST or DELETE", 405);
-      try { return jsonResponse(manager.update(id) satisfies PcUpdateStarted, 202); }
+      const text = await request.text();
+      let body: unknown = {};
+      if (text.trim() !== "") { try { body = JSON.parse(text); } catch { body = null; } }
+      const shown = isJsonObject(body) ? body.revision : undefined;
+      if (!isJsonObject(body) || shown !== undefined && typeof shown !== "string") return fail("invalid_body", "Expected nothing, or { revision } of the offer shown", 400);
+      try { return jsonResponse(manager.update(id, shown as string | undefined) satisfies PcUpdateStarted, 202); }
       catch (error) {
         if (error instanceof PcUpdateRefused) return fail("update_unavailable", error.message, 409);
         throw error;

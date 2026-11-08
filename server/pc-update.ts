@@ -49,6 +49,8 @@ export interface OwnUpdateOptions {
   endpoint(): Endpoint | undefined;
   /** why the PC stopped reconnecting for good (it came back on a version this app refuses), else null */
   refused?(): string | null;
+  /** the release the person was shown (its latest_revision): another one on offer now is refused, not installed */
+  revision?: string;
   signal: AbortSignal;
   onStep(step: string): void;
   /** tests shorten these */
@@ -76,30 +78,38 @@ export async function followOwnUpdate(options: OwnUpdateOptions): Promise<void> 
     if (!endpoint) return null;
     try { return await readOwnStatus(endpoint, signal); } catch { cancelled(); return null; }
   };
-  let before = await read();
   // a check for releases running there offers nothing until it ends
-  for (const until = Date.now() + checkMs; before?.phase === "checking" && Date.now() < until;) { await pause(); cancelled(); before = await read(); }
-  if (!options.endpoint()) throw new Error("This PC is not connected; update it once it is back.");
-  if (!before) throw new Error("That PC's Ovis did not tell its update status. Try again in a moment.");
-  if (before.phase === "checking") throw new Error("That PC's Ovis is still checking for updates. Try again in a moment.");
+  const settled = async (): Promise<Partial<UpdateStatus>> => {
+    let status = await read();
+    for (const until = Date.now() + checkMs; status?.phase === "checking" && Date.now() < until;) { await pause(); cancelled(); status = await read(); }
+    if (!options.endpoint()) throw new Error("This PC is not connected; update it once it is back.");
+    if (!status) throw new Error("That PC's Ovis did not tell its update status. Try again in a moment.");
+    if (status.phase === "checking") throw new Error("That PC's Ovis is still checking for updates. Try again in a moment.");
+    return status;
+  };
+  let before = await settled();
   const earlierError = before.phase === "error" ? words(before.error) : null;
   let started = installing(before);
-  const revision = before.latest_revision;
   const offer = offerFromStatus(before);
-  if (!started) {
-    if (!offer || typeof revision !== "string") throw new Error("That PC's Ovis has no update on offer any more.");
-    if (!offer.updatable) throw new Error(offer.reason ?? "That PC's Ovis cannot take this update.");
-    const endpoint = options.endpoint()!;
+  const revision = options.revision ?? before.latest_revision;
+  for (let attempt = 1; !started; attempt++) {
+    const now = offerFromStatus(before);
+    if (!now || typeof before.latest_revision !== "string") throw new Error("That PC's Ovis has no update on offer any more.");
+    if (before.latest_revision !== revision) throw new Error("That PC offers another release now than the one shown. Look at it again, then update.");
+    if (!now.updatable) throw new Error(now.reason ?? "That PC's Ovis cannot take this update.");
+    const endpoint = options.endpoint();
+    if (!endpoint) throw new Error("This PC is not connected; update it once it is back.");
     const response = await fetch(`${endpoint.url}/api/updates/install`, { method: "POST", redirect: "manual", body: JSON.stringify({ expected_revision: revision }),
       headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1", "content-type": "application/json" },
       signal: AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]) });
-    if (response.status === 202) await discard(response);
-    else {
-      const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
-      // busy: an install of it (its own Settings, another app) runs already, and is followed
-      if (refusal?.code !== "update_busy") throw new Error(`That PC's Ovis refused to update (${words(refusal?.code) ?? response.status}): ${words(refusal?.message) ?? "no reason given"}`);
-      started = true;
-    }
+    if (response.status === 202) { await discard(response); break; }
+    const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
+    if (refusal?.code === "update_offer_changed") throw new Error("That PC offers another release now than the one shown. Look at it again, then update.");
+    // busy: an install of it runs there already (its own Settings, another app), which is followed; or a check
+    // for releases started since its status was read, after which the install is asked for again
+    if (refusal?.code !== "update_busy" || attempt >= 3) throw new Error(`That PC's Ovis refused to update: ${words(refusal?.message) ?? `it answered ${response.status}`}`);
+    before = await settled();
+    started = installing(before);
   }
   const to = offer?.latest_version ? ` to v${offer.latest_version}` : "";
   const deadline = Date.now() + OWN_UPDATE_LIMIT_MS, startBy = Date.now() + startMs;

@@ -83,10 +83,42 @@ describe("followOwnUpdate", () => {
   it("fails in plain words when the PC refuses the install, or never starts it", async () => {
     const refused = remote(offered(), [], { status: 409, code: "update_offer_changed" });
     await expect(followOwnUpdate({ endpoint: () => refused.endpoint, signal: new AbortController().signal, onStep: () => {}, ...fast }))
-      .rejects.toThrow("That PC's Ovis refused to update (update_offer_changed): refused here");
+      .rejects.toThrow("That PC offers another release now than the one shown. Look at it again, then update.");
+    const blocked = remote(offered(), [], { status: 409, code: "update_restart_required" });
+    await expect(followOwnUpdate({ endpoint: () => blocked.endpoint, signal: new AbortController().signal, onStep: () => {}, ...fast }))
+      .rejects.toThrow("That PC's Ovis refused to update: refused here");
     const idle = remote(offered(), [{ phase: "idle" }]);
     await expect(followOwnUpdate({ endpoint: () => idle.endpoint, signal: new AbortController().signal, onStep: () => {}, ...fast }))
       .rejects.toThrow("did not start its update");
+  });
+
+  it("installs only the release the person was shown, never another one on offer since", async () => {
+    const pc = remote(offered(), [{ phase: "idle", available: false, current_revision: OFFERED }]);
+    await expect(followOwnUpdate({ endpoint: () => pc.endpoint, revision: "b".repeat(40), signal: new AbortController().signal, onStep: () => {}, ...fast }))
+      .rejects.toThrow("offers another release now than the one shown");
+    expect(pc.installs).toEqual([]);
+    await followOwnUpdate({ endpoint: () => pc.endpoint, revision: OFFERED, signal: new AbortController().signal, onStep: () => {}, ...fast });
+    expect(pc.installs).toEqual([{ expected_revision: OFFERED }]);
+  });
+
+  it("asks again once a check for releases that made it answer busy has ended, instead of waiting for an install never asked for", async () => {
+    const installs: unknown[] = [];
+    let busy = true, asked = false, reads = 0;
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/updates/install") {
+        installs.push(await request.json());
+        if (busy) { busy = false; return Response.json({ error: { code: "update_busy", message: "checking" } }, { status: 409 }); }
+        asked = true;
+        return new Response(null, { status: 202 });
+      }
+      // the check that made it busy, then the offer again; once asked, the install and the new release
+      if (!asked) return Response.json(installs.length === 1 && reads++ === 0 ? offered({ phase: "checking" }) : offered());
+      return Response.json(offered({ phase: "idle", available: false, current_revision: OFFERED }));
+    } });
+    servers.push(server);
+    await followOwnUpdate({ endpoint: () => ({ url: `http://127.0.0.1:${server.port}`, token: TOKEN }), signal: new AbortController().signal, onStep: () => {}, ...fast });
+    expect(installs).toEqual([{ expected_revision: OFFERED }, { expected_revision: OFFERED }]);
   });
 
   it("refuses before asking when nothing can be installed, and stops when the PC is turned away for good", async () => {

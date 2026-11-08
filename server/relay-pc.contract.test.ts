@@ -594,11 +594,15 @@ it("shows a relay PC's own update on its card and installs it from here, with it
   const a = startA();
   const { machine } = await (await addRelayPc(a.base, link, "Lab")).json() as { machine: Machine };
   const offered = await machineWhen(a.base, (pc) => pc.id === machine.id && pc.state === "connected" && pc.ovis_update != null);
-  expect(offered.ovis_update).toEqual({ how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null });
+  expect(offered.ovis_update).toEqual({ how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null, revision: OFFERED_RELEASE });
+  // a release other than the one shown is refused, and nothing is asked of that PC
+  const other = await fetch(`${a.base}/api/machines/${machine.id}/update`, { method: "POST", headers: { origin: a.base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ revision: "b".repeat(40) }) });
+  expect(other.status).toBe(409);
+  expect(b.requests).toEqual([]);
 
   const seen = new AbortController();
   const step = machineWhen(a.base, (pc) => pc.id === machine.id && pc.updating?.step.includes("building") === true, seen.signal);
-  const started = await machinePost(a.base, `${machine.id}/update`);
+  const started = await fetch(`${a.base}/api/machines/${machine.id}/update`, { method: "POST", headers: { origin: a.base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ revision: OFFERED_RELEASE }) });
   expect(started.status).toBe(202);
   const { job_id } = await started.json() as { job_id: string };
   expect((await step).updating).toMatchObject({ job_id, ovis: true });

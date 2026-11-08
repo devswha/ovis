@@ -89,8 +89,11 @@ interface Runtime {
   finishes: FinishEpochLedger;
   /** what the PC's own Ovis offers of its own update while connected (watchOwnOffer); undefined: not read yet */
   ownOffer?: PcUpdateOffer | null;
+  /** the release that offer names (its latest_revision): an update asked for installs only that one */
+  offerRevision?: string;
   offerTimer?: ReturnType<typeof setInterval>;
-  offerReading?: boolean;
+  /** the connection generation whose read of that offer is under way */
+  offerReading?: number;
   /** its own Ovis updating itself, asked from here through its connection (updateOwn) */
   ownJob?: { id: string; abort: AbortController };
 }
@@ -455,6 +458,7 @@ export class MachineManager {
           if (runtime) {
             runtime.machine.enabled = false; this.disconnect(runtime);
             for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
+            this.dropUpdate(runtime);
             this.machines.delete(id);
             this.emit();
           }
@@ -473,6 +477,7 @@ export class MachineManager {
         } else if (reconnect) {
           this.disconnect(runtime);
           for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
+          this.dropUpdate(runtime);
           changed = true;
         }
         if (runtime.machine.name !== profile.label) { runtime.machine.name = profile.label; changed = true; }
@@ -493,6 +498,7 @@ export class MachineManager {
       if (!runtime.machine.herdr_profile_id || wanted.has(id)) continue;
       runtime.machine.enabled = false; this.disconnect(runtime);
       for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
+      this.dropUpdate(runtime);
       this.machines.delete(id);
       changed = true;
     }
@@ -588,7 +594,7 @@ export class MachineManager {
   private updateOffer(runtime: Runtime): PcUpdateOffer | null {
     const machine = runtime.machine;
     if (machine.kind === "hc") return null;
-    if (machine.state === "connected") return runtime.ownOffer ?? null;
+    if (machine.state === "connected") return runtime.ownOffer ? { ...runtime.ownOffer, revision: runtime.offerRevision ?? null } : null;
     const own = machine.remote_ovis;
     if (machine.kind === "ssh" && own) return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable, reason: own.reason };
     if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
@@ -607,13 +613,20 @@ export class MachineManager {
     if (!own) return;
     const read = async () => {
       const endpoint = runtime.endpoint;
-      if (runtime.offerReading || !endpoint || generation !== runtime.generation || this.stopped) return;
-      runtime.offerReading = true;
+      // one read per connection at a time; a read of an earlier connection does not hold this one's back
+      if (runtime.offerReading === generation || !endpoint || generation !== runtime.generation || this.stopped) return;
+      runtime.offerReading = generation;
       let offer: PcUpdateOffer | null = null;
+      let revision: string | undefined;
       // a server too old to answer the bridge token here offers nothing
-      try { offer = offerFromStatus(await readOwnStatus(endpoint)); } catch { /* none known until the next read */ }
-      finally { runtime.offerReading = false; }
+      try {
+        const status = await readOwnStatus(endpoint);
+        offer = offerFromStatus(status);
+        if (offer && typeof status?.latest_revision === "string") revision = status.latest_revision;
+      } catch { /* none known until the next read */ }
+      finally { if (runtime.offerReading === generation) runtime.offerReading = undefined; }
       if (generation !== runtime.generation || this.stopped) return;
+      runtime.offerRevision = revision;
       if (JSON.stringify(offer) !== JSON.stringify(runtime.ownOffer ?? null)) { runtime.ownOffer = offer; this.emit(); }
     };
     void read();
@@ -786,13 +799,15 @@ export class MachineManager {
    * installs its offered release (updateOwn), anything else goes through the bridge update (updateBridge), which
    * also asks an own Ovis older than this app. Throws PcUpdateRefused, in plain words, when there is none to take.
    */
-  update(id: string): { job_id: string } {
+  update(id: string, shown?: string): { job_id: string } {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (this.updateRunning(runtime)) throw new PcUpdateRefused("This PC is already updating.");
     const offer = this.updateOffer(runtime);
     if (!offer) throw new PcUpdateRefused(runtime.machine.state === "connected" ? "This PC's Ovis is up to date." : "This PC is not connected; its update is offered once it is.");
     if (!offer.updatable) throw new PcUpdateRefused(offer.reason ?? "This PC cannot take its update from here.");
+    // the release the person saw: one the PC offers instead since is shown first, never installed unseen
+    if (shown !== undefined && shown !== (offer.revision ?? null)) throw new PcUpdateRefused("That PC offers another release now than the one shown. Look at it again, then update.");
     if (runtime.machine.state === "connected") return { job_id: this.updateOwn(runtime) };
     return { job_id: this.updateBridge(id).id };
   }
@@ -854,17 +869,21 @@ export class MachineManager {
     const abort = new AbortController();
     runtime.ownJob = { id, abort };
     runtime.machine.update_error = null;
+    // only this PC, at the address it had when asked: a PC removed, replaced or moved meanwhile is not asked
+    const target = runtime.machine.target;
+    const same = () => this.machines.get(runtime.machine.id) === runtime && (!target || !!runtime.machine.target && sameSshSession(target, runtime.machine.target));
+    const revision = runtime.offerRevision;
     const show = (step: string) => {
       if (runtime.ownJob?.id !== id) return;
       runtime.machine.updating = { job_id: id, step, progress: null, ovis: true };
       this.emit();
     };
     show("Asking this PC's own Ovis to update itself…");
-    const machineId = runtime.machine.id;
     void followOwnUpdate({
-      endpoint: () => this.endpoint(machineId),
+      endpoint: () => same() && runtime.machine.enabled && runtime.machine.state === "connected" ? runtime.endpoint : undefined,
+      revision,
       // it came back on a version this app refuses, or was turned away: it no longer reconnects by itself
-      refused: () => runtime.machine.state === "error" ? runtime.machine.error ?? "This PC stopped reconnecting." : null,
+      refused: () => !same() ? "This PC was removed or moved to another address, so its update is no longer followed." : runtime.machine.state === "error" ? runtime.machine.error ?? "This PC stopped reconnecting." : null,
       signal: abort.signal, onStep: show,
       pollMs: this.ownUpdatePollMs, startMs: this.ownUpdateStartMs, checkMs: this.ownUpdateCheckMs,
     }).then(() => { runtime.ownOffer = null; }, (error: unknown) => {
@@ -969,6 +988,8 @@ export class MachineManager {
           }
           throw error;
         }
+        // what runs at the address it moved to is known only now: whether its own Ovis is asked what it offers
+        if (move) { clearInterval(runtime.offerTimer); this.watchOwnOffer(runtime, runtime.generation); }
         this.stage(job, "connected", "Connected");
         this.emit();
       } catch (e) {
@@ -1762,7 +1783,7 @@ export class MachineManager {
     runtime.generation++;
     runtime.refreshQueued = false;
     clearTimeout(runtime.retry); runtime.retry = undefined; clearInterval(runtime.poll);
-    clearInterval(runtime.offerTimer); runtime.offerTimer = undefined; runtime.ownOffer = undefined;
+    clearInterval(runtime.offerTimer); runtime.offerTimer = undefined; runtime.ownOffer = undefined; runtime.offerRevision = undefined;
     runtime.abort?.abort(); runtime.abort = undefined;
     runtime.observer?.close(); runtime.observer = undefined;
     for (const close of runtime.terminals) close(); runtime.terminals.clear();

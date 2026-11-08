@@ -153,6 +153,9 @@ use, without going to it. Each PC in `GET /api/machines` (and the machine events
 
 `POST /api/machines/:id/update` starts that update (202 `{ job_id }`), whichever way the PC is
 reached, and refuses one that cannot run with 409 `update_unavailable` and the same words. A
+connected PC's own offer names its release as `revision`; a body `{ "revision": … }` with the one shown
+makes sure only that release is installed: one the PC offers instead by then is refused, never installed
+unseen. Update all installs each PC's release as this server last read it. A
 connected PC's own Ovis is asked to install the release it offers, by revision, through its
 connection (no redirect is followed); its connection drops while it restarts, the PC reconnects as
 any PC does, and the update ends once it answers on that release (at most 15 minutes, or a minute

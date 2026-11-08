@@ -594,7 +594,7 @@ describe("a PC whose own Ovis is older than this app", () => {
   it("shows the update a connected PC's own Ovis of this app's version offers, read through its tunnel", async () => {
     const { until } = pc({ status: managedOffer({ current_version: "0.5.0", latest_version: "0.5.1" }), bundle: REMOTE_BUNDLE_VERSION });
     const connected = await until((machine) => machine.state === "connected" && machine.ovis_update != null);
-    expect(connected.ovis_update).toEqual({ how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null });
+    expect(connected.ovis_update).toEqual({ how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null, revision: OFFERED });
   });
 
   it("follows an install that its own Settings already started instead of failing", async () => {

@@ -81,7 +81,14 @@ export interface PcUpdateOffer {
   latest_version: string | null;
   updatable: boolean;
   reason: string | null;
+  /** `own` on a connected PC: the release on offer (its commit), which an update asked for may name */
+  revision?: string | null;
 }
+/**
+ * POST /api/machines/:id/update, with an optional JSON body: `revision`, the offer's as shown. When the PC offers
+ * another release by then, nothing is installed: 409 `update_unavailable`, and the person looks again.
+ */
+export interface PcUpdateRequest { revision?: string }
 /** POST /api/machines/:id/update: the update started; its steps show on the PC's `updating` */
 export interface PcUpdateStarted { job_id: string }
 /**
