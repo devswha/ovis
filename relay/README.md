@@ -140,8 +140,10 @@ pairing hosts, in a release most PCs run.
   proves the key for its nameplate before it holds it, so a pass alone holds no nameplate and a proof
   opens no other nameplate or PC socket. While enforced, a host without a pass that holds for the key
   it offers (or offering none) closes `4402`, on Cloudflare in the Worker; a device that types a code
-  never needs one. A host let in before enforcement began keeps its nameplate for what is left of its
-  11 minutes.
+  never needs one. A host keeps its nameplate only while that holds: once enforcement begins, or its
+  pass runs out (5 minutes allowed for clocks), it closes `4402` with its device, at the alarm set for
+  that moment or at the next frame or arrival in the room, whichever comes first. The PC then opens
+  the nameplate again with the pass it holds now.
 - **Storage.** With passes off, and for pairing rooms always, the Durable Object never reads its
   storage.
 

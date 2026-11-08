@@ -910,6 +910,42 @@ describe("relay pass", () => {
     expect((await w.open("role=client")).closedWith).toBeNull();
   });
 
+  test("a pairing host's nameplate does not outlive enforcement: no device joins it, and the alarm at the date closes it 4402", async () => {
+    const enforceAt = T0 + 1000;
+    const w = await world("grace", new Date(enforceAt).toISOString());
+    const host = await w.openPair("role=host");
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    expect(w.fake.state.alarm).toBe(enforceAt);
+    setSystemTime(new Date(enforceAt));
+    const guest = await w.openPair("role=guest");
+    expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect(guest.closedWith?.code).toBe(4404);
+    const late = await world("grace", new Date(enforceAt).toISOString());
+    const held = await late.openPair("role=host");
+    setSystemTime(new Date(enforceAt));
+    await late.box.room.alarm();
+    expect(held.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+  });
+
+  test("while enforced, a pairing host whose pass runs out loses its nameplate, and one that proves after enforcement began without a pass gets none", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    const answer = (frame: Frame | undefined) => answerServerChallenge(frame, PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!;
+    const w = await world("enforce");
+    const host = await w.openPair(keyed, await passFor(SERVER, T0 - RELAY_PASS_LIFETIME_S * 1000 + 60_000));
+    w.box.room.webSocketMessage(host, answer(host.sent.shift()));
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    const lapse = T0 + 60_000 + RELAY_PASS_SKEW_S * 1000;
+    setSystemTime(new Date(lapse));
+    w.fake.keepalive.set(host, new Date(lapse));
+    await w.box.room.alarm();
+    expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass expired" });
+    const g = await world("grace", new Date(T0 + 1000).toISOString());
+    const proving = await g.openPair(keyed);
+    setSystemTime(new Date(T0 + 1000));
+    g.box.room.webSocketMessage(proving, answer(proving.sent.shift()));
+    expect(proving.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+  });
+
   test("a check result the request itself carries is never trusted", async () => {
     const w = await world("enforce");
     const forged = JSON.stringify({ state: "ok", exp: T0 + 3_600_000 });
