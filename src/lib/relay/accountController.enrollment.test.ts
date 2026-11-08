@@ -135,7 +135,7 @@ describe("account enrollment ownership", () => {
     expect(await run.store.get(introduced.server_id)).toBeUndefined();
   });
 
-  it.each(["cancel", "forget"] as const)("stops multi-key peer introductions after source %s during the first request", async (action) => {
+  it.each(["cancel", "forget", "forget-body"] as const)("stops multi-key peer introductions after source %s during the first request", async (action) => {
     const requested = Promise.withResolvers<void>();
     const response = Promise.withResolvers<Response>();
     const delivered: unknown[] = [];
@@ -143,17 +143,32 @@ describe("account enrollment ownership", () => {
       if (path === "/api/account/status?fresh=1") return Response.json({ account: "account", fresh: true, removals: [], adds: [], blocked: [] });
       if (path !== "/api/account/introduce") throw new TypeError("Unexpected peer request: " + path);
       delivered.push(JSON.parse(String(init?.body)));
-      if (delivered.length === 1) { requested.resolve(); return response.promise; }
+      if (delivered.length === 1) {
+        if (action === "forget-body") {
+          class HeldRefusal extends Response {
+            override async json() { requested.resolve(); return (await response.promise).json(); }
+          }
+          return new HeldRefusal(null, { status: 404 });
+        }
+        requested.resolve(); return response.promise;
+      }
       return Response.json({});
     } });
     const identity = generateKeyPair();
     const peer = { ...run.original, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey) };
     await run.store.update(peer.server_id, () => peer);
+    const firstRecord = run.records[0];
+    if (firstRecord === undefined) throw new TypeError("Missing enrollment record");
+    if (action === "forget-body") await run.accountStore.set("enrolls", { [run.original.server_id]: {
+      account: "account", done: [], introduce: { keys: [firstRecord.key], pc: {
+        server_id: run.original.server_id, server_public_key: run.original.server_public_key, relay: run.original.relay, name: "Desk",
+      }, to: [peer.server_id] },
+    } });
     const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
     await requested.promise;
     if (action === "cancel") run.controller.cancelEnrollment(run.original.server_id);
     else { run.otherController.cancelEnrollment(run.original.server_id); await forgetSavedPc(run.original.server_id, run.store); }
-    response.resolve(Response.json({}));
+    response.resolve(Response.json(action === "forget-body" ? { error: { code: "introduction_unknown_key" } } : {}));
     expect(await pending).toBeInstanceOf(DOMException);
     expect(delivered).toEqual([{ key: run.records[0]?.key, pcs: [{ server_id: run.original.server_id, server_public_key: run.original.server_public_key, relay: run.original.relay, name: "Desk" }] }]);
     expect((await run.accountStore.get("enrolls"))?.[run.original.server_id]?.introduce?.to).toEqual([peer.server_id]);
