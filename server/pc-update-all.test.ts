@@ -198,3 +198,31 @@ it("counts an SSH PC's own update through its setup against the same limit, and 
   expect(pc(B).update_error).toContain("another release now than the one shown");
   expect(asked).toEqual([A]);
 });
+
+it("keeps going past a PC whose update cannot start, and tells it under skipped", async () => {
+  const { manager, internals, asked } = fixture();
+  // A: an SSH PC whose own Ovis offers a release, started at once through its setup, which cannot start (no slot free)
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  (manager.updateBridge as unknown as { mockImplementationOnce(fn: () => never): void }).mockImplementationOnce(() => { throw new Error("Finish or cancel the current connection jobs first"); });
+  const all = manager.updateAll();
+  expect(all.skipped).toEqual([{ machine_id: A, reason: "Finish or cancel the current connection jobs first" }]);
+  // B was still reached after A failed to start, and A holds no place among those running at once
+  expect(all.queued).toEqual([B]);
+  expect(internals.machines.get(B)!.machine.updating).toBeTruthy();
+  expect((manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup.has(A)).toBe(false);
+  expect(asked).toEqual([]);
+});
+
+it("offers an SSH PC's own update only where this app may connect and manage it, as it does a bridge update", async () => {
+  const { manager, internals, pc } = fixture();
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  // a PC saved in herdr whose bridge this app was never approved to manage
+  const internalsOf = manager as unknown as { mayManageBridge(runtime: unknown): boolean };
+  spyOn(internalsOf, "mayManageBridge").mockImplementation((r) => (r as Runtime).machine.id !== A);
+  expect(pc(A).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("Review") });
+  expect(manager.updateAll().skipped.map((entry) => entry.machine_id)).toContain(A);
+});
