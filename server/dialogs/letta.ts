@@ -32,6 +32,10 @@ const LETTA_MODEL_COUNT_RE = /^(\d+) models?(?: · cached)?(?: · R to refresh l
 const LETTA_MODEL_MORE_RE = /^↓ \d+ more below$/;
 const LETTA_MODEL_ROW_RE = /^(> | {2})(?:🔒 )?(\S.*)$/;
 const LETTA_CURRENT_RE = /\s\(current\)(?=$|\s·\s)/;
+/** A search that matches nothing: no rows and no footer, only this line under the search (ModelSelector.tsx) */
+const LETTA_MODEL_NO_MATCH = "No models match your search.";
+/** Lines Letta draws above the rows that are none: a refresh under way, a catalog it could not fetch */
+const LETTA_MODEL_NOTES = new Set(["Refreshing list...", "Warning: Could not fetch available models. Showing all models."]);
 
 /**
  * The reasoning step that follows a pick (src/cli/components/ModelReasoningSelector.tsx):
@@ -71,28 +75,31 @@ const LETTA_TAB_OF: Record<string, string> = {
 };
 const LETTA_TAB_RE = /^(\S.*?) \[(\d+)\]$/;
 /** What a search may hold: typed one character at a time, as Letta reads a key (input.length === 1) */
-const LETTA_SEARCH_MAX = 40;
+export const LETTA_SEARCH_MAX = 40;
 
 function parseLettaModel(screen: string): ParsedPrompt | null {
   const { lines, end } = screenLines(screen);
-  // the picker holds the end of the screen: a hint above later output is an answered picker's
-  if (end < 0 || lines[end]!.trim() !== LETTA_MODEL_HINT) return null;
-  const count = lines[end - 1]?.trim().match(LETTA_MODEL_COUNT_RE);
-  if (!count) return null;
+  // the picker holds the end of the screen: a hint above later output is an answered picker's. A search that
+  // matches nothing ends it with its own line instead, and draws no rows
+  if (end < 0) return null;
+  const empty = lines[end]!.trim() === LETTA_MODEL_NO_MATCH;
+  if (!empty && lines[end]!.trim() !== LETTA_MODEL_HINT) return null;
+  const count = empty ? null : lines[end - 1]?.trim().match(LETTA_MODEL_COUNT_RE);
+  if (!empty && !count) return null;
   const search = findLastIndex(lines, (line, index) => index < end && /^\s{2}Search: /.test(line));
   if (search < 2 || !lines.slice(0, search).some((line) => line.trim() === LETTA_MODEL_TITLE)) return null;
   const rows: { label: string; cursor: boolean; current: boolean; lineIndex: number }[] = [];
-  for (let index = search + 1; index < end - 1; index += 1) {
+  for (let index = search + 1; index < (empty ? end : end - 1); index += 1) {
     const line = lines[index]!;
-    if (line.trim() === "" || LETTA_MODEL_MORE_RE.test(line.trim())) continue;
+    if (line.trim() === "" || LETTA_MODEL_MORE_RE.test(line.trim()) || LETTA_MODEL_NOTES.has(line.trim())) continue;
     const row = line.match(LETTA_MODEL_ROW_RE);
     if (!row) return null;
     const current = LETTA_CURRENT_RE.test(row[2]!);
     const text = row[2]!.replace(LETTA_CURRENT_RE, "");
     rows.push({ label: normalizeText(text), cursor: row[1] === "> ", current, lineIndex: index });
   }
-  // a search that matches nothing draws no rows: the card still offers the tabs and another search
-  if (rows.length > 0 && rows.filter((row) => row.cursor).length !== 1) return null;
+  // a search that matches nothing draws no rows: the card still offers the tabs, another search and Cancel
+  if (empty ? rows.length > 0 : rows.filter((row) => row.cursor).length !== 1) return null;
   const selectedIndex = Math.max(0, rows.findIndex((row) => row.cursor));
   const query = lines[search]!.replace(/^\s{2}Search: /, "");
   const typed = query === "(type to filter)" ? "" : query;
@@ -108,7 +115,7 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
 
   const current = rows.find((row) => row.current);
   const asked = current ? own("Select model for this session (currently {model})", { model: current.label }) : own("Select model for this session");
-  const hidden = Number(count[1]) - rows.length;
+  const hidden = count ? Number(count[1]) - rows.length : 0;
   const options = [
     ...rows.map((row) => ({ label: row.label, description: null })),
     ...beside.map(({ tab }) => ({ label: own("Show the {tab} tab", { tab: `${names[tab]} [${tabs[tab]![2]}]` }), description: null })),
@@ -143,8 +150,7 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     // time, as Letta reads one. The first goes into a search the backspaces emptied, where `r` refreshes the list
     // instead: its capital goes in
     customSteps: (text: string) => {
-      const words = text.slice(0, LETTA_SEARCH_MAX);
-      const first = words.startsWith("r") ? `R${words.slice(1)}` : words;
+      const first = text.startsWith("r") ? `R${text.slice(1)}` : text;
       return [...keySteps(Array.from({ length: typed.length }, () => KEY.backspace)), ...[...first].map((character) => ({ text: character }))];
     },
     // the search is the card's too: the same rows under another search take other backspaces

@@ -5745,6 +5745,18 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       });
     });
 
+    test("types on into a picker whose search matches nothing", async () => {
+      // letta-code's empty list: no rows and no footer, only its line saying so
+      const noMatch = (search: string) => `${lettaModels(search).slice(0, lettaModels(search).indexOf("Claude Opus 5.5 · Anthropic")).replace(/\n[^\n]*$/, "")}\n  No models match your search.\n`;
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { search += sent.slice(5); pane.screen = search.includes("x") ? noMatch(search) : lettaModels(search); };
+        expect(await answer(prompt.id, { custom_text: "xyz" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["text:x", "text:y", "text:z"]);
+      });
+    });
+
     test("refuses a search with a control character before any key", async () => {
       await withPane("letta", "idle", lettaModels(""), async (pane) => {
         const prompt = (await card())!;

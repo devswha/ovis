@@ -83,6 +83,31 @@ describe("Letta Code's /model", () => {
     expect(parseInteractivePrompt("letta", recents.replace("(type to filter)", "o"))!.id).not.toBe(parseInteractivePrompt("letta", recents)!.id);
   });
 
+  it("keeps a card for a search that matches nothing: the tabs, another search, and Cancel", () => {
+    // letta-code draws no footer under an empty list (ModelSelector.tsx), only its line saying so
+    const shown = screen("model-recents").replace("(type to filter)", "xyz");
+    const noMatch = `${shown.slice(0, shown.indexOf("Claude Opus 5.5 · Anthropic"))}`.replace(/\n[^\n]*$/, "") + "\n\u001b[2m  No models match your search.\u001b[0m\n";
+    const prompt = parseInteractivePrompt("letta", noMatch)!;
+    expect(prompt.options.map((option) => option.label)).toEqual(["Show the Recommended [12] tab", "Show the All models [21] tab", "Search models", "Cancel"]);
+    expect(answerKeys(prompt, { custom_text: "son" })).toEqual([{ keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { text: "s" }, { text: "o" }, { text: "n" }]);
+    expect(parseInteractivePrompt("letta", `${noMatch}\n› \n`)).toBeNull();
+  });
+
+  it("offers no row for the lines Letta draws above its rows while it refreshes", () => {
+    const lines = screen("model-recents").replace("R to refresh list", "refreshing...").split("\n");
+    // under the search line's blank, above the rows (ModelSelector.tsx)
+    lines.splice(lines.findIndex((line) => line.includes("Search: ")) + 2, 0, "  Refreshing list...");
+    const refreshing = lines.join("\n");
+    expect(card(refreshing)?.options).not.toContain("Refreshing list...");
+    expect(card(refreshing)?.options[0]).toBe("Claude Opus 5.5 · Anthropic");
+  });
+
+  it("refuses a search longer than Letta's search line takes, rather than cut it", () => {
+    const prompt = parseInteractivePrompt("letta", screen("model-recents"))!;
+    expect(answerKeys(prompt, { custom_text: "a".repeat(40) })).toHaveLength(40);
+    expect(() => answerKeys(prompt, { custom_text: "a".repeat(41) })).toThrow();
+  });
+
   it("reads no picker once output follows it, nor another agent's screen", () => {
     expect(parseInteractivePrompt("letta", `${screen("model-recents")}\n• Model switched\n`)).toBeNull();
     expect(parseInteractivePrompt("letta", `${screen("effort")}\n› \n`)).toBeNull();

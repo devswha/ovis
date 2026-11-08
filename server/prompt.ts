@@ -23,6 +23,7 @@ import { registry } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
+import { LETTA_SEARCH_MAX } from "./dialogs/letta.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
@@ -485,6 +486,9 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     // the picker), and one past U+FFFF (or half of one) is not the one unit a key of Letta's search holds (dialogs/letta.ts)
     if (parsed.responder === "letta-model" && /[\u0000-\u001f\u007f-\u009f\u{d800}-\u{dfff}\u{10000}-\u{10ffff}]/u.test(answer.custom_text)) {
       throw new InvalidAnswer("A model search must be one line of plain characters.");
+    }
+    if (parsed.responder === "letta-model" && answer.custom_text.trim().length > LETTA_SEARCH_MAX) {
+      throw new InvalidAnswer(`A model search holds at most ${LETTA_SEARCH_MAX} characters.`);
     }
     const text = answer.custom_text.trim();
     if (!text || parsed.customMenuIndex === null || (parsed.multi_select && parsed.responder !== "claude-question")) throw new InvalidAnswer("This prompt does not accept a custom answer.");
