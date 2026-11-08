@@ -2450,6 +2450,46 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
 const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean }>();
 
 /**
+ * What each pane's screen showed when its binding was last proven by a match (matchCodexTranscript), under which processes and to which rollout: the /new guard in
+ * codexTranscriptPath keeps a binding while the pane still shows exactly that (screenProvesBinding).
+ */
+const bindingProofs = new Map<string, { processes: string; path: string; shown: string }>();
+
+/**
+ * A screen as screenProvesBinding compares it: the rows down to the composer (the last row Codex starts with "\u203a",
+ * holding any draft), whitespace removed. The rows under it are left out (the model row and the hint row, which the
+ * pane's width cuts), and so are line breaks and indents, which only the width moves.
+ */
+function shownScreen(screen: string): string {
+  const lines = screen.split("\n");
+  let composer = -1;
+  for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.startsWith("\u203a")) { composer = at; break; }
+  return (composer >= 0 ? lines.slice(0, composer + 1) : lines).join("").replace(/\s+/g, "");
+}
+
+/**
+ * Remembers the screen that proved this pane's binding to path. A screen that proves nothing and differs from
+ * the remembered one forgets it: the pane moved on, and what it showed then never vouches for it again.
+ */
+export function noteBindingProof(paneId: string, processes: string, path: string | null, screen: string): void {
+  const shown = shownScreen(screen);
+  if (path === null || processes === "") {
+    if (bindingProofs.get(paneId)?.shown !== shown) bindingProofs.delete(paneId);
+    return;
+  }
+  bindingProofs.delete(paneId);
+  bindingProofs.set(paneId, { processes, path, shown });
+  if (bindingProofs.size > 64) bindingProofs.delete(bindingProofs.keys().next().value!);
+}
+
+/** Whether the pane, under the same processes, still shows the very screen that proved its binding to path. */
+export function screenProvesBinding(paneId: string, processes: string, path: string, screen: string): boolean {
+  const proof = bindingProofs.get(paneId);
+  return proof !== undefined && processes !== "" && proof.processes === processes && proof.path === path && proof.shown === shownScreen(screen);
+}
+
+
+/**
  * Threads begun in this cwd since `since` (seconds) that this pane's Codex may have moved
  * on to (/new), as their rollouts. Only interactive threads count: subagents (often with
  * a NULL agent_role) and `codex exec` runs share their parent's cwd but never replace the
@@ -3218,6 +3258,8 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
   const matched = screen ? matchCodexTranscript(screen.text, candidates, new Set(titledElsewhere === null ? [] : [titledElsewhere]), new Map(), false, folderRollouts) : null;
+  // the screen that proves this pane's binding, for the /new guard below (screenProvesBinding)
+  if (screen) noteBindingProof(paneId, processes, matched, screen.text);
   if (matched !== null) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), ...(matched === titledElsewhere ? { titled: true } : {}) });
@@ -3237,6 +3279,12 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundNewer = theirs(boundNewer, paneId, claimed);
     resumedNewer = theirs(resumedNewer, paneId, claimed);
   }
+  // a thread begun since in this cwd is no /new of this pane while the pane, under the same processes, still
+  // shows the very screen that proved its binding: /new redraws the screen at once (live 2026-11-07, Codex 0.164: the
+  // logo replaces the turns, and the thread is made then), and every later turn redraws it again. So a second Codex
+  // started here, whose short answer ("\ud655\uc778") its own pane cannot claim, no longer unbinds this pane
+  if (boundHere !== undefined && boundNewer.length > 0 && screen !== null && screenProvesBinding(paneId, processes, boundHere.path, screen.text)) boundNewer = [];
+
   if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null) {
     // a pane in use stays among the kept ones
     boundRollouts.delete(paneId);
