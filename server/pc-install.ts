@@ -102,7 +102,9 @@ export const birthNow = (pid: number, platform: string | undefined): string =>
   : platform === undefined || platform === "linux" ? `if [ -d /proc/self ]; then b=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); k=$(sed 's/.*) //' /proc/${pid}/stat 2>/dev/null | cut -d' ' -f20); [ -n "$b" ] && [ -n "$k" ] && printf '%s:%s' "$b" "$k"; fi; true`
   : "true";
 /** a shell test that a process runs at that pid, and has not ended (a zombie, not yet reaped, serves nothing) */
-export const runs = (pid: number): string => `[ -n "$(ps -o stat= -p ${pid} 2>/dev/null | grep -v '^ *Z')" ]`;
+// alive by kill -0; ended only on positive evidence (kill -0 fails, or ps reports a zombie): a PC whose ps lacks -o or -p
+// (BusyBox, a minimal image) never makes a running server look gone
+export const runs = (pid: number): string => `kill -0 ${pid} 2>/dev/null && ! ps -o stat= -p ${pid} 2>/dev/null | grep -q '^ *Z'`;
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
@@ -524,7 +526,7 @@ export class PcInstaller {
       // the server stopped (or signalled) for this install, with nothing installed or launched in its place: started again
       // as it was, before the job ends. Not once the installer ran or the launcher was asked: a start of their own may
       // still be on its way there, and would come up beside it. The copy is removed either way
-      // this app stopping (installer.stop()) only removes the copy: no SSH connection and minutes of waiting while it shuts down
+      // this app stopping (installer.stop()) only removes the copy (one short SSH command), never minutes of restoring while it shuts down
       const again = saved ? await this.startAgain(state, request, saved, socket, savedPort, !this.stopping && (stopped || signalled !== null) && replaced === "no" ? signalled : false) : null;
       // the signal never stopped it: as if nothing was stopped
       if (again === "running") stopped = false;

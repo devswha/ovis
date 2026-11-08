@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
+import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, runs, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -133,7 +133,7 @@ function fixture(pc: Pc) {
     // who serves the socket: dead, or its birth now (as the registration records it; nothing where it cannot be read)
     if (script.endsWith("|| echo dead")) {
       pc.onProbe?.();
-      const pid = Number(/ps -o stat= -p (\d+)/.exec(script)?.[1]);
+      const pid = Number(/kill -0 (\d+)/.exec(script)?.[1]);
       if (!alive.has(pid) || pc.zombies?.includes(pid)) return "dead\n";
       if (pc.unreadable?.includes(pid)) return "\n";
       const recorded = listed.find((d) => d.pid === pid)?.birth?.value;
@@ -1034,5 +1034,22 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     expect(await shell(birthNow(process.pid, "darwin"), {})).toBe("");
     // no process at that pid: nothing read
     expect(await shell(birthNow(2 ** 22 + 1, "linux"), {})).toBe("");
+  });
+
+  it("takes a process as ended only on evidence: gone, or a zombie; a ps that cannot say leaves it running", async () => {
+    const live = await shell(`${runs(process.pid)} && echo runs || echo ended`, {});
+    expect(live).toBe("runs");
+    expect(await shell(`${runs(2 ** 22 + 1)} && echo runs || echo ended`, {})).toBe("ended");
+    // a zombie: a child that exited and was not reaped
+    const zombie = Bun.spawn(["sh", "-c", "sleep 0.05 & exec sleep 30"], { stdout: "ignore" });
+    cleanups.push(() => zombie.kill());
+    // until its first child shows as a zombie (bounded)
+    const child = Number((await shell(`for i in $(seq 1 100); do c=$(pgrep -P ${zombie.pid} sleep | head -n 1); case "$(ps -o stat= -p "$c" 2>/dev/null)" in *Z*) echo $c; exit 0;; esac; sleep 0.05; done; echo 0`, {})).trim());
+    if (child > 0) expect(await shell(`${runs(child)} && echo runs || echo ended`, {})).toBe("ended");
+    // a ps that fails (BusyBox without -o) never makes a running process look ended
+    const dir = mkdtempSync(join(tmpdir(), "ovis-ps-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    expect(await shell(`${runs(process.pid)} && echo runs || echo ended`, { PATH: `${dir}:${process.env.PATH}` })).toBe("runs");
   });
 });
