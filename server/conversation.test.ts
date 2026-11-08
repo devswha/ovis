@@ -5,6 +5,8 @@ import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFil
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
+import * as cmd from "./cmd.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
@@ -2840,6 +2842,59 @@ it("changes a transcript's history_id when its first bytes are rewritten while i
     expect(await transcriptImageAsync(path, "00000000-0000-0000-0000-000000000000:0")).toBeNull();
     expect(id()).not.toBe(restored);
   } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("never digests a transcript reached through a link, so its touch counts as a rewrite", () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-link-"));
+  try {
+    const path = join(root, "target.jsonl");
+    const link = join(root, "session.jsonl");
+    writeFileSync(path, `${JSON.stringify({ type: "user", uuid: "u0", parentUuid: null, timestamp: "2026-11-06T00:00:00.000Z", message: { role: "user", content: "alpha" } })}\n`);
+    symlinkSync(path, link);
+    const base = transcriptPage("claude-transcript", link).history_id;
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    expect(transcriptPage("claude-transcript", link).history_id).not.toBe(base);
+  } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("lets the event loop run while a page read digests a touched transcript", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-touch-async-"));
+  const path = join(root, "session.jsonl");
+  writeFileSync(path, [
+    { type: "session", id: "cmd-session", version: 3 },
+    { type: "message", id: "u1", parentId: null, message: { role: "user", content: "hello" } },
+  ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  const pane = { pane_id: "cmd-touch", agent: "cmd", agent_status: "idle", cwd: root } as HerdrPane;
+  const resolution = spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path });
+  const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot);
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+  const realOpen = fsp.open;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held!: () => void;
+  const holding = new Promise<string>((resolve) => { held = () => resolve("held"); });
+  let opens: { mockRestore(): void } | undefined;
+  try {
+    const base = (await paneConversation(pane.pane_id)).history_id;
+    utimesSync(path, new Date(), new Date(Date.now() + 1000));
+    // the digest's read of the touched transcript waits until the test lets it go
+    opens = spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      if (args[0] === path) { held(); await gate; }
+      return realOpen(...args);
+    }) as typeof fsp.open);
+    let settled = false;
+    const pending = paneConversation(pane.pane_id).finally(() => { settled = true; });
+    expect(await Promise.race([holding, pending.then(() => "answered", () => "failed")])).toBe("held");
+    // a timer scheduled now runs while that read is outstanding: the loop is not held by it
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    release();
+    expect((await pending).history_id).toBe(base);
+  } finally {
+    release();
+    opens?.mockRestore(); rpc.mockRestore(); snapshot.mockRestore(); resolution.mockRestore();
+    forgetTranscriptState(); rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it("expands inherited Codex tool output without exposing output discarded by a backtrack", () => {

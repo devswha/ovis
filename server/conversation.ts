@@ -36,6 +36,7 @@
 
 import { createHash, randomUUID, type Hash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
+import { lstat, open as openHandle } from "node:fs/promises";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
@@ -219,11 +220,32 @@ interface TranscriptStream {
 // invalidating settled turns and incremental parsers as well as the response cache.
 // `hash` digests the first `hashed` bytes, fed only what each growth appends. `prefix` is the digest of
 // the first PREFIX_BYTES (or all) of the `at` bytes the last reading call saw.
-const transcriptRevisions = new Map<string, { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; prefix?: { digest: string; at: number }; window?: { start: number; end: number; digests: BigUint64Array } }>();
+interface TranscriptRevision { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; prefix?: { digest: string; at: number }; window?: { start: number; end: number; digests: BigUint64Array } }
+const transcriptRevisions = new Map<string, TranscriptRevision>();
 const PREFIX_BYTES = 64 * 1024;
+type RevisionStat = { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
 // `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: the
 // digest stays as it was, for the next read to extend, and a touch it sees counts as a rewrite.
-function transcriptGeneration(path: string, stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, checkWindow = false, read = true): string {
+function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = false, read = true): string {
+  const { next } = finish(transcriptRevisionSteps(path, stat, checkWindow, read, openRevisionNow));
+  remember(transcriptRevisions, path, next, 64);
+  return next.generation ? `-${next.generation}` : "";
+}
+
+/**
+ * Brings a transcript's revision up to date with reads through the thread pool, so the page read that
+ * follows finds its digests current and reads nothing for them on the event loop. A read that recorded
+ * the transcript meanwhile keeps its own result; a change after this leaves the rest to that page read.
+ */
+async function settleTranscriptRevision(path: string, checkWindow: boolean): Promise<void> {
+  let stat: Stats;
+  try { stat = await lstat(path); } catch { return; }
+  if (!stat.isFile()) return;
+  const { previous, next } = await finishAsync(transcriptRevisionSteps(path, stat, checkWindow, true, openRevisionAsync));
+  if (transcriptRevisions.get(path) === previous) remember(transcriptRevisions, path, next, 64);
+}
+
+function* transcriptRevisionSteps(path: string, stat: RevisionStat, checkWindow: boolean, read: boolean, opened: RevisionOpen): Steps<{ previous: TranscriptRevision | undefined; next: TranscriptRevision }> {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   const previous = transcriptRevisions.get(path);
@@ -235,7 +257,7 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // times about hourly, bytes untouched). The digest of the bytes digested before tells them apart;
   // bytes that cannot be read count as a rewrite.
   if (same && stat.size === previous.size && changed !== previous.changed) {
-    const now = read && hash ? hashRange(path, stat, createHash("sha256"), 0, hashed) : undefined;
+    const now = read && hash ? (yield* hashRange(opened, path, stat, createHash("sha256"), 0, hashed)) : undefined;
     if (!now || now.copy().digest("base64") !== hash!.copy().digest("base64")) rewritten = true;
   }
   // A growth of the same inode is taken for an append, and `hash` is only extended by it. Its first
@@ -246,7 +268,7 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   let prefix = same && !rewritten ? previous.prefix : undefined;
   let head: Hash | undefined;
   if (read && prefix && stat.size > prefix.at) {
-    head = hashRange(path, stat, createHash("sha256"), 0, Math.min(PREFIX_BYTES, prefix.at));
+    head = yield* hashRange(opened, path, stat, createHash("sha256"), 0, Math.min(PREFIX_BYTES, prefix.at));
     if (!head || head.copy().digest("base64") !== prefix.digest) { rewritten = true; head = undefined; }
   }
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
@@ -261,7 +283,7 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
     if (window !== undefined && window.end <= start) rewritten = true;
     const check = rewritten ? undefined : window;
     const from = check?.start ?? start;
-    const bytes = windowBytes(path, from, stat.size);
+    const bytes = yield* windowBytes(opened, path, from, stat.size);
     const digests = bytes && chunkDigests(bytes);
     if (check && (!digests || !sameOverlap(check, from, bytes!, digests))) rewritten = true;
     // an empty log keeps no window: it has no bytes to check
@@ -273,53 +295,84 @@ function transcriptGeneration(path: string, stat: { dev: number; ino: number; si
   // larger log's touch counts as a rewrite, as before.
   if (rewritten || stat.size > TRANSCRIPT_WINDOW_BYTES) { hash = undefined; hashed = 0; }
   if (read && stat.size <= TRANSCRIPT_WINDOW_BYTES && (hash === undefined || hashed < stat.size)) {
-    hash = hashRange(path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : hashed, stat.size);
+    hash = yield* hashRange(opened, path, stat, hash?.copy() ?? createHash("sha256"), hash === undefined ? 0 : hashed, stat.size);
     hashed = hash ? stat.size : 0;
   }
   if (rewritten) { prefix = undefined; head = undefined; }
   if (read && prefix?.at !== stat.size) {
     const checked = head ? Math.min(PREFIX_BYTES, prefix!.at) : 0;
     const to = Math.min(PREFIX_BYTES, stat.size);
-    head = checked === to ? head : hashRange(path, stat, head ?? createHash("sha256"), checked, to);
+    head = checked === to ? head : yield* hashRange(opened, path, stat, head ?? createHash("sha256"), checked, to);
     prefix = head ? { digest: head.digest("base64"), at: stat.size } : undefined;
   }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  remember(transcriptRevisions, path, { identity, size: stat.size, changed, generation, hash, hashed, prefix, window }, 64);
-  return generation ? `-${generation}` : "";
+  return { previous, next: { identity, size: stat.size, changed, generation, hash, hashed, prefix, window } };
+}
+
+/** The revision check's file: read on the event loop (finish) or through the thread pool (finishAsync). */
+interface RevisionFile {
+  stat(): Steps<Stats>;
+  read(into: Buffer, length: number, position: number): Steps<number>;
+  close(): Steps<void>;
+}
+type RevisionOpen = (path: string) => Steps<RevisionFile>;
+// O_NOFOLLOW: a link put in the transcript's place is refused, as the other transcript readers do;
+// O_NONBLOCK: a FIFO put there is not waited on
+const REVISION_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+function* openRevisionNow(path: string): Steps<RevisionFile> {
+  const fd = openSync(path, REVISION_FLAGS);
+  return {
+    *stat() { return fstatSync(fd); },
+    *read(into, length, position) { return readSync(fd, into, 0, length, position); },
+    *close() { closeSync(fd); },
+  };
+}
+function* openRevisionAsync(path: string): Steps<RevisionFile> {
+  const handle = yield* awaited(openHandle(path, REVISION_FLAGS));
+  return {
+    stat: () => awaited(handle.stat()),
+    *read(into, length, position) { return (yield* awaited(handle.read(into, 0, length, position))).bytesRead; },
+    close: () => awaited(handle.close()),
+  };
 }
 
 /**
  * `hash` fed bytes `from` to `to` of a file a chunk at a time, or undefined when they cannot all be read
  * or the path no longer names the regular file `stat` saw, holding at least `to` bytes, before and after
- * the read (an append meanwhile leaves them alone). O_NONBLOCK, so a FIFO put there is not waited on.
+ * the read (an append meanwhile leaves them alone).
  */
-function hashRange(path: string, stat: { dev: number; ino: number }, hash: Hash, from: number, to: number): Hash | undefined {
+function* hashRange(opened: RevisionOpen, path: string, stat: { dev: number; ino: number }, hash: Hash, from: number, to: number): Steps<Hash | undefined> {
   const unchanged = (now: Stats): boolean => now.isFile() && now.dev === stat.dev && now.ino === stat.ino && now.size >= to;
   try {
-    const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const file = yield* opened(path);
     try {
-      if (!unchanged(fstatSync(fd))) return undefined;
+      if (!unchanged(yield* file.stat())) return undefined;
       // 64 KiB at a time: a check, not a page read, so a page read's failure is its own
       const chunk = Buffer.allocUnsafe(Math.min(Math.max(to - from, 0), 64 * 1024));
       for (let at = from; at < to;) {
-        const read = readSync(fd, chunk, 0, Math.min(chunk.length, to - at), at);
+        const read = yield* file.read(chunk, Math.min(chunk.length, to - at), at);
         if (read <= 0) return undefined;
         hash.update(chunk.subarray(0, read));
         at += read;
       }
-      return unchanged(fstatSync(fd)) ? hash : undefined;
-    } finally { closeSync(fd); }
+      return unchanged(yield* file.stat()) ? hash : undefined;
+    } finally { yield* file.close(); }
   } catch { return undefined; }
 }
 
 /** Bytes `from` to `to` of a file, or null when they cannot all be read. */
-function windowBytes(path: string, from: number, to: number): Buffer | null {
+function* windowBytes(opened: RevisionOpen, path: string, from: number, to: number): Steps<Buffer | null> {
   try {
-    const fd = openSync(path, "r");
+    const file = yield* opened(path);
     try {
       const bytes = Buffer.allocUnsafe(to - from);
-      return readSync(fd, bytes, 0, bytes.length, from) === bytes.length ? bytes : null;
-    } finally { closeSync(fd); }
+      for (let got = 0; got < bytes.length;) {
+        const read = yield* file.read(bytes.subarray(got), bytes.length - got, from + got);
+        if (read <= 0) return null;
+        got += read;
+      }
+      return bytes;
+    } finally { yield* file.close(); }
   } catch { return null; }
 }
 
@@ -2228,6 +2281,8 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       throw error;
     }
   }
+  // the page read below digests the transcript (transcriptGeneration): read it here off the event loop
+  await settleTranscriptRevision(resolved.path, resolved.source === "muse-transcript");
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
     : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
@@ -3298,6 +3353,8 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   if (resolved.source === "dsh-transcript") return await dshToolOutput(resolved, ref);
   if (resolved.source === "kiro-transcript") return await kiroToolOutput(resolved, ref);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
+  // the sources whose lookup below digests the transcript (transcriptGeneration)
+  if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") await settleTranscriptRevision(resolved.path, false);
   let nativeRef = ref;
   if (resolved.source === "copilot-transcript") {
     let history: string;
@@ -3488,6 +3545,7 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
  * large transcript never holds the bridge for more than a window's work.
  */
 export async function ompTranscriptImage(path: string, ref: string, anchor?: string | null): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  await settleTranscriptRevision(path, false);
   try { return await finishAsync(ompTranscriptImageSteps(path, ref, anchor)); } catch { return null; }
 }
 
@@ -3598,6 +3656,7 @@ function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content:
  * windows (finishAsync).
  */
 export async function codexToolImage(path: string, ref: string, codexHome: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
+  await settleTranscriptRevision(path, false);
   try { return await finishAsync(codexToolImageSteps(path, ref, codexHome)); } catch { return null; }
 }
 
