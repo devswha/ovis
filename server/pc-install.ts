@@ -187,6 +187,13 @@ export class PcInstaller {
     });
     // the server started by hand there was stopped by this try: a later failure says so, as nothing runs there now
     let stopped = false;
+    // a start through herdr or the launcher that fails there is told in words, as every failure is
+    const launch = async (command: string) => {
+      try { await state.ssh!.run(command); } catch (error) {
+        if (abort.signal.aborted) throw error;
+        throw new InstallFailed("not_started", `Ovis could not be started on that PC: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`);
+      }
+    };
     // whether an Ovis was installed or started in its place: "maybe" while that command still ran, when a cancel can come
     let replaced: "no" | "maybe" | "yes" = "no";
     try {
@@ -214,6 +221,8 @@ export class PcInstaller {
       // an Ovis already installed there (a plugin, or its service) is started through that, and updated once it answers:
       // the installer would keep it as it is and only start it, whatever release it was asked for
       const installed = facts.launcher !== "none";
+      // the planned server already gone (see below): nothing of it is waited for after the launcher's start
+      let gone = false;
       if (!plan) {
         if (live.some((d) => d.managed_remote)) throw new InstallFailed("bridge_there", "That PC runs this app's bridge for herdr; update it from its card with Update instead.");
         if (live.length) throw new InstallFailed("ovis_there", "Ovis already runs on that PC. Add it with Add PC, or update it from its card.");
@@ -223,7 +232,7 @@ export class PcInstaller {
         const shown = live.find((d) => d.pid === plan.pid && !d.managed_remote && (plan.token === undefined || d.token === plan.token));
         // gone already (an earlier try stopped it, or the launcher stopped it and failed to start one), with no other Ovis
         // running there: nothing is left to stop, and the install or the launcher's start is tried again
-        const gone = !shown && live.length === 0;
+        gone = !shown && live.length === 0;
         const command = shown ? await ssh.run(`ps -o args= -p ${plan.pid} 2>/dev/null || true`) : "";
         if (!gone && (!shown || !OVIS_COMMAND.test(command))) throw new InstallFailed("changed", "That PC's Ovis changed since it was looked at, so nothing was stopped. Reconnect it and try again.");
         if (gone && plan.mode === "replace") stopped = true;
@@ -246,12 +255,13 @@ export class PcInstaller {
         step("starting", job.mode === "restart" ? "Restarting that PC's Ovis through its own launcher…" : "Starting the Ovis already installed on that PC…");
         // a plugin's actions need a herdr server: without one, herdr is started headless and starts the plugin itself
         const plugin = facts.launcher === "plugin" || facts.launcher === "plugin-legacy";
-        if (plugin && !facts.herdrRunning) await ssh.run(HEADLESS_HERDR);
-        else { if (stopped) replaced = "maybe"; await ssh.run(viaLauncher(facts.launcher, job.mode === "restart")); }
+        if (plugin && !facts.herdrRunning) await launch(HEADLESS_HERDR);
+        else { if (stopped) replaced = "maybe"; await launch(viaLauncher(facts.launcher, job.mode === "restart")); }
         if (stopped) replaced = "yes";
         // the launcher restarts what it runs: a planned process it did not run (started by hand beside it) is still
         // there, and a second Ovis would serve the same socket, so nothing is connected
-        if (plan?.mode === "restart") {
+        // a planned server already gone is not waited for: its pid may run something else by now (after a reboot)
+        if (plan?.mode === "restart" && !gone) {
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
             if (Date.now() >= until) {
               // the launcher started an Ovis of its own beside the planned one: only that new one (a token not seen
@@ -283,7 +293,7 @@ export class PcInstaller {
         if (stopped) replaced = "yes";
         // the plugin starts with herdr: one not running is started headless, which runs the plugin's startup hook
         // (as scripts/fresh-install-docker.ts checks), in a session of its own so it outlives this SSH connection
-        if (!facts.herdrRunning) await ssh.run(HEADLESS_HERDR);
+        if (!facts.herdrRunning) await launch(HEADLESS_HERDR);
       }
       step("starting", "Waiting for Ovis to answer on that PC…");
       for (const until = Date.now() + this.startMs; ;) {

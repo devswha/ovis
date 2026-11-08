@@ -10,6 +10,9 @@ import type { PushService } from "./push.ts";
 import { SshConnection } from "./ssh.ts";
 import { forgetSshAddresses, sshAddresses } from "./ssh-address.ts";
 
+/** ssh -G as it runs, for the tests that read a config of their own; every other test reads none */
+const realResolve = sshAddresses.resolve;
+
 // The install routes and the one-job-per-PC rule on a manager with one saved SSH PC. SSH never connects: each
 // connection waits until the test lets it in, refuses it, or it is closed. No PC, herdr or real state is touched.
 const SAVED = "00000000-0000-4000-8000-0000000000aa";
@@ -37,6 +40,9 @@ function fixture() {
   };
   SshConnection.prototype.close = function (this: SshConnection) { (this as unknown as { refuse?: () => void }).refuse?.(); };
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
+  const resolve = spyOn(sshAddresses, "resolve").mockReturnValue(null);
+  forgetSshAddresses();
+  cleanups.push(() => { resolve.mockRestore(); forgetSshAddresses(); });
   cleanups.push(() => { manager.stop(); Object.assign(SshConnection.prototype, real); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
   /** as this PC's owner from this app's own page, unless the test says otherwise */
   const call = (path: string, method = "POST", body?: unknown, readOnly = false, owner = !readOnly, headers: Record<string, string> = { "x-herdr-update": "1" }) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`,
@@ -281,13 +287,12 @@ function sshConfig(): void {
   const dir = mkdtempSync(join(tmpdir(), "ovis-ssh-config-"));
   const config = join(dir, "config");
   writeFileSync(config, "Host new-alias\n  HostName new.invalid\n  User me\n\nHost *\n  User me\n");
-  const real = sshAddresses.resolve;
-  const resolve = spyOn(sshAddresses, "resolve").mockImplementation((target) => real.call(sshAddresses, target, config));
+  spyOn(sshAddresses, "resolve").mockImplementation((target) => realResolve.call(sshAddresses, target, config));
   forgetSshAddresses();
-  cleanups.push(() => { resolve.mockRestore(); forgetSshAddresses(); rmSync(dir, { recursive: true, force: true }); });
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 }
 
-it("keeps one install or setup per PC as ssh resolves it: an alias, or the default port given, is the same PC", async () => {
+it.skipIf(!Bun.which("ssh"))("keeps one install or setup per PC as ssh resolves it: an alias, or the default port given, is the same PC", async () => {
   const { manager, reached } = fixture();
   sshConfig();
   const job = manager.install({ destination: "me@new.invalid" });
@@ -299,7 +304,7 @@ it("keeps one install or setup per PC as ssh resolves it: an alias, or the defau
   manager.cancelInstall(job.id);
 });
 
-it("keeps one setup at a time per PC as ssh resolves it, whatever herdr session each names", async () => {
+it.skipIf(!Bun.which("ssh"))("keeps one setup at a time per PC as ssh resolves it, whatever herdr session each names", async () => {
   const { manager, reached } = fixture();
   sshConfig();
   const first = manager.setup({ destination: "new-alias" });

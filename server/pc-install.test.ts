@@ -33,6 +33,8 @@ interface Pc {
   installer?: { exit: number; output: string };
   /** the installed Ovis never registers */
   neverStarts?: boolean;
+  /** its launcher's start fails there, with these words */
+  launcherFails?: string;
   /** the installer's command holds until this settles, and tells when it starts */
   installerHeld?: { started(): void; gate: Promise<void> };
   descriptors?: Descriptor[];
@@ -74,6 +76,7 @@ function fixture(pc: Pc) {
     if (script.includes("kill -TERM")) { alive.delete(Number(/kill -TERM (\d+)/.exec(script)![1])); return ""; }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
     if (script.includes(" server </dev/null")) { register(); return ""; }
+    if (pc.launcherFails && (script.includes("devswha.ovis.start") || script.includes("ovis.service"))) throw new Error(pc.launcherFails);
     if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); register(); return ""; }
     throw new Error(`Unexpected remote command: ${script}`);
   };
@@ -267,6 +270,22 @@ describe("installing Ovis on a PC over SSH", () => {
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
     expect(job).toMatchObject({ phase: "connected", error: null });
     expect(pc.commands.some((command) => command.includes("ovis.service"))).toBe(true);
+  });
+
+  it("restarts through the launcher on a retry when the planned server is gone and its pid now runs something else", async () => {
+    // after a reboot: no Ovis is registered there, and the old pid belongs to an unrelated process
+    const pc = fixture({ launcher: "systemd" });
+    pc.alive.add(4242);
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "connected", error: null });
+    // the Ovis the launcher started is never stopped as one left beside it
+    expect(pc.commands.some((command) => /kill -TERM 5555/.test(command))).toBe(false);
+  });
+
+  it("fails in plain words, with its code, when the launcher's start fails there", async () => {
+    const pc = fixture({ launcher: "systemd", launcherFails: "Failed to start ovis.service: Unit not found." });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "not_started", error: expect.stringContaining("Ovis could not be started on that PC: Failed to start ovis.service") });
   });
 
   it("says the server it stopped is gone only while nothing was started in its place", async () => {
