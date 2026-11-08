@@ -141,3 +141,21 @@ it("installs on a PC added here only as its card offers: never one not approved 
   expect(unapproved.status).toBe(409);
   expect((await unapproved.json() as { error: { message: string } }).error.message).toContain("Review the bridge update");
 });
+
+it("updates an older Ovis a fresh install finds already installed there, as a PC added here would be", async () => {
+  const { manager } = fixture();
+  type Job = { id: string; phase: string; error: string | null; step: string; action_required?: string | null; remote_ovis?: { latest_version: string | null } | null };
+  const asked: boolean[] = [];
+  const outcomes: Partial<Job>[] = [{ phase: "failed", action_required: "update_bridge", error: "older", remote_ovis: { latest_version: "0.5.0" } }, { phase: "connected" }];
+  const jobs = (manager as unknown as { jobs: Map<string, { finished: Promise<void>; public: Job }> }).jobs;
+  spyOn(manager, "setup").mockImplementation((request) => {
+    asked.push(request.update_remote === true);
+    const job: Job = { id: `job-${asked.length}`, phase: "connecting", error: null, step: "", ...outcomes.shift() };
+    jobs.set(job.id, { finished: Promise.resolve(), public: job });
+    return job as unknown as ReturnType<MachineManager["setup"]>;
+  });
+  const connect = (manager as unknown as { installConnect(request: { target: SshTarget; machine_id?: string; update: boolean }): { finished: Promise<string | null> } }).installConnect;
+  // no machine_id: a PC not added here yet, whose own Ovis the launcher started at its old release
+  expect(await connect({ target: { destination: "me@fresh.invalid" }, update: true }).finished).toBeNull();
+  expect(asked).toEqual([false, true]);
+});

@@ -113,7 +113,8 @@ export class PcInstaller {
     const state: State = { public: job, abort: new AbortController(), finished: Promise.resolve() };
     this.jobs.set(id, state);
     // ended jobs are kept for their dialog to read, at most the last 40
-    if (this.jobs.size > 40) for (const [key, other] of this.jobs) if (key !== id && ["connected", "failed", "cancelled"].includes(other.public.phase)) { this.jobs.delete(key); break; }
+    // only a job whose run has ended: a cancelled one may still run there, and keeps its PC busy until then
+    if (this.jobs.size > 40) for (const [key, other] of this.jobs) if (key !== id && other.settled) { this.jobs.delete(key); break; }
     state.finished = this.run(state, request);
     this.options.onChange?.(job);
     return job;

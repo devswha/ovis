@@ -925,18 +925,22 @@ export class MachineManager {
       { ...(update ? { auto: true } : {}), keysOnly: true, fromInstall: true });
     const ended = async (job: SetupJob) => { await this.jobs.get(job.id)?.finished; return this.jobs.get(job.id)?.public ?? job; };
     let current = start(false);
+    let cancelled = false;
     const finished = (async () => {
       let result = await ended(current);
-      // still older than this app (a restarted supervisor, or an install kept as it was): its own update now, as its steps said
-      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) {
+      // still older than this app (a restarted supervisor, or an install kept as it was, on a PC added here or not yet): its
+      // own update now, as its steps said
+      if (request.update && result.phase === "failed" && result.action_required === "update_bridge") {
+        // a cancel that came while the first connect ended: nothing more is started
+        if (cancelled) return "Cancelled";
         // its update, as update-bridge asks it: never to a release newer than this app, which would then refuse it
-        const runtime = this.machines.get(request.machine_id);
-        if (runtime && newerThanThisApp(runtime.machine.remote_ovis?.latest_version)) return NEWER_THAN_APP;
+        const offered = result.remote_ovis?.latest_version ?? (request.machine_id ? this.machines.get(request.machine_id)?.machine.remote_ovis?.latest_version : undefined);
+        if (newerThanThisApp(offered)) return NEWER_THAN_APP;
         current = start(true); request.onJob?.(current.id); result = await ended(current);
       }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
-    return { job_id: current.id, cancel: () => this.cancelJob(current.id), finished };
+    return { job_id: current.id, cancel: () => { cancelled = true; this.cancelJob(current.id); }, finished };
   };
   /** an install for a PC added here shows on its card as its update does */
   private showInstall(job: PcInstallJob): void {
@@ -1132,7 +1136,8 @@ export class MachineManager {
       if (target.identity_file) throw new Error("SSH connection details are managed by herdr; use the account's SSH config for keys");
       target = { ...existing.machine.target! };
     }
-    const auto = options.auto === true && request.update_remote === true && !!existing;
+    // the install that asks it (fromInstall) was the approval of a PC not added here yet too
+    const auto = options.auto === true && request.update_remote === true && (!!existing || options.fromInstall === true);
     // A saved PC set up at another SSH address stays at its own until it connects there: that address is the user's to
     // review in this dialog, and a reconnect or an update that asks nobody goes only where the PC is (#2075)
     const moving = !!existing && !sameSshSession(target, existing.machine.target!);
