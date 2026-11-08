@@ -272,7 +272,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- truthful counts (todo 2) and the overview (todo 9) ----
 
-  const counts: [FleetName, number, number, number][] = [["F4", 0, 4, 1], ["FREADY", 3, 3, 1], ["F20", 8, 12, 4]];
+  const counts: [FleetName, number, number, number][] = [["F4", 0, 4, 1], ["FREADY", 2, 3, 1], ["F20", 8, 12, 4]];
   for (const [fleet, ready, needs, offline] of counts) {
     await check(`dashboard-${fleet}-counts`, async () => {
       const { page } = await open({ fleet });
@@ -371,7 +371,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- filters (todos 2, 7): the Needs filter lists what the strip counts ----
 
-  const filters: [string, FleetName, string, number][] = [["filter-needs", "FREADY", "needs", 3], ["filter-ready", "FREADY", "ready", 3], ["filter-offline", "FREADY", "offline", 1], ["filter-empty", "F4", "ready", 0]];
+  const filters: [string, FleetName, string, number][] = [["filter-needs", "FREADY", "needs", 3], ["filter-ready", "FREADY", "ready", 2], ["filter-offline", "FREADY", "offline", 1], ["filter-empty", "F4", "ready", 0]];
   for (const [name, fleet, filter, want] of filters) {
     await check(name, async () => {
       const { page } = await open({ fleet });
@@ -518,7 +518,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const lost = known.filter((id) => !shown.includes(id));
     await shot(page, "dashboard-directory-error-1440-dark", true);
     expect(lost.length === 0, `the PCs this device holds stay listed through the failure (${lost.length} of ${known.length} gone)`);
-    return `alert + Try again, ${known.length} known rows kept`;
+    expect((await strip(page))["ready"]?.count === 0, "unchecked pairings do not claim Ready when the directory fails");
+    await page.getByRole("button", { name: "Ready", exact: true }).click();
+    expect(await listedRows(page).count() === 0, "the Ready filter agrees with the zero Ready count");
+    return `alert + Try again, ${known.length} known rows kept; Ready 0 and empty Ready filter`;
   });
 
   // ---- devices (todo 6) ----
