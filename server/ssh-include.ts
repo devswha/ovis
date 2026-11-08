@@ -4,14 +4,16 @@
  * config. A file or folder is opened first and what was opened is checked, so nothing swapped in on the way after a
  * check stands in for it: Linux names the opened object itself (/proc/self/fd) and lists a folder through its open
  * descriptor (getdents64), a bounded read at a time; elsewhere a file's path is resolved again once open and must
- * still name the same object. Without getdents64 (macOS, Windows, a Linux without glibc) no folder is listed: Bun has no
- * descriptor-relative listing, so a wildcard's folders are left unread rather than listed by a path a swap can redirect.
+ * still name the same object. Without getdents64 (macOS, Windows, a Linux without glibc) Bun has no descriptor-relative
+ * listing, so a wildcard's folders are listed by path, which a swap after the check can redirect: every file reached
+ * that way comes back marked `unclaimed`, and the hosts it brings are listed but claim no Tailscale PC.
  */
 import { constants } from "node:fs";
-import { open, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
+import { open, readdir, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 
+import type { Included } from "./ssh-config.ts";
 import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.ts";
 
 /** an ssh config is a few kilobytes; past this it is not read on */
@@ -56,7 +58,7 @@ const inside = (path: string, roots: readonly string[]): boolean => roots.some((
 
 /** whether the object open at `handle`, opened as `path`, really is inside `roots` */
 async function openedInside(handle: FileHandle, path: string, roots: readonly string[]): Promise<boolean> {
-  if ((includeHooks.platform ?? process.platform) === "linux") return inside(await readlink(`/proc/self/fd/${handle.fd}`), roots);
+  if ((includeTestOnly.platform ?? process.platform) === "linux") return inside(await readlink(`/proc/self/fd/${handle.fd}`), roots);
   const real = await realpath(path);
   const [opened, named] = await Promise.all([handle.stat({ bigint: true }), stat(real, { bigint: true })]);
   return inside(real, roots) && opened.dev === named.dev && opened.ino === named.ino;
@@ -77,17 +79,22 @@ async function openInside(path: string, roots: readonly string[], flags: number)
 /** getdents64(2): fills `buffer` with a folder's entries from its descriptor and answers the bytes written, or -1 */
 type Getdents = (fd: number, buffer: Buffer, length: number) => number | bigint;
 
-/** glibc's getdents64(2), which reads a folder's entries from its descriptor a buffer at a time; null without glibc */
+/**
+ * glibc's getdents64(2), which reads a folder's entries from its descriptor a buffer at a time; null without glibc. It is
+ * called synchronously through bun:ffi, so a folder on a stalled network mount (an NFS or SMB home) blocks the server's
+ * event loop, every request with it, until the mount answers, while the SSH list is built.
+ */
 const getdents: Getdents | null = (() => {
   if (process.platform !== "linux") return null;
   try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
 })();
 
-/** whether a wildcard Include's folders can be listed here at all (getdents64); without it every one is left unread */
+/** whether a wildcard Include's folders are listed through their descriptor (getdents64); without it, by path, unclaimed */
 export const wildcardIncludesRead = getdents !== null;
 
-/** tests stand in for getdents64 here (a fake one, or null for a platform without it) and for the platform openedInside checks on */
-export const includeHooks: { getdents?: Getdents | null; platform?: NodeJS.Platform } = {};
+/** for tests only: getdents64 stood in for (a fake one, or null for a platform without it), and the platform openedInside checks on */
+export const includeTestOnly: { getdents?: Getdents | null; platform?: NodeJS.Platform } = {};
+const descriptorListing = (): Getdents | null => includeTestOnly.getdents === undefined ? getdents : includeTestOnly.getdents;
 
 /**
  * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
@@ -118,17 +125,30 @@ function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
   }
 }
 
-/** the names in folder `dir` when it really is inside `roots`, listed through its open descriptor; "unread" without getdents64 */
+/**
+ * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 is, else by
+ * the path its realpath checked, read whole (Bun has no listing that stops early) and then charged to `budget.entries`
+ */
 async function listInside(dir: string, roots: readonly string[], budget: Budget): Promise<Listing> {
-  const read = includeHooks.getdents === undefined ? getdents : includeHooks.getdents;
+  const read = descriptorListing();
   if (read !== null) {
     const folder = await openInside(dir, roots, FOLDER_FLAGS);
     if (folder === null) return null;
     if (folder === "refused") return "unread";
     try { return entriesOf(folder.fd, read, budget); } finally { await folder.close(); }
   }
-  // a folder that is not there is nothing, as for ssh; any other is left unread
-  return (await realpath(dir).catch(() => null)) === null ? null : "unread";
+  const real = await realpath(dir).catch(() => null);
+  if (real === null) return null;
+  if (!inside(real, roots)) return "unread";
+  let raw: Buffer[];
+  try { raw = await readdir(real, { encoding: "buffer" }); } catch (error) {
+    // a match that is a file (`conf.d/*/x`) or gone is nothing, as for ssh; a folder it could not list is unread
+    return error instanceof Error && "code" in error && (error.code === "ENOTDIR" || error.code === "ENOENT") ? null : "unread";
+  }
+  const names = raw.map((bytes) => bytes.toString("utf8"));
+  if (names.length > budget.entries || names.some((name, at) => !Buffer.from(name).equals(raw[at]!))) return "unread";
+  budget.entries -= names.length;
+  return names;
 }
 
 /**
@@ -137,9 +157,9 @@ async function listInside(dir: string, roots: readonly string[], budget: Budget)
  * home or ssh folder; matches keep the spelling the pattern gives them and glob(3)'s order. A file ssh would read that is
  * left unread (out of those folders, past a budget, behind a pattern not matched exactly here, `~user`, a `%` token or
  * `${VAR}`, not a regular file of at most the size cap) comes back as null, so what it might set stays unknown; a file
- * that is not there is nothing, as for ssh.
+ * that is not there is nothing, as for ssh. A file reached through a folder listed by path comes back `unclaimed`.
  */
-export function includer(sshDir: string, home: string): (pattern: string) => Promise<(string | null)[]> {
+export function includer(sshDir: string, home: string): (pattern: string) => Promise<Included[]> {
   const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
   const budget: Budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES, entries: MAX_SCANNED_ENTRIES, steps: MAX_MATCH_STEPS };
   const escapes = sep === "/";
@@ -179,7 +199,8 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
       const folders = await Promise.all(level.map((path) => stat(path).then((found) => found.isDirectory(), () => false)));
       paths = level.filter((_, at) => !folders[at]).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
     }
-    const texts: (string | null)[] = [];
+    const byPath = first >= 0 && descriptorListing() === null;
+    const texts: Included[] = [];
     for (const path of paths) {
       if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }
       const handle = await openInside(path, allowed, READ_FLAGS);
@@ -189,7 +210,7 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
       try {
         const text = await readHandle(handle, Math.min(MAX_FILE_BYTES, budget.bytes)).catch(() => null);
         if (text !== null) budget.bytes -= Buffer.byteLength(text);
-        texts.push(text);
+        texts.push(text === null || !byPath ? text : { text, unclaimed: true });
       } finally { await handle.close(); }
     }
     return [...(scanCut ? [null] : []), ...texts, ...(truncated ? [null] : [])];

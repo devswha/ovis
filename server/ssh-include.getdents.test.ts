@@ -2,16 +2,16 @@ import { expect, it } from "bun:test";
 
 import { sshCandidates } from "./ssh-candidates.ts";
 import { sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
-import { includeHooks } from "./ssh-include.ts";
+import { includeTestOnly } from "./ssh-include.ts";
 
 // what the SSH list makes of a folder's listing when getdents64 answers something it cannot trust
 /** what the list makes of `config` beside a `box` host at 100.64.0.1, with getdents64 standing as `getdents` */
-async function withGetdents(getdents: typeof includeHooks.getdents, files: Record<string, string>): Promise<(string | undefined)[][]> {
+async function withGetdents(getdents: typeof includeTestOnly.getdents, files: Record<string, string>): Promise<(string | undefined)[][]> {
   const dir = sshDir({ ...files, config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
-  includeHooks.getdents = getdents;
+  includeTestOnly.getdents = getdents;
   try {
     return (await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers })).map((candidate) => [candidate.name, candidate.tailnet]);
-  } finally { delete includeHooks.getdents; }
+  } finally { delete includeTestOnly.getdents; }
 }
 const unread = [["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
 

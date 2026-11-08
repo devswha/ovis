@@ -1,10 +1,10 @@
 import { expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdirSync, type PathLike, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, type PathLike, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
-import { includeHooks, wildcardIncludesRead } from "./ssh-include.ts";
+import { includeTestOnly, wildcardIncludesRead } from "./ssh-include.ts";
 import { sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
 // the files an Include of the ssh config names: which ones are read, how far a wildcard goes, and the read budget
@@ -173,35 +173,23 @@ it("claims nothing for a host an Include of another user's home (~user) may set"
 
 const unread = [["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
 
-it.skipIf(process.platform === "win32")("lists no folder without getdents64, leaving its Include unread, even across a swap and restore between checks", async () => {
-  const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+it.skipIf(process.platform === "win32")("claims no PC for a host a folder listed by path brings, even one swapped for a link out of home after it was checked", async () => {
+  const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*\n" });
+  writeFileSync(join(home, "notes", "leak"), "Host leaked\n  HostName 100.64.0.1\n");
   const folder = join(ssh, "conf.d");
-  const [stat, realpath, readdir] = [fsPromises.stat, fsPromises.realpath, fsPromises.readdir];
-  const listed: string[] = [];
-  let stage = 0;
-  const spies = [
-    // swapped for a link out of home just after the folder's identity is first taken, put back before it is checked again
-    spyOn(fsPromises, "stat").mockImplementation((async (looked: PathLike, options?: { bigint: true }) => {
-      const found = await stat(looked, options);
-      if (stage === 0 && String(looked) === folder) { stage = 1; renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); }
-      return found;
-    }) as typeof stat),
-    spyOn(fsPromises, "realpath").mockImplementation((async (looked: PathLike) => {
-      if (stage === 1 && String(looked) === folder) { stage = 2; unlinkSync(folder); renameSync(`${folder}.old`, folder); }
-      return realpath(looked);
-    }) as typeof realpath),
-    spyOn(fsPromises, "readdir").mockImplementation((async (looked: PathLike) => {
-      const names = await readdir(looked);
-      listed.push(...names);
-      return names;
-    }) as typeof readdir),
-  ];
-  includeHooks.getdents = null;
+  const realpath = fsPromises.realpath;
+  let swapped = false;
+  // swapped for a link out of home just after the folder's path is checked, before it is listed by that path
+  const spy = spyOn(fsPromises, "realpath").mockImplementation((async (looked: PathLike) => {
+    const found = await realpath(looked);
+    if (!swapped && String(looked) === folder) { swapped = true; renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); }
+    return found;
+  }) as typeof realpath);
+  includeTestOnly.getdents = null;
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => twoPeers });
-    expect(listed).not.toContain("evil");
-    expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
-  } finally { delete includeHooks.getdents; for (const spy of spies) spy.mockRestore(); }
+    expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["leaked", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+  } finally { delete includeTestOnly.getdents; spy.mockRestore(); }
 });
 
 /** the rows of a config whose Include may set `box`, beside a `box` host at 100.64.0.1 after it */
@@ -230,11 +218,24 @@ it.skipIf(!wildcardIncludesRead)("reads the files a wildcard matches in the orde
   expect(await rowsOf(files)).toEqual(unclaimed);
 });
 
-it("leaves a wildcard Include unread where getdents64 is not available", async () => {
-  includeHooks.getdents = null;
+it("reads a wildcard Include by path where getdents64 is not available, and claims no PC for the hosts it brings", async () => {
+  const dir = sshDir({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  includeTestOnly.getdents = null;
   try {
-    expect(await rowsOf({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" })).toEqual(unread);
-  } finally { delete includeHooks.getdents; }
+    const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+    expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.tailnet])).toEqual([
+      ["box", "100.64.0.2", undefined], ["box", "box.tail.ts.net", "box.tail.ts.net"], ["other", "other.tail.ts.net", "other.tail.ts.net"],
+    ]);
+  } finally { delete includeTestOnly.getdents; }
+});
+
+it("lists a host only a wildcard Include names where getdents64 is not available, without claiming the PC its HostName reaches", async () => {
+  includeTestOnly.getdents = null;
+  try {
+    expect(await rowsOf({ "config.d/lab.conf": "Host lab\n  HostName 100.64.0.2\n", config: "Include config.d/*\n" })).toEqual([
+      ["lab", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
+    ]);
+  } finally { delete includeTestOnly.getdents; }
 });
 
 it.skipIf(process.platform === "win32")("never reads a literally named Include file swapped for a link out of home after it was opened, where the opened file is checked by its path", async () => {
@@ -242,11 +243,11 @@ it.skipIf(process.platform === "win32")("never reads a literally named Include f
   writeFileSync(join(outside, "secret"), "Host leaked\n");
   const file = join(ssh, "conf.d", "x.conf");
   const restore = swapAfterFirstLook(file, () => { renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); });
-  includeHooks.platform = "darwin";
+  includeTestOnly.platform = "darwin";
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => twoPeers });
     expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
-  } finally { delete includeHooks.platform; restore(); }
+  } finally { delete includeTestOnly.platform; restore(); }
 });
 
 it.skipIf(!wildcardIncludesRead)("leaves a wildcard Include unread when a folder entry's name is not UTF-8", async () => {
