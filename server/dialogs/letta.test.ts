@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
-import { KEY } from "./shared.ts";
+import { registry } from "./registry.ts";
+import { KEY, parsedByPublicPrompt } from "./shared.ts";
 
 // Screens of letta-code 0.34.31's /model, recorded with colour in a herdr pane 120 columns wide
 // (local backend, Claude subscription providers for Anthropic and Amazon Bedrock).
@@ -61,6 +62,14 @@ describe("Letta Code's /model", () => {
     for (const text of ["son\rnet", "so\u001bhi", "a\u0000b", "a\u009fb", `${"a".repeat(39)}🙂`]) {
       expect(() => answerKeys(prompt, { custom_text: text }), JSON.stringify(text)).toThrow();
     }
+  });
+
+  it("answers a row only on the tab its card was read on", () => {
+    const recents = screen("model-recents");
+    // a plan read on Recents does not take Recommended, whose cursor row has the same label
+    const plan = registry.readerFor("letta-model")!.interaction!(parsedByPublicPrompt.get(parseInteractivePrompt("letta", recents)!)!)!;
+    expect(plan.matches(recents)).toBe(true);
+    expect(plan.matches(screen("model-recommended"))).toBe(false);
   });
 
   it("reads no picker once output follows it, nor another agent's screen", () => {

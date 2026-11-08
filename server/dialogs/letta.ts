@@ -128,6 +128,8 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
     custom_option_index: searchIndex,
   }, {
     responder: "letta-model", menuLabels: [...rows.map((row) => row.label), ...beside.map(({ tab }) => `tab ${names[tab]}`), "search", "cancel"], selectedIndex, lettaSearch: typed,
+    // the tab shown, by its line of tabs and the line Letta draws under them: a row of the same name on another tab is another row
+    lettaTab: `${lines[search - 2]?.trim() ?? ""}\n${lines[search - 1]?.trim() ?? ""}`,
     checkedOptionIndices: [], customMenuIndex: searchIndex, rejectWithEscapeIndex: cancelIndex,
     optionSteps: [
       ...rows.map((_, index) => [...keySteps(navigationKeys(index - selectedIndex)), { keys: [KEY.enter] }]),
@@ -179,7 +181,9 @@ export const readers: readonly DialogReader[] = [
   {
     id: "letta-model", agents: ["letta"], priority: 50,
     reread: "before-commit", list: "letter-window",
-    interaction: (parsed) => pickerPlan(parsed, parseLettaModel, parsed.optionSteps ?? [], (shown, cursor) => shown.menuLabels[cursor]),
+    // a row is its tab's and its search's: Recents and Recommended may both have one model under the cursor
+    interaction: (parsed) => pickerPlan(parsed, parseLettaModel, parsed.optionSteps ?? [],
+      (shown, cursor) => `${shown.lettaTab}\n${shown.lettaSearch}\n${shown.menuLabels[cursor]}`),
     parse: (screen) => {
       const parsed = parseLettaModel(screen);
       return parsed?.responder === "letta-model" ? parsed : null;
