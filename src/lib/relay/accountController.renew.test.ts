@@ -53,7 +53,7 @@ describe("account carrier renewal", () => {
       renderApp: () => ({ render() {}, unmount() {} }),
     }, { active: () => false, changed: async () => {}, outdated: () => new Set() });
     try {
-      expect(await controller.enroll(opened, offer.server_id, false)).toBe("complete");
+      expect(await controller.enroll(opened, offer.server_id, false)).toEqual({ state: "complete" });
       expect(device.account_enrollment).toEqual({ account: "acct-test", state: "complete" });
     } finally { await opened.renewed.promise; opened.close(); }
   });
