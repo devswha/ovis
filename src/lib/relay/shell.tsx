@@ -1,4 +1,5 @@
 /** Hosted-shell routing and the pairing state machine. */
+// allow: SIZE_OK - One state-machine closure shares attempt ownership across connection, cancellation and admission handlers.
 import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
@@ -175,13 +176,25 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell?.unmount(); shell = null;
     app = mount.renderApp(); account.armRefresh();
     registerPending(attempt.offer.server_id);
-    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true);
     last = { ...attempt, fresh: false };
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),
-    accepted: (opened, attempt) => { if (attempt.fresh || sheetJoin) show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id }); else enterApp(opened, attempt); },
+    accepted: (opened, attempt) => {
+      if (transport !== opened) return;
+      const checkpoint = attempt.fresh || sheetJoin;
+      if (checkpoint) { last = attempt; show({ kind: "connecting", name: attempt.offer.name ?? null }); }
+      else enterApp(opened, attempt);
+      void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true).then(() => {
+        if (!checkpoint || last !== attempt || transport !== opened) return;
+        last = { ...attempt, fresh: false };
+        show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id });
+      }, async (error: unknown) => {
+        console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
+        if (checkpoint && transport === opened) await failed(error, attempt);
+      });
+    },
   }, store);
   const pair = (): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
