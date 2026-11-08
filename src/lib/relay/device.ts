@@ -5,6 +5,19 @@ import type { PendingPush, PendingPushStore } from "../push.ts";
 export { base64url, ServerIdentityChangedError, sign } from "../../../shared/relay-device.ts";
 export type { RelayDevice, RelayDeviceStore } from "../../../shared/relay-device.ts";
 
+/** The version a PC's last admission named, and whether it was older than this shell accepts. */
+export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
+/** A saved PC as this browser keeps it: the shared record plus the version its last admission named (updateFlow.ts). */
+export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion };
+
+/** The version kept on a saved record, if a well-formed one is there (the record is read back from IndexedDB). */
+export function observedVersionOf(device: RelayDevice): ObservedVersion | undefined {
+  if (!("observed_version" in device)) return undefined;
+  const value: unknown = device.observed_version;
+  if (typeof value !== "object" || value === null || !("version" in value) || !("outdated" in value)) return undefined;
+  return typeof value.version === "string" && typeof value.outdated === "boolean" ? { version: value.version, outdated: value.outdated } : undefined;
+}
+
 export const indexedDeviceStore: RelayDeviceStore = {
   async get(serverId) {
     const db = await openDatabase();

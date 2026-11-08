@@ -8,7 +8,9 @@ import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
 import type { Attempt, PcUpdate, RelayShellState } from "./shellState.ts";
 import type { RelayTransport } from "./transport.ts";
-import { indexedDeviceStore, type RelayDeviceStore } from "./device.ts";
+import { indexedDeviceStore, observedVersionOf, type ObservedVersion, type RelayDeviceStore, type SavedDevice } from "./device.ts";
+
+export type { ObservedVersion } from "./device.ts";
 
 const UPDATE_MS = 15 * 60_000;
 /** How often the shell reads the PC's update status while it installs. */
@@ -35,27 +37,74 @@ function tabMemory(): ReloadMemory | null {
 }
 
 
-export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
-const VERSION_KEY = "ovis-relay-versions";
-export function observedVersions(): ReadonlyMap<string, ObservedVersion> {
-  try {
-    const value: unknown = JSON.parse(sessionStorage.getItem(VERSION_KEY) ?? "[]");
-    if (!Array.isArray(value)) return new Map();
-    const entries: [string, ObservedVersion][] = [];
-    for (const item of value) {
-      if (Array.isArray(item) && typeof item[0] === "string" && /^[0-9a-f]{32}$/.test(item[0]) && typeof item[1] === "object" && item[1] !== null
-        && typeof item[1].version === "string" && typeof item[1].outdated === "boolean") entries.push([item[0], { version: item[1].version, outdated: item[1].outdated }]);
-    }
-    return new Map(entries);
-  } catch { return new Map(); }
+/** Where older shells kept the observed versions; web storage holds no relay data now (scripts/relay-e2e-regression.ts). */
+const LEGACY_VERSION_KEY = "ovis-relay-versions";
+
+/** Each saved PC's last admitted version, mirrored from its record so the views read it without waiting. */
+let observed: ReadonlyMap<string, ObservedVersion> = new Map();
+export function observedVersions(): ReadonlyMap<string, ObservedVersion> { return observed; }
+
+/** Reads and deletes the record an older shell left in web storage. */
+function takeLegacyVersions(): ReadonlyMap<string, ObservedVersion> {
+  const entries = new Map<string, ObservedVersion>();
+  for (const storage of [() => localStorage, () => sessionStorage]) {
+    try {
+      const area = storage();
+      const value: unknown = JSON.parse(area.getItem(LEGACY_VERSION_KEY) ?? "[]");
+      area.removeItem(LEGACY_VERSION_KEY);
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (Array.isArray(item) && typeof item[0] === "string" && /^[0-9a-f]{32}$/.test(item[0]) && typeof item[1] === "object" && item[1] !== null
+          && typeof item[1].version === "string" && typeof item[1].outdated === "boolean") entries.set(item[0], { version: item[1].version, outdated: item[1].outdated });
+      }
+    } catch { /* unavailable or damaged web storage holds nothing to move */ }
+  }
+  return entries;
 }
 
-/** Forget discards this PC's pairing and its tab-local admission observations together. */
+class UnsavedPcError extends Error {
+  constructor(readonly serverId: string) { super(`PC ${serverId} is not saved in this browser`); }
+}
+
+/** Writes the version into the PC's saved record; a PC this browser does not keep has no record to hold it. */
+async function keepVersion(store: RelayDeviceStore, serverId: string, version: ObservedVersion): Promise<void> {
+  try {
+    await store.update(serverId, (current) => {
+      if (current === undefined) throw new UnsavedPcError(serverId);
+      const saved: SavedDevice = { ...current, observed_version: version };
+      return saved;
+    });
+  } catch (error) {
+    if (error instanceof UnsavedPcError) return;
+    console.warn("Ovis: the PC's version was not saved", error);
+  }
+}
+
+/** Loads the saved PCs' versions (once per page, before the shell first draws), moving an older shell's web-storage record in. */
+export async function loadObservedVersions(store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
+  const legacy = takeLegacyVersions();
+  const devices = await store.list().catch((error: unknown) => {
+    console.warn("Ovis: the saved PCs' versions could not be read", error);
+    return null;
+  });
+  if (devices === null) return;
+  const next = new Map<string, ObservedVersion>();
+  for (const device of devices) {
+    const kept = observedVersionOf(device);
+    const version = kept ?? legacy.get(device.server_id);
+    if (version === undefined) continue;
+    next.set(device.server_id, version);
+    if (kept === undefined) await keepVersion(store, device.server_id, version);
+  }
+  observed = next;
+}
+
+/** Forget discards this PC's pairing and the version kept with it together. */
 export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
   await store.remove(serverId);
-  const versions = new Map(observedVersions());
+  const versions = new Map(observed);
   versions.delete(serverId);
-  try { sessionStorage.setItem(VERSION_KEY, JSON.stringify([...versions])); } catch { /* tab storage may be unavailable */ }
+  observed = versions;
 }
 
 export function createUpdateFlow(shellVersion: string, view: {
@@ -63,7 +112,7 @@ export function createUpdateFlow(shellVersion: string, view: {
   readonly accepted: (opened: RelayTransport, attempt: Attempt) => void;
   readonly failed: (error: unknown, attempt: Attempt) => Promise<void>;
   readonly reload: () => Promise<void>;
-}) {
+}, store: RelayDeviceStore = indexedDeviceStore) {
   let outdated: { opened: RelayTransport; attempt: Attempt; name: string | null; version: string } | null = null;
   let updating = false;
   const { show, failed, reload } = view;
@@ -75,9 +124,9 @@ export function createUpdateFlow(shellVersion: string, view: {
       await failed(new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${server.relayProtocol}`), attempt);
       return;
     }
-    const versions = new Map(observedVersions());
-    versions.set(attempt.offer.server_id, { version: server.version, outdated: skew === "pc-outdated" });
-    try { sessionStorage.setItem(VERSION_KEY, JSON.stringify([...versions])); } catch { /* unavailable storage loses only display metadata */ }
+    const version = { version: server.version, outdated: skew === "pc-outdated" };
+    observed = new Map(observed).set(attempt.offer.server_id, version);
+    await keepVersion(store, attempt.offer.server_id, version);
     const memory = tabMemory();
     if (skew === "server-newer" && memory !== null && reloadOnce(memory, shellVersion, server.version)) { opened.close(); await reload(); return; }
     if (skew !== "pc-outdated") { outdated = null; view.accepted(opened, attempt); return; }

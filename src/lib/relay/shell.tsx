@@ -21,7 +21,7 @@ import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { createAccountController } from "./accountController.ts";
 import { createPcSweep } from "./pcSweep.ts";
-import { createUpdateFlow, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
+import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
 export { forgetSavedPc } from "./updateFlow.ts";
 declare const __APP_VERSION__: string;
@@ -30,6 +30,7 @@ const INTRODUCED_GRACE_MS = 15 * 60_000;
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
+  await loadObservedVersions(store);
   const open = mount.open ?? openRelayTransport;
   const navigate = mount.navigate ?? ((path: string) => window.location.assign(path));
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
@@ -181,7 +182,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),
     accepted: (opened, attempt) => { if (attempt.fresh || sheetJoin) show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id }); else enterApp(opened, attempt); },
-  });
+  }, store);
   const pair = (): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
     void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id) });

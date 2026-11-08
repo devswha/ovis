@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { RelayTransport } from "./transport.ts";
-import { createUpdateFlow, observedVersions } from "./updateFlow.ts";
+import { createUpdateFlow, loadObservedVersions, observedVersions } from "./updateFlow.ts";
 import type { Attempt, RelayShellState } from "./shellState.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { isValidElement, type ReactNode } from "react";
@@ -11,22 +11,49 @@ import { forgetSavedPc, mountRelayShell, type RelayShellMount } from "./shell.ts
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
-import type { RelayDevice } from "./device.ts";
+import { observedVersionOf, type RelayDevice, type RelayDeviceStore, type SavedDevice } from "./device.ts";
 
-const descriptor = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+const storageKeys = ["localStorage", "sessionStorage"] as const;
+const descriptors = storageKeys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
 afterEach(() => {
-  if (descriptor) Object.defineProperty(globalThis, "sessionStorage", descriptor);
-  else Reflect.deleteProperty(globalThis, "sessionStorage");
+  for (const [key, descriptor] of descriptors) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  }
   setTransport(nativeTransport);
 });
 
-it("keeps admitted old-version metadata across controllers and clears it on a newer admission", async () => {
-  const values = new Map<string, string>();
-  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
-  } });
+/** Both web storages, as the page sees them; the returned maps are what each holds. */
+function webStorage(): { readonly local: Map<string, string>; readonly session: Map<string, string> } {
+  const local = new Map<string, string>(), session = new Map<string, string>();
+  for (const [key, values] of [["localStorage", local], ["sessionStorage", session]] as const) {
+    Object.defineProperty(globalThis, key, { configurable: true, value: {
+      getItem: (name: string) => values.get(name) ?? null,
+      setItem: (name: string, value: string) => { values.set(name, value); },
+      removeItem: (name: string) => { values.delete(name); },
+    } });
+  }
+  return { local, session };
+}
+
+function memoryStore(devices: Map<string, RelayDevice>): RelayDeviceStore {
+  return {
+    get: async (id) => devices.get(id), list: async () => [...devices.values()],
+    remove: async (id) => { devices.delete(id); },
+    update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
+  };
+}
+
+async function savedDevice(serverId: string): Promise<RelayDevice> {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  return { server_id: serverId, server_public_key: "unused", relay: "wss://relay.ovis.sh", device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" };
+}
+
+it("keeps a PC's admitted version in its saved record across a reload, never in web storage", async () => {
+  const storage = webStorage();
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: "unused", relay: "wss://relay.ovis.sh" };
+  const devices = new Map([[offer.server_id, await savedDevice(offer.server_id)]]);
+  const store = memoryStore(devices);
   class Admitted extends RelayTransport {
     version = "0.0.1";
     override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL }; }
@@ -37,17 +64,37 @@ it("keeps admitted old-version metadata across controllers and clears it on a ne
   const flow = createUpdateFlow("1.0.0", {
     show: (state) => states.push(state), accepted() {}, reload: async () => {},
     failed: async (error) => { throw error; },
-  });
+  }, store);
   const attempt: Attempt = { offer, code: false, paired: true };
   try {
     await flow.admit(opened, attempt);
     expect(observedVersions().get(offer.server_id)).toEqual({ version: "0.0.1", outdated: true });
     expect(states.at(-1)).toMatchObject({ kind: "outdated", update: { phase: "manual" } });
+    // a reload starts with nothing in memory and reads the saved records
+    await loadObservedVersions(memoryStore(new Map()));
+    expect(observedVersions().size).toBe(0);
+    await loadObservedVersions(store);
+    expect(observedVersions().get(offer.server_id)).toEqual({ version: "0.0.1", outdated: true });
     opened.version = "1.0.0";
     await flow.admit(opened, attempt);
+    await loadObservedVersions(store);
     expect(observedVersions().get(offer.server_id)).toEqual({ version: "1.0.0", outdated: false });
-    expect([...values.values()].join()).not.toContain("server_public_key");
+    expect([...storage.local, ...storage.session]).toEqual([]);
   } finally { flow.cancel(); opened.close(); }
+});
+
+it("moves an old web-storage version record into the saved PCs once and deletes it", async () => {
+  const storage = webStorage();
+  const saved = "12".repeat(16), unsaved = "ab".repeat(16);
+  const legacy = JSON.stringify([[saved, { version: "0.0.1", outdated: true }], [unsaved, { version: "0.0.2", outdated: true }]]);
+  storage.local.set("ovis-relay-versions", legacy);
+  storage.session.set("ovis-relay-versions", legacy);
+  const devices = new Map([[saved, await savedDevice(saved)]]);
+  await loadObservedVersions(memoryStore(devices));
+  expect([...storage.local, ...storage.session]).toEqual([]);
+  const record = devices.get(saved);
+  expect(record && observedVersionOf(record)).toEqual({ version: "0.0.1", outdated: true });
+  expect([...observedVersions()]).toEqual([[saved, { version: "0.0.1", outdated: true }]]);
 });
 
 it("never installs after cancellation while an update-status read was pending", async () => {
@@ -67,7 +114,7 @@ it("never installs after cancellation while an update-status read was pending", 
   }
   const opened = new Admitted(offer);
   const states: RelayShellState[] = [];
-  const flow = createUpdateFlow("1.0.0", { show: (state) => states.push(state), accepted() {}, reload: async () => {}, failed: async (error) => { throw error; } });
+  const flow = createUpdateFlow("1.0.0", { show: (state) => states.push(state), accepted() {}, reload: async () => {}, failed: async (error) => { throw error; } }, memoryStore(new Map()));
   try {
     await flow.admit(opened, { offer, paired: true, code: false });
     flow.update();
@@ -150,9 +197,9 @@ it.each(["settings", "shell"] as const)("clears only the forgotten PC's admitted
   }
   const opened = new Outdated(fixture.offer);
   try {
-    fixture.browser.sessionStore.set("ovis-relay-versions", JSON.stringify([[otherId, { version: "0.0.2", outdated: true }]]));
-    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-    fixture.devices.set(fixture.offer.server_id, { ...fixture.offer, device_id: "paired", private_key: key.privateKey, public_spki: "fixture", label: "Phone" });
+    const other: SavedDevice = { ...await savedDevice(otherId), observed_version: { version: "0.0.2", outdated: true } };
+    fixture.devices.set(otherId, other);
+    fixture.devices.set(fixture.offer.server_id, { ...await savedDevice(fixture.offer.server_id), ...fixture.offer });
     await mountRelayShell({ ...fixture.mount, entryUrl: `https://app.ovis.sh/s/${fixture.offer.server_id}/`, open: async () => opened });
     expect(observedVersions().has(fixture.offer.server_id)).toBe(true);
     switch (path) {
@@ -166,5 +213,7 @@ it.each(["settings", "shell"] as const)("clears only the forgotten PC's admitted
     expect(fixture.devices.has(fixture.offer.server_id)).toBe(false);
     expect(observedVersions().has(fixture.offer.server_id)).toBe(false);
     expect(observedVersions().get(otherId)).toEqual({ version: "0.0.2", outdated: true });
+    const kept = fixture.devices.get(otherId);
+    expect(kept && observedVersionOf(kept)).toEqual({ version: "0.0.2", outdated: true });
   } finally { opened.close(); fixture.browser.dispose(); }
 });
