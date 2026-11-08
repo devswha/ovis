@@ -856,9 +856,11 @@ describe("relay pass", () => {
     keys = `${KID}:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   });
   const passFor = (sid = SERVER, at = T0) => signRelayPass(signer, KID, sid, Math.floor(at / 1000));
+  /** a v2 pass for SERVER that admits new client sessions to it, or not */
+  const passAdmitting = (newSessions: boolean, at = T0) => signRelayPass(signer, KID, SERVER, Math.floor(at / 1000), undefined, { newSessions });
 
   /** A Worker whose Durable Object for SERVER is one RelayRoom over fake sockets, behind `handle`. */
-  async function world(mode: "grace" | "enforce", enforceAt?: string, fake = fakeState(), extra: Record<string, string> = {}) {
+  async function world(mode: "off" | "grace" | "enforce", enforceAt?: string, fake = fakeState(), extra: Record<string, string> = {}) {
     setSystemTime(new Date(T0));
     const settings = { RELAY_PASS_MODE: mode, RELAY_PASS_KEYS: keys, ...(enforceAt ? { RELAY_PASS_ENFORCE_AT: enforceAt } : {}), ...extra };
     const box = { room: new RelayRoom(fake.state, settings) };
@@ -1158,6 +1160,55 @@ describe("relay pass", () => {
     w.fake.keepalive.set(warm, new Date(lapse));
     await w.box.room.alarm();
     expect(warm.closedWith).toEqual({ code: 4402, reason: "relay pass expired" });
+  });
+
+  test("a renewal that admits no new client sessions refuses the next client 4429 past an eviction; the client already in keeps flowing and the PC still connects", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passFor());
+    const client = await w.open("role=client");
+    const { connection_id } = client.json(0) as { connection_id: string };
+    const data = w.prove(await w.open(`role=server&connection_id=${connection_id}&${proof()}`, await passFor()), connection_id);
+    const renewedAt = T0 + 3_600_000;
+    setSystemTime(new Date(renewedAt));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passAdmitting(false, renewedAt) }));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: renewedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID, new_sessions: false });
+    await w.evict();
+    const heard = control.sent.length;
+    const refused = await w.open("role=client");
+    expect(refused.closedWith).toEqual({ code: 4429, reason: "relay allowance used" });
+    expect(control.sent).toHaveLength(heard);
+    await w.box.room.webSocketMessage(client, "up");
+    await w.box.room.webSocketMessage(data, "down");
+    expect([data.sent.at(-1), client.sent.at(-1)]).toEqual(["up", "down"]);
+    expect([control.closedWith, client.closedWith, data.closedWith]).toEqual([null, null, null]);
+    // the PC's own sockets still connect with that pass
+    const next = await w.control(await passAdmitting(false, renewedAt));
+    expect(next.closedWith).toBeNull();
+    expect(next.json(0)).toMatchObject({ type: "sync", relay_pass: { state: "ok" } });
+  });
+
+  test("a newer pass that admits new client sessions lifts the refusal; an older one does not", async () => {
+    const w = await world("grace");
+    await w.control(await passAdmitting(false));
+    expect((await w.open("role=client")).closedWith).toEqual({ code: 4429, reason: "relay allowance used" });
+    // a PC socket that came with the pass before it (an earlier expiry) changes nothing
+    const control = await w.control(await passAdmitting(true, T0 - 60_000));
+    expect((await w.open("role=client")).closedWith).toEqual({ code: 4429, reason: "relay allowance used" });
+    const renewedAt = T0 + 60_000;
+    setSystemTime(new Date(renewedAt));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passAdmitting(true, renewedAt) }));
+    const admitted = await w.open("role=client");
+    expect(admitted.closedWith).toBeNull();
+    expect(admitted.json(0)).toMatchObject({ type: "assigned" });
+  });
+
+  test("with passes off, a pass that admits no new client sessions changes nothing", async () => {
+    const w = await world("off");
+    await w.control(await passAdmitting(false));
+    const client = await w.open("role=client");
+    expect(client.closedWith).toBeNull();
+    expect(client.json(0)).toEqual({ type: "assigned", connection_id: expect.any(String) });
+    expect(w.fake.reads).toEqual([]);
   });
 });
 

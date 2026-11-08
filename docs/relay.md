@@ -640,7 +640,8 @@ socket itself with `4000` when the challenge is invalid or out of order. It retr
 `server key does not match server_id` and `invalid server key` stop retries
 ([step 1](#how-a-connection-is-made)). A phone does not receive the PC's proof close directly:
 it can instead find the PC offline or lose its carrier with `1012`. Phones can also receive the
-relay's own `1013` capacity or answer-deadline close.
+relay's own `1013` capacity or answer-deadline close, and `4429` (`relay allowance used`) when the
+PC's [relay pass](#relay-pass) says the relay admits no new client sessions to it.
 
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
@@ -720,7 +721,9 @@ run yourself need no account and no pass.
   then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
   `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
-  (`enforce_at`). `pass` is absent on a relay that is not Ovis's, and with
+  (`enforce_at`). `new_sessions: false` there means the pass in use says the relay admits no new
+  client sessions to this PC for the pass's lifetime (a new phone or browser then hears `4429`;
+  sessions already up stay); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
   `OVIS_ACCOUNT_SERVICE_URL=off`. `error_code` says which of the reasons below it is.
 
 ## Why it is not online
