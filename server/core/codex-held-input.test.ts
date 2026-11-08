@@ -194,6 +194,15 @@ describe('a message sent to a Codex pane', () => {
       expect(keys).not.toHaveBeenCalled();
     });
   }
+  it('hands agent.prompt nothing while an approval herdr still reports at rest is up', async () => {
+    const { prompt, typed, keys } = spies(APPROVAL);
+    const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(typed).not.toHaveBeenCalled();
+    expect(keys).not.toHaveBeenCalled();
+  });
+
   it('sends no raw Enter into an approval that came up over the paste', async () => {
     const { read, prompt, typed, keys } = spies(FREE['its composer']!);
     prompt.mockRejectedValue(new client.HerdrError('agent_not_ready', 'refused'));

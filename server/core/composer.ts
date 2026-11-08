@@ -378,10 +378,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       try { authorize(); return true; } catch (error) { refused = error; return false; }
     };
     /**
-     * What takes a raw paste or its Enter on a Codex screen: one of its own lists or fields (codexInputHeld), herdr reporting
-     * it at rest, and, typed raw past agent.prompt, also an approval or a masked prompt that came up since herdr's own check.
+     * What takes a paste or its Enter on a Codex screen: one of its own lists or fields (codexInputHeld), herdr reporting it at
+     * rest, or an approval herdr's status has not caught up with; typed raw past agent.prompt, also a masked prompt.
      */
-    const codexHolds = (text: string): boolean => registry.holdsInput("codex", text) || (codexFallback && (parseInteractivePrompt("codex", text) !== null || maskedPromptAtAnyWidth(text)));
+    const codexHolds = (text: string): boolean => registry.holdsInput("codex", text) || parseInteractivePrompt("codex", text) !== null || (codexFallback && maskedPromptAtAnyWidth(text));
     /** read right before a write: nothing else is awaited between this read and it */
     const codexScreenFree = async (target: string): Promise<void> => {
       const held = codexHolds((await paneRead({ paneId: target, source: "detection", format: "text" })).text);

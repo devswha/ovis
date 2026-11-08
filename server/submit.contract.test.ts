@@ -1551,7 +1551,8 @@ describe("WebSocket submit", () => {
       socket.send({ type: "submit", id: 20, pane_id: codexApproval.pane, text: "y", payload: "y" });
       expect(await socket.result(20)).toMatchObject({ ok: false, code: "agent_blocked" });
       expect(chunks(codexApproval).slice(from)).toEqual([]);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codexApproval.pane).map(([options]) => options.source)).toEqual(["detection", "detection"]);
+      // the send's own look already finds the approval (codexHolds): agent.prompt is never asked
+      expect(read.mock.calls.filter(([options]) => options.paneId === codexApproval.pane).map(([options]) => options.source)).toEqual(["detection"]);
     } finally {
       read.mockRestore();
       socket.close();
