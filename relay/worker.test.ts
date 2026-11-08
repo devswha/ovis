@@ -758,6 +758,19 @@ describe("relay Worker pairing rendezvous", () => {
     expect(guest.closedWith?.code).toBe(1001);
   });
 
+  test("a host that does not answer its key's challenge in time is closed 4401, and the nameplate is free again", async () => {
+    const fake = fakeState();
+    setSystemTime(new Date(1_000_000));
+    const room = new RelayRoom(fake.state);
+    expect((await room.fetch(new Request(`${pairUrl("host")}&server_id=${SERVER}&public_key=${PC.publicKey}`, upgrade))).status).toBe(101);
+    const host = fake.sockets.at(-1)!;
+    expect(host.json(0)).toMatchObject({ type: "server_challenge" });
+    setSystemTime(new Date(1_000_000 + SERVER_PROOF_MS));
+    await room.alarm();
+    expect(host.closedWith?.code).toBe(SERVER_PROOF_CLOSE);
+    expect((await openPair(room, fake, "host")).json(0)).toEqual({ type: "waiting" });
+  });
+
   test("a host the runtime keeps answering keepalives for is not closed as idle", async () => {
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
@@ -853,20 +866,37 @@ describe("relay pass", () => {
     const allow = { limit: async () => ({ success: true }) };
     const e: Env = { ...settings, RELAY: { idFromName: (name: string) => name, get: () => ({ fetch: (request: Request) => box.room.fetch(request) }) }, RELAY_LIMITER: allow, RELAY_GLOBAL_LIMITER: allow };
     /** the socket the request ends on: the Durable Object's, or the one the Worker closed itself */
-    const open = async (query: string, pass?: string, extra: Record<string, string> = {}) => {
+    const openAt = async (address: string, pass?: string, extra: Record<string, string> = {}) => {
       const before = fake.sockets.length;
-      const response = await handle(new Request(url(query), { headers: { upgrade: "websocket", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}), ...extra } }), e);
+      const response = await handle(new Request(address, { headers: { upgrade: "websocket", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}), ...extra } }), e);
       expect(response.status).toBe(101);
       return fake.sockets.length > before ? fake.sockets.at(-1)! : pairs.at(-1)![1];
     };
+    const open = (query: string, pass?: string, extra: Record<string, string> = {}) => openAt(url(query), pass, extra);
+    const openPair = (query: string, pass?: string) => openAt(`https://relay.test/v1/pair?nameplate=AB1&v=1&${query}`, pass);
     const prove = (socket: FakeSocket, connectionId: string | null = null) => {
       const answer = answerChallenge(socket.sent.shift(), PC, connectionId);
       if (answer) box.room.webSocketMessage(socket, answer);
       return socket;
     };
     const control = async (pass?: string) => prove(await open(`role=server&${proof()}`, pass));
-    return { fake, box, open, prove, control, evict: async () => { box.room = new RelayRoom(fake.state, settings); await fake.state.ready; } };
+    return { fake, box, open, openPair, prove, control, evict: async () => { box.room = new RelayRoom(fake.state, settings); await fake.state.ready; } };
   }
+
+  test("while enforced, a pairing host needs a pass for the PC key it offers: 4402 in the Worker without one; with one it holds the nameplate once it proves the key, past an eviction", async () => {
+    const w = await world("enforce");
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    expect((await w.openPair("role=host", await passFor())).closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect((await w.openPair(keyed)).closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect(w.fake.sockets).toEqual([]);
+    const host = await w.openPair(keyed, await passFor());
+    const challenge = host.sent.shift();
+    await w.evict();
+    w.box.room.webSocketMessage(host, answerServerChallenge(challenge, PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    expect((await w.openPair("role=guest")).closedWith).toBeNull();
+    expect(host.json(1)).toMatchObject({ type: "guest" });
+  });
 
   test("while enforced, a PC socket without a pass closes 4402 in the Worker, before any Durable Object", async () => {
     const w = await world("enforce");
