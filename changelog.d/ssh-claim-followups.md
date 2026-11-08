@@ -10,4 +10,8 @@
   deep, too many files, or outside the home folder) could change.
 - A changed hosts file or DNS answer counts the next time the SSH list opens, and the list's name
   lookups never pile up past 16 while a resolver hangs.
-- A long Host pattern in the ssh config no longer stalls the server while the SSH list is read.
+- An Include with a wildcard now reads a linked file (a dotfiles repo) as ssh does, when the file it
+  links to is in the home folder. A link that leads outside it leaves the hosts it could change
+  without a claimed PC.
+- A long Host pattern in the ssh config, or one Host alias repeated thousands of times, no longer
+  stalls the server while the SSH list is read.

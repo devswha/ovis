@@ -143,3 +143,12 @@ it("weighs each listed host against the HostName lines once, not every alias of 
     expect(lowered.mock.calls.length).toBeLessThan(200_000);
   } finally { lowered.mockRestore(); }
 });
+
+it("groups the blocks of a repeated alias in work linear in the config, not one copy of the group per repeat", async () => {
+  const steps = spyOn(Object.getPrototypeOf([][Symbol.iterator]()), "next");
+  try {
+    const hosts = await sshConfigHosts("Host x\n".repeat(4000));
+    expect(hosts).toEqual([{ alias: "x", hostname: null, user: null }]);
+    expect(steps.mock.calls.length).toBeLessThan(100_000);
+  } finally { steps.mockRestore(); }
+});

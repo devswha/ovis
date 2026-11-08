@@ -259,7 +259,14 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
   };
   await walk(text, 0);
   const blocksOf = new Map<string, HostBlock[]>();
-  for (const block of blocks) for (const alias of block.aliases) blocksOf.set(alias, [...blocksOf.get(alias) ?? [], block]);
+  // pushed in place: a copy per repeat would cost the square of an alias's repeats
+  for (const block of blocks) {
+    for (const alias of block.aliases) {
+      const named = blocksOf.get(alias);
+      if (named === undefined) blocksOf.set(alias, [block]);
+      else named.push(block);
+    }
+  }
   const weighings = new Map<string, Weighing>();
   const seen = new Set<string>();
   const hosts: ConfigHost[] = [];

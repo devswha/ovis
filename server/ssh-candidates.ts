@@ -92,7 +92,9 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
       const base = await realpath(literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1) || ".").catch(() => null);
       if (base === null) return [];
       if (!allowed.some((root) => inside(base, root))) return [null];
-      for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true })) {
+      // links are followed as ssh's glob(3) does (a dotfiles repo linked in); each path is still read only when its real
+      // target is inside the home or ssh folder, below, and one that is not comes back as null
+      for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true, followSymlinks: true })) {
         if (paths.length >= budget.files) { truncated = true; break; }
         paths.push(path);
       }

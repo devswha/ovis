@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
@@ -93,6 +93,25 @@ it.skipIf(process.platform === "win32")("reads an Include only inside the home o
   ].join("\n"));
   const candidates = await sshCandidates({ sshDir: join(home, ".ssh"), home, readStatus: async () => null });
   expect(candidates.map((candidate) => candidate.name)).toEqual(["in-home", "own"]);
+});
+
+it.skipIf(process.platform === "win32")("follows a glob Include's link whose target stays in the home folder, as ssh -G does", async () => {
+  const home = sshDir({ "dotfiles/box.conf": "Host box\n  HostName 100.64.0.2\n", ".ssh/config": "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  mkdirSync(join(home, ".ssh", "conf.d"));
+  symlinkSync(join(home, "dotfiles", "box.conf"), join(home, ".ssh", "conf.d", "box.conf"));
+  const candidates = await sshCandidates({ sshDir: join(home, ".ssh"), home, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.tailnet])).toEqual([
+    ["box", "100.64.0.2", "other.tail.ts.net"], ["box", "box.tail.ts.net", "box.tail.ts.net"],
+  ]);
+});
+
+it.skipIf(process.platform === "win32")("claims nothing for a host a glob Include's link out of the home folder may set", async () => {
+  const outside = sshDir({ "box.conf": "Host box\n  HostName 100.64.0.2\n" });
+  const home = sshDir({ ".ssh/config": "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  mkdirSync(join(home, ".ssh", "conf.d"));
+  symlinkSync(join(outside, "box.conf"), join(home, ".ssh", "conf.d", "box.conf"));
+  const candidates = await sshCandidates({ sshDir: join(home, ".ssh"), home, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
 });
 
 it.skipIf(process.platform === "win32")("skips an included FIFO or oversized file without waiting on it or reading it", async () => {
