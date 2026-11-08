@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync } from "node:fs";
 
 import type { ConversationMetadata, ConversationTurn } from "../shared/protocol.ts";
 
@@ -87,8 +87,11 @@ export function checkBound(path: string, fd: number): void {
   if (opened.dev !== identity.dev || opened.ino !== identity.ino) throw new ConversationReadPending();
 }
 
-/** openSync of `path`, closed and refused where it is bound to another file (checkBound). */
-export function openBound(path: string, flags: number | string = "r"): number {
+/**
+ * openSync of `path`, closed and refused where it is bound to another file (checkBound). O_NONBLOCK: a FIFO
+ * put there is opened at once, for the check to refuse, never waited on.
+ */
+export function openBound(path: string, flags: number | string = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)): number {
   const fd = openSync(path, flags);
   try { checkBound(path, fd); } catch (error) { closeSync(fd); throw error; }
   return fd;

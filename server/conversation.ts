@@ -525,7 +525,11 @@ function transcriptStream(source: StreamSource, path: string, stat: { dev: numbe
   const branch = (source === "pi-transcript" || source === "cmd-transcript") ? piBranchSegments(path, stat.size) : null;
   if ((source === "pi-transcript" || source === "cmd-transcript") && branch === null) throw new ConversationUnavailable("branch_unreadable");
   const segments: { path: string; start: number; end: number }[] = source === "codex-transcript"
-    ? codexHistorySegments(path, codexHome).map((segment) => ({ path: segment.path, start: 0, end: segment.end }))
+    ? codexHistorySegments(path, codexHome).map((segment) => {
+      // each earlier rollout is read as the file it was when its chain was resolved (readStream)
+      if (segment.identity) bindFile(segment.path, segment.identity);
+      return { path: segment.path, start: 0, end: segment.end };
+    })
     : grok !== null ? grok.segments.map((segment) => ({ path, ...segment }))
     : agy ? agy.segments.map((segment) => ({ path, ...segment }))
     : branch !== null ? branch.map((segment) => ({ path, start: segment.start, end: segment.end }))
@@ -560,8 +564,6 @@ function transcriptStream(source: StreamSource, path: string, stat: { dev: numbe
   } else if (source === "codex-transcript") {
     const earlier = files.slice(0, -1).map((file) => {
       const identity = statSync(file.path, { throwIfNoEntry: false });
-      // each earlier rollout is read as the file it was when the chain was laid out (readStream)
-      if (identity) bindFile(file.path, identity);
       return `${file.path}\0${file.length}\0${identity ? `${identity.dev}:${identity.ino}` : "-"}`;
     });
     chain = earlier.length === 0 ? "" : `-${createHash("sha256").update(earlier.join("\n")).digest("base64url").slice(0, 10)}`;
@@ -3645,9 +3647,9 @@ export function transcriptToolOutput(source: Exclude<StreamSource, "agy-transcri
     for (const segment of segments) {
       let text: string;
       // a rollout may have been archived since resolution: the others still hold theirs. Each is read as the
-      // file it was when the chain was laid out, and another file there answers nothing (readAuthorized)
+      // file it was when its chain was resolved, and another file there answers nothing (readAuthorized)
       try {
-        bindFile(segment.path, statSync(segment.path));
+        if (segment.identity) bindFile(segment.path, segment.identity);
         text = readRange(segment.path, 0, segment.end);
       } catch (error) {
         if (error instanceof ConversationReadPending) throw error;

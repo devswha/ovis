@@ -262,6 +262,31 @@ describe("shared pager projection", () => {
     expect(JSON.stringify(answered)).not.toContain("FOREIGN");
     expect(answered).toBeInstanceOf(ConversationReadPending);
   });
+  test("keeps no failure on the transcript's index from another session's bytes a folder swap shows an unbound projection", () => {
+    writeFileSync(path, user(0, "the pane's prompt") + answer("the pane's answer"));
+    const folder = dirname(path);
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "updates.jsonl"), "{ not a record\n");
+    // a lookup outside any page (an image, a tool output) projects while the other folder is in place for its open
+    let swaps = 0;
+    const real = fs.openSync;
+    const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path || swaps++ > 0) return real(...args);
+      renameSync(folder, away);
+      renameSync(elsewhere, folder);
+      try { return real(...args); }
+      finally {
+        renameSync(folder, elsewhere);
+        renameSync(away, folder);
+      }
+    }) as typeof fs.openSync);
+    try { expect(() => grokProjection(path, statSync(path))).toThrow(GrokUnavailable); } finally { spy.mockRestore(); }
+    expect(swaps).toBe(1);
+    // the pane's own file reads as it is
+    expect(page().turns.flatMap((turn) => turn.parts)).toEqual([{ kind: "text", text: "the pane's prompt" }, { kind: "text", text: "the pane's answer" }]);
+  });
   test("truncation resets history and tool refs; refs cannot cross stores", () => {
     writeFileSync(path, user(0) + tool() + update("a".repeat(6000)));
     const first = page(); const ref = lastTool().output_ref!;

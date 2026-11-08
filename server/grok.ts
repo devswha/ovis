@@ -129,8 +129,11 @@ export function grokProjection(path: string, stat: { dev: number; ino: number; s
   // Known limitation: one malformed or unreconstructable record keeps this file on the
   // terminal view until it is replaced or shrinks. Skipping the line could misplace a rewind.
   if (index.failed) throw new GrokUnavailable();
-  // the file a page read is bound to, never another a folder swapped in around this open puts there
+  // the file a page read is bound to, never another a folder swapped in around this open puts there; and,
+  // bound or not, the file `stat` saw: another file's bytes never mark this one's index failed
   const fd = openBound(path);
+  const opened = fstatSync(fd);
+  if (opened.dev !== stat.dev || opened.ino !== stat.ino) { closeSync(fd); throw new GrokUnavailable(); }
   let position = index.scanned;
   let carry: Buffer[] = [];
   let carried = 0;
