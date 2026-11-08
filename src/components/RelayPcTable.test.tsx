@@ -219,7 +219,7 @@ describe("RelayPcTable", () => {
     const pc = makePc(IDS.local, "Paired desk", "paired", { listed: false, linked: false, enrollment: "failed" });
     await mount(buildProps([pc]));
     const root = rootOf(renderer);
-    expect(textOf(root)).toContain("This PC could not be listed in your account. Try again.");
+    expect(textOf(root)).toContain("This PC could not be listed in your account. Open it to try again.");
     const retry = root.find((node) => node.type === "a" && textOf(node) === "Open");
     expect(retry.props.href).toBe(`/s/${IDS.local}/`);
   });

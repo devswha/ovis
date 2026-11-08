@@ -94,7 +94,7 @@ describe("dashboard state provenance across rendered surfaces", () => {
     expect(offline).toContain('data-pc-action="details">Details</button>');
     expect(update).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
     expect(offline).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
-    const enrollmentText = enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account. Try again.";
+    const enrollmentText = enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.";
     const lines = (rowHtml: string) => [...rowHtml.matchAll(/class="relay-pc-probe-line"[^>]*>([^<]+)</g)].map((match) => match[1]);
     // the enrollment line is added under the state; the PC's next action stays beside it
     expect(lines(update)).toEqual([enrollmentText, "Update Ovis on it"]);

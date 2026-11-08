@@ -86,7 +86,9 @@ export function RelayPcTable({
   const enrollmentLine = (row: DashboardRow): string | null => {
     if (mode !== "account") return null;
     if (row.enrollment === "pending") return t("Adding it to your account…");
-    if (row.enrollment === "failed") return t("This PC could not be listed in your account. Try again.");
+    // Open loads the PC's own page, which retries the enrollment; Update and Details do not, so those rows only say what happened
+    if (row.enrollment === "failed") return row.displayState === "paired" || row.displayState === "unchecked"
+      ? t("This PC could not be listed in your account. Open it to try again.") : t("This PC could not be listed in your account.");
     return null;
   };
   /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */

@@ -461,6 +461,8 @@ const BASE: Record<string, string> = {
   "Every device of your account can use this PC after that.": "그 뒤에는 계정의 모든 기기가 이 PC를 쓸 수 있습니다.",
   "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "이미 계정에 있는 폰에서 Ovis 앱을 열고 {name}의 추가를 누르세요. 그런 다음 여기서 승인하세요.",
   "This PC could not be listed in your account. Try again.": "이 PC를 계정에 올리지 못했습니다. 다시 시도하세요.",
+  "This PC could not be listed in your account. Open it to try again.": "이 PC를 계정에 올리지 못했습니다. 열면 다시 시도합니다.",
+  "This PC could not be listed in your account.": "이 PC를 계정에 올리지 못했습니다.",
   "Turn on remote access through the Ovis relay above first.": "먼저 위에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "먼저 설정 → 기기와 PC에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "New terminal": "새 터미널",

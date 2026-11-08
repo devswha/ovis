@@ -463,6 +463,8 @@ const BASE: Record<string, string> = {
   "Every device of your account can use this PC after that.": "その後は、アカウントのすべてのデバイスからこのPCを使えます。",
   "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "すでにアカウントにあるスマホでOvisアプリを開き、{name} の「追加」をタップしてください。そのあとここで承認します。",
   "This PC could not be listed in your account. Try again.": "このPCをアカウントに登録できませんでした。もう一度お試しください。",
+  "This PC could not be listed in your account. Open it to try again.": "このPCをアカウントに登録できませんでした。開くともう一度試します。",
+  "This PC could not be listed in your account.": "このPCをアカウントに登録できませんでした。",
   "Turn on remote access through the Ovis relay above first.": "まず上でOvisリレー経由のリモートアクセスをオンにしてください。",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "まず設定 → デバイスと PC で Ovis リレー経由のリモートアクセスをオンにしてください。",
   "New terminal": "新しいターミナル",
