@@ -1337,6 +1337,8 @@ export class MachineManager {
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform, expectedSocket } = inspection;
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
+    // kept while its own Ovis is away (below): an install that stopped it and then failed is tried again from its card
+    const offered = { remote_ovis: runtime.machine.remote_ovis, installFix: runtime.installFix };
     if (!moving) { runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; }
     let { herdrPath } = inspection;
     if (herdrPath) {
@@ -1358,7 +1360,10 @@ export class MachineManager {
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
-    if (!descriptor && runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target) && (!job || job.auto)) throw new Error(OWN_OVIS_AWAY);
+    if (!descriptor && runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target) && (!job || job.auto)) {
+      if (!moving && offered.installFix) { runtime.machine.remote_ovis = offered.remote_ovis ?? null; runtime.installFix = offered.installFix; }
+      throw new Error(OWN_OVIS_AWAY);
+    }
     // Update is idempotent: another app may have finished it while this dialog was open.
     // Prove the live endpoint is compatible; a descriptor or installed directory alone is not enough.
     let update = job?.update === true;

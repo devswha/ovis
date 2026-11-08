@@ -25,6 +25,10 @@ interface Pc {
   command?: string;
   /** the new Ovis registers with this pid: one an old descriptor already named, reused */
   newPid?: number;
+  /** a server started by hand beside the launcher: restarting the launcher leaves it running */
+  besideLauncher?: boolean;
+  /** the probe's SSH command fails, as a dropped connection does */
+  probeFails?: boolean;
   /** the installer's answer: its exit status and last words; it starts the plugin when herdr runs */
   installer?: { exit: number; output: string };
   /** the installed Ovis never registers */
@@ -49,6 +53,7 @@ function fixture(pc: Pc) {
   SshConnection.prototype.run = async (script: string) => {
     commands.push(script);
     if (script.includes("free_kb=")) {
+      if (pc.probeFails) throw new Error("Connection to lab.invalid closed by remote host.");
       const tools = pc.tools ?? ["curl", "git", "tar"];
       return [`os=${pc.os ?? "Linux"}`, "arch=x86_64", ...tools.map((tool) => `has=${tool}`), ...(pc.writable === false ? [] : ["writable=1"]), `free_kb=${pc.freeKb ?? 50_000_000}`,
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
@@ -65,7 +70,7 @@ function fixture(pc: Pc) {
       return `${answer.output}\novis-install-exit=${answer.exit}\n`;
     }
     if (script.includes(" server </dev/null")) { register(); return ""; }
-    if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (script.includes("devswha.ovis.stop") || script.includes("restart")) for (const d of listed) alive.delete(d.pid); register(); return ""; }
+    if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); register(); return ""; }
     throw new Error(`Unexpected remote command: ${script}`);
   };
   const connects: Parameters<InstallConnect>[0][] = [];
@@ -74,10 +79,14 @@ function fixture(pc: Pc) {
   let held: Promise<void> | null = null;
   let cancelled = 0;
   const connect: InstallConnect = (request) => { connects.push(request); return { job_id: "setup-job", cancel: () => { cancelled++; }, finished: (held ?? Promise.resolve()).then(() => answer) }; };
-  const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200 });
+  /** resolves once a job reaches a phase, told by the installer's own change events */
+  const waiters: { phase: string; resolve(): void }[] = [];
+  const onChange = (job: PcInstallJob) => { for (const waiter of waiters.splice(0)) if (waiter.phase === job.phase) waiter.resolve(); else waiters.push(waiter); };
+  const reached = (phase: string) => new Promise<void>((resolve) => { waiters.push({ phase, resolve }); });
+  const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200, stopMs: 100, onChange });
   cleanups.push(() => installer.stop());
   const settled = async (job: PcInstallJob) => { await installer.finished(job.id); return installer.job(job.id)!; };
-  return { installer, commands, challenges, connects, settled, alive, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled };
+  return { installer, commands, challenges, connects, settled, alive, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
 }
 
 const target = { destination: "me@lab.invalid" };
@@ -199,8 +208,9 @@ describe("installing Ovis on a PC over SSH", () => {
     const pc = fixture({});
     const gate = Promise.withResolvers<void>();
     pc.holdConnect(gate.promise);
+    const handedOver = pc.reached("connecting_pc");
     const started = pc.installer.start({ target });
-    for (let i = 0; i < 100 && pc.installer.job(started.id)?.phase !== "connecting_pc"; i++) await Bun.sleep(1);
+    await handedOver;
     pc.installer.cancel(started.id);
     gate.resolve();
     expect(await pc.settled(started)).toMatchObject({ phase: "cancelled" });
@@ -221,5 +231,36 @@ describe("installing Ovis on a PC over SSH", () => {
     const job = await pc.settled(started);
     expect(job.phase).toBe("cancelled");
     expect(pc.connects).toEqual([]);
+  });
+
+  it("says the server it stopped is gone when the install then fails, and installs on a retry with nothing left to stop", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download Ovis v9.9.9 from github.com." } });
+    const failed = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(failed).toMatchObject({ phase: "failed", error_code: "installer_failed" });
+    expect(failed.error).toContain("already stopped, so none runs there now");
+    pc.installerAnswer({ exit: 0, output: "Ovis: installing the herdr plugin" });
+    const retried = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(retried).toMatchObject({ phase: "connected", error: null });
+    expect(pc.commands.filter((command) => command.includes("kill -TERM"))).toHaveLength(1);
+  });
+
+  it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
+    const pc = fixture({ launcher: "plugin", herdrRunning: false });
+    const job = await pc.settled(pc.installer.start({ target }));
+    expect(job.phase).toBe("connected");
+    expect(pc.commands.some((command) => command.includes("herdr plugin action invoke"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes("nohup herdr server </dev/null"))).toBe(true);
+  });
+
+  it("connects nothing when the launcher's restart leaves the planned server running beside it", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], launcher: "plugin", besideLauncher: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "not_stopped" });
+    expect(pc.connects).toEqual([]);
+  });
+
+  it("tells a connection dropped while it looks at the PC as one, not as an unsupported PC", async () => {
+    const pc = fixture({ probeFails: true });
+    expect(await pc.settled(pc.installer.start({ target }))).toMatchObject({ phase: "failed", error_code: "ssh_unreachable" });
   });
 });
