@@ -67,7 +67,7 @@ export const RELAY_KO: Record<string, string> = {
   "{name} did not approve this device": "{name}에서 이 기기를 승인하지 않았습니다",
   "{name} is not taking new devices right now": "{name}에서 지금은 새 기기를 받지 않습니다",
   "{name} has not added this device yet": "{name}에 아직 이 기기가 추가되지 않았습니다",
-  "{name} is offline": "{name}에 연결할 수 없습니다",
+  "{name} is offline": "{name}: 오프라인",
   "{name} did not finish connecting": "{name}의 연결이 완료되지 않았습니다",
   "The relay could not be reached": "릴레이에 연결할 수 없습니다",
   "Update needed": "업데이트가 필요합니다",

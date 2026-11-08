@@ -100,10 +100,35 @@ describe.each(Object.entries(DICTIONARIES))("%s state words", (_name, dictionary
   it.each([
     ["Ready", "Ready · not in the account yet"],
     ["Offline", "Offline · {when}"],
+    ["Offline", "{name} is offline"],
     ["Not checked", "Paired · not checked"],
   ])("reuses the %p word inside %p", (word, composed) => {
     expect(dictionary[composed]).toBeString();
     expect(dictionary[composed]).toContain(dictionary[word]!);
+  });
+});
+
+/**
+ * One update word for the whole update journey: the state words, the relay failure title and every
+ * step of updating a PC use the word `Needs update` uses, never its synonym.
+ */
+describe.each([["Korean", KO, ["업데이트", "갱신"]], ["Japanese", JA, ["アップデート", "更新"]], ["Chinese", ZH, ["更新", "升级"]]] as const)("%s update journey", (_name, dictionary, synonyms) => {
+  it("names the update with one word", () => {
+    const term = synonyms.find((word) => dictionary["Needs update"]?.includes(word));
+    expect(term).toBeString();
+    const journey = [
+      "Updating",
+      "Update needed",
+      "Update Ovis on {name}",
+      "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.",
+      "Update now",
+      "Its Ovis does not update itself. On the PC, run the installer:",
+      "Asking the PC to update…",
+      "The update did not finish.",
+      "{name} and this app speak different versions of the relay protocol. Update Ovis on the PC, then try again.",
+    ];
+    const mixed = journey.filter((key) => !dictionary[key]?.includes(term!) || synonyms.some((word) => word !== term && dictionary[key]!.includes(word)));
+    expect(mixed).toEqual([]);
   });
 });
 
