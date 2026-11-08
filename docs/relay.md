@@ -706,7 +706,8 @@ run yourself need no account and no pass.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
-  A new pass goes to the relay on the open control socket; nothing reconnects.
+  A new pass goes to the relay on the open control socket; nothing reconnects. The file names the
+  account service the pass came from, and a pass from another one (a staging one) is never sent.
 - **Sending it.** In the `x-ovis-relay-pass` header of every socket the PC opens to Ovis's relays,
   never in the address, and never to any other relay (`OVIS_RELAY_URL` naming your own), unless
   `OVIS_RELAY_STAGING=1` says the relay it names is a staging copy of Ovis's, for testing only

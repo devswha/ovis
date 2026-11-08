@@ -84,7 +84,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = () => `http://127.0.0.1:${app.port}`;
   return {
-    stateDir, asked, headers, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
+    stateDir, origin, asked, headers, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
     get service() { return service; },
     get synced() { return synced.promise; },
     get refused() { return refused.promise; },
@@ -154,11 +154,13 @@ test("a relay that is not Ovis's gets no pass, and the account service is never 
 test("a test PC on a staging copy of Ovis's relay (OVIS_RELAY_STAGING=1 with OVIS_RELAY_URL) sends it the pass as to Ovis's own", async () => {
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
-  const previous = process.env["OVIS_RELAY_STAGING"];
-  process.env["OVIS_RELAY_STAGING"] = "1";
-  cleanup.push(() => { if (previous === undefined) delete process.env["OVIS_RELAY_STAGING"]; else process.env["OVIS_RELAY_STAGING"] = previous; });
-  // no list of Ovis's relays named by the test: the relay counts as Ovis's for the setting alone
-  await f.restart({ ovisRelays: undefined });
+  for (const [name, value] of [["OVIS_RELAY_STAGING", "1"], ["OVIS_RELAY_URL", f.origin]] as const) {
+    const previous = process.env[name];
+    process.env[name] = value;
+    cleanup.push(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
+  }
+  // the relay from the environment, and no list of Ovis's relays named by the test: it counts as Ovis's for the setting alone
+  await f.restart({ relay: undefined, ovisRelays: undefined });
   await f.start();
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
@@ -171,7 +173,7 @@ test("a pass the relay refuses is dropped and a new one asked for at once", asyn
   const identity = loadRelayIdentity(f.stateDir);
   const stale = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
   mkdirSync(join(f.stateDir, "relay"), { recursive: true });
-  writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
+  writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, service: "https://account.test", expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
   await f.start();
   expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass invalid" });
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });

@@ -64,14 +64,15 @@ export function retryAfterMs(value: string | null, now = Date.now()): number {
   return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, RETRY_AFTER_CAP_MS) : 0;
 }
 
-interface Saved { pass: string; server_id: string; expires_at: number; refresh_at: number }
+/** A pass as kept, with the account service it came from: one from another service (a staging one) is never sent. */
+interface Saved { pass: string; server_id: string; service: string; expires_at: number; refresh_at: number }
 
 function readSaved(path: string): Saved | null {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (!isJsonObject(value) || typeof value.pass !== "string" || typeof value.server_id !== "string"
+    if (!isJsonObject(value) || typeof value.pass !== "string" || typeof value.server_id !== "string" || typeof value.service !== "string"
       || typeof value.expires_at !== "number" || typeof value.refresh_at !== "number") return null;
-    return { pass: value.pass, server_id: value.server_id, expires_at: value.expires_at, refresh_at: value.refresh_at };
+    return { pass: value.pass, server_id: value.server_id, service: value.service, expires_at: value.expires_at, refresh_at: value.refresh_at };
   } catch { return null; }
 }
 
@@ -103,7 +104,7 @@ export class RelayPassKeeper {
   current(): string | null {
     const saved = this.saved;
     const identity = this.options.identity();
-    if (!saved || !identity || saved.server_id !== identity.server_id || this.clock.now() >= saved.expires_at) return null;
+    if (!saved || !identity || saved.server_id !== identity.server_id || saved.service !== this.options.service || this.clock.now() >= saved.expires_at) return null;
     return saved.pass;
   }
 
@@ -229,7 +230,7 @@ export class RelayPassKeeper {
       const refreshIn = Math.min(Math.max(refreshRaw, MIN_REFRESH_S), MAX_REFRESH_S, expiresIn - RELAY_PASS_SKEW_S);
       const now = this.clock.now();
       // timed from receipt, so this PC's own clock needs to be right only to within the relay's skew
-      const saved: Saved = { pass: body.pass as string, server_id: identity.server_id,
+      const saved: Saved = { pass: body.pass as string, server_id: identity.server_id, service,
         expires_at: now + (expiresIn - RELAY_PASS_SKEW_S) * 1000, refresh_at: now + refreshIn * 1000 };
       this.saved = saved;
       try { writePrivateState(this.path, saved); } catch { /* kept in memory; asked again after a restart */ }
