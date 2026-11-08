@@ -101,7 +101,8 @@ export class PendingMessageStore {
     try {
       const raw = this.storage().getItem(PREFIX + owner);
       if (this.saved.get(owner) === raw) return;
-      const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id));
+      const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id))
+        .map((message) => message.state === "held" && this.discarded.get(owner)?.has(message.id) ? { ...message, state: "uncertain" as const } : message);
       const next = loaded.map((message) => this.applyHeldResumed(owner, message));
       const heldAgain = next.some((message, at) => message !== loaded[at]);
       // Another tab cannot alter or discard a live connection's authoritative rows.
@@ -169,7 +170,8 @@ export class PendingMessageStore {
       ...(resendInFlight ? { resendInFlight } : {}),
       ...(resendGeneration !== undefined ? { resendGeneration } : {}),
       state: resendInFlight ? "uncertain" : heldByReceipt ? "held"
-        : scope === null && (message.state === "queued" || message.state === "sending") ? "uncertain" : message.state };
+        : scope === null && (message.state === "queued" || message.state === "sending"
+          || message.state === "held" && this.discarded.get(owner)?.has(message.id) === true) ? "uncertain" : message.state };
     if (heldByReceipt) { delete view.sending_at; this.heldResumed.get(owner)?.delete(message.id); }
     const at = previous.findIndex((item) => item.id === message.id);
     const next = [...previous];

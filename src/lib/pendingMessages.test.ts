@@ -98,6 +98,14 @@ describe("pending message ownership", () => {
     tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "newest");
     tab.accept("p", message("saved", "sending"), null);
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
+    // nor does a stale held copy or a late held acceptance
+    tab.removeCopy("p", "saved");
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("saved", "held")] }));
+    tab.refresh("p");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
+    tab.removeCopy("p", "saved");
+    tab.accept("p", message("saved", "held"), null);
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
   });
   it("settles only the exact resumed Pi ID after reload, never same-text or unrelated rows", () => {
     const port = storage(), first = new PendingMessageStore(() => port);

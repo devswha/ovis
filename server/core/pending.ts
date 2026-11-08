@@ -1254,11 +1254,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (held) {
             if (answer.ok) {
               // its sent receipt only for the pane and browser the held one was kept for
-              if (held.paneId === message.pane_id && held.key === resumeKey(client, message.pane_id)) {
+              // (unless settling its record kept that receipt already)
+              if (held.paneId === message.pane_id && held.key === resumeKey(client, message.pane_id) && !completed.some((entry) => entry.id === held.id)) {
                 completed.push({ ...held, outcome: "sent", at: Date.now() });
                 pushResumed(client, message.pane_id, held.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
               }
-            } else if (submitNotTyped(answer.code ?? "")) completed.push(held);
+            } else if (submitNotTyped(answer.code ?? "")) {
+              // back in its place by age, as pruning drops expired receipts from the front
+              const at = completed.findIndex((entry) => entry.at > held.at);
+              completed.splice(at < 0 ? completed.length : at, 0, held);
+            }
             prunePi();
           }
           result(answer.ok, answer.code, answer.message, undefined, undefined, undefined, answer.ok && typedNow, typedNow ? sendingAt : undefined);

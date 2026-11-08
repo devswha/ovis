@@ -250,6 +250,46 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
     } finally { clock.mockRestore(); }
   });
 
+it("keeps a held receipt's ten-minute expiry after a resend that typed nothing puts it back", async () => {
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+    const client = (): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { throw new herdr.HerdrError("agent_not_ready", "not ready"); },
+      authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+    const identity = { agent: "codex", terminalId: "p", session: null } as const;
+    const first = client(), older = delivery.pending.enqueue(first, "p", 1, "older", null, identity, false);
+    clients.delete(first); delivery.closeConnection(first);
+    now += 5 * 60 * 1000;
+    const second = client(), newer = delivery.pending.enqueue(second, "p", 1, "newer", null, identity, false);
+    clients.delete(second); delivery.closeConnection(second);
+    now += 60_001; delivery.pending.expire();
+    const resumed = client();
+    delivery.attached(resumed, "p");
+    await delivery.pendingFrames.submit(resumed, {
+      type: "submit", id: 2, pane_id: "p", text: "older", payload: "older", delivery: "immediate", resend_id: older.message.id,
+    });
+    now += 5 * 60 * 1000;
+    const later = client();
+    delivery.attached(later, "p");
+    expect(heldIds(later)).toEqual([newer.message.id]);
+  } finally { clock.mockRestore(); }
+});
+
 it.each(["before close", "after close", "overlapping reload", "same live browser", "no device", "read-only", "detach", "wrong browser", "wrong device", "revoked", "expired", "pending cap", "completed cap", "confirmation budget"] as const)(
   "resumes only exact, authorized Pi presentation receipts: %s", async (when) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-resume-")); roots.push(root);
