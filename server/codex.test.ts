@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpat
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1448,5 +1448,78 @@ describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
       writer.close();
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+/** A rollout read with one finished turn: the prompt it was asked, and the short answer it finished on. */
+const shortTurn = (turn: string, prompt: string, answer: string): string => [
+  JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "item_completed", turn_id: turn, item: { type: "UserMessage", content: [{ type: "input_text", text: prompt }] } } }),
+  JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: turn, last_agent_message: answer } }),
+].join("\n");
+
+/**
+ * A Codex pane that answered a short word, as Codex 0.164 draws it: a Stop hook's message under the answer, the
+ * hint row under the idle composer, which a split pane cuts short.
+ */
+const shortAnswerScreen = (prompt: string, answer: string, options: { hook?: boolean; hint?: string } = {}): string => [
+  "  >_ OpenAI Codex (v0.164.0)",
+  "     /tmp/proj",
+  "",
+  `› ${prompt}`,
+  "",
+  "",
+  `• ${answer}`,
+  "",
+  ...(options.hook ? ["  ↳ Hook · Stop completed", "  ran the project's stop-check", ""] : []),
+  "  Worked for 1s • 7:05 PM",
+  "",
+  "",
+  "",
+  "› Ask Codex to do anything",
+  "",
+  "  GPT-6-Luna low · /tmp/proj · Reply with one word",
+  `  ${options.hint ?? "← for agents · ? for shortcuts"}`,
+].join("\n");
+
+describe("a Codex pane whose last answer is shorter than 64 letters and digits (#3262 case 2)", () => {
+  const prompt = "Do not run any tools. Reply with just the word ok and nothing else.";
+  const path = "/tmp/rollouts/short.jsonl";
+  const owners = new Set([path]);
+  const candidates = [{ path, text: shortTurn("t1", prompt, "ok") }];
+
+  it("binds the one conversation whose last finished turn the screen shows footed", () => {
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), candidates, null, owners, null)).toBe(path);
+  });
+
+  it("binds past a Stop hook's message between the answer and its footer", () => {
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok", { hook: true }), candidates, null, owners, null)).toBe(path);
+  });
+
+  it("binds in a split pane whose hint row is cut", () => {
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok", { hint: "← for agents · ? for shortcu" }), candidates, null, owners, null)).toBe(path);
+  });
+
+  it("takes no conversation when another one also finished on that word", () => {
+    const both = [...candidates, { path: "/tmp/rollouts/other.jsonl", text: shortTurn("t9", "Say ok.", "ok") }];
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), both, null, new Set([path, "/tmp/rollouts/other.jsonl"]), null)).toBeNull();
+  });
+
+  it("takes no conversation whose last turn answered another word", () => {
+    const done = [{ path, text: shortTurn("t1", prompt, "done") }];
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), done, null, owners, null)).toBeNull();
+  });
+
+  it("takes no conversation whose last turn was asked another prompt", () => {
+    const other = [{ path, text: shortTurn("t1", "Say ok.", "ok") }];
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), other, null, owners, null)).toBeNull();
+  });
+
+  it("reads nothing from a screen whose turn has not finished", () => {
+    const screen = shortAnswerScreen(prompt, "ok").replace("  Worked for 1s • 7:05 PM", "");
+    expect(footedShortTranscript(screen, candidates, null, owners, null)).toBeNull();
+  });
+
+  it("never takes the conversation only a title points to, from another folder", () => {
+    expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), candidates, path, owners, null)).toBeNull();
   });
 });
