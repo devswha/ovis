@@ -77,6 +77,45 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(1);
   });
 
+  it("lets no title from before a live report restart the finish it told", async () => {
+    core();
+    const h = hub();
+    resolving().mockResolvedValue(null);
+    h.herdrSays(letta("⠋ Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("working");
+    // the program itself reports its turn done, then says nothing: the old spinner is no evidence of work any more
+    handlers.onStatus("w1:p1", "done", "letta");
+    handlers.onStatus("w1:p1", "unknown", "letta");
+    expect(h.last().status).not.toBe("working");
+  });
+
+  it("tells no failure a later successful answer replaced while the approval waited", async () => {
+    core();
+    const store = join(root, "letta-store-superseded");
+    const agent = "agent-local-f";
+    const messages = lettaMessagesPath(store, agent, "default")!;
+    mkdirSync(join(messages, ".."), { recursive: true });
+    writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
+    const h = hub();
+    const failed: string[] = [];
+    spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failed.push(paneId); });
+    resolving().mockResolvedValue({ path: join(root, "t6.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    await h.status.letta.refresh([letta("[ ! ] Action Required | Tutor")] as never);
+    await h.snapshot();
+    const aborted = JSON.parse(turn.at(-1)!);
+    aborted.message.stopReason = "aborted";
+    appendFileSync(messages, `${JSON.stringify(aborted)}\n`);
+    await h.status.letta.poll();
+    // a new turn then ends well, all while the title still asked
+    appendFileSync(messages, `${turn.slice(0, 1).concat(turn.slice(-1)).join("\n")}\n`);
+    await h.status.letta.poll();
+    h.herdrSays(letta("Tutor"));
+    await h.snapshot();
+    expect(failed).toEqual([]);
+  });
+
   it("tells no turn from a read that began before one already applied and finished after it", async () => {
     core();
     const h = hub();

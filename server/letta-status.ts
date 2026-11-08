@@ -39,9 +39,10 @@ const MESSAGES_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (const
  * under its store's real path: no link for the file, its folder or any folder up to the store, so it is
  * never another conversation's or another store's.
  */
-function ownMessagesFile(path: string): { dev: number; ino: number } | null {
+function ownMessagesFile(path: string): { dev: bigint; ino: bigint } | null {
   try {
-    const stat = lstatSync(path);
+    // as bigints: a large inode number rounded to a double could match another file's
+    const stat = lstatSync(path, { bigint: true });
     if (!stat.isFile()) return null;
     const folder = dirname(path);
     const store = dirname(dirname(folder));
@@ -57,7 +58,7 @@ export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
     let fd: number;
     try { fd = openSync(path, MESSAGES_FLAGS); } catch { return null; }
     // a folder above it swapped for a link between the check and the open opens another file: the same one must be open
-    try { const opened = fstatSync(fd); if (opened.isFile() && opened.dev === checked.dev && opened.ino === checked.ino) return fd; } catch { /* gone */ }
+    try { const opened = fstatSync(fd, { bigint: true }); if (opened.isFile() && opened.dev === checked.dev && opened.ino === checked.ino) return fd; } catch { /* gone */ }
     closeSync(fd);
     return null;
   };
@@ -65,7 +66,7 @@ export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
     stat: (path) => {
       const fd = open(path);
       if (fd === null) return null;
-      try { const stat = fstatSync(fd); return { size: stat.size, id: `${stat.dev}:${stat.ino}` }; } finally { closeSync(fd); }
+      try { const stat = fstatSync(fd, { bigint: true }); return { size: Number(stat.size), id: `${stat.dev}:${stat.ino}` }; } finally { closeSync(fd); }
     },
     lines: (path, from, size, each, current) => {
       const fd = open(path);

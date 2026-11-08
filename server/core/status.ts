@@ -165,7 +165,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // (an aborted or errored answer written meanwhile is kept, so that the wait's end is told as the failed rest it is)
     onChange: (paneId, derived, _background, turn, rest) => {
       if (lettaTitled.get(paneId) !== "blocked") { gjcChanged(paneId, derived, turn, rest, "letta"); return; }
-      if (turn && rest !== undefined) lettaRests.set(paneId, rest); else if (turn && derived === "working") lettaRests.delete(paneId);
+      // each turn the file tells replaces the last: a later good answer leaves no earlier failure standing
+      if (turn && rest !== undefined && derived !== "working") lettaRests.set(paneId, rest); else if (turn) lettaRests.delete(paneId);
     },
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
@@ -517,6 +518,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
     } finally { settling = was; }
+    // a live report makes what the title said before it stale
+    if (agent === "letta" && read !== "unknown" && replay === undefined) lettaTitled.delete(paneId);
     // an unreported Letta pane on herdr-core has no word of herdr's: what its own title last said stands for it
     const titled = agent === "letta" && read === "unknown" && servingCore() && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
