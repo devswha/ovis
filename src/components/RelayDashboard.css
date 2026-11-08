@@ -249,6 +249,17 @@
   .relay-dash-tab svg { width: var(--mark-size); height: var(--mark-size); color: currentColor; }
   .relay-dash-tab > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  @media (max-width: 360px) {
+    .relay-dash-tabs {
+      gap: var(--space-1);
+      padding-inline: calc(var(--space-1) + env(safe-area-inset-left, 0px)) calc(var(--space-1) + env(safe-area-inset-right, 0px));
+    }
+
+    .relay-dash-tab {
+      padding-inline: 0;
+    }
+  }
+
   @media (hover: hover) {
     .relay-dash-tab:hover { background: var(--bg-hover); }
   }
