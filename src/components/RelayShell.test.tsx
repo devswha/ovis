@@ -452,6 +452,18 @@ describe("the dashboard", () => {
       expect(rows()).toHaveLength(4);
     });
 
+    it("keeps the dashboard mounted under the sheet, so its filter and the control that opened the sheet are still there to take the focus back", async () => {
+      await mount(signedIn(four()));
+      const segBtn = (label: string) => renderer!.root.findByProps({ className: "segmented" }).find((n) => n.type === "button" && textOf(n).trim() === label);
+      await act(async () => { segBtn("Ready").props.onClick(); });
+      await act(async () => { button("Add a PC").props.onClick(); });
+      expect(dialog().props["data-add-pc-mode"]).toBe("add");
+      await act(async () => { button("Close").props.onClick(); });
+      expect(dialogs()).toHaveLength(0);
+      expect(segBtn("Ready").props["aria-pressed"]).toBe(true);
+      expect(rows()).toEqual(["Desk PC", "MacBook"]);
+    });
+
     it("goes on in the sheet over the PC's own page for the join it started: the link's question, the digits, and the sheet's own Step 4 of 4 ready phase; a plain visit keeps the screens", async () => {
       const offer = { v: 1 as const, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" };
       let paired = 0;
