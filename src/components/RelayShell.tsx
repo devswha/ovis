@@ -85,7 +85,7 @@ export interface RelayShellProps {
  * The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the
  * DOM), as GitHub's device sign-in asks for the code its other screen shows.
  */
-export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: Title = "h1" }: { readonly failure: TypedCodeFailure | null; readonly looking?: boolean | undefined; readonly onSubmit: (code: string) => void; readonly back: ReactNode; readonly titleTag?: "h1" | "h2" | undefined }) {
+export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: Title = "h1", titleId }: { readonly failure: TypedCodeFailure | null; readonly looking?: boolean | undefined; readonly onSubmit: (code: string) => void; readonly back: ReactNode; readonly titleTag?: "h1" | "h2" | undefined; /** the id a dialog around this screen is labelled by */ readonly titleId?: string | undefined }) {
   const t = useT();
   const id = useId();
   const submit = (event: FormEvent<HTMLFormElement>): void => {
@@ -95,7 +95,7 @@ export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: 
   const label = t("Code from the PC");
   return (
     <>
-      <Title className="relay-shell-title">{t("Pair with a code")}</Title>
+      <Title className="relay-shell-title" id={titleId}>{t("Pair with a code")}</Title>
       <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.")}</p>
       <form className="relay-shell-code-form" onSubmit={submit}>
         <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{label}</label>
@@ -119,6 +119,8 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   readonly onClose: () => void;
 }) {
   const t = useT();
+  /** the one heading of the current screen names the dialog (each screen renders exactly one h2 with it) */
+  const titleId = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
   const inCode = state.kind === "code-entry" || state.kind === "code-looking" || state.kind === "code-compare";
   const close = (): void => { if (inCode) onCancel(); onClose(); };
@@ -139,19 +141,19 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   const pc = state.kind === "code-compare" ? (state.offer.name ?? t("this PC")) : t("this PC");
   return createPortal(
     <div className="modal-scrim relay-shell-screen" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <div ref={surface} className="modal add-pc-sheet relay-shell" role="dialog" aria-modal="true" tabIndex={-1} data-pair-dialog={state.kind === "code-entry" || state.kind === "code-looking" ? "code" : state.kind === "code-compare" ? "compare" : "qr"}>
+      <div ref={surface} className="modal add-pc-sheet relay-shell" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-pair-dialog={state.kind === "code-entry" || state.kind === "code-looking" ? "code" : state.kind === "code-compare" ? "compare" : "qr"}>
         {state.kind === "code-entry" || state.kind === "code-looking" ? (
-          <CodeEntry titleTag="h2" failure={state.kind === "code-entry" ? state.failure : null} looking={state.kind === "code-looking"} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={close}>{t("Cancel")}</button>} />
+          <CodeEntry titleTag="h2" titleId={titleId} failure={state.kind === "code-entry" ? state.failure : null} looking={state.kind === "code-looking"} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={close}>{t("Cancel")}</button>} />
         ) : state.kind === "code-compare" ? (
           <>
-            <h2 className="relay-shell-title">{t("Does {name}'s screen show this ID?", { name: pc })}</h2>
+            <h2 className="relay-shell-title" id={titleId}>{t("Does {name}'s screen show this ID?", { name: pc })}</h2>
             <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Pair only if every group matches.")}</p>
             <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
             <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={close}>{t("Cancel")}</button></div>
           </>
         ) : (
           <>
-            <h2 className="relay-shell-title">{t("Scan the QR code on your PC")}</h2>
+            <h2 className="relay-shell-title" id={titleId}>{t("Scan the QR code on your PC")}</h2>
             <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
             <div className="relay-shell-actions">
               <button type="button" className="btn btn-primary" onClick={onCodeStart}>{t("Pair with a code")}</button>
