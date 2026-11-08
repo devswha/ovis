@@ -202,9 +202,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store: enrollmentStore });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
-        const renewed = opened.renew();
+        await opened.renew();
         // a Devices panel open since before the link reads the list again, over the session that proved the new key
-        if (linking) void renewed.then(() => window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT)));
+        if (linking) window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
       }
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) throw new AccountPcError(409, "enrolling");

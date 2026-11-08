@@ -367,7 +367,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     }, entries);
   };
   /** The saved record for a PC in this page's storage, or null. */
-  const saved = (page: Page, serverId: string): Promise<{ device_id: string | null } | null> => page.evaluate(async (serverId) => {
+  const saved = (page: Page, serverId: string): Promise<{ device_id: string | null; enrollment: string | null } | null> => page.evaluate(async (serverId) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("ovis-relay", 2);
       request.onupgradeneeded = () => {
@@ -377,9 +377,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       request.onerror = () => reject(request.error);
     });
     try {
-      return await new Promise<{ device_id: string | null } | null>((resolve, reject) => {
+      return await new Promise<{ device_id: string | null; enrollment: string | null } | null>((resolve, reject) => {
         const request = db.transaction("devices", "readonly").objectStore("devices").get(serverId);
-        request.onsuccess = () => resolve(request.result ? { device_id: request.result.device_id ?? null } : null);
+        request.onsuccess = () => resolve(request.result ? { device_id: request.result.device_id ?? null, enrollment: request.result.account_enrollment?.state ?? null } : null);
         request.onerror = () => reject(request.error);
       });
     } finally { db.close(); }
@@ -598,9 +598,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const note = await hop(page, serverId).locator(".relay-map-hop-note").textContent() ?? "";
       const wired = await wire(page, serverId).getAttribute("data-wire");
       // an answered check reads as its route and round trip ("Same network · 4 ms", "Tailscale · 18 ms", "relay.test · 31 ms")
-      const answered = /^[^·]+ · \d+ ms$/.test(note);
-      assert.ok(answered || /^(Paired · not checked|Offline)$/.test(note), `the map reports this device's own check only ("${note}")`);
-      assert.equal(wired, answered ? "live" : note === "Offline" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
+      const answered = /^(Same network|Tailscale|relay\.test) · \d+ ms$/.test(note);
+      assert.ok(answered || /^(Paired · not checked|Offline|No answer|Not checked)$/.test(note), `the map reports this device's own check only ("${note}")`);
+      assert.equal(wired, answered ? "live" : note === "Offline" || note === "No answer" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
       assert.equal(await page.locator(".relay-map-flow, .relay-map-dot").count(), 0, "nothing flows once the check settled");
       return `${note}, wire ${wired}`;
     };
@@ -659,7 +659,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await row(a, "Desk PC").waitFor();
       // the directory lists none yet: the QR pairing is a row this device holds, never one the account claims Ready
       const unlistedWord = await stateWord(a, "Desk PC").innerText();
-      assert.match(unlistedWord, /^(Paired · not checked|Checking…|Answers|No answer|This device: .+)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
+      assert.match(unlistedWord, /^(Paired · not checked|Checking…|Answers|No answer)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
       assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");
       await capture(a, "account-unlisted-1440-dark");
       log9(`account, before Open: directory [] -> row state "${unlistedWord}" (this device's check, not the account's Ready)`);
@@ -671,7 +671,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await row(a, "Desk PC").getByRole("link", { name: "Open" }).click();
       await inApp(a);
       await listed;
-      await until(pc1.joined, "Desk PC joined the account");
+      await until(async () => pc1.joined() && (await saved(a, pc1.id))?.enrollment === "complete", "Desk PC joined the account and this device recorded completion", 75_000);
       // dated five minutes back (still seen lately), so the pull with the relay down below changes the row's Last seen to "just now"
       await pc1.mailbox.pull();
       const seenDesk = fake.pcs(ACCT).find((entry) => entry.server_id === pc1.id);
@@ -753,7 +753,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal((await pc2.local("/api/relay/pairing", { body: { id: asked!.id, decision: "approve" } })).status, 200);
       await openFromReady(a);
       await inApp(a);
-      await until(pc2.joined, "Mac mini joined the account through this device");
+      await until(async () => pc2.joined() && (await saved(a, pc2.id))?.enrollment === "complete", "Mac mini joined the account and this device recorded completion", 75_000);
       await pc2.mailbox.pull();
       await a.goto(`${APP}/`);
       await row(a, "Mac mini").and(a.locator('[data-pc-state="paired"]')).waitFor();
@@ -791,17 +791,17 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await prompt.getByRole("button", { name: "Approve" }).click();
       await openFromReady(b);
       await inApp(b);
-      await until(async () => (await pc1.pairings()).length === 0 && pc1.joined(), "Desk PC settled after the member's approval");
+      await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       await pc1.mailbox.pull();
       await pc2.mailbox.pull();
       await b.goto(`${APP}/`);
       await row(b, "Desk PC").and(b.locator('[data-pc-state="paired"]')).waitFor();
       log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) Join -> Ask to join -> Pair -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app -> row Ready`);
 
-      // the visual matrix: dashboard and sheet at 1440 (the first device) and 390 at DPR 3 (the second), dark and light
+      // The generic Add sheet at both widths/themes: the account introduction already paired the second device with Mac mini.
       for (const [page, width, sheetOpen] of [
         [a, 1440, () => a.getByRole("button", { name: "Add a PC" }).first().click()],
-        [b, 390, () => row(b, "Mac mini").getByRole("button", { name: "Add", exact: true }).click()],
+        [b, 390, () => b.locator(".relay-dash-brand-bar").getByRole("button", { name: "Add a PC", exact: true }).click()],
       ] as const) {
         for (const theme of ["dark", "light"] as const) {
           await page.goto(`${APP}/`);
@@ -875,9 +875,9 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       log9(`map at rest (#relay, motion allowed): ${JSON.stringify(settled)}`);
       await view(a, "overview");
 
-      // the PC stops coming by: past OFFLINE_AFTER_MS on this browser's clock, its wire goes dotted and its row Offline
+      // No mailbox pulls or reachable relay: past OFFLINE_AFTER_MS the row and map are Offline, with no live probe overriding it.
       pc1.mailbox.stop();
-      pc2.mailbox.stop();
+      pc2.mailbox.stop(); await relay!.stop(); relay = null;
       await a.reload();
       await row(a, "Desk PC").and(a.locator('[data-pc-state="paired"]')).waitFor();
       const later = accountRequest("GET /v1/pcs", "the dashboard read the directory past the offline mark");
