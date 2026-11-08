@@ -2404,10 +2404,13 @@ button {
   color: var(--text-strong);
 }
 
+/* the + and More sit on the tabs' middle line: the row's tabs stand on its bottom edge
+   (align-items: flex-end), so these do too, raised by half of the 36px tab's extra height */
 .header-tabs .tab-strip-add {
-  align-self: center;
+  align-self: flex-end;
   width: 28px;
   height: 28px;
+  margin-bottom: calc((36px - 28px) / 2);
   margin-left: var(--space-1);
   border-radius: var(--radius-pill);
   box-shadow: none;
@@ -2419,10 +2422,11 @@ button {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  align-self: center;
+  align-self: flex-end;
   flex: 0 0 auto;
   width: 52px;
   height: 28px;
+  margin-bottom: calc((36px - 28px) / 2);
   margin-left: var(--space-1);
   padding: 0;
   background: transparent;
@@ -2458,6 +2462,15 @@ button {
   .header-tabs .tab-strip-add {
     width: var(--touch-target);
     height: var(--touch-target);
+  }
+
+  /* the + is as tall as a tab here; More keeps its 28px */
+  .header-tabs .tab-strip-add {
+    margin-bottom: 0;
+  }
+
+  .header-tabs .tab-strip-more {
+    margin-bottom: calc((44px - 28px) / 2);
   }
 
   .header-tabs .tab-strip-item.is-active {
