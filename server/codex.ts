@@ -1204,6 +1204,41 @@ function footedAnswer(screen: string): { text: string; prompt: string } | null {
   return { text: lines.slice(start, index - 1).join("\n").slice(2).trim(), prompt: collapsed(lines.slice(prompt, end).join("\n").slice(1)) };
 }
 
+/**
+ * The conversation whose finished answer ends above a completed-turn footer on screen. A Codex TUI on the shared
+ * app-server daemon holds no rollout open and herdr may report no thread for it, so only its screen binds it, and
+ * matchCodexTranscript wants the answer whole in one bullet block: an answer longer than the screen, or one Codex draws as
+ * a code block (indented, no bullet, its fences not shown), never is. Here the text between one "Worked for" footer and
+ * the one before it (or the top of the read) must hold the anchor (answerAnchor: the last 160 letters and digits) of one
+ * of the last 8 finished answers of exactly one of this folder's candidates (`owners`, or the one herdr reported), and no
+ * other candidate ever finished on that text: a fork, or two that said it, leaves the terminal standing in. Never the
+ * conversation only the title offered (`titled`, another folder).
+ */
+export function footedTailTranscript(screen: string, candidates: { path: string; text: string }[], titled: string | null, owners: ReadonlySet<string>, reported: string | null): string | null {
+  const lines = screen.split("\n").map((line) => line.replace(/\r$/, ""));
+  const segments: string[] = [];
+  let from = 0;
+  for (const [at, line] of lines.entries()) {
+    if (!CODEX_TURN_FOOTER.test(line)) continue;
+    segments.push(normalizeDisplay(lines.slice(from, at).join("\n")));
+    from = at + 1;
+  }
+  if (segments.length === 0) return null;
+  const finished = candidates.map(({ text }) => finishedAnswerTexts(text));
+  const said = finished.map((answers) => answers.map(normalizeDisplay).join("\n"));
+  const found = new Set<string>();
+  for (const [index, candidate] of candidates.entries()) {
+    if (candidate.path === titled || !(owners.has(candidate.path) || candidate.path === reported)) continue;
+    for (const answer of finished[index]!.slice(-8)) {
+      const anchor = answerAnchor(answer);
+      if (anchor === null || !segments.some((segment) => segment.includes(anchor.anchor))) continue;
+      if (said.some((other, at) => at !== index && other.includes(anchor.anchor))) return null;
+      found.add(candidate.path);
+    }
+  }
+  return found.size === 1 ? [...found][0]! : null;
+}
+
 /** The answers a conversation's rollout records its turns finished on (task_complete), as written. */
 function finishedAnswerTexts(rollout: string): string[] {
   return rollout.split("\n").flatMap((line) => {
@@ -3217,7 +3252,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const candidates = paths.flatMap((path) => {
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
-  const matched = screen ? matchCodexTranscript(screen.text, candidates, new Set(titledElsewhere === null ? [] : [titledElsewhere]), new Map(), false, folderRollouts) : null;
+  // a long answer (its start scrolled off the screen) or one Codex draws as a code block (indented, no bullet) is never shown whole in one block
+  const matched = screen ? (matchCodexTranscript(screen.text, candidates, new Set(titledElsewhere === null ? [] : [titledElsewhere]), new Map(), false, folderRollouts)
+    ?? footedTailTranscript(screen.text, candidates, titledElsewhere, folderRollouts, reported)) : null;
   if (matched !== null) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), ...(matched === titledElsewhere ? { titled: true } : {}) });
