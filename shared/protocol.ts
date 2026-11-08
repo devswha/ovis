@@ -549,7 +549,6 @@ export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
 
-/** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
 /**
  * Why the relay is not online, as a fixed code a client puts in its own words (RelayStatus.error_code;
  * docs/relay.md, "Why it is not online"). Each says whether the PC tries again by itself:
@@ -569,6 +568,7 @@ export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalSt
 export type RelayErrorCode = "start_failed" | "identity_unreadable" | "relay_unreachable" | "server_key_refused"
   | "pass_required" | "pass_not_listed" | "pass_limit" | "pass_unavailable" | "pass_refused" | "pass_unsupported";
 
+/** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
 export interface RelayStatus {
   readonly phase: "off" | "connecting" | "online" | "error";
   readonly relay: string;
