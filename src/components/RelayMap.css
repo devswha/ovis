@@ -1,23 +1,71 @@
-/*
- * The dashboard's connection map (RelayMap.tsx), after GOAT's FleetGraph in technique: a dashed
- * orbit, cubic wires, a flowing stepped dash and SMIL particles on the wires of PCs the directory
- * saw lately. Rings and keys take the colors the PC rows use (AccountPcs.css); the one accent is
- * this device and what was seen lately. Under 760px the svg gives way to the route list, and
- * reduced motion removes the flow and the particles: the words under each PC carry its state.
- */
+.relay-dash-map > #relay-dash-map-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .relay-map {
+  display: grid;
+  gap: var(--space-3);
   margin: 0;
+}
+
+.relay-map-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.relay-map-title-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.relay-map-heading {
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.relay-map-security {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-ui);
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
+  color: var(--text-dim);
+}
+
+.relay-map-security svg {
+  flex: none;
+  width: var(--relay-control-icon-size);
+  height: var(--relay-control-icon-size);
+  color: var(--status-done);
 }
 
 .relay-map-legend {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--space-1) var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: var(--fs-xs);
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
   color: var(--text-dim);
 }
 
@@ -28,57 +76,59 @@
   white-space: nowrap;
 }
 
-/* the legend's keys and the route list's marks: one dot in the state's color, hollow for offline */
-.relay-map-key {
+.relay-map-wire-swatch {
+  display: inline-block;
   flex: none;
-  width: var(--dot-size);
-  height: var(--dot-size);
-  border-radius: 50%;
-  background: var(--status-idle);
+  width: var(--space-4);
+  height: calc(2 * var(--hairline));
+  border-radius: var(--radius-pill);
+  background: var(--accent);
 }
 
-.relay-map-key[data-state="lately"] { background: var(--accent); }
-.relay-map-key[data-state="paired"] { background: var(--status-done); }
-.relay-map-key[data-state="needs-approval"] { background: var(--status-working); }
-.relay-map-key[data-state="needs-update"] { background: var(--status-blocked); }
-.relay-map-key[data-state="offline"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--status-idle); }
+.relay-map-diagram {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
 
 .relay-map-svg {
   display: block;
   width: 100%;
   height: auto;
-  margin-top: var(--space-2);
-  font-family: var(--font-ui);
-}
-
-.relay-map-orbit {
-  fill: none;
-  stroke: var(--border-strong);
-  stroke-dasharray: 6 8;
+  overflow: visible;
 }
 
 .relay-map-edge {
   fill: none;
-  stroke: var(--border-strong);
-  stroke-width: 1.3;
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
 }
 
 .relay-map-edge[data-wire="live"] {
   stroke: var(--accent);
-  stroke-opacity: 0.45;
+  stroke-width: 1.75;
+  stroke-dasharray: none;
 }
 
 .relay-map-edge[data-wire="off"] {
-  stroke-dasharray: 3 5;
+  stroke: var(--text-dim);
+  stroke-dasharray: 2 4;
 }
 
-/* the flow: 2 on, 12 off, two periods a cycle, stepped so it draws 30 frames a second rather than every refresh; towards the relay, as the PC's check-in goes */
+.relay-map-edge[data-wire="checking"] {
+  stroke: var(--status-working);
+  stroke-dasharray: 5 4;
+}
+
 .relay-map-flow {
   fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.6;
-  stroke-dasharray: 2 12;
-  animation: relay-map-flow 1.1s steps(33) infinite reverse;
+  stroke: var(--status-working);
+  stroke-width: 2;
+  stroke-dasharray: 3 11;
+  vector-effect: non-scaling-stroke;
+  animation: relay-map-flow var(--dur-spin) steps(24) infinite reverse;
 }
 
 @keyframes relay-map-flow {
@@ -89,90 +139,140 @@
   animation-play-state: paused;
 }
 
-.relay-map-dot {
-  fill: var(--accent);
+.relay-map-nodes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
-.relay-map-ring {
-  fill: var(--bg-elevated);
-  stroke: var(--border-strong);
-  stroke-width: 1.5;
+.relay-map-me-card,
+.relay-map-hub-btn,
+.relay-map-pc-btn {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: max(var(--relay-fs-body-min), var(--fs-sm));
+  line-height: var(--lh-tight);
+  text-align: start;
+  transform: translate(calc(-1 * var(--space-4)), -50%);
 }
 
-.relay-map-node[data-me] .relay-map-ring { stroke: var(--accent); }
-.relay-map-node[data-pc-state="paired"] .relay-map-ring { stroke: var(--status-done); }
-.relay-map-node[data-pc-state="needs-approval"] .relay-map-ring { stroke: var(--status-working); }
-.relay-map-node[data-pc-state="needs-update"] .relay-map-ring { stroke: var(--status-blocked); }
-.relay-map-node[data-pc-state="offline"] { opacity: 0.75; }
+.relay-map-hub-btn,
+.relay-map-pc-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
 
-.relay-map-glyph {
+.relay-map-me-card {
+  border-color: var(--accent);
+}
+
+.relay-map-me-mark,
+.relay-map-hub-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--avatar-size) - var(--space-2));
+  height: calc(var(--avatar-size) - var(--space-2));
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
   color: var(--text);
 }
 
+.relay-map-hub-mark {
+  background: var(--accent);
+  color: var(--bg-panel);
+}
+
+.relay-map-me-mark svg,
+.relay-map-hub-mark svg {
+  width: var(--relay-control-icon-size);
+  height: var(--relay-control-icon-size);
+}
+
+.relay-map-me-label,
 .relay-map-name {
-  fill: var(--text);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-}
-
-.relay-map-word,
-.relay-map-caption {
-  fill: var(--text-dim);
-  font-size: var(--fs-2xs);
+  font-size: max(var(--relay-fs-body-min), var(--fs-sm));
   font-weight: var(--fw-medium);
+  color: var(--text);
+  white-space: nowrap;
 }
 
-.relay-map-hub-disc {
-  fill: var(--primary);
+.relay-map-hub-body,
+.relay-map-pc-body {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space-1) / 2);
+  min-width: 0;
 }
 
-.relay-map-hub .relay-map-glyph {
-  color: var(--primary-text);
-}
-
-.relay-map-hub-small .relay-map-hub-disc {
-  fill: var(--bg-elevated);
-  stroke: var(--border-strong);
-  stroke-width: 1.5;
-}
-
-.relay-map-hub-small .relay-map-glyph {
+.relay-map-hub-meta,
+.relay-map-word {
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
+  font-weight: var(--fw-regular);
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-.relay-map-lock {
-  fill: var(--bg-panel);
-  stroke: var(--border-strong);
+.relay-map-rtt {
+  font-variant-numeric: tabular-nums;
 }
 
-.relay-map-lock-glyph {
-  color: var(--status-done);
+.relay-map-pc-btn[data-selected] {
+  background: var(--bg-elevated);
+  border-color: var(--text-dim);
 }
 
-/* the phone's map: this device, then each relay and the PCs behind it, one row each */
 .relay-map-routes {
-  display: none;
+  display: grid;
   gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.relay-map-route {
-  display: grid;
+.relay-map[data-diagram="true"] .relay-map-routes {
+  position: relative;
+  margin-top: calc(-1 * var(--space-2));
 }
 
-/* each is a grid item of the one above it: at min-width: auto a long name's row would widen the page instead of cutting the name (below) */
+.relay-map[data-diagram="true"] .relay-map-routes:not(:focus-within) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.relay-map-origin,
 .relay-map-route,
 .relay-map-fan,
 .relay-map-hop {
   min-width: 0;
 }
 
+.relay-map-route {
+  display: grid;
+}
+
 .relay-map-fan {
   display: grid;
   gap: var(--space-1);
-  margin: 0 0 0 calc(var(--avatar-size) + var(--space-2));
+  margin: var(--space-1) 0 0 calc(var(--avatar-size) + var(--space-2));
   padding: 0;
   list-style: none;
 }
@@ -182,7 +282,32 @@
   align-items: center;
   gap: var(--space-2);
   min-height: var(--avatar-size);
-  font-size: var(--fs-md);
+  font-size: max(var(--relay-fs-body-min), var(--fs-md));
+}
+
+.relay-map-hop-btn {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: max(var(--relay-fs-body-min), var(--fs-sm));
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.relay-map-hop-btn[data-selected] {
+  background: var(--bg-elevated);
+  border-color: var(--border);
 }
 
 .relay-map-hop-mark {
@@ -196,27 +321,54 @@
   place-items: center;
 }
 
+.relay-map-hop-hub-mark {
+  background: var(--accent);
+  color: var(--bg-panel);
+}
+
 .relay-map-hop-mark svg {
   width: var(--icon-size);
   height: var(--icon-size);
 }
 
 .relay-map-hop-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
+  font-weight: var(--fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* the relay's row: its host stays whole, and on a narrow phone the note drops under it instead */
-.relay-map-hop-hub {
+.relay-map-hop-hub-btn {
+  padding-inline-start: 0;
+}
+
+.relay-map-hop-hub-body {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
 }
 
 .relay-map-host {
+  max-width: 100%;
+  overflow: hidden;
   font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
+  font-size: max(var(--relay-fs-min), var(--fs-xs));
+  color: var(--text);
+  text-overflow: ellipsis;
+}
+
+.relay-map-hop-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .relay-map-hop-note {
@@ -225,21 +377,72 @@
   align-items: center;
   gap: var(--space-1);
   margin-left: auto;
-  font-size: var(--fs-xs);
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
-.relay-map-hop-note svg {
-  width: 14px;
-  height: 14px;
-  color: var(--status-done);
+.relay-map-tooltip {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-popover);
+  display: none;
+  flex-direction: column;
+  gap: calc(var(--space-1) / 2);
+  max-width: calc(var(--sidebar-w) - var(--space-6));
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-pop);
+  color: var(--text);
+  font-size: max(var(--relay-fs-body-min), var(--fs-xs));
+  line-height: var(--lh-base);
+  pointer-events: none;
 }
 
-/* the way from this device to its relay: a dotted drop, in the accent when a PC behind it was seen lately */
+.relay-map-tooltip strong {
+  font-weight: var(--fw-medium);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-map-tooltip span {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.relay-map-pc-btn:focus-visible,
+.relay-map-hub-btn:focus-visible,
+.relay-map-hop-btn:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.relay-map-pc-btn:focus-visible .relay-map-tooltip,
+.relay-map-hop-btn:focus-visible .relay-map-tooltip {
+  display: flex;
+}
+
+@media (hover: hover) {
+  .relay-map-hub-btn:hover,
+  .relay-map-pc-btn:hover,
+  .relay-map-hop-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--text-dim);
+  }
+
+  .relay-map-pc-btn:hover .relay-map-tooltip,
+  .relay-map-hop-btn:hover .relay-map-tooltip {
+    display: flex;
+  }
+}
+
 .relay-map-link {
   position: relative;
   width: var(--avatar-size);
-  height: var(--space-4);
+  height: var(--space-3);
 }
 
 .relay-map-link::before {
@@ -247,29 +450,139 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--avatar-size) / 2 - 1px);
-  border-left: 2px dotted var(--border-strong);
+  left: calc(var(--avatar-size) / 2 - var(--hairline));
+  border-left: calc(2 * var(--hairline)) dashed var(--text-dim);
 }
 
-.relay-map-link[data-live]::before {
+.relay-map-link[data-wire="live"]::before {
+  border-left-style: solid;
   border-left-color: var(--accent);
 }
 
-@media (max-width: 760px) {
-  .relay-map-legend,
-  .relay-map-svg {
+.relay-map-link[data-wire="off"]::before {
+  border-left-style: dotted;
+  border-left-color: var(--text-dim);
+}
+
+.relay-map-link[data-wire="checking"]::before {
+  border-left-style: dashed;
+  border-left-color: var(--status-working);
+}
+
+.relay-map-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.relay-map-empty-icon {
+  width: calc(2 * var(--space-6));
+  height: calc(2 * var(--space-6));
+  color: var(--text-dim);
+}
+
+.relay-map-empty-copy {
+  max-width: 65ch;
+  margin: 0;
+  font-size: max(var(--relay-fs-body-min), var(--fs-md));
+}
+
+@media (pointer: coarse) {
+  .relay-map-hub-btn,
+  .relay-map-pc-btn,
+  .relay-map-hop-btn {
+    min-height: var(--touch-target);
+  }
+}
+
+@media (max-width: 1099px) {
+  .relay-map-diagram {
     display: none;
   }
 
-  .relay-map-routes {
-    display: grid;
+  .relay-map[data-diagram="true"] .relay-map-routes,
+  .relay-map[data-diagram="true"] .relay-map-routes:not(:focus-within) {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 768px) {
+  .relay-map-diagram {
+    display: none;
+  }
+
+  .relay-map-hop-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (forced-colors: active) {
+  .relay-map-me-card,
+  .relay-map-hub-btn,
+  .relay-map-pc-btn,
+  .relay-map-hop-btn {
+    border-color: CanvasText;
+  }
+
+  .relay-map-pc-btn[data-selected],
+  .relay-map-hop-btn[data-selected] {
+    outline: calc(2 * var(--hairline)) solid Highlight;
+  }
+
+  .relay-map-hub-mark,
+  .relay-map-hop-hub-mark {
+    forced-color-adjust: none;
+    background: Canvas;
+    color: CanvasText;
+    border: var(--hairline) solid Highlight;
+  }
+
+  .relay-map-edge,
+  .relay-map-flow {
+    forced-color-adjust: none;
+    stroke: CanvasText;
+  }
+
+  .relay-map-edge[data-wire="live"],
+  .relay-map-flow {
+    stroke: Highlight;
+  }
+
+  .relay-map-wire-swatch {
+    forced-color-adjust: none;
+    background: Highlight;
+    border: var(--hairline) solid CanvasText;
+  }
+
+  .relay-map-link::before {
+    border-left-color: CanvasText;
+  }
+
+  .relay-map-link[data-wire="live"]::before {
+    border-left-color: Highlight;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .relay-map-flow,
-  .relay-map-dot {
+  .relay-map-flow {
     display: none;
     animation: none;
+  }
+
+  .relay-map-hub-btn,
+  .relay-map-pc-btn,
+  .relay-map-hop-btn {
+    transition: none;
   }
 }
