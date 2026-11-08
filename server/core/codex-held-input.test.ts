@@ -5,6 +5,8 @@ import { createSubmitText } from './composer.ts';
 import { codexInputHeld } from '../dialogs/codex.ts';
 import { registry } from '../dialogs/registry.ts';
 import * as opencode from '../opencode-native.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // herdr reports Codex at rest under its own lists and fields, so a message for its composer would be pasted into them: the
 // paste is dropped, and the Enter after it takes the row under the cursor (saving a model as the default for every new
@@ -47,10 +49,15 @@ const FREE: Record<string, string[]> = {
   'a status row wrapped onto a thread named as a key': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  esc back', ROWS],
   'such a wrapped row, the footer gone': ['› a draft', '  GPT-6-Astra ultra · /fixture ·', '  esc back'],
   'a draft with a status-shaped line over key hints': ['› note', '  gpt default · test', '  enter select · esc back', STATUS],
+  // a list never draws under the status row: its keys there are a folder or thread name wrapped onto the next row
+  'a status row wrapped onto a list\'s keys': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  enter select · esc back'],
+  'such a row at 40 columns': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /home/u… ·', '  enter select · esc back', '  ← for agents · ? for shortcuts'],
 };
 // /statusline in a narrow pane wraps its hints, the separator left at the end of the first row
 // a folder whose name ends in the separator ends the status row in it: the transcript view's keys under it still hold
 HELD['the transcript view in a folder named with a separator'] = ['» Ask Codex to do anything', '  GPT-6.1-Sol default · ~/dir ·', 'Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back'];
+// /statusline's keys broken between rows, the separator starting the next one
+HELD['/statusline wrapped before its separator'] = ['Configure Status Line', '› [x] model', '↓', '  GPT-6-Astra ultra · /fixture', '', '  enter save', '  · esc cancel'];
 HELD['/statusline at 16 columns'] = ['Configure Status', '› [x] model', '↓', '  m low · /fixt…', '', '  enter save ·', '  esc cancel'];
 // a list's screen whose last row reads as the composer's footer: the footer is the composer's only under its status row
 HELD['a list over a footer-shaped row'] = [...HELD['/permissions']!, ROWS];
@@ -60,6 +67,16 @@ describe('codexInputHeld', () => {
   for (const [name, rows] of Object.entries(HELD)) it(`holds under ${name}`, () => expect(codexInputHeld(screen(rows))).toBe(true));
   for (const [name, rows] of Object.entries(FREE)) it(`is free with ${name}`, () => expect(codexInputHeld(screen(rows))).toBe(false));
   it('reads divider rows and colour as nothing', () => expect(codexInputHeld(`\u001b[1mSelect Model\u001b[0m\n  \u001b[2menter select\u001b[0m · \u001b[2mesc back\u001b[0m\n${'─'.repeat(40)}\n`)).toBe(true));
+});
+
+// Codex 0.167's own screens as herdr's pane.read gave them at 80, 40 and 15 columns (paths renamed): a narrow pane
+// wraps the keys between words and cuts the status row and the footer short
+describe('codexInputHeld on recorded Codex 0.167 screens', () => {
+  const recorded = (name: string, cols: number) => readFileSync(join(import.meta.dir, '..', 'fixtures', `codex-held-0.167.0-${name}-${cols}.txt`), 'utf8');
+  for (const cols of [80, 40, 15]) {
+    for (const name of ['statusline', 'permissions', 'transcript']) it(`holds under ${name} at ${cols} columns`, () => expect(codexInputHeld(recorded(name, cols))).toBe(true));
+    it(`is free at the composer at ${cols} columns`, () => expect(codexInputHeld(recorded('idle', cols))).toBe(false));
+  }
 });
 
 describe('registry.holdsInput', () => {
@@ -158,6 +175,21 @@ describe('a message sent to a Codex pane', () => {
     expect(typed).toHaveBeenCalledTimes(1);
     expect(keys).not.toHaveBeenCalled();
   });
+
+  for (const code of ['agent_not_ready', 'agent_not_found'] as const) {
+    it(`types nothing raw once agent.prompt is refused with ${code} and one of its screens opened`, async () => {
+      const { read, prompt, typed, keys } = spies(FREE['its composer']!);
+      // herdr no longer names or knows the agent, and /permissions is up by then
+      prompt.mockImplementation(async () => {
+        read.mockResolvedValue({ text: screen(HELD['/permissions']!) } as Awaited<ReturnType<typeof client.paneRead>>);
+        throw new client.HerdrError(code, 'refused');
+      });
+      const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+      expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+      expect(typed).not.toHaveBeenCalled();
+      expect(keys).not.toHaveBeenCalled();
+    });
+  }
 
   it('goes to the agent at its composer', async () => {
     const { prompt } = spies(FREE['its composer at Ultra']!);

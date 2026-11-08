@@ -277,39 +277,34 @@ const CODEX_HOLD_HINT_RE = /^(?:esc (?:back|cancel|close|exit|dismiss|save\/clos
 /** The composer's status row, which may name a thread "esc back": the model and its effort come first. Its levels' `enter default ·` is no model at its default. */
 const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|medium|high|xhigh|max|ultra)(?:\s+fast)?\s+·/;
 
+/** The hints a narrow pane wraps from one row onto the next (Codex 0.167 breaks them between words): the rows read as one. */
+const codexHints = (text: string): string[] => text.split(/\s+·\s+|\s{2,}|^·\s+|\s+·$/).map((hint) => hint.trim());
+const holdsHint = (text: string): boolean => codexHints(text).some((hint) => CODEX_HOLD_HINT_RE.test(hint));
+
 /**
  * Whether a screen of Codex's own holds the input instead of its composer, whichever it is: the lists of
  * /model, /permissions, /review, /theme and /resume, /statusline, /experimental, /rename's field, the
  * agents view and the transcript view (live in 0.166). herdr reports the pane at rest under all of them,
  * so agent.prompt pastes into them: the paste is dropped, and its Enter takes the row under the cursor,
  * which saves a model as the default for every new session, or in the transcript view rewinds the
- * conversation. Read by the composer's own layout, never by what a row merely says: its mark (`›`, `»`),
- * then its draft, then its status row (model and effort first). Without that layout under the last mark
- * (a list hides the composer), each screen draws its key hints last, in its last two rows at most
- * (/resume), so a whole hint there holds the input, also over a footer-shaped last row. With it (the last
- * status-shaped row: a draft above may read like one), only a row of several hints under the status row
- * holds it (the transcript view, /statusline), a row ending in ` ·` going on in the next one (hints wrapped
- * by a narrow pane), never joined to the status row itself, whose last field may end in ` ·` (a folder named
- * so): a single `esc back` under it is a wrapped folder or thread name, and the draft above it is the user's.
+ * conversation. Read by the layout Codex 0.167 draws (server/fixtures/codex-held-0.167.0-*), never by what one
+ * row merely says. Under the last mark (`›`, `»`): the transcript view's row starts `Browsing` at any width
+ * (at 15 columns that word is all it keeps). With the composer's status row there (model and effort first, the
+ * last such row: a draft above may read like one), only what /statusline draws under it holds the input
+ * (`enter save`, `esc cancel`, read over the rows a narrow pane wraps them onto); a list never draws under a
+ * status row, so its hints there are a wrapped folder or thread name. Without it (a list hides the composer, or
+ * a narrow pane cuts the status row short), the screen's key hints come last: a whole hint in one of its last
+ * rows holds the input, or in those rows read as one (`enter` / `select ·` / `esc back` at 15 columns).
  */
 export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
-  const hints = (row: string): string[] => row.split(/\s+·\s+|\s{2,}/);
   const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
-  const status = findLastIndex(rows, (row, index) => index > composer && CODEX_STATUS_ROW_RE.test(row));
-  if (composer < 0 || status < 0) return rows.slice(-2).some((row) => !/^[›»]/.test(row) && hints(row).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
-  // the rows under the status row, each joined to the next while it ends in a separator
-  const lines: string[] = [];
-  let joined = false;
-  for (const row of rows.slice(status + 1)) {
-    if (joined) lines[lines.length - 1] += ` ${row}`;
-    else lines.push(row);
-    joined = /\s·$/.test(row);
-  }
-  return lines.some((line) => {
-    const parts = hints(line.replace(/\s·$/, ""));
-    return parts.length > 1 && parts.some((hint) => CODEX_HOLD_HINT_RE.test(hint));
-  });
+  const under = rows.slice(composer + 1);
+  if (under.some((row) => /^Browsing(?:\s|$)/.test(row))) return true;
+  const status = findLastIndex(under, (row) => CODEX_STATUS_ROW_RE.test(row));
+  if (composer >= 0 && status >= 0) return codexHints(under.slice(status + 1).join(" ")).some((hint) => /^(?:enter save|esc cancel)$/.test(hint));
+  const last = under.slice(-4);
+  return last.some(holdsHint) || holdsHint(last.join(" "));
 }
 
 function parseCodexModel(screen: string): ParsedPrompt | null {

@@ -1,0 +1,40 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/user/.cache/ovis-tmp/test-dirs/project-01/qa/work
+
+
+› hello
+
+
+• stand-in answer
+
+  Worked for <1s • 4:04 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-5.5 default · /home/user/.cache/ovis-tmp/test-dirs/project-01/qa/work
+  Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back

@@ -383,8 +383,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       inTime();
       if (held) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     };
-    /** typed past a collapsed Codex queue (blockedOnlyByCodexQueue): the raw paste reads the screen once more first */
-    let pastCodexQueue = false;
+    /** a Codex send agent.prompt refused, typed raw instead (a collapsed queue, or herdr not naming or not knowing the agent): the paste and its Enter each read the screen right before */
+    let codexFallback = false;
     /** A write mayType stopped fails with the sender's own refusal (read_only, device_revoked), not herdr's `cancelled`. */
     const refusal = (error: unknown): never => { throw refused ?? error; };
     const typed = Date.now() - (lastTyped.get(paneId) ?? 0);
@@ -640,7 +640,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           // nor typed past a collapsed queue: herdr cannot type only if the agent still runs, and Codex may exit first
           const queuedOnly = !agentOnly && error.code === "agent_blocked" && await blockedOnlyByCodexQueue(paneId);
           if (error.code !== "agent_not_found" && error.code !== "agent_not_ready" && !queuedOnly) throw error;
-          pastCodexQueue = queuedOnly;
+          codexFallback = agent === "codex";
         }
       }
       // one long line from the input line: herdr's agent.prompt pastes it in the agent's own paste mode and
@@ -664,13 +664,13 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       // asked only for such a block, so a one-line message never waits on it.
       const shaped = await mirrorInput(closeMention(payload), async () => await terminalAttach() ? null : await paneAgentOf(paneId));
       inTime();
-      // typed past a collapsed Codex queue: a list opened since blockedOnlyByCodexQueue's read gets nothing
-      if (pastCodexQueue) await codexScreenFree(paneId);
+      // a Codex send typed raw: a list opened since the earlier reads gets nothing
+      if (codexFallback) await codexScreenFree(paneId);
       await paneSendText(paneId, shaped, undefined, mayType).catch(refusal);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
       // and its Enter: one of Codex's own screens that opened over the paste would take it for a row
-      if (pastCodexQueue) {
+      if (codexFallback) {
         // the paste is in: a read that fails leaves the send as unconfirmed as a screen that opened over it
         const unsent = new HerdrError("submit_partial", "The message was pasted into Codex, but its Enter was not sent. Your chat text stayed here. Check the terminal before sending again.");
         const screen = await paneRead({ paneId, source: "detection", format: "text" }).catch(() => { throw unsent; });

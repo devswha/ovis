@@ -1,0 +1,38 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/user/.cache/…/qa/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-5.5 default · /home/user/.c…
+  ← for agents · ? for shortcuts

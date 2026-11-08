@@ -548,22 +548,24 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /**
    * The screen once more, right before a write and after every other check: a masked prompt that came up while those were
-   * awaited gets no paste and no Enter. Then the bound process's start again, which costs no herdr call: one that took
-   * its PID during this read is not written to. herdr cannot compare and write in one step, so what changes during the
-   * last reads or herdr's write is still not seen: the window is those reads and the write's own call.
+   * awaited gets no paste and no Enter. The bound process's start is read first (no herdr call), so this screen read is
+   * the last await before the write. herdr cannot compare and write in one step, so what changes during that read or
+   * herdr's write is still not seen: the window is that read and the write's own call.
    */
   async function noMaskedPrompt(paneId: string, cols: number | undefined, pinned: PendingIdentity | null): Promise<void> {
+    await sameStart(pinned);
     if (secretPrompt((await paneRead({ paneId, source: "detection", format: "text" })).text, cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
     }
-    await sameStart(pinned);
   }
   /**
    * noMaskedPrompt's look, the last before the paste and before its Enter, also for what holds the agent's input
    * on the screen alone (registry.holdsInput, as pendingContext reads it): one of Codex's own lists that opened
-   * after the earlier reads gets no paste and no Enter.
+   * after the earlier reads gets no paste and no Enter. The bound process's start is read first, so this screen
+   * read is the last await before the write: nothing opened during another wait goes unseen.
    */
   async function freeForWrite(paneId: string, look: { cols: number | undefined; pinned: PendingIdentity | null; agent: string | null }): Promise<void> {
+    await sameStart(look.pinned);
     const seen = drawn.get(paneId) ?? 0;
     const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
     if (secretPrompt(screen, look.cols) !== null) {
@@ -574,7 +576,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (status === "idle" || status === "done") throw new ScreenHeldError(status === "idle" ? "idle" : "done", seen);
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }
-    await sameStart(look.pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
     authorizePending(owner, paneId, lease);

@@ -91,6 +91,23 @@ it("pastes nothing into a Codex list that opened after the queued message's firs
   expect(d.writes).toEqual([]);
 });
 
+it("reads the screen as the last wait before the queued paste and before its Enter, so a list opened during another wait is seen", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen(COMPOSER);
+  // every wait of the delivery that may let a list open: herdr's screen reads and the bound process's start
+  const waits: string[] = [];
+  (processStart.processStartedAtAsync as unknown as { mockImplementation(run: () => Promise<number>): void }).mockImplementation(async () => { waits.push("start"); return 1000; });
+  d.hooks.read = () => { waits.push("read"); };
+  d.hooks.paste = () => { waits.push("paste"); };
+  d.hooks.enter = () => { waits.push("enter"); };
+  d.setStatus("idle");
+  await d.settled();
+  expect(waits.filter((wait) => wait === "paste" || wait === "enter")).toEqual(["paste", "enter"]);
+  expect(waits[waits.indexOf("paste") - 1]).toBe("read");
+  expect(waits[waits.indexOf("enter") - 1]).toBe("read");
+});
+
 it("sends no Enter into a Codex list that opened after the paste's own look", async () => {
   const d = delivery({ pid: 41001, name: "codex" }, "working");
   await d.submit(1, "queue");

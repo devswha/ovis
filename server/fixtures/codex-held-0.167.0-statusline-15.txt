@@ -1,0 +1,18 @@
+
+  Configur
+  e Status
+  Line
+  Select
+  which
+  Type to
+
+› [x] … App…
+↓
+  GPT-5.5…
+  space
+  toggle ·
+  ←/→
+  reorder ·
+  enter save
+  · esc
+  cancel

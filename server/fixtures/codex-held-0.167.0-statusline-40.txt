@@ -1,0 +1,38 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/user/.cache/…/qa/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Configure Status Line
+  Select which items to display in
+  the status line.
+
+  Type to search
+
+› [x] Use theme colors   Apply color…
+  ───────────────────────
+  [x] model-with-reason… Current mod…
+  [x] current-dir        Current wor…
+  [x] thread-name        Current thr…
+  [ ] model              Current mod…
+  [ ] reasoning          Current rea…
+  [ ] project-name       Project nam…
+↓
+  GPT-5.5 default · /home/user/…
+  space toggle · ←/→ reorder · enter
+  save · esc cancel

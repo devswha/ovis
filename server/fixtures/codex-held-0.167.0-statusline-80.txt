@@ -1,0 +1,40 @@
+
+  >_ OpenAI Codex (v0.167.0)
+     /home/user/.cache/ovis-tmp/test-dirs/project-01/qa/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Configure Status Line
+  Select which items to display in the status line.
+
+  Type to search
+
+› [x] Use theme colors      Apply colors from the active /theme
+  ───────────────────────
+  [x] model-with-reasoning  Current model name with reasoning level
+  [x] current-dir           Current working directory
+  [x] thread-name           Current thread name (omitted when unnamed)
+  [ ] model                 Current model name
+  [ ] reasoning             Current reasoning level
+  [ ] project-name          Project name (omitted when unavailable)
+↓
+  GPT-5.5 default · /home/user/.cache/ovis-tmp/test-dirs/project-01/qa/work · thread name
+  space toggle · ←/→ reorder · enter save · esc cancel
