@@ -14,7 +14,7 @@ const none = () => {};
 const props = (state: RelayShellProps["state"]): RelayShellProps => ({ state, scoped: true, iosTab: false, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none });
 /** The dashboard's table row for the PC named `name`, as rendered. */
 const rowOf = (html: string, name: string): string => {
-  const row = [...html.matchAll(/<tr data-pc-state="[^"]+">[\s\S]*?<\/tr>/g)].map((m) => m[0]).find((r) => r.includes(`<b>${name}</b>`));
+  const row = [...html.matchAll(/<tr data-pc-state="[^"]+">[\s\S]*?<\/tr>/g)].map((m) => m[0]).find((r) => r.includes(`>${name}</b>`));
   if (row === undefined) throw new Error(`no row for ${name}`);
   return row;
 };
@@ -182,29 +182,38 @@ describe("the dashboard", () => {
   it("sums the model into the strip: counts, relays in the map's order with their kind, and what needs attention", () => {
     const html = render(signedIn(four()));
     expect(html).toContain('data-dashboard-mode="account"');
-    // the header counts the account's PCs: MacBook, paired by QR alone, is a row and not one of them
-    expect(html).toContain("3 PCs in your account");
-    expect(html).not.toContain("4 PCs in your account");
-    const counts = [...html.matchAll(/<li><span class="relay-dash-dot" data-pc-state="[^"]+" aria-hidden="true"><\/span>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
+    // IS-FRAME-06: no subtitle in the page header (the count lives in the strip and sidebar)
+    expect(html).not.toContain("relay-dash-sub");
+    const counts = [...html.matchAll(/<li><svg class="status-dot"[^>]*>[\s\S]*?<\/svg>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
     expect(counts).toEqual([["Ready", 2], ["Needs you", 2], ["Offline", 1]]);
     const relays = [...html.matchAll(/<code class="relay-dash-host">([^<]+)<\/code><span>([^<]+)<\/span><span>([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
     expect(relays).toEqual([["relay-ap.ovis.sh", "3 PCs", "regional"], ["relay.ovis.sh", "1 PC", "global"]]);
     expect(html).toContain("Needs attention · 2");
-    const attention = [...html.matchAll(/<span class="relay-dash-attention-name">([^<]+)<\/span><small>([^<]+)<\/small>/g)].map(([, name, why]) => [name, why]);
+    const attention = [...html.matchAll(/<span class="relay-dash-attention-name"[^>]*>([^<]+)<\/span><small>([^<]+)<\/small>/g)].map(([, name, why]) => [name, why]);
     expect(attention).toEqual([["Mac mini", "Needs approval"], ["Home server", "Offline · 20 h ago"]]);
-    // the map has a case of its own below; the nav counts the PCs
-    expect(html).toContain('data-slot="relay-map"');
+    // Overview ends with the Connection map disclosure to #relay; the nav counts the PCs
+    expect(html).not.toContain('data-slot="relay-map"');
+    expect(html).toContain('class="relay-dash-map-disclosure"');
     expect(html).toContain('<span class="relay-dash-nav-count">4</span>');
   });
 
-  it("draws the connection map from the model between the strip and the table, and none for an empty account", () => {
-    const html = render(signedIn(four()));
-    const map = /<section class="relay-dash-map" data-slot="relay-map"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
-    expect(text(map)).toContain("Connection map");
-    expect(map).toMatch(/<svg class="relay-map-svg" viewBox="[^"]+" role="img" aria-label="Connection map: This device\. Relays: relay-ap\.ovis\.sh, relay\.ovis\.sh\. PCs: 4\. Seen lately: 1\. Ready: 2\. Needs you: 1\. Offline: 1\."/);
-    expect(map).toContain('class="relay-map-routes"');
-    expect(html.indexOf('class="relay-dash-summary"')).toBeLessThan(html.indexOf(map));
-    expect(html.indexOf(map)).toBeLessThan(html.indexOf('id="relay-dash-pcs"'));
+  it("places a Connection map disclosure after the table on Overview, draws the full map on #relay, and omits both for an empty account", () => {
+    const overview = render(signedIn(four()));
+    expect(overview).not.toContain('data-slot="relay-map"');
+    expect(overview.indexOf('class="relay-dash-summary"')).toBeLessThan(overview.indexOf('id="relay-dash-pcs"'));
+    expect(overview.indexOf('id="relay-dash-pcs"')).toBeLessThan(overview.indexOf('class="relay-dash-map-disclosure"'));
+    const prevWin = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#relay" } } });
+    try {
+      const relayHtml = render(signedIn(four()));
+      const map = /<section class="relay-dash-map" data-slot="relay-map"[\s\S]*?<\/section>/.exec(relayHtml)?.[0] ?? "";
+      expect(text(map)).toContain("Connection map");
+      expect(map).toMatch(/<svg class="relay-map-svg" viewBox="[^"]+" role="img" aria-label="Connection map: This device\. Relays: relay-ap\.ovis\.sh, relay\.ovis\.sh\. PCs: 4\. Seen lately: 1\. Ready: 2\. Needs you: 1\. Offline: 1\."/);
+      expect(map).toContain('class="relay-map-routes"');
+    } finally {
+      if (prevWin) Object.defineProperty(globalThis, "window", prevWin);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
     const empty = render(signedIn([]));
     expect(empty).not.toContain('role="img"');
     expect(empty).not.toContain("relay-map");
@@ -235,7 +244,7 @@ describe("the dashboard", () => {
     const answered = { kind: "answered", route: "relay", rttMs: 13 } as const;
     const html = render(signedIn(four(), { pcStatus: new Map([[ids.home, answered], [ids.desk, answered]]), onCheckPcs: none }));
     const cell = (name: string) => /<td class="relay-dash-state-cell">([\s\S]*?)<\/td>/.exec(rowOf(html, name))?.[1] ?? "";
-    expect(cell("Home server")).toContain('<span class="relay-dash-dot" data-pc-state="offline"');
+    expect(cell("Home server")).toContain('<svg class="status-dot" data-state="offline"');
     const state = (html: string) => /<span class="relay-dash-state">([\s\S]*?)<\/span>(?=<small|$)/.exec(html)?.[1] ?? "";
     expect(text(state(cell("Home server")))).toBe("Offline · 20 h ago");
     expect(cell("Home server")).not.toContain("connection-line");
@@ -249,44 +258,49 @@ describe("the dashboard", () => {
     expect(downCell).not.toContain("relay-dash-state-note");
   });
 
-  it("gives a phone's tab bar the sidebar's places: Overview, PCs and Devices as links to what is there, Settings a row with no page, Relay the sidebar's alone", () => {
+  it("gives both the sidebar and a phone's tab bar the five real routes: Overview, PCs, Devices, Relay and Settings", () => {
     const html = render(signedIn(four()));
-    const tabs = /<nav class="relay-dash-tabs">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
-    // the class is what RelayDashboard.css hangs the touch target on, so every tab carries it
+    const tabs = /<nav class="relay-dash-tabs"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
     const items = [...tabs.matchAll(/<(a|span) class="relay-dash-tab"([^>]*)><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/(?:a|span)>/g)].map(([, tag, attrs, label]) => [tag, label, attrs!.trim()]);
     expect(items).toEqual([
-      ["a", "Overview", 'href="#relay-dash-overview" aria-current="page"'],
-      ["a", "PCs", 'href="#relay-dash-pcs"'],
-      ["a", "Devices", 'href="#relay-dash-device"'],
-      ["span", "Settings", 'aria-disabled="true"'],
+      ["a", "Overview", 'href="#overview" aria-current="page"'],
+      ["a", "PCs", 'href="#pcs"'],
+      ["a", "Devices", 'href="#devices"'],
+      ["a", "Relay", 'href="#relay"'],
+      ["a", "Settings", 'href="#settings"'],
     ]);
     expect(tabs).not.toContain("relay-dash-nav-count");
-    for (const target of ["relay-dash-overview", "relay-dash-pcs", "relay-dash-device"]) expect(html).toContain(`id="${target}"`);
-    const side = /<nav class="relay-dash-nav">([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
+    const side = /<nav class="relay-dash-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? "";
     expect([...side.matchAll(/<(a|span) class="relay-dash-nav-item"([^>]*)>/g)].map(([, tag, attrs]) => [tag, attrs!.trim()])).toEqual([
-      ["a", 'href="#relay-dash-overview" aria-current="page"'], ["a", 'href="#relay-dash-pcs"'], ["a", 'href="#relay-dash-device"'], ["a", 'href="#relay-dash-relays"'], ["span", 'aria-disabled="true"'],
+      ["a", 'href="#overview" aria-current="page"'], ["a", 'href="#pcs"'], ["a", 'href="#devices"'], ["a", 'href="#relay"'], ["a", 'href="#settings"'],
     ]);
-    // the cell the phone's row layout places under the name
     expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell">');
   });
 
-  it("counts the account's own PCs in the header, never a PC paired by QR alone", () => {
-    // the directory empty, this device paired with one PC by QR: a row, and nothing in the account yet
+  it("keeps a PC paired by QR alone marked as not in the account while counting every PC in the sidebar and strip", () => {
+    const countsOf = (html: string) => [...html.matchAll(/<li><svg class="status-dot"[^>]*>[\s\S]*?<\/svg>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
+    // the directory empty, this device paired with one PC by QR: a row, marked not in the account yet
     const alone = render(signedIn([pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
-    expect(text(alone)).toContain("0 PCs in your account");
-    expect(alone).not.toContain("1 PC in your account");
+    expect(alone).not.toContain("relay-dash-sub");
     expect(text(rowOf(alone, "MacBook"))).toContain("paired by QR · not in the account yet");
-    // the sidebar's PCs row counts the table's rows, as the strip and the map count every PC
+    expect(text(rowOf(alone, "MacBook"))).not.toContain("in your account");
     expect(alone).toContain('<span class="relay-dash-nav-count">1</span>');
-    const one = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
-    expect(text(one)).toContain("1 PC in your account");
+    expect(countsOf(alone)).toEqual([["Ready", 1], ["Needs you", 0], ["Offline", 0]]);
+    // one listed in the account + one paired by QR alone: only the listed row says "in your account"
+    const both = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
+    expect(text(rowOf(both, "Desk PC"))).toContain("in your account");
+    expect(text(rowOf(both, "MacBook"))).toContain("paired by QR · not in the account yet");
+    expect([...both.matchAll(/<small>in your account<\/small>/g)]).toHaveLength(1);
+    expect([...both.matchAll(/<small>paired by QR · not in the account yet<\/small>/g)]).toHaveLength(1);
+    expect(both).toContain('<span class="relay-dash-nav-count">2</span>');
+    expect(countsOf(both)).toEqual([["Ready", 2], ["Needs you", 0], ["Offline", 0]]);
   });
 
-  it("says who is signed in at the sidebar's foot, with Sign out and the way out of the account", () => {
+  it("says who is signed in at the sidebar's foot with Sign out, while keeping device removal in Devices", () => {
     const html = render(signedIn(four()));
     const foot = /<div class="relay-dash-foot"[\s\S]*?<\/aside>/.exec(html)![0];
     expect(text(foot)).toContain("Signed in with GitHub");
-    expect([...foot.matchAll(/<button type="button" class="account-link[^"]*">([^<]+)</g)].map(([, label]) => label)).toEqual(["Sign out", "Remove this device from your account"]);
+    expect([...foot.matchAll(/<button type="button" class="account-link[^"]*">([^<]+)</g)].map(([, label]) => label)).toEqual(["Sign out"]);
     expect(html.match(/<h1/g)).toHaveLength(1);
     expect(html).toContain("Overview");
   });
@@ -359,31 +373,24 @@ describe("the dashboard", () => {
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
     const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.type === "b")));
 
-    it("keeps the sidebar's foot after the page on a phone, so Tab reaches Add a PC before Sign out, and in the sidebar on a desktop", async () => {
-      /** every control, in the order Tab visits it: the links with a page and the buttons */
+    it("keeps the account foot in the desktop sidebar and moves account controls to the Devices view on a phone", async () => {
       const stops = () => renderer!.root.findAll((node) => node.type === "button" || (node.type === "a" && node.props.href !== undefined)).map((node) => textOf(node).trim());
       await mount(signedIn(four()));
       const desktop = stops();
       expect(desktop.indexOf("Sign out")).toBeLessThan(desktop.indexOf("Add a PC"));
+      expect(desktop).not.toContain("Remove this device from your account");
       await act(async () => { renderer!.unmount(); });
-      // a phone: the one-column layout of RelayDashboard.css, which draws the foot after the page
-      const narrow = (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} });
+      const narrow = (query: string) => ({ matches: query === "(max-width: 768px)", addEventListener() {}, removeEventListener() {} });
       (window as unknown as { matchMedia: typeof narrow }).matchMedia = narrow;
       await mount(signedIn(four()));
-      const phone = stops();
-      expect(phone.indexOf("Add a PC")).toBeLessThan(phone.indexOf("Sign out"));
-      // the foot follows the table's last action and precedes the tab bar
-      expect(phone.lastIndexOf("Details")).toBeLessThan(phone.indexOf("Sign out"));
-      expect(phone.indexOf("Sign out") + 1).toBe(phone.indexOf("Remove this device from your account"));
-      expect(phone.indexOf("Remove this device from your account")).toBeLessThan(phone.lastIndexOf("Overview"));
-      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash-foot")).toHaveLength(1);
+      expect(renderer!.root.findAll((node) => node.props.className === "relay-dash-foot")).toHaveLength(0);
     });
 
     it("narrows the table: Needs you hides the ready and offline rows, Ready the others, All brings them back", async () => {
       await mount(signedIn(four()));
       expect(rows()).toEqual(["Desk PC", "MacBook", "Mac mini", "Home server"]);
       await act(async () => { button("Needs you").props.onClick(); });
-      expect(rows()).toEqual(["Mac mini"]);
+      expect(rows()).toEqual(["Mac mini", "Home server"]);
       expect(button("Needs you").props["aria-pressed"]).toBe(true);
       await act(async () => { button("Ready").props.onClick(); });
       expect(rows()).toEqual(["Desk PC", "MacBook"]);
@@ -483,7 +490,7 @@ describe("the dashboard", () => {
       const foot = renderer!.root.findByProps({ className: "relay-dash-foot" });
       expect(textOf(foot)).toContain("Without an account");
       expect(textOf(foot)).not.toContain("Sign out");
-      expect(textOf(renderer!.root.find((node) => node.type === "p" && node.props.className === "relay-dash-sub"))).toBe("2 PCs paired with this device");
+      expect(renderer!.root.findAll((node) => node.type === "p" && node.props.className === "relay-dash-sub")).toHaveLength(0);
       // the strip counts them ready, both on their own relays
       expect(renderer!.root.findAll((node) => node.type === "code").map(textOf)).toEqual(["relay-ap.ovis.sh", "relay.ovis.sh"]);
       await act(async () => { foot.find((node) => node.type === "button").props.onClick(); });

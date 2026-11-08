@@ -1,12 +1,9 @@
 /*
- * The relay dashboard (RelayDashboard.tsx): the app's sidebar grid (DESIGN.md, sidebar roster row:
- * one grid, neutral hover fill, the selected row's fill and no stroke) beside one column of panels
- * on --bg. Tokens only; every count in tabular numerals; every control a finger can reach grows to
- * --touch-target through the .btn, .segmented and .account-link rules it reuses. A phone (760px and
- * under, the block at the end) gets one column: a top bar, a tab bar at the bottom, the table as rows.
+ * The relay dashboard (RelayDashboard.tsx): a 240px sticky sidebar on --bg-panel beside a
+ * 1280px-capped main column on --bg. At 768px and under, one column with a sticky glass top bar
+ * (--header-h + safe area) and a fixed 5-item bottom tab bar (--tabbar-h + safe area).
  */
 
-/* the <main> the shell gives the dashboard: the whole viewport, no card */
 .relay-dash-screen {
   display: grid;
   min-height: 100dvh;
@@ -15,46 +12,61 @@
 }
 
 .relay-dash {
-  /* the sidebar: narrower than the app's roster, which has rows to fill; aliases of existing tokens only */
-  --dash-side-w: calc(var(--sidebar-w) - 2 * var(--space-8) - var(--space-4));
-  --dash-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-panel));
-  --dash-selected: var(--bg-hover);
   display: grid;
-  grid-template-columns: var(--dash-side-w) minmax(0, 1fr);
+  grid-template-columns: var(--relay-sidebar-w) minmax(0, 1fr);
   min-width: 0;
 }
 
 /* ---- sidebar ---- */
 
-/* the column stretches to the grid's row, so its fill and hairline reach the end of a page taller than the viewport */
 .relay-dash-side {
   background: var(--bg-panel);
   border-right: var(--hairline) solid var(--divider);
 }
 
-/* the box inside sticks to the viewport, one screen tall, its foot at the bottom */
 .relay-dash-side-box {
   position: sticky;
   top: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 8px;
   height: 100dvh;
   height: var(--app-height, 100dvh);
   padding: calc(var(--space-3) + env(safe-area-inset-top, 0px)) var(--space-2) calc(var(--space-3) + env(safe-area-inset-bottom, 0px)) calc(var(--space-2) + env(safe-area-inset-left, 0px));
 }
 
-.relay-dash-brand {
+@media (max-height: 520px) {
+  .relay-dash-side-box {
+    position: static;
+    height: auto;
+  }
+}
+
+.relay-dash-brand-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.relay-dash-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-height: var(--control-h);
-  margin: 0 0 var(--space-3);
   padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
   color: var(--text-strong);
   font-size: var(--fs-md);
-  font-weight: var(--fw-bold);
+  font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-tight);
+  text-decoration: none;
+}
+
+.relay-dash-brand:focus-visible {
+  outline: var(--ring);
+  outline-offset: calc(-1 * var(--ring-offset));
 }
 
 .relay-dash-brand-mark {
@@ -65,85 +77,101 @@
 .relay-dash-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 
-/* one grid for every row: a --control-h leading cell for the glyph, the words, a trailing count */
 .relay-dash-nav-item {
-  display: grid;
-  grid-template-columns: var(--control-h) minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
+  gap: 8px;
   min-height: var(--control-h);
-  padding-right: var(--space-3);
+  padding: 0 var(--space-2);
   border-radius: var(--radius-md);
   color: var(--text);
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   text-decoration: none;
-  transition: background-color var(--dur-fast) var(--ease-out);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.relay-dash-nav-item > span:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .relay-dash-nav-item svg {
-  width: var(--icon-size);
-  height: var(--icon-size);
-  justify-self: center;
+  flex: none;
+  width: var(--relay-control-icon-size);
+  height: var(--relay-control-icon-size);
   color: var(--text-dim);
 }
 
-.relay-dash-nav-item:hover {
-  background: var(--dash-hover);
+@media (hover: hover) {
+  .relay-dash-nav-item:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.relay-dash-nav-item:active {
+  background: var(--bg-hover);
 }
 
 .relay-dash-nav-item[aria-current="page"] {
-  background: var(--dash-selected);
-  color: var(--text-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
 }
 
 .relay-dash-nav-item[aria-current="page"] svg {
-  color: var(--accent);
+  color: currentColor;
 }
 
-/* keyboard focus draws the ring inside the row, so it is not clipped by the panel's edge */
 .relay-dash-nav-item:focus-visible {
   outline: var(--ring);
   outline-offset: calc(-1 * var(--ring-offset));
 }
 
-.relay-dash-nav-item[aria-disabled="true"] {
-  color: var(--text-dim);
-  cursor: default;
-}
-
-.relay-dash-nav-item[aria-disabled="true"]:hover {
-  background: transparent;
-}
-
 .relay-dash-nav-count {
+  flex: none;
   font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
 
-/* forced colors repaint the fill as Canvas: the current row keeps a Highlight leading bar, as the app's sidebar does */
 @media (forced-colors: active) {
-  .relay-dash-nav-item[aria-current="page"] {
-    border-inline-start: calc(2 * var(--hairline)) solid Highlight;
+  .relay-dash-nav-item[aria-current="page"],
+  .relay-dash-tab[aria-current="page"] {
+    outline: calc(2 * var(--hairline)) solid Highlight;
+    outline-offset: calc(-1 * var(--ring-offset));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-dash-nav-item,
+  .relay-dash-tab,
+  .relay-dash-map-disclosure {
+    transition: none;
   }
 }
 
 .relay-dash-foot {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 8px;
   margin-top: auto;
-  padding: var(--space-3) var(--space-2) 0;
+  padding-top: 12px;
+  padding-left: 8px;
+  padding-right: 8px;
   border-top: var(--hairline) solid var(--border);
 }
 
 .relay-dash-who {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
   min-height: var(--control-h);
   margin: 0;
   font-size: var(--fs-sm);
@@ -171,14 +199,25 @@
 
 .relay-dash-main {
   min-width: 0;
-  padding: var(--space-5) calc(var(--space-6) + env(safe-area-inset-right, 0px)) calc(var(--space-8) + env(safe-area-inset-bottom, 0px)) var(--space-6);
+}
+
+.relay-dash-content {
+  width: 100%;
+  max-width: var(--relay-content-w);
+  margin-inline: auto;
+  min-width: 0;
+  padding-top: 24px;
+  padding-right: calc(var(--space-6) + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(var(--space-8) + env(safe-area-inset-bottom, 0px));
+  padding-left: 24px;
 }
 
 .relay-dash-top {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
 }
 
 .relay-dash-top-text {
@@ -195,26 +234,107 @@
   color: var(--text-strong);
 }
 
-.relay-dash-sub {
-  margin: var(--space-1) 0 0;
-  font-size: var(--fs-sm);
+.relay-dash-title:focus {
+  outline: none;
+}
+
+.relay-dash-title:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- section headings & view stack ---- */
+
+.relay-dash-h {
+  margin-top: 24px;
+  margin-bottom: 12px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--tracking-caps);
+  line-height: var(--lh-tight);
+  text-transform: uppercase;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
 
-.relay-dash-top .btn svg {
-  width: var(--icon-size);
-  height: var(--icon-size);
+.relay-dash-cell > .relay-dash-h,
+.relay-dash-map > .relay-dash-h,
+.relay-dash-panel > .relay-dash-h:first-child,
+.relay-dash-pcs-head > .relay-dash-h {
+  margin-top: 0;
 }
 
-/* a PC waiting on this device: one line in the waiting state's tint, with the row's own action */
+.relay-dash-pcs-head > .relay-dash-h {
+  margin-bottom: 0;
+}
+
+.relay-dash-view-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.relay-dash-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.relay-dash-device-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--control-h);
+}
+
+.relay-dash-device-icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+}
+
+.relay-dash-device-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.relay-dash-account-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.relay-dash-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- notice & summary ---- */
+
 .relay-dash-notice {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
-  padding: var(--space-3) var(--space-4);
-  background: var(--status-working-tint);
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-left: 16px;
+  padding-right: 16px;
+  background: var(--notice-tint);
   border-radius: var(--radius-lg);
   font-size: var(--fs-md);
   color: var(--text);
@@ -227,11 +347,10 @@
   overflow-wrap: anywhere;
 }
 
-/* the summary strip: counts, relays, what needs attention, three cells parted by hairlines */
 .relay-dash-summary {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr) minmax(0, 1fr);
-  margin-bottom: var(--space-4);
+  margin-bottom: 24px;
   background: var(--bg-panel);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
@@ -240,21 +359,14 @@
 
 .relay-dash-cell {
   min-width: 0;
-  padding: var(--space-3) var(--space-4);
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .relay-dash-cell + .relay-dash-cell {
   border-left: var(--hairline) solid var(--border);
-}
-
-.relay-dash-h {
-  margin: 0 0 var(--space-2);
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
 }
 
 .relay-dash-counts,
@@ -262,7 +374,7 @@
 .relay-dash-attention {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -273,7 +385,7 @@
 .relay-dash-counts li {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
   min-height: var(--space-6);
 }
 
@@ -288,11 +400,25 @@
 .relay-dash-relays li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: var(--space-3);
+  gap: 12px;
   align-items: center;
   min-height: var(--space-6);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+.relay-dash-relay-filter {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  max-width: 100%;
+  padding-left: 8px;
+  padding-right: 8px;
+  min-height: var(--chip-h);
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 
 .relay-dash-host {
@@ -307,12 +433,8 @@
 .relay-dash-attention li {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--space-2);
+  gap: 8px;
   align-items: start;
-}
-
-.relay-dash-attention li .relay-dash-dot {
-  margin-top: calc(var(--space-2) - var(--hairline));
 }
 
 .relay-dash-attention-name {
@@ -334,52 +456,145 @@
   color: var(--text-dim);
 }
 
-/* the state's dot, the same four as AccountPcs.css: offline is a hollow ring, so it never reads as a colour alone */
-.relay-dash-dot {
-  display: inline-block;
-  flex: none;
-  box-sizing: border-box;
-  width: var(--dot-size);
-  height: var(--dot-size);
-  border-radius: 50%;
-  background: var(--status-idle);
-}
-
-.relay-dash-dot[data-pc-state="paired"] { background: var(--status-done); }
-.relay-dash-dot[data-pc-state="needs-approval"] { background: var(--status-working); }
-.relay-dash-dot[data-pc-state="needs-update"] { background: var(--status-blocked); }
-.relay-dash-dot[data-pc-state="offline"] { background: transparent; border: var(--hairline) solid var(--status-idle); }
-
-/* the connection map (RelayMap.tsx) in the strip's frame: the heading, then the map's own legend and drawing, or its route list on a phone */
 .relay-dash-map {
-  margin-bottom: var(--space-4);
-  padding: var(--space-3) var(--space-4) var(--space-4);
+  margin-bottom: 24px;
+  padding: 16px;
   background: var(--bg-panel);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
 }
 
-/* ---- the PC table ---- */
+.relay-dash-map-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--touch-target);
+  margin-top: 24px;
+  padding-left: 12px;
+  padding-right: 12px;
+  background: var(--bg-panel);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.relay-dash-map-disclosure > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.relay-dash-map-disclosure svg {
+  flex: none;
+  width: var(--relay-control-icon-size);
+  height: var(--relay-control-icon-size);
+  color: var(--text-dim);
+}
+
+@media (hover: hover) {
+  .relay-dash-map-disclosure:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.relay-dash-map-disclosure:active {
+  background: var(--bg-hover);
+}
+
+/* ---- the PC table & details ---- */
 
 .relay-dash-pcs-head {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin: var(--space-2) 0;
+  gap: 12px;
+  margin-top: 24px;
+  margin-bottom: 12px;
 }
 
-.relay-dash-pcs-head h2 {
-  flex: 1;
+.relay-dash-pcs-head > .relay-dash-h {
+  flex: 1 1 auto;
   min-width: 0;
-  margin: 0;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-semibold);
-  color: var(--text-strong);
 }
 
 .relay-dash-pcs-head .account-link {
   width: auto;
   margin-top: 0;
+}
+
+.relay-dash-pcs-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  min-width: 0;
+}
+
+@media (min-width: 1100px) {
+  .relay-dash-pcs-split.is-selected {
+    grid-template-columns: minmax(0, 1fr) var(--relay-detail-w);
+  }
+}
+
+.relay-dash-pcs-list {
+  min-width: 0;
+}
+
+.relay-dash-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--bg-panel);
+  border-left: var(--hairline) solid var(--divider);
+  border-radius: var(--radius-lg);
+}
+
+.relay-dash-details-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--touch-target);
+}
+
+.relay-dash-details-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.relay-dash-details-dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  row-gap: 8px;
+  column-gap: 16px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.relay-dash-details-dl dt {
+  color: var(--text-dim);
+}
+
+.relay-dash-details-dl dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.relay-dash-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .relay-dash-table {
@@ -389,14 +604,16 @@
   font-size: var(--fs-md);
 }
 
-.relay-dash-col-name { width: 34%; }
-.relay-dash-col-state { width: 22%; }
-.relay-dash-col-relay { width: 20%; }
+.relay-dash-col-name { width: 36%; }
+.relay-dash-col-state { width: 18%; }
+.relay-dash-col-relay { width: 22%; }
 .relay-dash-col-seen { width: 12%; }
 .relay-dash-col-act { width: 12%; }
 
 .relay-dash-table th {
-  padding: var(--space-2) var(--space-3);
+  height: var(--relay-table-head-h);
+  padding-left: 12px;
+  padding-right: 12px;
   border-bottom: var(--hairline) solid var(--border);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
@@ -405,27 +622,35 @@
 }
 
 .relay-dash-table td {
-  padding: var(--space-3);
+  height: var(--table-row-h);
+  padding-left: 12px;
+  padding-right: 12px;
   border-bottom: var(--hairline) solid var(--border);
   vertical-align: middle;
+}
+
+@media (hover: hover) {
+  .relay-dash-table tbody tr:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.relay-dash-table tbody tr[aria-selected="true"] {
+  background: var(--bg-elevated);
 }
 
 .relay-dash-name {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 8px;
   min-width: 0;
 }
 
 .relay-dash-name-icon {
-  display: grid;
+  display: inline-flex;
   flex: none;
-  place-items: center;
-  width: var(--avatar-size);
-  height: var(--avatar-size);
-  background: var(--bg-elevated);
-  border-radius: var(--radius-md);
-  color: var(--text);
+  align-items: center;
+  color: var(--text-dim);
 }
 
 .relay-dash-name-icon svg {
@@ -435,11 +660,11 @@
 
 .relay-dash-name-text {
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
 }
 
-/* a long name truncates: the row keeps its columns, and the PC's own page shows the name whole */
 .relay-dash-name-text b,
 .relay-dash-name-text small {
   overflow: hidden;
@@ -448,7 +673,7 @@
 }
 
 .relay-dash-name-text b {
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-medium);
   color: var(--text-strong);
 }
 
@@ -460,11 +685,10 @@
 .relay-dash-state {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
   min-width: 0;
 }
 
-/* under an offline row's state: this device's own check still got an answer */
 .relay-dash-state-note {
   display: block;
   font-size: var(--fs-xs);
@@ -494,16 +718,15 @@
 }
 
 .relay-dash-none {
-  margin-top: var(--space-3);
+  margin-top: 12px;
 }
 
-/* no PC at all: one sentence and the one thing to do */
 .relay-dash-empty {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-6);
+  gap: 12px;
+  padding: 24px;
   background: var(--bg-panel);
   border: var(--hairline) solid var(--border);
   border-radius: var(--radius-lg);
@@ -511,6 +734,7 @@
 
 .relay-dash-empty p {
   margin: 0;
+  max-width: 65ch;
   font-size: var(--fs-md);
   color: var(--text-dim);
 }
@@ -521,7 +745,6 @@
   }
 }
 
-/* a narrower window: the attention list takes a row of its own under the counts and relays */
 @media (max-width: 1100px) {
   .relay-dash-summary {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -537,26 +760,20 @@
   }
 }
 
-/* ---- a phone (760px and under, where RelayMap.css shows the route list in place of the drawing) ---- */
+/* ---- a phone (768px and under) ---- */
 
-/* the tab bar is a phone's alone */
 .relay-dash-tabs {
   display: none;
 }
 
-@media (max-width: 760px) {
-  /*
-   * One column. The sidebar's box goes (display: contents): its brand is the top bar, stuck to the
-   * top; its foot, where the Devices tab leads, is the last section, and RelayDashboard.tsx renders it
-   * after the page here so that Tab reaches the page's controls first; its nav gives way to the tab bar
-   * fixed at the bottom, over the safe area. The page ends above the tab bar, and what a tab leads to
-   * stops under the top bar, not behind it.
-   */
+@media (max-width: 768px) {
   .relay-dash {
-    --dash-top-h: calc(var(--header-h) + env(safe-area-inset-top, 0px));
-    --dash-tabs-h: calc(var(--touch-target) + 2 * var(--space-1) + var(--hairline) + env(safe-area-inset-bottom, 0px));
+    --dash-top-h: calc(max(52px, var(--header-h)) + env(safe-area-inset-top, 0px));
+    --dash-tabs-h: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
     grid-template-columns: minmax(0, 1fr);
-    padding-bottom: var(--dash-tabs-h);
+    grid-template-rows: auto 1fr;
+    align-content: start;
+    padding-bottom: calc(var(--dash-tabs-h) + var(--space-4));
   }
 
   .relay-dash-side,
@@ -564,7 +781,7 @@
     display: contents;
   }
 
-  .relay-dash-brand {
+  .relay-dash-brand-bar {
     position: sticky;
     top: 0;
     z-index: var(--z-header);
@@ -572,27 +789,32 @@
     min-height: var(--dash-top-h);
     margin: 0;
     padding: env(safe-area-inset-top, 0px) calc(var(--space-4) + env(safe-area-inset-right, 0px)) 0 calc(var(--space-4) + env(safe-area-inset-left, 0px));
-    background: var(--bg-panel);
+    background: var(--bar-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border-bottom: var(--hairline) solid var(--divider);
+  }
+
+  .relay-dash-phone-add {
+    width: var(--touch-target);
+    height: var(--touch-target);
   }
 
   .relay-dash-nav {
     display: none;
   }
 
-  .relay-dash-main {
-    padding: var(--space-4) calc(var(--space-4) + env(safe-area-inset-right, 0px)) var(--space-4) calc(var(--space-4) + env(safe-area-inset-left, 0px));
-  }
-
-  .relay-dash-foot {
-    margin-top: 0;
-    padding: var(--space-4) calc(var(--space-4) + env(safe-area-inset-right, 0px)) 0 calc(var(--space-4) + env(safe-area-inset-left, 0px));
+  .relay-dash-content {
+    padding-top: 16px;
+    padding-right: calc(var(--space-4) + env(safe-area-inset-right, 0px));
+    padding-bottom: 16px;
+    padding-left: calc(var(--space-4) + env(safe-area-inset-left, 0px));
   }
 
   .relay-dash-main,
   .relay-dash-pcs,
-  .relay-dash-foot {
-    scroll-margin-top: var(--dash-top-h);
+  .relay-dash-panel {
+    scroll-margin-top: calc(var(--dash-top-h) + var(--space-4));
   }
 
   .relay-dash-tabs {
@@ -604,29 +826,34 @@
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(0, 1fr);
-    padding: var(--space-1) env(safe-area-inset-right, 0px) calc(var(--space-1) + env(safe-area-inset-bottom, 0px)) env(safe-area-inset-left, 0px);
+    gap: 8px;
+    min-height: var(--dash-tabs-h);
+    padding: var(--space-1) calc(var(--space-2) + env(safe-area-inset-right, 0px)) calc(var(--space-1) + env(safe-area-inset-bottom, 0px)) calc(var(--space-2) + env(safe-area-inset-left, 0px));
     background: var(--bg-panel);
     border-top: var(--hairline) solid var(--divider);
   }
 
-  /* a tab: the glyph over its word, the whole cell the target; the current one strong with the accent's glyph, as the sidebar's row; the row with no page dimmed as a disabled button is */
   .relay-dash-tab {
     display: grid;
-    gap: calc(var(--space-1) / 2);
+    gap: 4px;
     align-content: center;
     justify-items: center;
     min-width: 0;
     min-height: var(--touch-target);
+    padding: 4px;
     border-radius: var(--radius-md);
     color: var(--text-dim);
-    font-size: var(--fs-2xs);
+    font-size: max(var(--relay-fs-min), var(--fs-2xs));
     font-weight: var(--fw-medium);
+    line-height: var(--lh-tight);
     text-decoration: none;
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
 
   .relay-dash-tab svg {
-    width: calc(var(--icon-size) + var(--space-1));
-    height: calc(var(--icon-size) + var(--space-1));
+    width: var(--mark-size);
+    height: var(--mark-size);
+    color: currentColor;
   }
 
   .relay-dash-tab > span {
@@ -636,16 +863,19 @@
     white-space: nowrap;
   }
 
+  @media (hover: hover) {
+    .relay-dash-tab:hover {
+      background: var(--bg-hover);
+    }
+  }
+
+  .relay-dash-tab:active {
+    background: var(--bg-hover);
+  }
+
   .relay-dash-tab[aria-current="page"] {
-    color: var(--text-strong);
-  }
-
-  .relay-dash-tab[aria-current="page"] svg {
-    color: var(--accent);
-  }
-
-  .relay-dash-tab[aria-disabled="true"] {
-    opacity: 0.55;
+    background: var(--bg-elevated);
+    color: var(--text);
   }
 
   .relay-dash-tab:focus-visible {
@@ -653,7 +883,6 @@
     outline-offset: calc(-1 * var(--ring-offset));
   }
 
-  /* the strip stacks; the notice already names what waits, so the attention list goes */
   .relay-dash-summary {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -663,15 +892,15 @@
     border-left: 0;
   }
 
-  .relay-dash-cell-attention {
-    display: none;
-  }
-
   .relay-dash-pcs-head {
     flex-wrap: wrap;
+    gap: 8px;
   }
 
-  /* the table as rows: the name and the action on one line, the state under the name past its icon; relay and last seen go (the strip and the route list name the relays) */
+  .relay-dash-pcs-head > .relay-dash-h {
+    flex: 1 1 100%;
+  }
+
   .relay-dash-table,
   .relay-dash-table tbody,
   .relay-dash-table td {
@@ -679,29 +908,35 @@
   }
 
   .relay-dash-table colgroup,
-  .relay-dash-table thead,
-  .relay-dash-table .relay-dash-relay,
-  .relay-dash-table .relay-dash-seen {
+  .relay-dash-table thead {
     display: none;
   }
 
   .relay-dash-table tr {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--space-1) var(--space-3);
+    row-gap: 4px;
+    column-gap: 12px;
     align-items: center;
-    padding: var(--space-3) 0;
+    min-height: calc(2 * var(--space-8));
+    padding-top: 8px;
+    padding-bottom: 8px;
     border-bottom: var(--hairline) solid var(--border);
   }
 
   .relay-dash-table td {
+    height: auto;
+    min-height: 0;
     padding: 0;
     border: 0;
   }
 
-  .relay-dash-table .relay-dash-state-cell {
+  .relay-dash-table .relay-dash-state-cell,
+  .relay-dash-table .relay-dash-relay,
+  .relay-dash-table .relay-dash-seen {
     grid-column: 1;
-    padding-left: calc(var(--avatar-size) + var(--space-3));
+    padding-left: calc(var(--icon-size) + var(--space-2));
+    font-size: var(--fs-xs);
   }
 
   .relay-dash-table .relay-dash-act {
