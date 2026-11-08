@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { startBunRelay } from "../../relay/bun.ts";
 import { passPolicy } from "../../relay/pass.ts";
 import { RELAY_PASS_HEADER, signRelayPass } from "../../shared/relay-pass.ts";
+import { offerFromCode } from "../../shared/relay-code-offer.ts";
 import { proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
@@ -78,7 +79,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
     headers.push(extra);
     dialed.push({ origin: target.origin, pass: extra?.[RELAY_PASS_HEADER] ?? null });
     const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`, (extra ? { headers: extra } : undefined) as unknown as string[]);
-    if (!target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
+    if (target.pathname === "/v1/ws" && !target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
       const send = socket.send.bind(socket);
       socket.send = (data) => {
         if (typeof data === "string") { sentOnControl.push(data); if (data.includes('"relay_pass"')) renewal.resolve(data); }
@@ -92,13 +93,13 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
     }
     return socket;
   };
-  const options = { stateDir, relay: origin, regionalRelays: [], connect, accountService: "https://account.test" as string | Error, accountFetch, ovisRelays: [origin] };
+  const options = { stateDir, relay: origin, regionalRelays: [], connect, accountService: "https://account.test" as string | Error, accountFetch, ovisRelays: [origin], pairCodeRelay: origin };
   let service = new RelayService(options);
   let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = () => `http://127.0.0.1:${app.port}`;
   return {
-    stateDir, origin, asked, headers, dialed, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
+    stateDir, origin, relayPort: relay.port, asked, headers, dialed, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
     get service() { return service; },
     get synced() { return synced.promise; },
     get refused() { return refused.promise; },
@@ -230,6 +231,16 @@ test("with the staging setting the PC uses the one relay OVIS_RELAY_URL names, a
   await f.start();
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.dialed.map((socket) => socket.origin)).toEqual(f.dialed.map(() => regional));
+});
+
+test("on an enforcing relay, a PC with its pass holds its typed code's nameplate by proving its key, and a device finds the PC there", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  await bounded(f.synced);
+  const minted = await bounded(f.service.pairCode());
+  const offer = await bounded(offerFromCode(minted!.code, { relay: f.origin, connect: (address) => new WebSocket(address.replace(f.origin, `ws://127.0.0.1:${f.relayPort}`)) }));
+  expect(offer.server_id).toBe(minted!.server_id);
 });
 
 test("a pass the relay refuses is dropped and a new one asked for at once", async () => {
