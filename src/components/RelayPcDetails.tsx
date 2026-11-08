@@ -32,7 +32,8 @@ export interface RelayPcDetailsProps {
   readonly onOpenPc?: (pc: MyPc) => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
   readonly onForget?: (serverId: string) => Promise<void> | void;
-  readonly onCheckPcs?: () => void;
+  /** Check now: this PC alone, never the fleet's rotating sweep */
+  readonly onCheckPc?: (serverId: string) => void;
 }
 
 function checkCauseText(check: PcStatus | null, t: ReturnType<typeof useT>): string | null {
@@ -52,7 +53,7 @@ export function RelayPcDetails({
   onOpenPc,
   onOpenSheet,
   onForget,
-  onCheckPcs,
+  onCheckPc,
 }: RelayPcDetailsProps) {
   const t = useT();
   const fullView = useMediaQuery(NARROW_DETAILS_QUERY);
@@ -220,8 +221,8 @@ export function RelayPcDetails({
               {fresh ? t("Add") : t("Join")}
             </button>
           )}
-          {pc.paired && onCheckPcs && (
-            <button type="button" className="btn" onClick={onCheckPcs}>
+          {pc.paired && onCheckPc && (
+            <button type="button" className="btn" data-action="check-pc" onClick={() => onCheckPc(pc.server_id)}>
               {pc.check?.kind === "checking" ? t("Checking…") : t("Check now")}
             </button>
           )}

@@ -269,6 +269,16 @@ describe("RelayPcDetails", () => {
     expect(reached.replace(/<[^>]+>/g, "")).toContain("relay.ovis.sh · 42 ms");
   });
 
+  it("checks this PC alone from Check now, says Checking… while its check runs, and offers no check for an unpaired PC", async () => {
+    const checked: string[] = [];
+    await mount({ pc: makeRow({ state: "paired" }), onClose: none, onCheckPc: (id) => { checked.push(id); } });
+    const button = rootOf(renderer).find((n) => n.type === "button" && n.props["data-action"] === "check-pc");
+    expect(textOf(button)).toBe("Check now");
+    await act(async () => { button.props.onClick(); });
+    expect(checked).toEqual([SERVER_ID]);
+    expect(renderHtml({ pc: makeRow({ state: "paired" }, { kind: "checking" }), onClose: none, onCheckPc: none })).toContain('data-action="check-pc">Checking…</button>');
+    expect(renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false }), onClose: none, onCheckPc: none })).not.toContain("check-pc");
+  });
 
   it("renders an explicit Not checked observation time when observedVersion has no observedAt", () => {
     const html = renderHtml({ pc: makeRow(), observedVersion: { version: "0.5.0", outdated: false }, onClose: none });
