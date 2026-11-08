@@ -218,15 +218,17 @@ describe("RelayOverview", () => {
     expect(openedRelays).toEqual([undefined, AP]);
   });
 
-  it("matches dashboardModel counts across F4 (0/4/1), FREADY (3/3/1) and F20 (8/12/4)", () => {
-    for (const [pcs, expected] of [
-      [f4Pcs(), { ready: 0, needs: 4, offline: 1, relays: 2 }],
-      [freadyPcs(), { ready: 3, needs: 3, offline: 1, relays: 2 }],
-      [f20Pcs(), { ready: 8, needs: 12, offline: 4, relays: 2 }],
+  it("matches dashboardModel counts across F4 (0/4/1), FREADY (3/3/1) and F20 (8/12/4), and qualifies Needs you with the offline count so Ready + Needs you equals the PC count", () => {
+    for (const [pcs, expected, needsLabel] of [
+      [f4Pcs(), { ready: 0, needs: 4, offline: 1, relays: 2 }, "Needs you · 1 offline"],
+      [freadyPcs(), { ready: 3, needs: 3, offline: 1, relays: 2 }, "Needs you · 1 offline"],
+      [f20Pcs(), { ready: 8, needs: 12, offline: 4, relays: 2 }, "Needs you · 4 offline"],
     ] as const) {
       const html = renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, now: NOW });
       const cells = Object.fromEntries([...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, count]) => [cell, Number(count)]));
       expect(cells).toEqual(expected);
+      expect(cells.ready + cells.needs).toBe(pcs.length);
+      expect(html).toContain(needsLabel);
       expect(html).not.toContain("relay-dash-notice");
     }
   });

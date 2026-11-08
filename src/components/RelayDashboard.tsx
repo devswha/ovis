@@ -1,38 +1,31 @@
 import "./RelayDashboard.css";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, LayoutGrid, Monitor, Plus, Settings, Smartphone, Waypoints, X, type LucideIcon } from "lucide-react";
-import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import { LayoutGrid, Monitor, Plus, Settings, Smartphone, Waypoints, type LucideIcon } from "lucide-react";
+import type { MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useT } from "../lib/i18n.ts";
-import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import { formatDashboardHash, isDashboardHash, parseDashboardHash, type DashboardRoute, type DashboardView } from "../lib/relay/dashboardRoute.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
+import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { uiFontSize, useSettings } from "../lib/settings.ts";
-import { serverScopePath } from "../lib/shellMode.ts";
 import { UI_FONT_MAX, UI_FONT_MIN } from "../lib/typography.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { accountPcStateText, CheckPcsButton, pcStateWord, PcStatusLine, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
+import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RelayMap } from "./RelayMap.tsx";
+import { RelayOverview } from "./RelayOverview.tsx";
+import { RelayPcDetails } from "./RelayPcDetails.tsx";
+import { RelayPcTable } from "./RelayPcTable.tsx";
 import { Segmented, SettingsBare, SettingsGroup, SettingsRow, SettingsSelect, Stepper } from "./SettingsControls.tsx";
-import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 const PHONE_QUERY = "(max-width: 768px)";
-const DOT_STATE: Record<MyPc["state"], StatusDotState> = { paired: "ready", "needs-approval": "needs-you", "needs-update": "needs-you", offline: "offline" };
 
 export interface RelayDashboardProps {
-  pcs: readonly DashboardPc[] | null;
-  account: { provider: AccountProvider } | null;
-  defaultRelay: string;
-  meLabel: string;
-  error?: string | null;
-  pcStatus?: ReadonlyMap<string, PcStatus>;
-  onCheckPcs?: () => void;
-  onAddPc: () => void;
-  onOpenSheet: (pc: MyPc, mode: "new" | "join") => void;
-  onSignIn?: () => void;
-  onSignOut?: () => void;
-  onLeave?: () => void;
+  pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
+  error?: string | null; pcStatus?: ReadonlyMap<string, PcStatus>; observedVersions?: ReadonlyMap<string, ObservedVersion>;
+  onCheckPcs?: () => void; onRefreshAccount?: () => void; onAddPc: () => void; onPairByQr?: () => void;
+  onOpenSheet: (pc: MyPc, mode: "new" | "join") => void; onForgetPc?: (serverId: string) => Promise<void> | void;
+  onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
 }
 
 type Place = { view: DashboardView; href: string; Icon: LucideIcon; label: string; current: boolean; count?: number };
@@ -102,10 +95,15 @@ function SettingsSection() {
   );
 }
 
-export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = null, pcStatus, onCheckPcs, onAddPc, onOpenSheet, onSignIn, onSignOut, onLeave }: RelayDashboardProps) {
+export function RelayDashboard({
+  pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
+  onCheckPcs, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
+}: RelayDashboardProps) {
   const t = useT(), phone = useMediaQuery(PHONE_QUERY);
+  const mode: "account" | "local" = account ? "account" : "local";
   const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(window.location.hash));
   const [localFilter, setLocalFilter] = useState<DashboardFilter>("all");
+  const [checkedByUser, setCheckedByUser] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null), prevViewRef = useRef<DashboardView>(route.view);
 
   useEffect(() => {
@@ -122,25 +120,13 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
   };
   const activeFilter: DashboardFilter = route.view === "pcs" ? route.filter : localFilter;
   const setFilter = (next: DashboardFilter) => route.view === "pcs" ? navigateTo(formatDashboardHash({ view: "pcs", filter: next, relay: route.relay, pc: route.pc })) : setLocalFilter(next);
+  const handleCheckPcs = onCheckPcs ? () => { setCheckedByUser(true); onCheckPcs(); } : undefined;
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
-  const fresh = new Set(pcs === null ? [] : newPcs(pcs, Date.now()).map((pc) => pc.server_id));
-  const byId = new Map((pcs ?? []).map((pc) => [pc.server_id, pc])), waiting = pcs?.find((pc) => pc.state === "needs-approval");
-  const filterSet = model ? new Set(model.filters[activeFilter]) : null;
-  const shown = (pcs ?? []).filter((pc) => (filterSet ? filterSet.has(pc.server_id) : true) && (route.view !== "pcs" || route.relay === null || (pc.relay ?? defaultRelay) === route.relay));
-  const selectedPc = route.view === "pcs" && route.pc !== null ? byId.get(route.pc) ?? null : null;
-  const scope = (pc: MyPc): string => serverScopePath(pc.server_id);
-  const openDetails = (pc: MyPc) => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: pc.server_id }));
-
-  const action = (pc: DashboardPc): ReactNode => {
-    switch (pc.state) {
-      case "paired": return <a className="btn btn-primary" data-pc-action="open" href={scope(pc)}>{t("Open")}</a>;
-      case "needs-approval": return pc.join === undefined ? null : fresh.has(pc.server_id) ? <button type="button" className="btn" data-pc-action="add" onClick={() => onOpenSheet(pc, "new")}>{t("Add")}</button> : <button type="button" className="btn" data-pc-action="join" onClick={() => onOpenSheet(pc, "join")}>{t("Join")}</button>;
-      case "needs-update": return pc.paired ? <a className="btn" data-pc-action="update" href={scope(pc)}>{t("Update")}</a> : null;
-      case "offline": return pc.paired ? <a className="btn" data-pc-action="details" href={scope(pc)} onClick={(e) => { e.preventDefault(); openDetails(pc); }}>{t("Details")}</a> : pc.join === undefined ? null : <button type="button" className="btn" data-pc-action="join" onClick={() => onOpenSheet(pc, "join")}>{t("Join")}</button>;
-    }
-  };
-  const under = (pc: DashboardPc): string => pc.listed && !(pc.paired && !pc.linked) ? (fresh.has(pc.server_id) ? t("new in your account") : t("in your account")) : account ? t("paired by QR · not in the account yet") : t("paired with this device");
+  const rowById = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
+  const selectedRow = route.view === "pcs" && route.pc !== null ? rowById.get(route.pc) ?? null : null;
+  const selectPc = (serverId: string) => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: serverId }));
+  const closeDetails = () => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null }));
 
   const viewTitles: Record<DashboardView, string> = { overview: t("Overview"), pcs: t("PCs"), devices: t("Devices"), relay: t("Relay"), settings: t("Settings") };
   const places: Place[] = [
@@ -151,92 +137,76 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
     { view: "settings", href: "#settings", Icon: Settings, label: viewTitles.settings, current: route.view === "settings" },
   ];
 
-  const renderTable = (list: readonly DashboardPc[]) => (
-    <section className="relay-dash-pcs" id="relay-dash-pcs" aria-labelledby="relay-dash-pcs-title">
-      <div className="relay-dash-pcs-head">
-        <h2 className="relay-dash-h" id="relay-dash-pcs-title">{t("PCs")}</h2>
-        {onCheckPcs && list.some((pc) => pc.paired) && <CheckPcsButton status={pcStatus ?? new Map()} onCheck={onCheckPcs} />}
-        <div className="segmented" role="group" aria-label={t("Filter")}>
-          <button type="button" aria-pressed={activeFilter === "all"} onClick={() => setFilter("all")}>{t("All")}</button>
-          <button type="button" aria-pressed={activeFilter === "ready"} onClick={() => setFilter("ready")}>{pcStateWord("paired", t)}</button>
-          <button type="button" aria-pressed={activeFilter === "needs"} onClick={() => setFilter("needs")}>{t("Needs you")}</button>
-          {route.view === "pcs" && <button type="button" aria-pressed={activeFilter === "offline"} onClick={() => setFilter("offline")}>{pcStateWord("offline", t)}</button>}
-        </div>
-      </div>
-      <div className={selectedPc ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
+  const renderTableSection = (relayFilter: string | null) => model && (
+    <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
+      <div className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
         <div className="relay-dash-pcs-list">
-          <table className="relay-dash-table" data-pc-list="">
-            <colgroup><col className="relay-dash-col-name" /><col className="relay-dash-col-state" /><col className="relay-dash-col-relay" /><col className="relay-dash-col-seen" /><col className="relay-dash-col-act" /></colgroup>
-            <thead><tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col">{t("Relay")}</th><th scope="col">{t("Last seen")}</th><th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr></thead>
-            <tbody>
-              {shown.map((pc) => {
-                const offline = pc.state === "offline", status = pc.paired ? pcStatus?.get(pc.server_id) : undefined;
-                return (
-                  <tr key={pc.server_id} data-pc-state={pc.state} aria-selected={selectedPc?.server_id === pc.server_id || undefined}>
-                    <td><div className="relay-dash-name"><span className="relay-dash-name-icon" aria-hidden="true"><Monitor /></span><span className="relay-dash-name-text"><b title={pc.name}>{pc.name}</b><small>{under(pc)}</small></span></div></td>
-                    <td className="relay-dash-state-cell">
-                      {!offline && status ? <PcStatusLine status={status} lastSeenAt={pc.last_seen_at} /> : <span className="relay-dash-state"><StatusDot state={DOT_STATE[pc.state]} />{offline || (pc.paired && !pc.linked && account) ? accountPcStateText(pc, t) : pcStateWord(pc.state, t)}</span>}
-                      {offline && status?.kind === "answered" && <small className="relay-dash-state-note">{t("Answered this device's latest check")}</small>}
-                    </td>
-                    <td className="relay-dash-relay">{relayHost(pc.relay ?? defaultRelay)}</td>
-                    <td className="relay-dash-seen">{pc.listed ? lastSeen(pc.last_seen_at) : "—"}</td>
-                    <td className="relay-dash-act">{action(pc)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {shown.length === 0 && <p className="relay-dash-quiet relay-dash-none" data-filter-empty="">{t("No PC matches this filter.")}</p>}
+          <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
+            relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
+            selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet}
+            {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
         </div>
-        {selectedPc && (
-          <aside className="relay-dash-details" data-pc-details={selectedPc.server_id} aria-label={selectedPc.name}>
-            <header className="relay-dash-details-bar"><StatusDot state={DOT_STATE[selectedPc.state]} /><h3 className="relay-dash-details-title" title={selectedPc.name}>{selectedPc.name}</h3><button type="button" className="icon-button" aria-label={t("Close")} onClick={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null }))}><X aria-hidden="true" /></button></header>
-            <dl className="relay-dash-details-dl"><dt>{t("State")}</dt><dd>{accountPcStateText(selectedPc, t)}</dd><dt>{t("Relay")}</dt><dd><code>{relayHost(selectedPc.relay ?? defaultRelay)}</code></dd><dt>{t("Last seen")}</dt><dd>{selectedPc.listed ? lastSeen(selectedPc.last_seen_at) : "—"}</dd></dl>
-            {selectedPc.paired && <div className="relay-dash-details-actions"><a className="btn" href={scope(selectedPc)}>{t("Open")}</a></div>}
-          </aside>
+        {selectedRow && (
+          <RelayPcDetails pc={selectedRow} observedVersion={observedVersions?.get(selectedRow.server_id) ?? null} mode={mode}
+            onClose={closeDetails} onOpenSheet={onOpenSheet} {...(onForgetPc ? { onForget: onForgetPc } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} />
         )}
       </div>
     </section>
   );
 
   const renderFleetView = (): ReactNode => {
-    if (pcs === null || model === null) {
-      return <>{route.view === "overview" && waiting && <div className="relay-dash-notice"><StatusDot state="needs-you" /><p>{fresh.has(waiting.server_id) ? t("{name} is new in your account. Type the number it shows on its own screen to add it.", { name: waiting.name }) : t("{name} has not approved this device yet.", { name: waiting.name })}</p>{action(waiting)}</div>}<div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Loading your PCs…")}</span></div></>;
-    }
-    if (pcs.length === 0) {
-      return <div className="relay-dash-empty" data-dashboard-empty=""><p>{t("No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.")}</p><button type="button" className="btn btn-primary" onClick={onAddPc}>{t("Add a PC")}</button></div>;
-    }
     if (route.view === "relay") {
+      if (pcs === null || model === null) {
+        return <RelayOverview pcs={null} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error} {...(onRefreshAccount ? { onRetryError: onRefreshAccount } : {})} />;
+      }
       return (
         <>
-          <section className="relay-dash-map" data-slot="relay-map" aria-labelledby="relay-dash-map-title"><h2 className="relay-dash-h" id="relay-dash-map-title">{t("Connection map")}</h2><RelayMap map={model.map} /></section>
-          <section className="relay-dash-panel" id="relay-dash-relays" aria-labelledby="relay-dash-relays-title">
-            <h2 className="relay-dash-h" id="relay-dash-relays-title">{t("Relays")}</h2>
-            <ul className="relay-dash-relays">{model.map.hubs.map((hub) => (<li key={hub.origin}><button type="button" className="relay-dash-relay-filter" onClick={() => navigateTo(formatDashboardHash({ view: "pcs", relay: hub.origin }))}><code className="relay-dash-host">{relayHost(hub.origin)}</code></button><span>{hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length })}</span><span>{model.relays.find((relay) => relay.origin === hub.origin)?.regional ? t("regional") : t("global")}</span></li>))}</ul>
+          {error !== null && (
+            <div className="relay-overview-banner" role="alert" data-directory-error="">
+              <p className="relay-overview-banner-text">{error}</p>
+              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={onRefreshAccount}>{t("Try again")}</button>}
+            </div>
+          )}
+          <section className="relay-dash-map" data-slot="relay-map" aria-labelledby="relay-dash-map-title">
+            <h2 className="relay-dash-h" id="relay-dash-map-title">{t("Connection map")}</h2>
+            <RelayMap map={model.map} selectedPcId={route.pc} onSelectPc={selectPc} onSelectRelay={(origin) => navigateTo(formatDashboardHash({ view: "pcs", relay: relayHost(origin) }))} standalone />
           </section>
+          {model.map.hubs.length > 0 && (
+            <section className="relay-dash-panel" id="relay-dash-relays" aria-labelledby="relay-dash-relays-title">
+              <h2 className="relay-dash-h" id="relay-dash-relays-title">{t("Relays")}</h2>
+              <ul className="relay-dash-relays">{model.map.hubs.map((hub) => (<li key={hub.origin}><button type="button" className="relay-dash-relay-filter" onClick={() => navigateTo(formatDashboardHash({ view: "pcs", relay: relayHost(hub.origin) }))}><code className="relay-dash-host">{relayHost(hub.origin)}</code></button><span>{hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length })}</span><span>{model.relays.find((relay) => relay.origin === hub.origin)?.regional ? t("regional") : t("global")}</span></li>))}</ul>
+            </section>
+          )}
         </>
       );
     }
-    if (route.view === "pcs") return renderTable(pcs);
+    if (route.view === "pcs" && pcs !== null && pcs.length > 0 && model !== null) {
+      return (
+        <>
+          {error !== null && (
+            <div className="relay-overview-banner" role="alert" data-directory-error="">
+              <p className="relay-overview-banner-text">{error}</p>
+              {onRefreshAccount && <button type="button" className="btn" data-action="retry-directory" onClick={onRefreshAccount}>{t("Try again")}</button>}
+            </div>
+          )}
+          {renderTableSection(route.relay)}
+        </>
+      );
+    }
     return (
-      <>
-        {waiting && <div className="relay-dash-notice"><StatusDot state="needs-you" /><p>{fresh.has(waiting.server_id) ? t("{name} is new in your account. Type the number it shows on its own screen to add it.", { name: waiting.name }) : t("{name} has not approved this device yet.", { name: waiting.name })}</p>{action(waiting)}</div>}
-        <section className="relay-dash-summary" aria-label={t("Summary")}>
-          <div className="relay-dash-cell"><h2 className="relay-dash-h">{t("PCs")}</h2><ul className="relay-dash-counts"><li><StatusDot state="ready" />{pcStateWord("paired", t)}<b>{model.counts.ready}</b></li><li><StatusDot state="needs-you" />{t("Needs you")}<b>{model.counts.needsYou}</b></li><li><StatusDot state="offline" />{pcStateWord("offline", t)}<b>{model.counts.offline}</b></li></ul></div>
-          <div className="relay-dash-cell" id="relay-dash-relays"><h2 className="relay-dash-h">{t("Relays")}</h2><ul className="relay-dash-relays">{model.map.hubs.map((hub) => (<li key={hub.origin}><code className="relay-dash-host">{relayHost(hub.origin)}</code><span>{hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length })}</span><span>{model.relays.find((relay) => relay.origin === hub.origin)?.regional ? t("regional") : t("global")}</span></li>))}</ul></div>
-          <div className="relay-dash-cell relay-dash-cell-attention">
-            <h2 className="relay-dash-h">{t("Needs attention · {count}", { count: model.attention.length })}</h2>
-            {model.attention.length === 0 ? <p className="relay-dash-quiet">{t("Nothing needs you right now.")}</p> : <ul className="relay-dash-attention">{model.attention.flatMap(({ server_id }) => { const pc = byId.get(server_id); return pc ? [<li key={server_id}><StatusDot state={DOT_STATE[pc.state]} /><span><span className="relay-dash-attention-name" title={pc.name}>{pc.name}</span><small>{accountPcStateText(pc, t)}</small></span></li>] : []; })}</ul>}
-          </div>
-        </section>
-        {renderTable(pcs)}
-        <a className="relay-dash-map-disclosure" href="#relay" onClick={(e) => { e.preventDefault(); navigateTo("#relay"); }}><Waypoints aria-hidden="true" /><span>{t("Connection map")}</span><ChevronRight aria-hidden="true" /></a>
-      </>
+      <RelayOverview pcs={pcs} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error}
+        {...(pcStatus ? { pcStatus } : {})} {...(observedVersions ? { observedVersions } : {})} activeFilter={activeFilter}
+        onSelectFilter={(f) => navigateTo(formatDashboardHash({ view: "pcs", filter: f }))}
+        onOpenRelay={(origin) => navigateTo(origin ? formatDashboardHash({ view: "pcs", relay: relayHost(origin) }) : "#relay")}
+        {...(onRefreshAccount ? { onRetryError: onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
+        onOpenSheet={onOpenSheet} onSelectPc={selectPc}>
+        {pcs !== null && pcs.length > 0 && renderTableSection(null)}
+      </RelayOverview>
     );
   };
 
   return (
-    <div className="relay-dash" data-dashboard-mode={account ? "account" : "local"} data-dashboard-view={route.view}>
+    <div className="relay-dash" data-dashboard-mode={mode} data-dashboard-view={route.view}>
       <aside className="relay-dash-side" aria-label={t("Navigation")}>
         <div className="relay-dash-side-box">
           <div className="relay-dash-brand-bar">
@@ -256,7 +226,6 @@ export function RelayDashboard({ pcs, account, defaultRelay, meLabel, error = nu
           {route.view === "devices" ? <DevicesSection meLabel={meLabel} account={account} {...(onSignIn ? { onSignIn } : {})} {...(onSignOut ? { onSignOut } : {})} {...(onLeave ? { onLeave } : {})} />
             : route.view === "settings" ? <SettingsSection />
             : renderFleetView()}
-          {error !== null && <p className="account-error" data-directory-error="" role="alert">{error}</p>}
         </div>
       </div>
       <nav className="relay-dash-tabs" aria-label={t("Sections")}>{places.map((place) => <PlaceLink key={place.view} place={place} as="relay-dash-tab" onNavigate={navigateTo} />)}</nav>

@@ -137,7 +137,7 @@ export function RelayOverview(props: RelayOverviewProps) {
     ]
     : [
       ["ready", "ready", t("Ready"), model.counts.ready, () => selectFilter?.("ready"), currentFilter === "ready"],
-      ["needs", "needs-you", t("Needs you"), model.counts.needsYou, () => selectFilter?.("needs"), currentFilter === "needs"],
+      ["needs", "needs-you", model.counts.offline > 0 ? t("Needs you · {count} offline", { count: model.counts.offline }) : t("Needs you"), model.counts.needsYou, () => selectFilter?.("needs"), currentFilter === "needs"],
       ["offline", "offline", t("Offline"), model.counts.offline, () => selectFilter?.("offline"), currentFilter === "offline"],
       ["relays", "ready", t("Relays in use"), model.relays.length, () => onOpenRelay?.(), false],
     ];
