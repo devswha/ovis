@@ -159,6 +159,8 @@ export type ParsedPrompt = InteractivePrompt & {
   ompCall?: string;
   /** Claude's /effort: the state its Ultracode switch shows, null without one; checked before `s`, never sent */
   claudeUltracode?: boolean | null;
+  /** Letta's /model: what its search line shows (letta.ts), the search each key of a typed one is checked against */
+  lettaSearch?: string;
   menuLabels: string[];
   selectedIndex: number;
   checkedOptionIndices: number[];

@@ -5735,6 +5735,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     const recents = readFileSync(new URL("./fixtures/letta/model-recents-0.34.31.txt", import.meta.url), "utf8");
     const lettaModels = (search: string) => search === "" ? recents : recents.replace("(type to filter)", search);
 
+    test("types the search into the picker while it shows each key", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { if (sent.startsWith("text:")) search += sent.slice(5); pane.screen = lettaModels(search); };
+        expect(await answer(prompt.id, { custom_text: "son" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["text:s", "text:o", "text:n"]);
+      });
+    });
+
     test("refuses a search with a control character before any key", async () => {
       await withPane("letta", "idle", lettaModels(""), async (pane) => {
         const prompt = (await card())!;
@@ -5746,6 +5756,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       });
     });
 
+    test("sends no further key into Letta's input once the picker closes under the search", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Esc in the terminal right after the first key: the composer would take the rest
+        pane.onSent = (sent) => { if (sent === "text:a") pane.screen = "\n> \n"; };
+        const result = await answer(prompt.id, { custom_text: "abc" });
+        expect(pane.sent, "a closed picker must not receive the remaining keys").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
+      });
+    });
   });
 
   // a refusal waits out the answer's own 1.5 s for the picker to show the row

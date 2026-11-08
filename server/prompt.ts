@@ -1991,6 +1991,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (more) await Bun.sleep(30);
         };
         let customTyped = false;
+        /** Letta's model search as the keys sent so far leave it */
+        let lettaSearch = parsed.lettaSearch ?? "";
         const customEditorReady = async (draft: string): Promise<boolean> => {
           const deadline = Date.now() + SETTLE_MS;
           if (responder === "pi-questionnaire-question") {
@@ -2007,6 +2009,21 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
             return !!read && !read.inputUnverified && asks() && !request.signal.aborted && Date.now() < deadline
               && shown?.id === parsed.id && shown.piAskTyping === true && shown.selectedIndex === parsed.customMenuIndex;
+          }
+          if (responder === "letta-model") {
+            // Letta's picker, its search as the keys so far left it (the line drops trailing spaces): a closed
+            // picker would hand the next key to Letta's input
+            while (asks() && !request.signal.aborted && Date.now() < deadline) {
+              const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+              reading.catch(() => undefined);
+              const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
+              const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
+              if (read && !read.inputUnverified && shown?.responder === "letta-model" && shown.lettaSearch === draft.trimEnd()) {
+                return asks() && !request.signal.aborted && Date.now() < deadline;
+              }
+              await Bun.sleep(50);
+            }
+            return false;
           }
           while (asks() && !request.signal.aborted && Date.now() < deadline) {
             const read = await Promise.race([
@@ -2048,6 +2065,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               if (!(await customEditorReady(customTyped ? body.custom_text.trim() : ""))) return promptChanged();
               if (step.text !== undefined) customTyped = true;
             }
+            // Letta's search goes in a key at a time, each only into the picker showing the search the keys before it left
+            if (responder === "letta-model" && body.custom_text !== undefined && committed && !(await customEditorReady(lettaSearch))) return promptChanged();
             // GJC's selector can close under the answer: its composer must not take the moves.
             if (move && walked && (list || reader?.reread === "each-move" || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();
             if (!move && (!committed || togglesInPlace)) {
@@ -2061,6 +2080,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const key: AnswerStep | null = step.pick ? (seen as ParsedPrompt | null)?.rowKey ?? null : step;
             if (key === null) return promptChanged();
             await sendStep(key, move, index < steps.length - 1);
+            if (key.text !== undefined) lettaSearch += key.text;
+            for (const pressed of key.keys ?? []) if (pressed === KEY.backspace) lettaSearch = lettaSearch.slice(0, -1);
             if (move) {
               moved = true;
               walked = true;
