@@ -1,20 +1,18 @@
 /*
- * The relay shell's account part (AccountPcs.tsx), inside the shell's card (RelayShell.css). The
- * sign-in follows Linear's and Warp's: the mark, one short title and line, the provider buttons
- * stacked full width, a quiet link to the other way in, and one small line at the foot.
+ * The relay shell's account part (AccountPcs.tsx), inside the sign-in column (RelayShell.css) and
+ * Settings → Account. Sign-in is one centred 368px column on --bg: 44px mark, --fs-display h1,
+ * equal neutral 44px provider buttons with 18px brand marks at a fixed --space-4 inset, saved-PC
+ * continuation above the hairline when present, full-width ghost Pair with a QR or code below the
+ * hairline, and --fs-xs fine print at the foot.
  */
 
-/* signed out with nothing saved: the card's content centred, as a sign-in page's is */
+/* signed out: the column's mark, title and fine print centred */
 .account-centered {
   text-align: center;
 }
 
 .account-centered .relay-shell-mark {
   margin-inline: auto;
-}
-
-.account-subtitle {
-  margin-bottom: var(--space-5);
 }
 
 .account-providers {
@@ -24,60 +22,110 @@
 }
 
 /*
- * Apple's button is black on light and white on dark; GitHub's matches it, so neither is the one
- * to pick. The theme's strongest ink is that black or white, so no colour is added here.
+ * Equal neutral outlined buttons at 44px (--touch-target), with the 18px brand mark anchored at a
+ * fixed --space-4 (16px) left inset and the label centered across the full button width.
  */
 .account-provider {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
   width: 100%;
+  height: var(--touch-target);
   min-height: var(--touch-target);
-  background: var(--text-strong);
-  border-color: var(--text-strong);
-  color: var(--bg-panel);
+  padding-inline: calc(var(--space-4) + var(--icon-size) + var(--space-2));
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  color: var(--text-strong);
   font-weight: var(--fw-medium);
 }
 
-.account-provider:hover {
-  background: var(--text-strong);
-  color: var(--bg-panel);
-  opacity: 0.88;
+@media (hover: hover) {
+  .account-provider:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+    color: var(--text-strong);
+  }
 }
 
+.btn > svg.account-provider-mark,
 .account-provider-mark {
+  position: absolute;
+  inset-inline-start: var(--space-4);
   flex: none;
   width: var(--icon-size);
   height: var(--icon-size);
 }
 
+.account-provider-spinner {
+  border-width: 2px;
+}
+
 .account-error {
   margin: var(--space-3) 0 0;
   font-size: var(--fs-sm);
-  color: var(--status-blocked);
+  color: var(--danger-text);
+  text-align: start;
   overflow-wrap: anywhere;
 }
 
-/* the other way in: a link's weight, a touch target's height */
+.account-continue-saved {
+  width: 100%;
+  height: var(--touch-target);
+  min-height: var(--touch-target);
+  margin-top: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-divider {
+  width: 100%;
+  height: 0;
+  margin: var(--space-4) 0;
+  border: 0;
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* the other way in: a ghost button or quiet link at touch-target height */
 .account-link {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 100%;
   min-height: var(--touch-target);
   margin-top: var(--space-2);
-  padding: 0;
+  padding: 0 var(--space-3);
   background: none;
   border: 0;
+  border-radius: var(--radius-md);
   font: inherit;
   font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   color: var(--text-dim);
   text-decoration: underline;
-  text-underline-offset: 3px;
+  text-underline-offset: 0.15em;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 
-.account-link:hover {
-  color: var(--text-strong);
+.account-link.btn-ghost {
+  margin-top: 0;
+  color: var(--text);
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  .account-link:hover:not(:disabled) {
+    color: var(--text-strong);
+  }
+
+  .account-link.btn-ghost:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+}
+
+.account-link:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .account-fineprint {
@@ -85,6 +133,13 @@
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
   color: var(--text-dim);
+  text-wrap: balance;
+}
+
+.account-fineprint a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .account-pc-text {
@@ -94,7 +149,7 @@
   min-width: 0;
 }
 
-/* the state in words, after a dot in its colour: the words carry it, the dot only helps the eye */
+/* the state in words, after the shared inline StatusDot glyph */
 .account-pc-state {
   display: inline-flex;
   align-items: center;
@@ -105,18 +160,6 @@
   overflow-wrap: anywhere;
 }
 
-.account-pc-dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--status-idle);
-}
-
-[data-pc-state="paired"] .account-pc-dot { background: var(--status-done); }
-[data-pc-state="needs-approval"] .account-pc-dot { background: var(--status-working); }
-[data-pc-state="needs-update"] .account-pc-dot { background: var(--status-blocked); }
-
 /* a PC to compare digits with: the row is the button, as a saved PC's row is the link */
 .account-pc-join {
   width: 100%;
@@ -126,11 +169,6 @@
   font: inherit;
   text-align: start;
   cursor: pointer;
-}
-
-/* a PC that does not open yet: the row without the link's hover */
-.account-pc-waiting:hover {
-  color: var(--text-strong);
 }
 
 /* sign out and leave: quiet links under the list; leaving asks once more, in the card */
@@ -158,7 +196,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-pairing);
   font-weight: var(--fw-semibold);
-  letter-spacing: 0.12em;
+  letter-spacing: var(--tracking-code);
   color: var(--text-strong);
   user-select: all;
 }
@@ -232,8 +270,13 @@
   gap: var(--space-2);
 }
 
-/* Check now: a quiet link above the list's right edge, over the rows it refreshes */
+/* Check now: a compact ghost button above the list's right edge, over the rows it refreshes */
 .relay-shell-check {
   display: flex;
   justify-content: flex-end;
+}
+
+.relay-shell-check-btn {
+  min-width: calc(var(--space-8) * 3);
+  font-variant-numeric: tabular-nums;
 }

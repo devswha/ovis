@@ -10,6 +10,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "The number to check appears on another of your devices, not on {name}.": "要核对的数字会显示在你的另一台设备上，而不是 {name} 上。",
   "Ask to join": "请求加入",
   "Another of your devices shows three numbers: pick this one there.": "你的另一台设备上会显示三个数字，请在那里选择这个数字。",
+  "Approve this phone on {name} to finish.": "在 {name} 上批准这部手机即可完成。",
   "Waiting for an account member to approve this device…": "正在等待账户中的另一台设备批准此设备…",
   "{name} signed in": "{name} 已登录",
   "It asked to join your account": "它请求加入你的账户",

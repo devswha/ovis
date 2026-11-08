@@ -10,6 +10,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "The number to check appears on another of your devices, not on {name}.": "확인할 숫자는 {name}이(가) 아니라 다른 기기에 나옵니다.",
   "Ask to join": "참여 요청",
   "Another of your devices shows three numbers: pick this one there.": "다른 기기에 숫자 세 개가 나옵니다. 거기서 이 숫자를 고르세요.",
+  "Approve this phone on {name} to finish.": "{name}에서 이 휴대폰을 승인하면 끝납니다.",
   "Waiting for an account member to approve this device…": "계정의 다른 기기가 이 기기를 승인하기를 기다리는 중…",
   "{name} signed in": "{name} 로그인됨",
   "It asked to join your account": "계정에 참여를 요청했습니다",

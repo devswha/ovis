@@ -10,6 +10,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "The number to check appears on another of your devices, not on {name}.": "確認する番号は {name} ではなく、別のデバイスに表示されます。",
   "Ask to join": "参加を申請",
   "Another of your devices shows three numbers: pick this one there.": "別のデバイスに 3 つの番号が表示されます。そこでこの番号を選んでください。",
+  "Approve this phone on {name} to finish.": "{name} でこのスマートフォンを承認すると完了します。",
   "Waiting for an account member to approve this device…": "アカウントの別のデバイスがこのデバイスを承認するのを待っています…",
   "{name} signed in": "{name} がサインイン済み",
   "It asked to join your account": "アカウントへの参加を求めています",

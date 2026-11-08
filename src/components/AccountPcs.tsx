@@ -11,6 +11,7 @@ import { lastSeen } from "../lib/lastSeen.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { ConnectionLine } from "./ConnectionLine.tsx";
+import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
 
@@ -18,7 +19,7 @@ export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub
  * The providers' own marks, as their brand rules ask for a sign-in button: GitHub's and Apple's in
  * one colour (currentColor), Google's "G" always in its four colours, never recoloured.
  */
-export function ProviderMark({ provider }: { provider: AccountProvider }) {
+export function ProviderMark({ provider }: { readonly provider: AccountProvider }) {
   if (provider === "google") {
     return (
       <svg className="account-provider-mark" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
@@ -40,27 +41,65 @@ export function ProviderMark({ provider }: { provider: AccountProvider }) {
   );
 }
 
+const PROVIDERS: readonly AccountProvider[] = ["github", "google", "apple"];
+
+function providerLabel(provider: AccountProvider, t: ReturnType<typeof useT>): string {
+  switch (provider) {
+    case "github": return t("Continue with GitHub");
+    case "google": return t("Continue with Google");
+    case "apple": return t("Continue with Apple");
+  }
+}
+
 /**
- * Sign in with GitHub, Google or Apple, alike and stacked: App Review 4.8 asks for Sign in with Apple
- * wherever another provider is offered, and Apple's button is black or white, so all take the
- * theme's strongest ink (black in light, white in dark) and none looks like the one to pick.
- * Google's dark and light buttons are that same black or white, with its four-colour "G".
+ * Sign in with GitHub, Google or Apple: equal neutral outlined buttons at 44px with the brand mark
+ * at a fixed --space-4 inset and the label centered. When a sign-in is under way, the tapped
+ * button swaps its brand mark for a spinner in the same 18px slot, keeps its box and disables peers.
  */
-export function AccountSignIn({ onSignIn, error, providers = ["github"] }: { onSignIn: (provider: AccountProvider) => void; error: string | null; providers?: readonly AccountProvider[] }) {
+export function AccountSignIn({
+  onSignIn,
+  error,
+  providers = ["github"],
+  busy = false,
+  busyProvider = null,
+}: {
+  readonly onSignIn: (provider: AccountProvider) => void;
+  readonly error: string | null;
+  readonly providers?: readonly AccountProvider[];
+  readonly busy?: boolean;
+  readonly busyProvider?: AccountProvider | null;
+}) {
   const t = useT();
+  const groupBusy = busy && (busyProvider === null || !providers.includes(busyProvider));
   return (
-    <div className="account-sign-in">
+    <div className="account-sign-in" {...(groupBusy ? { "aria-busy": "true" } : {})}>
       <div className="account-providers">
-        {providers.includes("github") && <button type="button" className="btn account-provider" onClick={() => onSignIn("github")}><ProviderMark provider="github" />{t("Continue with GitHub")}</button>}
-        {providers.includes("google") && <button type="button" className="btn account-provider" data-provider="google" onClick={() => onSignIn("google")}><ProviderMark provider="google" />{t("Continue with Google")}</button>}
-        {providers.includes("apple") && <button type="button" className="btn account-provider" onClick={() => onSignIn("apple")}><ProviderMark provider="apple" />{t("Continue with Apple")}</button>}
+        {PROVIDERS.filter((provider) => providers.includes(provider)).map((provider) => {
+          const isBusy = busy && busyProvider === provider;
+          return (
+            <button
+              key={provider}
+              type="button"
+              className="btn account-provider"
+              data-provider={provider}
+              aria-busy={isBusy ? "true" : undefined}
+              disabled={busy}
+              onClick={() => { if (!busy) onSignIn(provider); }}
+            >
+              {isBusy
+                ? <span className="boot-spinner account-provider-mark account-provider-spinner" aria-hidden="true" />
+                : <ProviderMark provider={provider} />}
+              {providerLabel(provider, t)}
+            </button>
+          );
+        })}
       </div>
       {error !== null && <p className="account-error" role="alert">{error}</p>}
     </div>
   );
 }
 
-/** One line at the card's foot: what the account service sees. */
+/** One line at the sign-in column's foot: what the account service sees. */
 export function AccountFinePrint() {
   const t = useT();
   return <p className="account-fineprint">{t("The account only lists your PCs. Sessions stay end-to-end encrypted.")}</p>;
@@ -85,8 +124,17 @@ export function accountPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string
   }
 }
 
+function statusDotOf(state: MyPcState): StatusDotState {
+  switch (state) {
+    case "paired": return "ready";
+    case "needs-approval":
+    case "needs-update": return "needs-you";
+    case "offline": return "offline";
+  }
+}
+
 /** How a saved PC answered the latest check (pcStatus.ts): its way and round trip, or why it did not. */
-export function PcStatusLine({ status, lastSeenAt = null }: { status: PcStatus; lastSeenAt?: string | null }) {
+export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: PcStatus; readonly lastSeenAt?: string | null }) {
   const t = useT();
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
   if (status.kind === "checking") return <ConnectionLine state={{ kind: "checking" }} />;
@@ -95,24 +143,37 @@ export function PcStatusLine({ status, lastSeenAt = null }: { status: PcStatus; 
 }
 
 /** Check now, beside a list of PCs: probes each saved one again. */
-export function CheckPcsButton({ status, onCheck }: { status: ReadonlyMap<string, PcStatus>; onCheck: () => void }) {
+export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {
   const t = useT();
   const checking = [...status.values()].some((one) => one.kind === "checking");
-  return <div className="relay-shell-check"><button type="button" className="account-link" onClick={onCheck} disabled={checking}>{checking ? t("Checking…") : t("Check now")}</button></div>;
+  return (
+    <div className="relay-shell-check">
+      <button
+        type="button"
+        className="btn btn-ghost relay-shell-check-btn"
+        aria-busy={checking ? "true" : undefined}
+        onClick={onCheck}
+        disabled={checking}
+      >
+        {checking ? t("Checking…") : t("Check now")}
+      </button>
+    </div>
+  );
 }
 
 /** The account's PCs: a paired one opens and says how it answered the latest check; the others say what they wait for. */
-export function AccountPcList({ pcs, onJoin, status }: { pcs: readonly MyPc[]; onJoin?: (pc: MyPc) => void; status?: ReadonlyMap<string, PcStatus> }) {
+export function AccountPcList({ pcs, onJoin, status }: { readonly pcs: readonly MyPc[]; readonly onJoin?: (pc: MyPc) => void; readonly status?: ReadonlyMap<string, PcStatus> }) {
   const t = useT();
   return (
     <ul className="relay-shell-pcs">
       {pcs.map((pc) => {
+        const pcStatus = status?.get(pc.server_id);
         const body = (
           <span className="account-pc-text">
             <span className="relay-shell-pc-name">{pc.name}</span>
-            {pc.paired && status?.get(pc.server_id)
-              ? <PcStatusLine status={status.get(pc.server_id)!} lastSeenAt={pc.last_seen_at} />
-              : <span className="account-pc-state"><span className="account-pc-dot" aria-hidden="true" />{accountPcStateText(pc, t)}</span>}
+            {pc.paired && pcStatus
+              ? <PcStatusLine status={pcStatus} lastSeenAt={pc.last_seen_at} />
+              : <span className="account-pc-state"><StatusDot state={statusDotOf(pc.state)} size="inline" />{accountPcStateText(pc, t)}</span>}
           </span>
         );
         return (
