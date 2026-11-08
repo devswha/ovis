@@ -1,0 +1,120 @@
+import { afterEach, expect, it, spyOn } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Machine, PcUpdateAll, PcUpdateOffer } from "../shared/machines.ts";
+import { unmanagedUpdateStatus, type UpdateStatus } from "../shared/update.ts";
+import type { CompletionTracker } from "./completion.ts";
+import { handleMachineRequest } from "./machine-api.ts";
+import { MachineManager } from "./machines.ts";
+import type { PushService } from "./push.ts";
+
+// Update all's queue and the cancel route on a manager with saved SSH PCs: no SSH runs, the bridge update itself is a
+// stand-in whose end each test decides, and an own Ovis is a loopback stand-in. No PC, herdr or real state is touched.
+const A = "00000000-0000-4000-8000-00000000000a";
+const B = "00000000-0000-4000-8000-00000000000b";
+type Runtime = { machine: Machine; endpoint?: { url: string; token: string }; ownOffer?: PcUpdateOffer | null; offerRevision?: string };
+type Internals = { machines: Map<string, Runtime>; jobs: Map<string, { finished: Promise<void>; public: { machine_id: string; phase: string } }>; autoQueued: Set<string>; reconnect(runtime: Runtime): Promise<void> };
+
+const cleanups: (() => void)[] = [];
+afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+
+function fixture() {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-update-all-"));
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([A, B].map((id, i) => ({ id, name: `PC ${i + 1}`, target: { destination: `me@pc${i + 1}.invalid` }, enabled: true }))));
+  const reconnect = spyOn(MachineManager.prototype as unknown as Internals, "reconnect").mockImplementation(async () => {});
+  const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
+  const internals = manager as unknown as Internals;
+  cleanups.push(() => { manager.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+  // both wait for a bridge update, as a PC refused on the version check does
+  for (const id of [A, B]) Object.assign(internals.machines.get(id)!.machine, { state: "error", action_required: "update_bridge", error: "This PC runs a bridge from a different version." });
+  /** each bridge update asked for, by PC, and how to end it */
+  const asked: string[] = [];
+  const ends = new Map<string, () => void>();
+  spyOn(manager, "updateBridge").mockImplementation((id: string) => {
+    asked.push(id);
+    const done = Promise.withResolvers<void>();
+    const job = `job-${id}`;
+    const state = { finished: done.promise, abort: new AbortController(), public: { machine_id: id, phase: "installing" } };
+    internals.jobs.set(job, state);
+    ends.set(id, () => { state.public.phase = "connected"; internals.machines.get(id)!.machine.action_required = null; internals.machines.get(id)!.machine.state = "connected"; done.resolve(); });
+    return { id: job } as ReturnType<MachineManager["updateBridge"]>;
+  });
+  const pc = (id: string) => manager.list().find((machine) => machine.id === id)!;
+  const until = async (done: () => boolean) => { const deadline = Date.now() + 2000; while (!done()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(5); } };
+  const request = (path: string, method = "POST") => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager);
+  return { manager, internals, asked, ends, pc, until, request };
+}
+
+it("runs Update all's bridge updates one after another, each showing that it waits until its turn", async () => {
+  const { asked, ends, pc, until, request } = fixture();
+  const response = await request("update-all");
+  expect(response.status).toBe(202);
+  expect(await response.json() as PcUpdateAll).toEqual({ started: [], queued: [A, B], skipped: [] });
+  await until(() => asked.length === 1);
+  expect(asked).toEqual([A]);
+  expect(pc(B).updating).toMatchObject({ queued: true, job_id: "" });
+  ends.get(A)!();
+  await until(() => asked.length === 2);
+  expect(asked).toEqual([A, B]);
+});
+
+it("does not repeat an automatic bridge update already waiting for a PC, nor one done before its turn", async () => {
+  const { internals, asked, ends, pc, until, request } = fixture();
+  internals.autoQueued.add(A);
+  expect(await (await request("update-all")).json() as PcUpdateAll).toEqual({ started: [], queued: [B], skipped: [{ machine_id: A, reason: "This PC is already updating." }] });
+  await until(() => asked.length === 1);
+  ends.get(B)!();
+  internals.autoQueued.delete(A);
+  // both wait again; B's update is done another way before its turn comes, so its queued step asks for nothing
+  Object.assign(pc(B), { state: "error", action_required: "update_bridge" });
+  expect((await (await request("update-all")).json() as PcUpdateAll).queued).toEqual([A, B]);
+  await until(() => asked.length === 2);
+  Object.assign(pc(B), { state: "connected", action_required: null });
+  ends.get(A)!();
+  await until(() => !pc(B).updating);
+  expect(asked).toEqual([B, A]);
+});
+
+it("takes a PC out of the queue on cancel, or when it is disabled or removed, and never updates it", async () => {
+  const { manager, asked, ends, pc, until, request } = fixture();
+  await request("update-all");
+  await until(() => asked.length === 1);
+  const cancelled = await request(`${B}/update`, "DELETE");
+  expect(await cancelled.json()).toEqual({ cancelled: true });
+  expect(pc(B).updating ?? null).toBeNull();
+  ends.get(A)!();
+  await Promise.resolve();
+  expect(asked).toEqual([A]);
+  // again, with B removed while it waits
+  Object.assign(pc(A), { state: "error", action_required: "update_bridge" });
+  await request("update-all");
+  manager.remove(B);
+  await until(() => asked.length === 2);
+  ends.get(A)!();
+  await until(() => !pc(A).updating);
+  expect(asked).toEqual([A, A]);
+});
+
+it("ends the wait of a running own update on cancel, with no failure told", async () => {
+  const { internals, pc, until, request } = fixture();
+  const offered = "a".repeat(40);
+  let installing = false;
+  const status = (): UpdateStatus => ({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, current_version: "0.5.0", latest_version: "0.5.1",
+    latest_revision: offered, revision_bound_install: true, ...(installing ? { phase: "building" as const, step: "build" as const } : {}) });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    if (new URL(req.url).pathname === "/api/updates/install") { installing = true; return new Response(null, { status: 202 }); }
+    return Response.json(status());
+  } });
+  cleanups.push(() => server.stop(true));
+  const runtime = internals.machines.get(A)!;
+  Object.assign(runtime.machine, { state: "connected", action_required: null, error: null });
+  runtime.endpoint = { url: `http://127.0.0.1:${server.port}`, token: "t" };
+  runtime.ownOffer = { how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null };
+  runtime.offerRevision = offered;
+  expect((await request(`${A}/update`)).status).toBe(202);
+  await until(() => installing && pc(A).updating?.step.includes("building") === true);
+  expect(await (await request(`${A}/update`, "DELETE")).json()).toEqual({ cancelled: true });
+  await until(() => !pc(A).updating);
+  expect(pc(A).update_error ?? null).toBeNull();
+});

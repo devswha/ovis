@@ -122,7 +122,7 @@ interface JobState {
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 /** a setup job's phases once it has ended */
 const TERMINAL = new Set<SetupJob["phase"]>(["connected", "failed", "cancelled"]);
-const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis: update it on that PC.";
+const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which updates itself: update it with Update (POST /api/machines/:id/update).";
 /** a PC of herdr-core's machines is the core's: Ovis neither renames, removes nor sets it up */
 const HC_MACHINE_MANAGED = "This PC is a machine of herdr-core: add, rename or remove it with `hc machine` or in the Herdr app.";
 /** the shortest time between the starts of two health calls that prove one PC's server (sourceCheck) */
@@ -807,7 +807,7 @@ export class MachineManager {
     if (!offer) throw new PcUpdateRefused(runtime.machine.state === "connected" ? "This PC's Ovis is up to date." : "This PC is not connected; its update is offered once it is.");
     if (!offer.updatable) throw new PcUpdateRefused(offer.reason ?? "This PC cannot take its update from here.");
     // the release the person saw: one the PC offers instead since is shown first, never installed unseen
-    if (shown !== undefined && shown !== (offer.revision ?? null)) throw new PcUpdateRefused("That PC offers another release now than the one shown. Look at it again, then update.");
+    if (shown !== undefined && typeof offer.revision === "string" && shown !== offer.revision) throw new PcUpdateRefused("That PC offers another release now than the one shown. Look at it again, then update.");
     if (runtime.machine.state === "connected") return { job_id: this.updateOwn(runtime) };
     return { job_id: this.updateBridge(id).id };
   }
@@ -844,7 +844,8 @@ export class MachineManager {
     if (this.updateQueued.delete(runtime.machine.id)) runtime.machine.updating = null;
   }
   private updateRunning(runtime: Runtime): boolean {
-    return !!runtime.ownJob || this.updateQueued.has(runtime.machine.id) || [...this.jobs.values()].some((j) => j.public.machine_id === runtime.machine.id && !TERMINAL.has(j.public.phase));
+    // an automatic bridge update already waiting for this PC counts too: Update all would only repeat it
+    return !!runtime.ownJob || this.updateQueued.has(runtime.machine.id) || this.autoQueued.has(runtime.machine.id) || [...this.jobs.values()].some((j) => j.public.machine_id === runtime.machine.id && !TERMINAL.has(j.public.phase));
   }
   /** a bridge update of Update all, after the ones before it: they share one bundle download */
   private queueUpdate(runtime: Runtime): void {
@@ -855,6 +856,9 @@ export class MachineManager {
       // cancelled, removed or stopped meanwhile
       if (!this.updateQueued.delete(id) || this.stopped || this.machines.get(id) !== runtime) return;
       runtime.machine.updating = null;
+      // still needed: an update before its turn (an automatic one, or one asked for by hand) may have done it
+      const offer = this.updateOffer(runtime);
+      if (!offer?.updatable || runtime.machine.state === "connected" || this.updateRunning(runtime)) { this.emit(); return; }
       try { const job = this.updateBridge(id); await this.jobs.get(job.id)?.finished; }
       catch (error) { runtime.machine.update_error = error instanceof Error ? error.message : String(error); this.emit(); }
     });
@@ -1037,7 +1041,8 @@ export class MachineManager {
         }
       } finally {
         clearTimeout(job.timer); job.public.challenge = null; job.public.ssh_output = null; job.pending = undefined; job.ssh = undefined;
-        if (job.runtime) { job.runtime.machine.updating = null; this.emit(); }
+        // a PC still waiting in Update all's queue keeps showing that it waits
+        if (job.runtime && !this.updateQueued.has(job.runtime.machine.id)) { job.runtime.machine.updating = null; this.emit(); }
       }
     })();
     return job.public;
