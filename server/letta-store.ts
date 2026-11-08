@@ -290,10 +290,10 @@ export const peerClaimDeadline = { ms: 5_000 };
 async function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess, bound: { agent: string; conversation: string }): Promise<boolean> {
   const own = await realpath(owner.cwd).catch(() => null);
   // its process may run in a folder other than where the pane started: each folder's record counts
-  const folders = new Set(lettaPeerFolders(pane, panes).filter((cwd) => isAbsolute(cwd)));
+  const folders = lettaPeerFolders(pane, panes).filter((cwd) => isAbsolute(cwd));
   // the folders are read off the event loop, and one of them may never answer: what a deadline passes is a claim,
   // as a read that failed is, and the check that was left waiting is not kept
-  const claims = await beforePeerDeadline(Promise.all([...folders].map((folder) => folderClaims(folder, own, bound))).catch(() => [true]));
+  const claims = await beforePeerDeadline(folders, (folder) => folderClaims(folder, own, bound).catch(() => true));
   return claims === "late" || claims.includes(true);
 }
 
@@ -302,11 +302,39 @@ const lettaPeerFolders = (pane: HerdrPane, panes: readonly HerdrPane[]): string[
   panes.filter((other) => other.pane_id !== pane.pane_id && (other.agent === "letta" || other.agent_session?.agent === "letta"))
     .flatMap((other) => [other.foreground_cwd, other.cwd]).filter((cwd): cwd is string => typeof cwd === "string" && cwd !== "");
 
-/** What `work` answers, or "late" once peerClaimDeadline passes first; the work left waiting is not kept. */
-async function beforePeerDeadline<T>(work: Promise<T>): Promise<T | "late"> {
+/**
+ * Peer folders with a check still running past its deadline, by how many: on a mount that stopped answering,
+ * each check left waiting holds a slot of Bun's fs pool until it settles, so none is started there meanwhile.
+ */
+const stuckPeers = new Map<string, number>();
+
+/**
+ * What `check` answers for each folder, or "late" once peerClaimDeadline passes first, and at once while a
+ * folder's earlier check is still waiting past its own deadline. A check left waiting is not kept, but its
+ * folder stays stuck until it settles.
+ */
+async function beforePeerDeadline<T>(folders: readonly string[], check: (folder: string) => Promise<T>): Promise<T[] | "late"> {
+  const unique = [...new Set(folders)];
+  if (unique.some((folder) => stuckPeers.has(folder))) return "late";
+  const settled = new Set<string>();
+  let passed = false;
+  const work = Promise.all(unique.map(async (folder) => {
+    try { return await check(folder); } finally {
+      if (!passed) settled.add(folder);
+      else if (stuckPeers.get(folder) === 1) stuckPeers.delete(folder);
+      else stuckPeers.set(folder, (stuckPeers.get(folder) ?? 1) - 1);
+    }
+  }));
   let late: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"late">((resolve) => { late = setTimeout(() => resolve("late"), peerClaimDeadline.ms); });
-  try { return await Promise.race([work, deadline]); } finally { clearTimeout(late); }
+  try {
+    const answer = await Promise.race([work, deadline]);
+    if (answer === "late") {
+      passed = true;
+      for (const folder of unique) if (!settled.has(folder)) stuckPeers.set(folder, (stuckPeers.get(folder) ?? 0) + 1);
+    }
+    return answer;
+  } finally { clearTimeout(late); }
 }
 
 /** Where Linux names an open descriptor's own path: what is opened through it is inside the folder held. */
@@ -381,7 +409,8 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
     // nothing at the path now (a decoy opened, the path then removed) or a stat that fails proves nothing: it claims
     if (await lstat(path, { bigint: true }).then(deviceInode, () => null) !== deviceInode(found)) return true;
     if (!peerRecordReach.procFd && !before.at(-1)!.startsWith(`${found.dev}:`)) return true;
-    if (!readable) return false;
+    // a record that is not a plain file, or too large to read, may name the conversation: it claims
+    if (!readable) return true;
     const opened = lettaOpenedSessions(buffer.subarray(0, bytesRead).toString("utf8"));
     return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
   } catch (error) { return !absent(error); } finally { for (const handle of held) await handle.close().catch(() => {}); }
@@ -460,7 +489,7 @@ export async function lettaRecordOwned(pane: HerdrPane, panes: readonly HerdrPan
   if (folder === null || home === null || home === folder) return false;
   // another pane's folder may be on an unresponsive mount: resolved off the event loop, and one that has not
   // answered by the deadline may be this folder, so the record is not this pane's
-  const peers = await beforePeerDeadline(Promise.all(lettaPeerFolders(pane, panes).map(resolve)));
+  const peers = await beforePeerDeadline(lettaPeerFolders(pane, panes), resolve);
   return peers !== "late" && !peers.includes(folder);
 }
 

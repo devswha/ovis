@@ -435,6 +435,50 @@ describe("Letta conversation binding", () => {
     try { expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull(); } finally { lettaStore.peerClaimDeadline.ms = deadline; hanging.mockRestore(); }
   });
 
+  test("a peer folder whose earlier check still waits past its deadline claims at once, starting no other check there", async () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const away = join(root, "away");
+    mkdirSync(away);
+    const target = pane("w1:p1", "local-conv-1", owner.cwd);
+    const peer = pane("w2:p1", "local-conv-9", away);
+    // a mount that answers only when the test says so: each check left waiting would hold a slot of Bun's fs pool
+    const answer = Promise.withResolvers<string>();
+    let asked = 0;
+    const { realpath } = fsp;
+    const hanging = spyOn(fsp, "realpath").mockImplementation(((path: fs.PathLike, ...rest: [never]) => {
+      if (String(path) !== away) return realpath(path, ...rest);
+      asked++;
+      return answer.promise;
+    }) as typeof fsp.realpath);
+    const deadline = lettaStore.peerClaimDeadline.ms;
+    lettaStore.peerClaimDeadline.ms = 0;
+    try {
+      expect(await lettaRecordOwned(target, [target, peer], owner)).toBe(false);
+      expect(await lettaRecordOwned(target, [target, peer], owner)).toBe(false);
+      expect(asked).toBe(1);
+      // once the mount answers, the folder is checked again
+      answer.resolve(away);
+      lettaStore.peerClaimDeadline.ms = deadline;
+      expect(await lettaRecordOwned(target, [target, peer], owner)).toBe(true);
+      expect(asked).toBe(2);
+    } finally { lettaStore.peerClaimDeadline.ms = deadline; hanging.mockRestore(); }
+  });
+
+  peerTest("a peer record that is not a regular file, or is too large to read, claims", async () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const other = join(root, "other");
+    mkdirSync(join(other, ".letta"), { recursive: true });
+    const silent = pane("w1:p1", null, owner.cwd);
+    const peer = pane("w2:p1", "local-conv-9", other);
+    expect(await lettaTranscriptFor(silent, [silent, peer], owner)).not.toBeNull();
+    const record = join(other, ".letta", "settings.local.json");
+    mkdirSync(record);
+    expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull();
+    rmSync(record, { recursive: true });
+    writeFileSync(record, " ".repeat(256 * 1024 + 1));
+    expect(await lettaTranscriptFor(silent, [silent, peer], owner)).toBeNull();
+  });
+
   peerTest("the pane's own record rewritten while a peer's record is read binds nothing", async () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const other = join(root, "other");
