@@ -69,7 +69,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<Rel
   const syncs: Record<string, unknown>[] = [];
   const headers: (Record<string, string> | undefined)[] = [];
   /** every PC socket the PC opened: the relay it named, and the pass it sent there */
-  const dialed: { origin: string; pass: string | null }[] = [];
+  const dialed: { origin: string; path: string; pass: string | null }[] = [];
   /** what the PC sent on its control sockets after the proof */
   const sentOnControl: string[] = [];
   const renewal = deferred<string>();
@@ -87,7 +87,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<Rel
   const connect = (url: string, extra?: Record<string, string>) => {
     const target = new URL(url);
     headers.push(extra);
-    dialed.push({ origin: target.origin, pass: extra?.[RELAY_PASS_HEADER] ?? null });
+    dialed.push({ origin: target.origin, path: target.pathname, pass: extra?.[RELAY_PASS_HEADER] ?? null });
     const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`, (extra ? { headers: extra } : undefined) as unknown as string[]);
     if (target.pathname === "/v1/ws" && !target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
       const send = socket.send.bind(socket);
@@ -240,6 +240,22 @@ test("a staging pass kept from before goes to no production relay while the acco
   expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass required" });
   expect(f.dialed.every((socket) => socket.pass === null)).toBe(true);
   expect(f.service.status().pass?.state).toBe("unavailable");
+});
+
+test("a staging pass kept from before goes to the global relay through pairing neither, while the account service's address does not parse", async () => {
+  // in grace the relay lets the PC in without a pass, so the kept staging pass stays kept
+  const f = await fixture("grace");
+  const identity = loadRelayIdentity(f.stateDir);
+  const stale = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+  writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, service: STAGING_ACCOUNT_SERVICE, expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
+  await f.restart({ relay: GLOBAL_RELAY, ovisRelays: undefined, pairCodeRelay: GLOBAL_RELAY, accountService: new Error("Invalid OVIS_ACCOUNT_SERVICE_URL") });
+  await f.start();
+  await bounded(f.synced);
+  await bounded(f.service.pairCode());
+  const hosts = f.dialed.filter((socket) => socket.path === "/v1/pair");
+  expect(hosts.length).toBeGreaterThan(0);
+  expect(hosts.map((socket) => [socket.origin, socket.pass])).toEqual(hosts.map(() => [GLOBAL_RELAY, null]));
 });
 
 test("a relay that is not Ovis's gets no pass, and the account service is never asked", async () => {

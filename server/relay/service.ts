@@ -529,8 +529,9 @@ export class RelayService {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
     if (relay === null) return null;
+    // the typed code's host carries a pass as the links do: only one its own service's passes go to this relay
     this.pairCodes ??= new RelayPairCodes({ relay, devices: this.services.devices, offer: (code) => this.offerFor(code), identity: () => this.identity!, connect: this.options.connect,
-      ...(this.isOvisRelay(relay) ? { pass: () => this.passKeeper?.current() ?? null } : {}) });
+      pass: () => this.passFor(relay) });
     return { ...await this.pairCodes.mint(), server_id: this.identity.server_id };
   }
 
