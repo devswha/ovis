@@ -5,12 +5,14 @@ import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.
 export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number; heldUntil?: number }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 /** a resumed `held` ID (the frame's own `held` field) travels with the removals */
-export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: true; /** how long the bridge still keeps the receipt */ ms?: number };
-/** a pending-messages frame's removals and its resumed `held` IDs, as `publish` takes them */
+export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: true; /** when (Date.now) the bridge's receipt ends */ until?: number };
+/** a pending-messages frame's removals and its resumed `held` IDs, as `publish` takes them: each held ID's end is reckoned
+ * as the frame arrives (a receipt waiting for its snapshot loses no time), never past the bridge's ten minutes */
 export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: string[]; held_ms?: Record<string, number> }): Removal[] =>
   [...frame.removed ?? [], ...(frame.held ?? []).map((id) => {
     const ms = frame.held_ms?.[id];
-    return { id, outcome: "held" as const, resumed: true as const, ...(typeof ms === "number" && Number.isFinite(ms) ? { ms } : {}) };
+    return { id, outcome: "held" as const, resumed: true as const,
+      ...(typeof ms === "number" && Number.isFinite(ms) ? { until: Date.now() + Math.min(Math.max(ms, 0), HELD_RECEIPT_MS) } : {}) };
   })];
 const PREFIX = "ovis:pending:";
 /** the bridge keeps a held receipt this long (server/core/pending.ts PI_RESUME_MS), at most: a bridge that names no time gets this */
@@ -66,7 +68,10 @@ export class PendingMessageStore {
     if (this.expiry !== undefined) clearTimeout(this.expiry);
     this.expiry = undefined;
     let first = Infinity;
-    for (const rows of this.rows.values()) for (const message of rows) if (message.heldUntil !== undefined && message.state === "held") first = Math.min(first, message.heldUntil);
+    // a copy being sent ends with its send (end() tells the page, and this runs again)
+    for (const [owner, rows] of this.rows) for (const message of rows) {
+      if (message.heldUntil !== undefined && message.state === "held" && !this.isBusy(owner, message.id)) first = Math.min(first, message.heldUntil);
+    }
     if (first === Infinity) return;
     this.expiry = setTimeout(() => {
       this.expiry = undefined;
@@ -76,14 +81,14 @@ export class PendingMessageStore {
   }
   /** a page-only held copy whose proof has ended is uncertain again (saved, it already is); one being sent ends with its send */
   private dropExpired(owner: string, rows: PendingMessageView[]): PendingMessageView[] {
-    const ended = (message: PendingMessageView): boolean => message.heldUntil !== undefined && !freshReceipt(message.heldUntil) && !this.isBusy(owner, message.id);
+    const ended = (message: PendingMessageView): boolean => message.state === "held" && message.heldUntil !== undefined
+      && !freshReceipt(message.heldUntil) && !this.isBusy(owner, message.id);
     if (!rows.some(ended)) return rows;
-    const next = rows.map((message) => {
-      if (!ended(message)) return message;
-      const { heldUntil: _, ...rest } = message;
-      return rest.state === "held" ? { ...rest, state: "uncertain" as const } : rest;
-    });
+    // the ended time stays on the row: a late held answer for it is not a proof again
+    const next = rows.map((message) => ended(message) ? { ...message, state: "uncertain" as const } : message);
     this.rows.set(owner, next);
+    // a read during a render or a press must not tell the page synchronously: the next turn does
+    queueMicrotask(() => this.notify());
     return next;
   }
   isUnsaved(owner: string): boolean { return this.unsaved.has(owner); }
@@ -119,7 +124,9 @@ export class PendingMessageStore {
   private applyHeldResumed(owner: string, message: PendingMessageView): PendingMessageView {
     const at = this.heldResumed.get(owner)?.get(message.id);
     this.heldResumed.get(owner)?.delete(message.id);
-    if (!freshReceipt(at) || !this.canHoldResumed(owner, message) || message.state === "held") return message;
+    if (!freshReceipt(at) || !this.canHoldResumed(owner, message)) return message;
+    // a later receipt that ends sooner (a first frame that came late) shortens the proof, never lengthens it
+    if (message.state === "held") return message.heldUntil !== undefined && at < message.heldUntil ? { ...message, heldUntil: at } : message;
     const { sending_at: _, ...rest } = message;
     return { ...rest, state: "held", heldUntil: at };
   }
@@ -152,10 +159,10 @@ export class PendingMessageStore {
         }
       } catch { /* nothing saved proves this page's copy */ }
       const proven = new Map((this.rows.get(owner) ?? []).filter((message) => message.state === "held" && freshReceipt(message.heldUntil))
-        .map((message) => [message.id, { text: message.text, until: message.heldUntil! }]));
+        .map((message) => [message.id, { text: message.text, until: message.heldUntil!, error: message.error?.code }]));
       const next = loaded.map((message) => {
         const kept = proven.get(message.id);
-        return kept?.text === message.text && savedStates.get(message.id) === "uncertain" && !message.resendInFlight && !message.error
+        return kept?.text === message.text && savedStates.get(message.id) === "uncertain" && !message.resendInFlight && message.error?.code === kept.error
           ? { ...message, state: "held" as const, heldUntil: kept.until } : this.applyHeldResumed(owner, message);
       });
       const heldAgain = next.some((message, at) => message !== loaded[at]);
@@ -276,7 +283,7 @@ export class PendingMessageStore {
       && (proofs?.get(item.id) === undefined || proofs.get(item.id) === scope)) {
       const held = this.heldResumed.get(owner) ?? new Map<string, number>();
       // until the bridge's receipt ends: never longer than its window, whatever a frame says
-      held.set(item.id, Date.now() + Math.min(Math.max(item.ms ?? HELD_RECEIPT_MS, 0), HELD_RECEIPT_MS));
+      held.set(item.id, Math.min(item.until ?? Infinity, Date.now() + HELD_RECEIPT_MS));
       if (held.size > 1024) held.delete(held.keys().next().value!);
       this.heldResumed.set(owner, held);
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import type { PendingMessage } from "../../shared/protocol.ts";
-import { PendingMessageStore } from "./pendingMessages.ts";
+import { PendingMessageStore, frameRemovals } from "./pendingMessages.ts";
 
 const storage = () => {
   const data = new Map<string, string>();
@@ -138,8 +138,7 @@ describe("pending message ownership", () => {
       tab.subscribe(() => { told++; });
       for (const id of ["read", "timed", "discarded"]) tab.accept("p", message(id), "old");
       tab.suspendScope("old");
-      tab.publish("p", [], [{ id: "read", outcome: "held", resumed: true, ms: 60_000 }, { id: "timed", outcome: "held", resumed: true, ms: 90_000 },
-        { id: "discarded", outcome: "held", resumed: true, ms: 120_000 }], "new");
+      tab.publish("p", [], frameRemovals({ held: ["read", "timed", "discarded"], held_ms: { read: 60_000, timed: 90_000, discarded: 120_000 } }), "new");
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["read", "held"], ["timed", "held"], ["discarded", "held"]]);
       // one timer, to the first proof's end
       expect(active().map(({ ms }) => ms)).toEqual([60_000]);
@@ -161,6 +160,27 @@ describe("pending message ownership", () => {
       // the saved copies were never held
       expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["read", "uncertain"], ["timed", "uncertain"]]);
     } finally { clock.mockRestore(); set.mockRestore(); clear.mockRestore(); }
+  });
+  it("never lets a proof outlive the bridge's receipt: a late held answer, a shorter replay, a frame that waited", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const port = storage(), tab = new PendingMessageStore(() => port);
+      for (const id of ["late", "short", "waited"]) tab.accept("p", message(id), "old");
+      tab.suspendScope("old");
+      // a frame that waited 20 s (for its snapshot) still ends when the bridge's receipt does
+      const waited = frameRemovals({ held: ["waited"], held_ms: { waited: 30_000 } });
+      now += 20_000;
+      tab.publish("p", [], [...frameRemovals({ held: ["late", "short"], held_ms: { late: 1_000, short: 60_000 } }), ...waited], "new");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["short", "held"], ["waited", "held"]]);
+      // a replay that ends sooner shortens the proof
+      tab.publish("p", [], frameRemovals({ held: ["short"], held_ms: { short: 5_000 } }), "newer");
+      now += 10_001;
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["short", "uncertain"], ["waited", "uncertain"]]);
+      // the old connection's late held answer for an ended proof is no proof
+      tab.accept("p", message("late", "held"), null);
+      expect(tab.read("p").find((row) => row.id === "late")?.state).toBe("uncertain");
+    } finally { clock.mockRestore(); }
   });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
