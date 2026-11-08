@@ -1,6 +1,8 @@
 /**
- * Which Letta Code conversation a pane shows. Three facts must agree, or Chat uses Terminal:
- * - herdr's report from its Letta integration (`herdr integration install letta`): `herdr:letta`,
+ * Which Letta Code conversation a pane shows. These facts must agree, or Chat uses Terminal:
+ * - herdr's report from its Letta integration (`herdr integration install letta`), when there is one
+ *   (herdr-core sends none, and herdr none without the integration: Letta's record then speaks alone,
+ *   lettaRecordedBinding): `herdr:letta`,
  *   the conversation id, or `default:<agent id>` for an agent's default conversation. herdr 0.9.5
  *   keeps the first report of a letta process, so after `/new` or `/resume` it still names the
  *   conversation the pane left.
@@ -200,14 +202,27 @@ export type LettaTranscript = { path: string; session: string; agent: string; co
  */
 export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): LettaTranscript | null {
   const session = lettaSessionOf(pane);
-  if (session === null) return null;
-  if (panes.some((other) => other.pane_id !== pane.pane_id && lettaSessionOf(other)?.reported === session.reported)) return null;
+  // a report in another form is not the absence of one
+  if (session === null && pane.agent_session) return null;
+  if (session !== null && panes.some((other) => other.pane_id !== pane.pane_id && lettaSessionOf(other)?.reported === session.reported)) return null;
   const text = recordOlderThan(join(owner.cwd, ".letta", "settings.local.json"), owner.startedAt);
   const opened = text === null ? null : lettaOpenedSessions(text);
-  const bound = opened === null ? null : lettaBinding(session, opened);
+  const bound = opened === null ? null : session === null ? lettaRecordedBinding(opened) : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
   if (bound === null || root === null) return null;
-  return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: session.reported, ...bound };
+  const reported = session?.reported ?? (bound.conversation === "default" ? `default:${bound.agent}` : bound.conversation);
+  return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: reported, ...bound };
+}
+
+/**
+ * With no report (herdr-core sends none for Letta, nor does herdr without its Letta integration), the
+ * conversation Letta's record names when it names one: a record older than the process is what that
+ * process resumed, as it writes nothing for the conversation the record already names.
+ */
+export function lettaRecordedBinding(opened: readonly { agent: string; conversation: string }[]): { agent: string; conversation: string } | null {
+  const first = opened[0];
+  if (first === undefined || opened.some((ref) => ref.agent !== first.agent || ref.conversation !== first.conversation)) return null;
+  return ID.test(first.agent) && ID.test(first.conversation) ? { agent: first.agent, conversation: first.conversation } : null;
 }
 
 /**

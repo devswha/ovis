@@ -166,6 +166,24 @@ describe("Letta conversation binding", () => {
     }
   });
 
+  // herdr-core sends no report for Letta (hc 0.1.17, letta-code 0.34.44, old-desktop 2026-11-08), nor does herdr without its Letta integration
+  test("without a report, Letta's record alone binds the one conversation it names, still only when older than the process", () => {
+    const silent = (cwd: string) => pane("w1:p1", null, cwd);
+    let owner = setup(settingsAfterNew, now - 60_000, now);
+    expect(lettaTranscriptFor(silent(owner.cwd), [silent(owner.cwd)], owner)).toEqual({ path: lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1"), session: "local-conv-1", agent: AGENT, conversation: "local-conv-1" });
+    owner = setup(JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "default" } } }), now - 60_000, now);
+    expect(lettaTranscriptFor(silent(owner.cwd), [silent(owner.cwd)], owner)).toMatchObject({ session: `default:${AGENT}`, agent: AGENT, conversation: "default" });
+    owner = setup(settingsAfterNew, now + 1, now);
+    expect(lettaTranscriptFor(silent(owner.cwd), [silent(owner.cwd)], owner)).toBeNull();
+    // two servers' records naming different conversations do not say which one this process opened
+    owner = setup(JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-1" }, cloud: { agentId: "agent-x", conversationId: "conv-y" } } }), now - 60_000, now);
+    expect(lettaTranscriptFor(silent(owner.cwd), [silent(owner.cwd)], owner)).toBeNull();
+    // a report of another form is no absent report
+    const other = { ...silent(owner.cwd), agent_session: { agent: "letta", kind: "path", source: "herdr:letta", value: "x" } } as HerdrPane;
+    owner = setup(settingsAfterNew, now - 60_000, now);
+    expect(lettaTranscriptFor(other, [other], owner)).toBeNull();
+  });
+
   test("a record Letta cannot rewrite binds nothing: its switch would fail and leave the old one standing", () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const target = pane("w1:p1", "local-conv-1", owner.cwd);
@@ -459,7 +477,9 @@ describe("Letta conversation binding", () => {
       expect(await resolve(bound)).toEqual({ source: "letta-transcript", path,
         letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
-      await expect(resolve(pane("w1:p1", null, project))).rejects.toThrow("no_session_path");
+      // no report at all (herdr-core, or herdr without its Letta integration): Letta's record alone
+      expect(await resolve(pane("w1:p1", null, project))).toEqual({ source: "letta-transcript", path,
+        letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       // another pane running Letta in the folder writes the same record
       // project1 -> /new -> moved into this project, whose older record names the conversation it left
       foreground = movedIn.pid;
