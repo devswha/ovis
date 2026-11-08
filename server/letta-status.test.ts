@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { lettaPanes, lettaTitleStatus, lettaTurnAfter } from "./letta-status.ts";
+import { createLettaStatus, lettaPanes, lettaRefreshKey, lettaTitleStatus, lettaTurnAfter } from "./letta-status.ts";
 import { noTurn } from "./omo-status.ts";
 
 // One turn of letta-code 0.34.44's local backend (old-desktop, 2026-11-08): the prompt, a Bash call, its result, the answer
@@ -47,6 +47,37 @@ describe("a Letta pane's status from its local messages", () => {
     // a pane gone, or given a status by a report, is forgotten: its next title is a first look again
     expect(lettaTitleStatus({ panes: [titled("t2", "working", "Tutor")] }, () => false, last)).toEqual([]);
     expect([...last.keys()]).toEqual([]);
+  });
+
+  it("shows a tracked pane waiting on the user's approval as blocked, where its messages only show the pending call", () => {
+    const titled = (id: string, status: HerdrPane["agent_status"], title: string) => ({ ...pane(id, "letta", status), terminal_title: title } as HerdrPane);
+    const last = new Map<string, HerdrPane["agent_status"]>();
+    expect(lettaTitleStatus({ panes: [titled("t1", "working", "⠋ Tutor")] }, () => true, last)).toEqual([]);
+    const waiting = [titled("t1", "working", "[ ! ] Action Required | Tutor")];
+    expect(lettaTitleStatus({ panes: waiting }, () => true, last)).toEqual([{ paneId: "t1", status: "blocked" }]);
+    expect(waiting[0]!.agent_status).toBe("blocked");
+    // approved: the call runs, and its file says working again
+    expect(lettaTitleStatus({ panes: [titled("t1", "working", "⠙ Tutor")] }, () => true, last)).toEqual([{ paneId: "t1", status: "working" }]);
+  });
+
+  it("finds a pane again early when its title's name or its spinner changes, not on every spinner frame", () => {
+    const titled = (title: string) => ({ ...pane("t1", "letta", "unknown"), terminal_title: title } as HerdrPane);
+    expect(lettaRefreshKey(titled("⠋ Tutor"))).toBe(lettaRefreshKey(titled("⠙ Tutor")));
+    expect(lettaRefreshKey(titled("⠋ Tutor"))).not.toBe(lettaRefreshKey(titled("Tutor")));
+    expect(lettaRefreshKey(titled("Tutor"))).not.toBe(lettaRefreshKey(titled("Coder")));
+    expect(lettaRefreshKey(titled("Tutor"))).not.toBe(lettaRefreshKey(titled("[ ! ] Action Required | Tutor")));
+  });
+
+  it("looks a pane up again within its refresh interval only when its refresh key changes", async () => {
+    let lookups = 0;
+    const tracker = createLettaStatus({ discover: async () => { lookups += 1; return new Map(); }, snapshot: async () => ({ panes: [] }) as never, onChange: () => {} });
+    const titled = (title: string) => [{ ...pane("t1", "letta", "unknown"), terminal_title: title } as HerdrPane];
+    await tracker.refresh(titled("Tutor"));
+    await tracker.refresh(titled("Tutor"));
+    expect(lookups).toBe(1);
+    await tracker.refresh(titled("⠋ Tutor"));
+    expect(lookups).toBe(2);
+    tracker.stop();
   });
 
   it("goes on from the status a tracked messages file gave when the file stops speaking", () => {

@@ -54,6 +54,9 @@ describe("which agent a pane runs", () => {
   it("reads Letta's spinner title as work and its plain title as rest, and no other agent's title", () => {
     expect(["⠋ Tutor", "⠹ Tutor", "Tutor", "", null].map((title) => titleStatus("letta", title))).toEqual(["working", "working", "idle", null, null]);
     expect(titleStatus("claude", "⠋ Claude Code")).toBeNull();
+    // while a tool call waits for the user's approval (standard permission mode), the title says so, blinking
+    expect(titleStatus("letta", "[ . ] Action Required | Tutor")).toBe("blocked");
+    expect(titleStatus("letta", "[ ! ] Action Required | Tutor")).toBe("blocked");
   });
 
   it("does not take a binary whose name proves nothing on that platform", () => {

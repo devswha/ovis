@@ -11,7 +11,7 @@
  */
 import type { AgentStatus } from "../shared/herdr-api.generated.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { titleStatus } from "./agent-identity.ts";
+import { LETTA_ASKING_TITLE, LETTA_BUSY_TITLE, titleStatus } from "./agent-identity.ts";
 import { gjcTurnAfter } from "./gjc-status.ts";
 import { lettaMessagesPath, resolveLettaTranscript } from "./letta-store.ts";
 import { OmoStatus, type OmoPane, type OmoStatusDeps } from "./omo-status.ts";
@@ -60,15 +60,23 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
   for (const pane of panes) {
     if (pane.agent !== "letta") continue;
     if (tracks(pane.pane_id)) {
-      // the messages file speaks: what it said is where the title goes on from if the file stops
+      // the messages file speaks, but shows a call waiting for the user's approval only as a call: the title says it waits
       if (pane.agent_status === "working" || pane.agent_status === "idle" || pane.agent_status === "done") {
-        last.set(pane.pane_id, pane.agent_status === "working" ? "working" : "idle");
+        const asking = titleStatus(pane.agent, pane.terminal_title) === "blocked";
+        const status: AgentStatus = asking ? "blocked" : pane.agent_status === "working" ? "working" : "idle";
+        const before = last.get(pane.pane_id);
+        // only the approval's start and end are the title's to tell; the file tells its own turns
+        if (before !== undefined && before !== status && (status === "blocked" || (before === "blocked" && status === "working"))) changed.push({ paneId: pane.pane_id, status });
+        if (asking) pane.agent_status = "blocked";
+        // what the file said is where the title goes on from if the file stops
+        last.set(pane.pane_id, status);
         titled.add(pane.pane_id);
       }
       continue;
     }
     if (pane.agent_status !== "unknown") continue;
-    const status = titleStatus(pane.agent, pane.terminal_title ?? pane.title);
+    // the program's own title only: elsewhere `title` may be a pane's label
+    const status = titleStatus(pane.agent, pane.terminal_title);
     if (status === null) continue;
     pane.agent_status = status;
     titled.add(pane.pane_id);
@@ -92,11 +100,18 @@ function syncAgents(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; 
  * The tracker's Letta composition, as GJC's: no aliases, no background counts, an unfinished turn
  * of a process that is gone told as a failed rest, and a status only once a whole turn record was read.
  */
-export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs">): OmoStatus {
+/** What of a Letta pane's title finds it anew: the name and whether a spinner or the approval mark shows, never which spinner frame. */
+export function lettaRefreshKey(pane: HerdrPane): string {
+  const title = pane.terminal_title ?? "";
+  const mark = LETTA_ASKING_TITLE.test(title) ? "asking" : LETTA_BUSY_TITLE.test(title) ? "busy" : "";
+  return `${mark}\0${title.replace(LETTA_ASKING_TITLE, "").replace(LETTA_BUSY_TITLE, "")}`;
+}
+
+export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs" | "refreshKey">): OmoStatus {
   return new OmoStatus({
     ...deps,
-    // a /new or /resume moves the pane to another conversation: found again within a second
-    refreshMs: 1000,
+    // found again when its title's name or mark changes (a /resume of another agent, a turn's start or end), else as gjc's
+    refreshKey: lettaRefreshKey,
     agent: "letta",
     aliases: [],
     turnAfter: lettaTurnAfter,

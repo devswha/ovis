@@ -50,6 +50,24 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(snapshot.panes[0]!.agent_status).toBe("blocked");
   });
 
+  it("shows a file-tracked pane as blocked while its pending call waits for the user's approval", async () => {
+    const store = join(root, "letta-store-asking");
+    const agent = "agent-local-b";
+    const messages = lettaMessagesPath(store, agent, "default")!;
+    mkdirSync(join(messages, ".."), { recursive: true });
+    // the prompt and the call waiting for approval: nothing more is written until the user answers
+    writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
+    const h = hub();
+    resolving().mockResolvedValue({ path: join(root, "t2.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
+    h.herdrSays(letta("⠋ Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("working");
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    const snapshot = await h.snapshot();
+    expect(snapshot.panes[0]!.agent_status).toBe("blocked");
+    expect(h.last().status).toBe("blocked");
+  });
+
   it("works through a turn in Letta's local messages and finishes once, and gives the pane back to a report", async () => {
     const store = join(root, "letta-store");
     const agent = "agent-local-a";
