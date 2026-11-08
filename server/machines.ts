@@ -658,7 +658,8 @@ export class MachineManager {
     if (machine.kind === "ssh" && own && !own.updatable && fix && machine.target && sameSshSession(fix.target, machine.target)) {
       const release = appRelease();
       // it ends with this app's setup there, which needs the same approvals as an update
-      const unapproved = !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
+      // a restart then updates it to the release its own Ovis offers: never one newer than this app
+      const unapproved = fix.mode === "restart" && newerThanThisApp(own.latest_version) ? NEWER_THAN_APP : !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
       return { how: "install", current_version: own.version, latest_version: fix.mode === "replace" ? release.slice(1) : own.latest_version, updatable: !unapproved, reason: unapproved,
         steps: fix.mode === "replace"
           ? [`Stop the Ovis server started by hand on that PC (process ${fix.pid}); its settings and data stay.`, `Install Ovis ${release} there with its official installer (install.sh at ${release}, as ${INSTALLER} gives it), as a herdr plugin that updates itself; an Ovis already installed there is started and updated instead.`, "As when it is run by hand, the installer adds what is missing for this account only (herdr, Bun 1.4 or newer, which may add itself to the shell's startup file), and serves Ovis to the tailnet when Tailscale runs there.", "Start it and connect to it. herdr and its sessions keep running."]
@@ -904,6 +905,9 @@ export class MachineManager {
       const fix = runtime.installFix;
       if (runtime.machine.kind !== "ssh" || !fix || !runtime.machine.target || !sameSshSession(fix.target, runtime.machine.target)) throw new PcUpdateRefused("Nothing on that PC needs installing from here; update it with Update.");
       if (this.updateRunning(runtime)) throw new PcUpdateRefused("This PC is already updating.");
+      // only as its card offers it: an enabled PC this app may connect to and manage, never past this app's release
+      const offer = this.updateOffer(runtime);
+      if (offer?.how !== "install" || !offer.updatable) throw new PcUpdateRefused(offer?.reason ?? "Nothing on that PC needs installing from here; update it with Update.");
       runtime.machine.update_error = null;
       return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid } });
     }
@@ -924,7 +928,12 @@ export class MachineManager {
     const finished = (async () => {
       let result = await ended(current);
       // still older than this app (a restarted supervisor, or an install kept as it was): its own update now, as its steps said
-      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) { current = start(true); request.onJob?.(current.id); result = await ended(current); }
+      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) {
+        // its update, as update-bridge asks it: never to a release newer than this app, which would then refuse it
+        const runtime = this.machines.get(request.machine_id);
+        if (runtime && newerThanThisApp(runtime.machine.remote_ovis?.latest_version)) return NEWER_THAN_APP;
+        current = start(true); request.onJob?.(current.id); result = await ended(current);
+      }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
     return { job_id: current.id, cancel: () => this.cancelJob(current.id), finished };

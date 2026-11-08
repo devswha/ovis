@@ -121,3 +121,23 @@ it("connects after an install without updating, and asks for the update only whe
   expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true }).finished).toBeNull();
   expect(asked).toEqual([false, true]);
 });
+
+it("installs on a PC added here only as its card offers: never one not approved for this app, or past this app's release", async () => {
+  const { manager, internals, call } = fixture();
+  const runtime = internals.machines.get(SAVED)!;
+  const offer = (latest: string | null) => {
+    Object.assign(runtime.machine, { state: "error", action_required: "setup", remote_ovis: { version: "0.4.9", latest_version: latest, updatable: false, reason: "too old", address: "lab.invalid:7317", url: null } });
+    runtime.installFix = { mode: "restart", pid: 4242, target: { destination: "me@lab.invalid" } };
+  };
+  // a restart would update it to a release newer than this app, which would then refuse it
+  offer("999.0.0");
+  expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: false, reason: expect.stringContaining("newer than this app") });
+  const refused = await call("install", "POST", { machine_id: SAVED });
+  expect(refused.status).toBe(409);
+  // a PC this app was not approved to manage: refused through the direct route too, as on its card
+  offer("0.5.0");
+  spyOn(manager as unknown as { mayManageBridge(runtime: unknown): boolean }, "mayManageBridge").mockReturnValue(false);
+  const unapproved = await call("install", "POST", { machine_id: SAVED });
+  expect(unapproved.status).toBe(409);
+  expect((await unapproved.json() as { error: { message: string } }).error.message).toContain("Review the bridge update");
+});
