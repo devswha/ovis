@@ -766,6 +766,19 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(operations).toEqual([]);
   });
 
+  it("keeps a restart's offer and the release it names while that PC's Ovis is away, as when the restart stopped it", async () => {
+    let clock = 0;
+    const { manager, ovis, until } = pc({ status: managedOffer({ revision_bound_install: undefined }) }, { now: () => clock });
+    const offered = await until((machine) => machine.action_required === "setup");
+    expect(offered.ovis_update).toMatchObject({ how: "install", updatable: true, revision: OFFERED });
+    ovis.stop("removed");
+    // its next connect, as on this server's start or the PC turned on again: a PC waiting for setup has no retry of its own
+    const internals = manager as unknown as { machines: Map<string, unknown>; reconnect(runtime: unknown): Promise<void> };
+    clock += 10_000; void internals.reconnect(internals.machines.get(MACHINE_ID));
+    const away = await until((machine) => /own Ovis is not running/.test(machine.error ?? ""));
+    expect(away.ovis_update).toMatchObject({ how: "install", updatable: true, revision: OFFERED });
+  });
+
   it("keeps a newer one's message, asks it nothing about its updates and links no address it did not give", async () => {
     const { requests, until } = pc({ status: managedOffer(), bundle: String(Number(REMOTE_BUNDLE_VERSION) + 1) });
     const waiting = await until((machine) => machine.action_required === "setup");

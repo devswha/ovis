@@ -223,6 +223,9 @@ and herdr's default session only.
 - One whose supervisor is too old to install an update by revision is restarted through its own
   launcher (the herdr plugin's stop and start actions, or the `ovis` user service of Ovis on
   herdr-core), then asked for its update. Without a launcher nothing is stopped (`no_launcher`). A release before 0.4.13 cannot be updated from here this way.
+  When the launcher stopped it but failed to start it again, Update asks the launcher once more.
+- The installer sets Ovis up for herdr's default session only: a PC added with a named session is
+  offered no install (`updatable: false`, with why).
 - `POST /api/machines/:id/update` runs that install as any update; `POST /api/machines/install`
   with `{ "machine_id": … }` does the same, and with an SSH address (`destination`, `port`,
   `identity_file`, `name`) installs on a PC not added here and adds it once Ovis answers there
@@ -233,13 +236,18 @@ and herdr's default session only.
   `unsupported`, `missing_tool` (no curl, git or tar), `disk` (under 1 GB free in the home folder),
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
-  `no_launcher`, `not_started`, `connect_failed`. These routes are this PC's owner's only, with the
+  `no_launcher`, `not_started`, `connect_failed`. A failure or cancel after the server started by hand was stopped
+  says so, and whether another was installed in its place. These routes are this PC's owner's only, with the
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
-  connects to that PC from here, and its final connect uses keys only too. A cancelled install keeps
-  the PC busy until its own run has ended. An installer already running there is stopped with it:
-  beside it, a watcher writes an empty line to the SSH connection every two seconds, and once
-  nobody reads there (the connection was closed) it stops the installer's whole process group.
+  connects to that PC from here, for any herdr session there or another PC saved at the same address,
+  and its final connect uses keys only too. A cancelled install keeps the PC busy until its own run
+  has ended. Stopping an installer already running there is best effort: beside it, a watcher writes
+  an empty line to the SSH connection every two seconds, and once nobody reads there (the connection
+  was closed) it stops the installer's whole process group, and the command writes once more right
+  before the installer starts. The PC's SSH server can take a moment to notice a closed connection,
+  longer when the network between is cut, so an installer may still start or finish its changes there
+  after the job says `cancelled`.
 
 ## Runtime and endpoints
 

@@ -96,7 +96,8 @@ export interface PcUpdateOffer {
  * release (docs/remote-pcs.md). `machine_id` names a PC added here whose own Ovis cannot update itself (its offer's
  * `how: "install"`); without one, the PC is added once Ovis answers there.
  */
-export interface PcInstallRequest extends SshTarget { name?: string; machine_id?: string }
+/** POST /api/machines/install: a PC saved here by its id, or a new one by its SSH address (and a name for it) */
+export type PcInstallRequest = { machine_id: string } | (SshTarget & { name?: string; machine_id?: undefined });
 /** why an install over SSH stopped, for the words to show (`error` carries them in English) */
 export type PcInstallFailure = "ssh_refused" | "ssh_host_key" | "ssh_unreachable" | "unsupported" | "missing_tool" | "disk" | "permission"
   | "bridge_there" | "ovis_there" | "changed" | "not_stopped" | "installer_failed" | "no_launcher" | "not_started" | "connect_failed";

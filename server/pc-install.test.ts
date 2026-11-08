@@ -258,6 +258,24 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(pc.commands.filter((command) => command.includes("kill -TERM 4242"))).toHaveLength(1);
   });
 
+  it("restarts through the launcher on a retry after a restart whose launcher stopped the server and failed to start one", async () => {
+    // the planned server is gone, and no Ovis runs there: the launcher is asked again instead of failing as changed
+    const pc = fixture({ launcher: "systemd" });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "connected", error: null });
+    expect(pc.commands.some((command) => command.includes("ovis.service"))).toBe(true);
+  });
+
+  it("says the server it stopped is gone only while nothing was started in its place", async () => {
+    // the installer ran and its Ovis started, then the connect failed: the stopped one is not said to be all there is
+    const pc = fixture({ descriptors: [descriptor(4242)] });
+    pc.failConnect("refused by that PC");
+    const failed = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(failed).toMatchObject({ phase: "failed", error_code: "connect_failed" });
+    expect(failed.error).not.toContain("none runs there now");
+    expect(failed.error).toContain("installed in its place");
+  });
+
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
     const pc = fixture({ launcher: "plugin", herdrRunning: false });
     const job = await pc.settled(pc.installer.start({ target }));

@@ -188,3 +188,67 @@ it("restarts a PC's Ovis from its card with the release that card showed, for th
   expect(manager.update(SAVED, "d".repeat(40))).toEqual({ job_id: "install-1" });
   expect(start.mock.calls[0]![0]).toMatchObject({ revision: "d".repeat(40), plan: { mode: "restart", pid: 4242 } });
 });
+
+it("keeps one install or setup at a time per SSH address: across herdr sessions, and for two PCs saved at one address", async () => {
+  const { manager, internals, reached } = fixture();
+  const job = manager.install({ destination: "me@new.invalid" });
+  await reached("me@new.invalid");
+  // another herdr session on the same PC: the install restarts herdr's and its Ovis there too
+  expect(() => manager.setup({ destination: "me@new.invalid", session: "work" })).toThrow("Ovis is being installed on this PC");
+  manager.cancelInstall(job.id);
+  // a PC saved here whose address another install is busy at: not started beside it
+  const runtime = internals.machines.get(SAVED)!;
+  Object.assign(runtime.machine, { state: "error", action_required: "setup", remote_ovis: { version: "0.4.9", latest_version: null, updatable: false, reason: "not started by its updater", address: "lab.invalid:7317", url: null } });
+  runtime.installFix = { mode: "replace", pid: 4242, target: { destination: "me@lab.invalid" } };
+  const installer = (manager as unknown as { installer: { runningAt(target: SshTarget): unknown } }).installer;
+  spyOn(installer, "runningAt").mockImplementation((target) => target.destination === "me@lab.invalid" ? { id: "other" } : undefined);
+  expect(() => manager.install({ machine_id: SAVED })).toThrow("being installed or connected already");
+});
+
+it("cancels an automatic bridge update that is already running, not only one waiting its turn", () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(SAVED)!;
+  const jobs = (manager as unknown as { jobs: Map<string, unknown> }).jobs;
+  jobs.set("auto-1", { runtime, update: true, public: { id: "auto-1", phase: "uploading" } });
+  (manager as unknown as { autoQueued: Set<string> }).autoQueued.add(SAVED);
+  const cancel = spyOn(manager as unknown as { cancelJob(id: string): void }, "cancelJob").mockImplementation(() => {});
+  expect(manager.cancelUpdate(SAVED)).toBe(true);
+  expect(cancel).toHaveBeenCalledWith("auto-1");
+});
+
+it("starts no bridge update while the PC's own Ovis updates itself", () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(SAVED)! as Runtime & { ownJob?: { id: string; abort: AbortController } };
+  runtime.ownJob = { id: "own-1", abort: new AbortController() };
+  const setup = spyOn(manager, "setup");
+  expect(() => manager.updateBridge(SAVED)).toThrow("already updating");
+  expect(setup).not.toHaveBeenCalled();
+});
+
+it("offers no install for a PC added with a named herdr session, saying why", () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(SAVED)!;
+  Object.assign(runtime.machine, { target: { destination: "me@lab.invalid", session: "work" }, state: "error", action_required: "setup", remote_ovis: { version: "0.4.9", latest_version: null, updatable: false, reason: "not started by its updater", address: "lab.invalid:7317", url: null } });
+  runtime.installFix = { mode: "replace", pid: 4242, target: { destination: "me@lab.invalid", session: "work" } };
+  expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: false, reason: expect.stringContaining("default session only") });
+  expect(() => manager.install({ machine_id: SAVED })).toThrow("default session only");
+});
+
+it("has a restarted PC install the release its card showed even when it connects with no update asked", async () => {
+  const { manager, internals } = fixture();
+  const { asked, outcomes, connect } = connects(manager);
+  const runtime = internals.machines.get(SAVED)!;
+  const own = spyOn(manager as unknown as { updateOwn(runtime: unknown, shown?: string): string }, "updateOwn").mockReturnValue("own-1");
+  // restarted, its bridge is already this app's: the connect succeeds, and its own update follows, of that release only
+  outcomes.push({ phase: "connected" });
+  runtime.machine.state = "connected";
+  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true, revision: "c".repeat(40) }).finished).toBeNull();
+  expect(asked).toEqual([{ update: false, revision: undefined }]);
+  expect(own).toHaveBeenCalledTimes(1);
+  expect(own.mock.calls[0]![1]).toBe("c".repeat(40));
+  // an update that already ran in its follow-up connect is not asked again
+  own.mockClear(); asked.length = 0;
+  outcomes.push({ ...OLDER, remote_ovis: { latest_version: "0.5.0" }, offeredRevision: "b".repeat(40) }, { phase: "connected" });
+  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true, revision: "c".repeat(40) }).finished).toBeNull();
+  expect(own).not.toHaveBeenCalled();
+});

@@ -25,6 +25,8 @@ const MIN_FREE_KB = 1024 * 1024;
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const STOP_WAIT_MS = 15_000;
 
+/** the same PC over SSH, whatever herdr session each names */
+export const samePc = (a: SshTarget, b: SshTarget): boolean => sameSshSession({ ...a, session: undefined }, { ...b, session: undefined });
 /**
  * The official installer's run on that PC, for one SSH command. Downloaded first, so a failed download is told as one
  * (piped, sh would run an empty script and exit 0), then run with nothing on stdin, on herdr (a herdr plugin that updates
@@ -148,7 +150,8 @@ export class PcInstaller {
   }
   /** the install running at an SSH address, if any: one at a time per PC */
   runningAt(target: SshTarget): PcInstallJob | undefined {
-    return [...this.jobs.values()].find((state) => !state.settled && sameSshSession(state.public.target, target))?.public;
+    // whatever herdr session is asked: the install restarts herdr's Ovis on that PC, for every session there
+    return [...this.jobs.values()].find((state) => !state.settled && samePc(state.public.target, target))?.public;
   }
   /**
    * Ends the job here, and the connect it handed over to. Its SSH connection closes, which stops an installer already
@@ -183,6 +186,8 @@ export class PcInstaller {
     });
     // the server started by hand there was stopped by this try: a later failure says so, as nothing runs there now
     let stopped = false;
+    // an Ovis was installed or started in its place: the stopped one is then not all there is to say
+    let replaced = false;
     try {
       // the installer sets Ovis up for herdr's default session; one for a named session is not this app's to guess
       if (target.session) throw new InstallFailed("unsupported", `Installing from here sets Ovis up for herdr's default session only, and this PC is added with the session "${target.session}". Add it without a session to install there.`);
@@ -215,11 +220,12 @@ export class PcInstaller {
         // only the very process the plan was made for, only a server this app did not start, and only while that pid
         // still runs an Ovis server: a pid reused by another program since is never signalled
         const shown = live.find((d) => d.pid === plan.pid && !d.managed_remote);
-        // gone already (an earlier try stopped it, then failed), with no other Ovis running there: nothing is left to stop
-        const gone = plan.mode === "replace" && !shown && live.length === 0;
+        // gone already (an earlier try stopped it, or the launcher stopped it and failed to start one), with no other Ovis
+        // running there: nothing is left to stop, and the install or the launcher's start is tried again
+        const gone = !shown && live.length === 0;
         const command = shown ? await ssh.run(`ps -o args= -p ${plan.pid} 2>/dev/null || true`) : "";
         if (!gone && (!shown || !OVIS_COMMAND.test(command))) throw new InstallFailed("changed", "That PC's Ovis changed since it was looked at, so nothing was stopped. Reconnect it and try again.");
-        if (gone) stopped = true;
+        if (gone && plan.mode === "replace") stopped = true;
         // a restart goes through the launcher that runs it, which must be there before anything is stopped
         if (plan.mode === "restart" && !installed) throw new InstallFailed("no_launcher", "That PC's Ovis was not installed as a herdr plugin or a user service, so it cannot be restarted from here. Restart it on that PC (Settings → Updates there tells how), then update it.");
         if (plan.mode === "replace" && !gone) {
@@ -241,6 +247,7 @@ export class PcInstaller {
         const plugin = facts.launcher === "plugin" || facts.launcher === "plugin-legacy";
         if (plugin && !facts.herdrRunning) await ssh.run(HEADLESS_HERDR);
         else await ssh.run(viaLauncher(facts.launcher, job.mode === "restart"));
+        replaced = stopped;
         // the launcher restarts what it runs: a planned process it did not run (started by hand beside it) is still
         // there, and a second Ovis would serve the same socket, so nothing is connected
         if (plan?.mode === "restart") {
@@ -269,6 +276,7 @@ export class PcInstaller {
           const said = lines.filter((line) => !line.startsWith("ovis-install-exit=")).slice(-3).join(" ").slice(0, 500);
           throw new InstallFailed("installer_failed", `The Ovis installer failed on that PC: ${said || "it said nothing"}`);
         }
+        replaced = stopped;
         // the plugin starts with herdr: one not running is started headless, which runs the plugin's startup hook
         // (as scripts/fresh-install-docker.ts checks), in a session of its own so it outlives this SSH connection
         if (!facts.herdrRunning) await ssh.run(HEADLESS_HERDR);
@@ -296,13 +304,17 @@ export class PcInstaller {
     } catch (error) {
       if (abort.signal.aborted) {
         job.phase = "cancelled"; job.step = "Cancelled";
-        if (stopped) job.error = "Cancelled after the Ovis started by hand on that PC was stopped, so none runs there now; Update tries the install again.";
+        if (stopped) job.error = replaced
+          ? "Cancelled after the Ovis started by hand on that PC was stopped and another was installed in its place, which may not be running; Update tries again."
+          : "Cancelled after the Ovis started by hand on that PC was stopped, so none runs there now; Update tries the install again.";
       }
       else {
         job.phase = "failed"; job.step = "Install failed";
         job.error_code = error instanceof InstallFailed ? error.code : null;
         job.error = (error instanceof Error ? error.message : String(error))
-          + (stopped ? " The Ovis started by hand on that PC was already stopped, so none runs there now; Update tries the install again." : "");
+          + (!stopped ? "" : replaced
+            ? " The Ovis started by hand on that PC was stopped, and the one installed in its place did not connect; Update tries again."
+            : " The Ovis started by hand on that PC was already stopped, so none runs there now; Update tries the install again.");
       }
     } finally {
       state.ssh?.close();
