@@ -214,7 +214,9 @@ const defaultStoreRoots = (agentDir: string): StoreRoots =>
 
 /**
  * Validate the shared native breadcrumb under the store's terminal sessions (an agent directory's
- * own, or the roots given) and reject stale leftovers.
+ * own, or the roots given) and reject stale leftovers. omp skips rewriting a breadcrumb whose content
+ * is unchanged, so one `omp -c` leaves from an earlier run still counts once its session is written
+ * during this process's lifetime.
  */
 export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, terminalId: string, startedAt: number): string | null {
   if (!/^(?:pts-\d+|tty[\w-]+|tmux-%\d+)$/.test(terminalId) || !Number.isFinite(startedAt)) return null;
@@ -222,14 +224,16 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
   try {
     const marker = join(roots.terminalSessions, terminalId);
     const stat = statSync(marker);
-    if (!stat.isFile() || stat.size > 8192 || stat.mtimeMs < startedAt - 1000) return null;
+    if (!stat.isFile() || stat.size > 8192) return null;
+    const markerStale = stat.mtimeMs < startedAt - 1000;
     const [savedCwd, savedPath] = readFileSync(marker, "utf8").split("\n");
     if (!savedCwd || !savedPath || realpathSync(savedCwd) !== realpathSync(cwd)) return null;
     // omp writes a relative session directory as given, relative to a directory nothing proves
     if (!nodePath.isAbsolute(savedPath)) return null;
     const root = realpathSync(roots.sessions);
     const saved = realpathSync(savedPath);
-    if (!statSync(saved).isFile()) return null;
+    const savedStat = statSync(saved);
+    if (!savedStat.isFile() || (markerStale && savedStat.mtimeMs < startedAt - 1000)) return null;
     const path = gjcSessionFile(root, saved, nodePath, roots.depth);
     if (!path) return null;
     const headerCwd = transcriptCwd(path);
