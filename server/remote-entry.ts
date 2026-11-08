@@ -8,8 +8,8 @@ import { parseProcessLine, refusedSocket, staleMarker } from "./herdr-marker.ts"
 import { startHeadlessWindowsHerdr, startInteractiveWindowsHerdr, windowsStartupStatus } from "./windows-herdr-start.ts";
 import { ShellAgentLocator } from "./shell-agent.ts";
 import { AgentDetector, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { discoverHerdrSessions, validChosenHerdrSocket, validHerdrSocket } from "./herdr-discovery.ts";
@@ -44,6 +44,21 @@ function staleWindowsMarker(path: string): boolean {
 const descriptor = descriptorPath();
 mkdirSync(dirname(descriptor), { recursive: true, mode: 0o700 });
 async function startBridge(): Promise<void> {
+const resultDirectory = dirname(descriptor);
+const currentResult = process.env["HERDR_REMOTE_RESULT"];
+try {
+  const cutoff = Date.now() - 5 * 60_000;
+  const uid = process.getuid?.();
+  for (const name of readdirSync(resultDirectory)) {
+    if (!/^startup-[^/]+\.result$/.test(name)) continue;
+    const path = join(resultDirectory, name);
+    if (currentResult && path === resolve(currentResult)) continue;
+    try {
+      const file = lstatSync(path);
+      if (file.isFile() && (uid === undefined || file.uid === uid) && file.mtimeMs < cutoff) rmSync(path);
+    } catch { /* gone, inaccessible, or another start already removed it */ }
+  }
+} catch { /* housekeeping must not block starting the bridge */ }
 const report = (code: "herdr_sessions_found" | "herdr_session_gone", sessions: Awaited<ReturnType<typeof discoverHerdrSessions>>) => {
   const result = JSON.stringify({ code, sessions });
   const resultPath = process.env["HERDR_REMOTE_RESULT"];

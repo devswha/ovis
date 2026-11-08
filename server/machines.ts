@@ -650,6 +650,8 @@ export class MachineManager {
   }
   private mayConnect(runtime: Runtime): boolean {
     const machine = runtime.machine;
+    // Setup owns this PC until it settles; the saved runtime may still serve its previous session.
+    if ([...this.jobs.values()].some((job) => job.public.machine_id === machine.id && (!TERMINAL.has(job.public.phase) || job.closing))) return false;
     return !machine.herdr_profile_id || !!machine.target && this.profileState.connectionApproved(machine.herdr_profile_id, machine.target);
   }
   private mayManageBridge(runtime: Runtime): boolean {
@@ -1237,7 +1239,7 @@ export class MachineManager {
     const moving = !!existing && (!sameSshSession(target, existing.machine.target!) || target.herdr_socket !== existing.machine.target!.herdr_socket);
     // A session switch gets a separate connection. Keep the saved PC serving its old workspaces until commit.
     const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && target.port === existing.machine.target!.port;
-    const savedGeneration = existing?.generation;
+    if (switchingSession) { clearTimeout(existing.retry); existing.retry = undefined; }
     const resumeRetry = existing?.machine.state === "reconnecting";
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
     if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
@@ -1277,7 +1279,7 @@ export class MachineManager {
         if (!switchingSession) this.machines.set(machineId, runtime);
         await this.observe(runtime);
         if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
-        if (switchingSession && (this.machines.get(machineId) !== existing || existing!.generation !== savedGeneration)) throw new Error("Setup cancelled");
+        if (switchingSession && this.machines.get(machineId) !== existing) throw new Error("Setup cancelled");
         // connected there: the PC moves to the address it was set up at, with what this setup learnt there. A move is
         // all or nothing: one that cannot be completed or saved leaves the PC as it was, trying its own address (#2075)
         const move = runtime.move;
@@ -1362,6 +1364,8 @@ export class MachineManager {
         }
       } finally {
         clearTimeout(job.timer); job.public.challenge = null; job.public.ssh_output = null; job.pending = undefined; job.ssh = undefined;
+        // A failed switch leaves the saved PC in place, including a link lost while its retries were paused.
+        if (switchingSession && this.machines.get(machineId) === existing && existing.machine.enabled && !this.stopped && existing.machine.state === "reconnecting" && existing.retry === undefined) this.retryLater(existing);
         // a PC still waiting in Update all's queue keeps showing that it waits
         if (job.runtime && !this.updateQueued.has(job.runtime.machine.id)) { job.runtime.machine.updating = null; this.emit(); }
       }

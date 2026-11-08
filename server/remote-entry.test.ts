@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { join as winJoin } from "node:path/win32";
@@ -143,7 +143,7 @@ describe("remote entry startup lock", () => {
     expect(result.output).not.toContain(join(home, "missing-herdr"));
   }, 60_000);
 
-  it.each(["symlink", "parent symlink", "outside", "file"])("refuses a chosen %s before any bridge connection", async (kind) => {
+  it.skipIf(process.platform === "win32").each(["symlink", "parent symlink", "outside", "file"])("refuses a chosen %s before any bridge connection", async (kind) => {
     const actual = join(home, kind === "outside" ? "other" : "config/herdr", "herdr.sock");
     mkdirSync(dirname(actual), { recursive: true });
     let connections = 0;
@@ -161,6 +161,28 @@ describe("remote entry startup lock", () => {
       // Only the explicit rejection may be reported; a ping to the untrusted target already violates the boundary.
       if (kind === "outside" || kind === "file") expect(connections).toBe(0);
     } finally { listener?.stop(true); }
+  });
+
+  it("removes stale startup results but keeps this start, recent results and other bridge files", async () => {
+    const registry = dirname(descriptor);
+    const files = ["startup-cancelled.result", "startup-current.result", "startup-recent.result", "bridge.log", "other.result"];
+    const old = new Date(Date.now() - 20 * 60_000);
+    for (const name of files) {
+      const path = join(registry, name);
+      writeFileSync(path, name);
+      if (name !== "startup-recent.result") utimesSync(path, old, old);
+    }
+    const directory = join(registry, "startup-directory.result");
+    mkdirSync(directory); utimesSync(directory, old, old);
+    // An existing live descriptor lets the real entry finish without creating any server.
+    const bridge = other();
+    writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid: bridge.pid, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
+    const run = await start(undefined, { HERDR_REMOTE_RESULT: join(registry, ".", "startup-current.result") });
+    expect(run.code).toBe(0);
+    expect(files.filter((name) => existsSync(join(registry, name)))).toEqual(["startup-current.result", "startup-recent.result", "bridge.log", "other.result"]);
+    expect(readFileSync(join(registry, "startup-current.result"), "utf8")).toBe("startup-current.result");
+    expect(existsSync(directory)).toBe(true);
+    expect(existsSync(descriptor)).toBe(true);
   });
 
   it("reclaims a startup lock whose PID another process now holds", async () => {
