@@ -6,6 +6,7 @@
  */
 import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 
@@ -21,6 +22,8 @@ const MAX_INCLUDED_FILES = 64;
 const MAX_INCLUDED_BYTES = 1024 * 1024;
 /** hosts listed at most, so a generated config costs a bounded list */
 const MAX_HOSTS = 200;
+/** how long the list waits on every name lookup together; a name still unanswered then is matched by its spelling */
+const RESOLVE_TIMEOUT_MS = 1500;
 
 export interface SshCandidate {
   /** the Host alias, or the Tailscale machine name */
@@ -41,6 +44,10 @@ export interface SshCandidatesOptions {
   home?: string;
   /** `tailscale status --json`; null when Tailscale is not here */
   readStatus?: () => Promise<string | null>;
+  /** the addresses a host name resolves to, as ssh would reach it (getaddrinfo: hosts file, DNS, MagicDNS) */
+  resolve?: (host: string) => Promise<string[]>;
+  /** how long the list waits on `resolve` for every name together */
+  resolveTimeoutMs?: number;
 }
 
 /**
@@ -85,16 +92,24 @@ function keyword(line: string): { key: string; values: string[] } | null {
   return { key: match[1]!.toLowerCase(), values };
 }
 
-interface HostBlock { aliases: string[]; hostname?: string; user?: string }
+interface HostBlock { patterns: string[]; aliases: string[]; user?: string }
+
+/** whether a Host line applies to `alias`: one of its patterns matches and none of its negated ones does */
+const appliesTo = ({ patterns }: HostBlock, alias: string): boolean =>
+  patterns.some((pattern) => !pattern.startsWith("!") && globMatch(pattern, alias)) &&
+  !patterns.some((pattern) => pattern.startsWith("!") && globMatch(pattern.slice(1), alias));
 
 /**
- * The hosts an ssh config names, in its order, with the first HostName and User each block sets. Hosts named only
- * by a pattern (`*`, `?`, `!`) and everything under Match are left out; a later block repeating an alias adds nothing.
- * `include(pattern)` reads the files an Include names, as text, in their order.
+ * The hosts an ssh config names, in its order, with the HostName ssh would use for each (the first one set by any
+ * block that applies to it, a later `Host *` included, `%h` standing for the alias) and the first User its own block
+ * sets. Hosts named only by a pattern (`*`, `?`, `!`) and everything under Match are left out; a later block
+ * repeating an alias adds nothing. `include(pattern)` reads the files an Include names, as text, in their order.
  */
 export async function sshConfigHosts(text: string, include: (pattern: string) => Promise<string[]> = async () => []): Promise<{ alias: string; hostname: string | null; user: string | null }[]> {
   const blocks: HostBlock[] = [];
-  let current: HostBlock | null = null;
+  // lines before the first Host apply to every host, as in ssh
+  let current: HostBlock | null = { patterns: ["*"], aliases: [] };
+  const hostnames: { block: HostBlock; value: string }[] = [];
   let inMatch = false;
   const walk = async (text: string, depth: number): Promise<void> => {
     for (const line of text.split(/\r?\n/)) {
@@ -105,7 +120,7 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
         // `Host valid server-*` still names `valid`; a negated pattern on the line leaves out each alias it matches
         // (`Host web01 !web*` names nothing), as ssh never applies the block to that host
         const negated = parsed.values.filter((value) => value.startsWith("!")).map((value) => value.slice(1));
-        current = { aliases: parsed.values.filter((value) => plainAlias(value) && !negated.some((pattern) => globMatch(pattern, value))) };
+        current = { patterns: parsed.values, aliases: parsed.values.filter((value) => plainAlias(value) && !negated.some((pattern) => globMatch(pattern, value))) };
         blocks.push(current);
       } else if (parsed.key === "match") {
         inMatch = true;
@@ -123,7 +138,7 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
         }
         [current, inMatch] = [outer, outerMatch];
       } else if (current !== null && !inMatch) {
-        if (parsed.key === "hostname" && current.hostname === undefined) current.hostname = parsed.values[0];
+        if (parsed.key === "hostname" && parsed.values[0] !== undefined) hostnames.push({ block: current, value: parsed.values[0] });
         if (parsed.key === "user" && current.user === undefined) current.user = parsed.values[0];
       }
     }
@@ -135,7 +150,8 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
     for (const alias of block.aliases) {
       if (seen.has(alias)) continue;
       seen.add(alias);
-      hosts.push({ alias, hostname: block.hostname ?? null, user: block.user ?? null });
+      const hostname = hostnames.find((line) => appliesTo(line.block, alias))?.value.replace(/%([%h])/g, (_, token: string) => token === "h" ? alias : "%");
+      hosts.push({ alias, hostname: hostname ?? null, user: block.user ?? null });
     }
   }
   return hosts.slice(0, MAX_HOSTS);
@@ -204,6 +220,28 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<st
   };
 }
 
+/** one spelling per address, so `FD7A:0:0::1` is `fd7a::1` */
+const canonicalIp = (ip: string): string => {
+  const address = ip.split("%")[0]!;
+  return isIP(address) === 6 ? new URL(`http://[${address}]`).hostname.slice(1, -1) : address;
+};
+
+const systemResolve = async (host: string): Promise<string[]> => (await Bun.dns.lookup(host, { backend: "system" })).map(({ address }) => address);
+
+/** the addresses each name resolves to, waiting `timeoutMs` at most for all of them; a name that fails or is late is left out */
+async function resolveWithin(names: string[], resolve: (host: string) => Promise<string[]>, timeoutMs: number): Promise<Map<string, string[]>> {
+  const found = new Map<string, string[]>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((done) => { timer = setTimeout(done, timeoutMs); });
+  const lookups = names.map(async (name) => {
+    const addresses = await resolve(name).catch(() => []);
+    if (addresses.length > 0) found.set(name, addresses.map(canonicalIp));
+  });
+  await Promise.race([Promise.all(lookups), deadline]);
+  clearTimeout(timer);
+  return new Map(found);
+}
+
 /**
  * The SSH tab's list: the ssh config's hosts, then the Tailscale PCs no config host already names (by alias,
  * HostName or MagicDNS name). Either source missing leaves the other.
@@ -213,12 +251,19 @@ export async function sshCandidates(options: SshCandidatesOptions = {}): Promise
   const [config, status] = await Promise.all([readCapped(join(sshDir, "config"), MAX_FILE_BYTES), (options.readStatus ?? readTailscaleStatus)()]);
   const hosts = config === null ? [] : await sshConfigHosts(config, includer(sshDir, options.home ?? homedir()));
   const peers = tailnetPeers(status);
-  // a config host is the Tailscale PC it reaches: its HostName (machine name, MagicDNS name or Tailscale address)
-  // when it sets one, else its alias, as ssh resolves it. Then that row stands for it. An alias alone never claims a
-  // PC its HostName leads away from: one kept from before a rename names a PC it no longer reaches
+  // a config host is the Tailscale PC it reaches: its HostName when it sets one, else its alias, as ssh resolves it.
+  // Then that row stands for it. An address, or the addresses a name resolves to, decide; a name only when its lookup
+  // fails or is late. An alias alone never claims a PC its HostName leads away from: one kept from before a rename
+  // names a PC it no longer reaches
+  const targetOf = (alias: string, hostname: string | null) => (hostname ?? alias).toLowerCase().replace(/\.$/, "");
+  const names = peers.length === 0 ? [] : [...new Set(hosts.map(({ alias, hostname }) => targetOf(alias, hostname)).filter((target) => isIP(target) === 0))];
+  const resolved = await resolveWithin(names, options.resolve ?? systemResolve, options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS);
+  const peerIps = peers.map((peer) => ({ peer, ips: new Set(peer.ips.map(canonicalIp)) }));
   const peerOf = (alias: string, hostname: string | null) => {
-    const target = (hostname ?? alias).toLowerCase().replace(/\.$/, "");
-    return peers.find(({ name, dnsName, ips }) => target === name.toLowerCase() || target === dnsName.toLowerCase() || ips.includes(target));
+    const target = targetOf(alias, hostname);
+    const addresses = isIP(target) === 0 ? resolved.get(target) : [canonicalIp(target)];
+    if (addresses !== undefined) return peerIps.find(({ ips }) => addresses.some((address) => ips.has(address)))?.peer;
+    return peers.find(({ name, dnsName }) => target === name.toLowerCase() || target === dnsName.toLowerCase());
   };
   const claimed = new Set<string>();
   const fromConfig: SshCandidate[] = hosts.map(({ alias, hostname, user }) => {

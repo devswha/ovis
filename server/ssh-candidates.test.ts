@@ -80,7 +80,7 @@ it("stops a line at a word that starts a comment", async () => {
 
 it("reads an Include inside a Host block as part of that block", async () => {
   const dir = sshDir({ config: "Host lab\n  Include lab.conf\nHost after\n", "lab.conf": "HostName lab-pc.tail.ts.net\nUser alice\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc"]) });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc"]), resolve: async () => [] });
   expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.source])).toEqual([
     ["lab", "alice@lab-pc.tail.ts.net", "ssh_config"], ["after", null, "ssh_config"],
   ]);
@@ -130,14 +130,14 @@ it("reads at most 64 included files across every Include", async () => {
 
 it("lists 200 PCs at most, Tailscale PCs included", async () => {
   const dir = sshDir({ config: Array.from({ length: 200 }, (_, index) => `Host h${index}`).join("\n") });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["extra"]) });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["extra"]), resolve: async () => [] });
   expect(candidates).toHaveLength(200);
   expect(candidates.some((candidate) => candidate.source === "tailscale")).toBe(false);
 });
 
 it("adds the Tailscale PCs no config host already names, and names the Tailscale PC a config host is", async () => {
   const dir = sshDir({ config: "Host lab\n  HostName lab-pc.tail.ts.net\nHost eamac\nHost build\n  HostName build.example\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc", "eamac", "winvm"]) });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc", "eamac", "winvm"]), resolve: async () => [] });
   expect(candidates).toEqual([
     { name: "lab", destination: "lab", detail: "lab-pc.tail.ts.net", source: "ssh_config", tailnet: "lab-pc.tail.ts.net" },
     { name: "eamac", destination: "eamac", detail: null, source: "ssh_config", tailnet: "eamac.tail.ts.net" },
@@ -161,6 +161,53 @@ it("takes a config host's HostName over its alias: a stale alias naming one Tail
     { name: "home-server", destination: "home-server", detail: "100.123.228.51", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" },
     { name: "home-server", destination: "home-server.tail.ts.net", detail: "home-server.tail.ts.net", source: "tailscale", tailnet: "home-server.tail.ts.net" },
   ]);
+});
+
+it("takes the HostName ssh would use: later matching blocks after the alias's own, earlier ones first, `%h` as the alias", async () => {
+  expect(await sshConfigHosts([
+    "Host box", "  User me", "Host lab", "  HostName lab.example", "Host *.wild", "Host *", "  HostName 100.64.0.2",
+  ].join("\n"))).toEqual([
+    { alias: "box", hostname: "100.64.0.2", user: "me" },
+    { alias: "lab", hostname: "lab.example", user: null },
+  ]);
+  expect(await sshConfigHosts("HostName first.example\nHost a b !b\nHost *\n  HostName %h.lan\nHost c\n")).toEqual([
+    { alias: "a", hostname: "first.example", user: null }, { alias: "c", hostname: "first.example", user: null },
+  ]);
+  expect(await sshConfigHosts("Host !x *\n  HostName %h.lan\nHost box\n  HostName own.example\nHost x\n")).toEqual([
+    { alias: "box", hostname: "box.lan", user: null }, { alias: "x", hostname: null, user: null },
+  ]);
+});
+
+/** a tailnet of `box` at 100.64.0.1 and `other` at 100.64.0.2 and an IPv6 address */
+const twoPeers = JSON.stringify({
+  BackendState: "Running",
+  Self: { DNSName: "self.tail.ts.net.", UserID: 1 },
+  Peer: {
+    a: { DNSName: "box.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.64.0.1"] },
+    b: { DNSName: "other.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.64.0.2", "fd7a:115c:a1e0::2"] },
+  },
+});
+const resolver = (table: Record<string, string[]>) => async (host: string): Promise<string[]> => table[host] ?? [];
+
+it("claims the Tailscale PC a config host's name resolves to, not the one it is spelled like", async () => {
+  const dir = sshDir({ config: "Host box\nHost lab\n  HostName lab.lan\nHost far\n  HostName far.lan\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers,
+    resolve: resolver({ box: ["100.64.0.2"], "lab.lan": ["fd7a:115c:a1e0:0:0:0:0:2"], "far.lan": ["192.168.1.9"] }) });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["box", "other.tail.ts.net"], ["lab", "other.tail.ts.net"], ["far", undefined], ["box", "box.tail.ts.net"],
+  ]);
+});
+
+it("matches an equivalent spelling of a Tailscale IPv6 address", async () => {
+  const dir = sshDir({ config: "Host six\n  HostName FD7A:115C:A1E0:0:0:0:0:2\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: async () => { throw new Error("an address is not looked up"); } });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["six", "other.tail.ts.net"], ["box", "box.tail.ts.net"]]);
+});
+
+it("stops waiting on a lookup at the deadline and falls back to the name", async () => {
+  const dir = sshDir({ config: "Host box\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: () => new Promise<string[]>(() => {}), resolveTimeoutMs: 0 });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
 });
 
 it("lists only the other source when one is missing", async () => {
