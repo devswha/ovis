@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import "../src/styles.css";
+// the app bundle always carries the chat's styles, and with them the code block's wrapper (#3369)
+import "../src/components/ChatView.css";
 import { FileViewer } from "../src/components/FileViewer.tsx";
 import { SettingsProvider } from "../src/lib/settings.ts";
 
