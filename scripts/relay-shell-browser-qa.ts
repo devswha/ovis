@@ -35,7 +35,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
-import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { Browser, BrowserContext, Locator, Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import type { BunRelay } from "../relay/bun.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
@@ -524,6 +524,34 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
     const contexts: BrowserContext[] = [];
     /** what the pages warned of, kept with the report: the shell says there why a step it took did not finish */
     const consoleLines: string[] = [];
+    /**
+     * V-017: Add this PC / Ask to join is the consent. The press records every Add-a-PC phase the PC's page renders
+     * (a MutationObserver from document start, so an unpainted commit counts too) and lands on that page.
+     */
+    const pressOnce = async (page: Page, primary: Locator, serverId: string): Promise<void> => {
+      await page.addInitScript(() => {
+        const seen: string[] = [];
+        Object.assign(window, { qaAddPcPhases: seen });
+        const note = (node: Node): void => {
+          if (!(node instanceof Element)) return;
+          for (const element of [node, ...node.querySelectorAll("[data-add-pc-phase]")]) {
+            const phase = element.getAttribute("data-add-pc-phase");
+            if (phase !== null && seen.at(-1) !== phase) seen.push(phase);
+          }
+        };
+        new MutationObserver((records) => { for (const record of records) { if (record.type === "attributes") note(record.target); else record.addedNodes.forEach(note); } })
+          .observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-add-pc-phase"] });
+      });
+      await primary.click();
+      await page.waitForURL(`${APP}/s/${serverId}/`);
+    };
+    /** Once the comparison is up: the PC's page went from the press to it without a confirm phase or a second Pair button. */
+    const askedOnce = async (page: Page, mode: "new" | "join"): Promise<void> => {
+      const seen = await page.evaluate(() => (window as unknown as { qaAddPcPhases: string[] }).qaAddPcPhases);
+      assert.ok(!seen.includes("confirm"), `${mode}: one press is the consent, no "Pair with {name}?" step (phases ${seen.join(" -> ")})`);
+      assert.equal(seen.at(-1), "compare", `${mode}: the press reached the comparison (phases ${seen.join(" -> ")})`);
+      assert.equal(await page.locator(`[role=dialog][data-add-pc-mode="${mode}"]`).getByRole("button", { name: "Pair", exact: true }).count(), 0, `${mode}: no second Pair button`);
+    };
     const hosted = async (options: { width: number; height: number; theme: "dark" | "light"; clock?: boolean }) => {
       if (!browser) throw new Error("no browser");
       const mobile = options.width < 600;
@@ -738,11 +766,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await sheetNew.waitFor();
       await settledSheet(a);
       await capture(a, "sheet-new-1440-dark");
-      await sheetNew.getByRole("button", { name: "Add this PC" }).click();
-      await a.waitForURL(`${APP}/s/${pc2.id}/`);
-      await a.locator('[role=dialog][data-add-pc-mode="new"]').getByRole("button", { name: "Pair", exact: true }).click();
+      await pressOnce(a, sheetNew.getByRole("button", { name: "Add this PC" }), pc2.id);
       const typed = a.getByRole("textbox", { name: "Number on Mac mini" });
       await typed.waitFor();
+      await askedOnce(a, "new");
       await until(async () => (await pc2.pairings()).length === 1, "Mac mini's own screen shows the comparison");
       const [asked] = await pc2.pairings();
       await settledSheet(a);
@@ -757,7 +784,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await pc2.mailbox.pull();
       await a.goto(`${APP}/`);
       await row(a, "Mac mini").and(a.locator('[data-pc-state="paired"]')).waitFor();
-      log9(`new PC: Mac mini ${pc2.id} listed itself and opened its local-only window -> row Add -> sheet (new) -> Add this PC -> Pair -> typed the ${asked!.digits.length} digits its own screen listed -> approved on the PC -> app -> row Ready`);
+      log9(`new PC: Mac mini ${pc2.id} listed itself and opened its local-only window -> row Add -> sheet (new) -> Add this PC (no confirm step, no second Pair) -> typed the ${asked!.digits.length} digits its own screen listed -> approved on the PC -> app -> row Ready`);
 
       // (b) an older account PC, its own window closed: this device shows its digits, another member picks them
       await a.goto(`${APP}/s/${pc1.id}/`);
@@ -774,11 +801,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await sheetJoin.waitFor();
       await settledSheet(b);
       await capture(b, "sheet-join-390-dark");
-      await sheetJoin.getByRole("button", { name: "Ask to join" }).click();
-      await b.waitForURL(`${APP}/s/${pc1.id}/`);
-      await b.locator('[role=dialog][data-add-pc-mode="join"]').getByRole("button", { name: "Pair", exact: true }).click();
+      await pressOnce(b, sheetJoin.getByRole("button", { name: "Ask to join" }), pc1.id);
       const digits = b.locator("[role=dialog] .relay-shell-digits");
       await digits.waitFor();
+      await askedOnce(b, "join");
       const shown = (await digits.getAttribute("aria-label"))!.replace(/ /g, "");
       const prompt = a.getByTestId("account-approval");
       await prompt.waitFor();
@@ -796,7 +822,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await pc2.mailbox.pull();
       await b.goto(`${APP}/`);
       await row(b, "Desk PC").and(b.locator('[data-pc-state="paired"]')).waitFor();
-      log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) Join -> Ask to join -> Pair -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app -> row Ready`);
+      log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) Join -> Ask to join (no confirm step, no second Pair) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app -> row Ready`);
 
       // The generic Add sheet at both widths/themes: the account introduction already paired the second device with Mac mini.
       for (const [page, width, sheetOpen] of [
