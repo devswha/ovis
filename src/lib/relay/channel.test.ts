@@ -485,6 +485,15 @@ function connectReal(f: ReturnType<typeof relayFixture>, keys: ReturnType<typeof
   return opening;
 }
 
+it("names the connection_id a session had in `resume` when it reconnects through the relay", async () => {
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+  const urls: string[] = [];
+  const resume = "ef".repeat(16);
+  const opening = openRelayChannel(offer, { store: new MemoryDeviceStore(), resume, socket: (url) => { urls.push(url); throw new Error("captured"); } });
+  await expect(opening).rejects.toThrow("captured");
+  expect(urls).toEqual([`${offer.relay}/v1/ws?server_id=${offer.server_id}&role=client&resume=${resume}&v=1`]);
+});
+
 async function comparing(compare: (digits: string) => Promise<void>) {
   const f = relayFixture();
   cleanups.push(() => f.close());

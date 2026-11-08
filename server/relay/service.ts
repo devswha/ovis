@@ -225,8 +225,12 @@ export class RelayService {
       ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused, ...this.newSessions() } } : {}) };
   }
 
-  /** `new_sessions: false` while the pass the global link sends says its relay admits no new client sessions to this PC. */
+  /**
+   * `new_sessions: false` while the pass the global link sends says its relay admits no new client sessions to this PC,
+   * and only while that relay says passes are on and this one holds (`relay` ok): a relay with passes off ignores it.
+   */
   private newSessions(): { new_sessions?: false } {
+    if (this.passNotice?.state !== "ok") return {};
     const parsed = parseRelayPass(this.passFor(this.relay));
     return parsed && !relayPassAdmitsNewSessions(parsed.payload) ? { new_sessions: false } : {};
   }

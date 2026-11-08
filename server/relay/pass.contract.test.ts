@@ -30,7 +30,7 @@ function withEnv(values: Record<string, string>): void {
 const KID = "0badc0de";
 
 /** An enforcing Bun relay, an account service that lists this PC under `acct_1` only, and a PC that may use them. */
-async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<RelayServiceOptions> = {}, relayKeys?: string) {
+async function fixture(mode: "off" | "grace" | "enforce" = "enforce", extra: Partial<RelayServiceOptions> = {}, relayKeys?: string) {
   const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
   const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   // the relay trusts the account service's key unless the test names others
@@ -50,6 +50,8 @@ async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<Rel
   const limited = new Set<string>();
   /** what the passes the service signs say of new client sessions (unset: a v1 pass) */
   const signing: { newSessions?: boolean } = {};
+  /** the pass forms each pass request said this PC reads */
+  const passVersions: unknown[] = [];
   const accountFetch = async (request: Request): Promise<Response> => {
     const path = new URL(request.url).pathname;
     const body = await request.json() as Record<string, string>;
@@ -60,6 +62,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<Rel
       challenges.set(id, expected);
       return Response.json({ challenge_id: id, frame });
     }
+    passVersions.push((body as Record<string, unknown>)["pass_versions"]);
     const expected = challenges.get(body["challenge_id"] ?? "");
     challenges.delete(body["challenge_id"] ?? "");
     if (!expected || !verifyServerProof(body["proof"], expected)) return Response.json({ error: { code: "proof_invalid" } }, { status: 401 });
@@ -117,7 +120,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce", extra: Partial<Rel
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = () => `http://127.0.0.1:${app.port}`;
   return {
-    stateDir, origin, relayPort: relay.port, asked, headers, dialed, syncs, listed, hooks, limited, signing, sentOnControl, renewal: renewal.promise,
+    stateDir, origin, relayPort: relay.port, asked, headers, dialed, syncs, listed, hooks, limited, signing, passVersions, sentOnControl, renewal: renewal.promise,
     get service() { return service; },
     refusedFor,
     get synced() { return synced.promise; },
@@ -361,6 +364,8 @@ test("a pass that admits no new client sessions is told in the status; one that 
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await f.start();
   await bounded(f.synced);
+  // the PC says it reads both pass forms, so the service may sign it a v2 pass
+  expect(f.passVersions).toEqual([[1, 2]]);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false, new_sessions: false });
   // another account (which does not list this PC), then back: the PC renews with the pass the service signs now
   f.signing.newSessions = true;
@@ -368,6 +373,15 @@ test("a pass that admits no new client sessions is told in the status; one that 
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await bounded(f.renewal);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false });
+});
+
+test("with passes off on the relay, a pass that admits no new client sessions is not told in the status", async () => {
+  const f = await fixture("off");
+  f.signing.newSessions = false;
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  await bounded(f.synced);
+  expect(f.service.status().pass).toEqual({ state: "ok", relay: null, enforce_at: null, refused: false });
 });
 
 test("naming the same account again asks the account service nothing more", async () => {

@@ -21,7 +21,7 @@ upgrade, and a request that is not an upgrade is `426`.
 | Socket | Query | Who |
 |---|---|---|
 | control | `role=server` | the PC, one per `server_id` |
-| client | `role=client` | a phone or browser; the relay picks its `connection_id` |
+| client | `role=client` | a phone or browser; the relay picks its `connection_id`. A reconnect may add `resume=<the connection_id it had>` (see Relay pass) |
 | data | `role=server&connection_id=<id>` | the PC, one per client |
 | warm | `role=server&warm=<generation>` | the PC, at most one: a data socket opened before its client arrives |
 
@@ -136,11 +136,16 @@ pairing hosts, in a release most PCs run.
   relay without passes drops that frame like any other.
 - **New client sessions.** The account service can mark a pass (`new` 0) so the relay admits no new
   client sessions to that PC for the pass's lifetime. The pass with the latest expiry that
-  authorized the room decides, kept in storage with that expiry: while it holds, a client socket
-  arriving for that `server_id` closes `4429` (`relay allowance used`), in `grace` and `enforce`
-  alike. Clients already admitted, their data and warm sockets, and the PC's own sockets are never
-  closed for it. A newer pass with `new` 1 lifts it, and it ends with the pass. With passes `off`
-  it has no effect.
+  authorized the room decides (of two with one expiry, the later issued), kept in storage with that
+  expiry: while it holds, a new client socket for that `server_id` closes `4429` (`relay allowance
+  used`), in `grace` and `enforce` alike. Sessions already up keep running, their reconnects
+  included: while a pass authorizes the room, it remembers the `connection_id`s of the newest 64
+  clients it admits (in storage with the authorization, forgotten when that ends), and a client
+  socket that names one in `resume=<connection_id>` is admitted; it gets a fresh `connection_id`,
+  which is remembered in turn. The app sends `resume` on every reconnect of a session through the
+  relay, never on a first connect. Clients already admitted, their data and warm sockets, and the
+  PC's own sockets are never closed for it. A newer pass with `new` 1 lifts it, and it ends with
+  the pass. With passes `off` it has no effect.
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
   before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
   socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
@@ -196,7 +201,7 @@ pairing hosts, in a release most PCs run.
 | `1013` | a limit above; try again later |
 | `4401` | to a PC socket, or a pairing host that offers a key: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
 | `4402` | to a PC socket or a pairing host: no relay pass that holds while the relay asks for one (`relay pass required`, `relay pass expired`, `relay pass invalid`) |
-| `4429` | to a new client: the pass of its PC says the relay admits no new client sessions to it (`relay allowance used`); clients already connected stay |
+| `4429` | to a new client: the pass of its PC says the relay admits no new client sessions to it (`relay allowance used`); clients already connected stay, and so do their reconnects with `resume` |
 
 A socket that closes itself has its close answered at once, with its own code when that is `1000`
 or `3000`-`4999` (`1000` otherwise, such as for `1001` or `1005`), and its partner is closed as above. On Cloudflare the

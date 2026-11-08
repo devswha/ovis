@@ -1171,7 +1171,7 @@ describe("relay pass", () => {
     const renewedAt = T0 + 3_600_000;
     setSystemTime(new Date(renewedAt));
     await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passAdmitting(false, renewedAt) }));
-    expect(w.fake.stored.get("pass_until")).toEqual({ until: renewedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID, new_sessions: false });
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: renewedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID, issued: renewedAt, new_sessions: false, admitted: [connection_id] });
     await w.evict();
     const heard = control.sent.length;
     const refused = await w.open("role=client");
@@ -1200,6 +1200,55 @@ describe("relay pass", () => {
     const admitted = await w.open("role=client");
     expect(admitted.closedWith).toBeNull();
     expect(admitted.json(0)).toMatchObject({ type: "assigned" });
+  });
+
+  test("under a pass that admits no new client sessions, a client the room admitted comes back with resume, past an eviction; a made-up or absent one closes 4429", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passFor());
+    const first = await w.open("role=client");
+    const { connection_id: firstId } = first.json(0) as { connection_id: string };
+    const renewedAt = T0 + 3_600_000;
+    setSystemTime(new Date(renewedAt));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passAdmitting(false, renewedAt) }));
+    const admitted = () => (w.fake.stored.get("pass_until") as { admitted?: string[] }).admitted;
+    expect(admitted()).toEqual([firstId]);
+    // the carrier drops (a network change), and the room is evicted before the session comes back
+    closeFromFar(w.box.room, first);
+    await w.evict();
+    const back = await w.open(`role=client&resume=${firstId}`);
+    expect(back.closedWith).toBeNull();
+    const { connection_id: backId } = back.json(0) as { connection_id: string };
+    expect(backId).not.toBe(firstId);
+    expect(admitted()).toEqual([firstId, backId]);
+    for (const query of [`role=client&resume=${"0".repeat(32)}`, "role=client"]) {
+      expect((await w.open(query)).closedWith).toEqual({ code: 4429, reason: "relay allowance used" });
+    }
+    await w.evict();
+    expect((await w.open(`role=client&resume=${backId}`)).closedWith).toBeNull();
+  });
+
+  test("a client may name its earlier connection_id in resume; nothing else may", () => {
+    const base = `https://relay.test/v1/ws?server_id=${SERVER}&v=1`;
+    const id = "ab".repeat(16);
+    expect(parseSocketRequest(new URL(`${base}&role=client&resume=${id}`))).toEqual({ server_id: SERVER, role: "client", connection_id: null, version: "1", resume: id });
+    expect(parseSocketRequest(new URL(`${base}&role=client`))).not.toHaveProperty("resume");
+    for (const bad of [`role=client&resume=${id.toUpperCase()}`, "role=client&resume=abc", "role=client&resume=", `role=server&resume=${id}`, `role=server&warm=${id}&resume=${id}`]) {
+      expect(parseSocketRequest(new URL(`${base}&${bad}`))).toHaveProperty("error");
+    }
+  });
+
+  test("of two passes with one expiry, the later issued decides whichever comes first", async () => {
+    const at = Math.floor(T0 / 1000);
+    const early = (newSessions: boolean) => signRelayPass(signer, KID, SERVER, at, RELAY_PASS_LIFETIME_S, { newSessions });
+    const late = (newSessions: boolean) => signRelayPass(signer, KID, SERVER, at + 60, RELAY_PASS_LIFETIME_S - 60, { newSessions });
+    const first = await world("grace");
+    const renewed = await first.control(await early(true));
+    await first.box.room.webSocketMessage(renewed, JSON.stringify({ type: "relay_pass", pass: await late(false) }));
+    expect((await first.open("role=client")).closedWith).toEqual({ code: 4429, reason: "relay allowance used" });
+    const second = await world("grace");
+    const kept = await second.control(await late(true));
+    await second.box.room.webSocketMessage(kept, JSON.stringify({ type: "relay_pass", pass: await early(false) }));
+    expect((await second.open("role=client")).closedWith).toBeNull();
   });
 
   test("with passes off, a pass that admits no new client sessions changes nothing", async () => {

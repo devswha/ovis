@@ -23,11 +23,11 @@ export interface PassPolicy {
 }
 
 /**
- * What the relay made of a PC socket's pass; `exp` (ms) only when it holds, and `new_sessions` (false)
- * only when it holds and admits no new client sessions to the PC.
+ * What the relay made of a PC socket's pass; `exp` and `iat` (ms) only when it holds, and
+ * `new_sessions` (false) only when it holds and admits no new client sessions to the PC.
  */
 export type PassState = "ok" | "missing" | "invalid" | "expired";
-export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number; readonly kid?: string; readonly new_sessions?: false }
+export interface PassResult { readonly state: PassState; readonly reason?: string; readonly exp?: number; readonly iat?: number; readonly kid?: string; readonly new_sessions?: false }
 
 export interface PassSettings {
   readonly RELAY_PASS_MODE?: string;
@@ -93,7 +93,7 @@ export function passMayHold(policy: PassPolicy, pass: string | null, serverId: s
 export async function checkPass(policy: PassPolicy, pass: string | null | undefined, serverId: string, now: number): Promise<PassResult> {
   if (policy.revoked.has(serverId)) return pass ? { state: "invalid", reason: "relay pass invalid" } : { state: "missing", reason: RELAY_PASS_REQUIRED };
   const check = await checkRelayPass(pass, policy.keys, serverId, Math.floor(now / 1000));
-  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000, kid: check.payload.kid, ...(relayPassAdmitsNewSessions(check.payload) ? {} : { new_sessions: false }) };
+  if (check.ok) return { state: "ok", exp: check.payload.exp * 1000, iat: check.payload.iat * 1000, kid: check.payload.kid, ...(relayPassAdmitsNewSessions(check.payload) ? {} : { new_sessions: false }) };
   return { state: check.reason === RELAY_PASS_REQUIRED ? "missing" : check.reason === "relay pass expired" ? "expired" : "invalid", reason: check.reason };
 }
 
