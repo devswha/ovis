@@ -97,6 +97,17 @@ it("moves an old web-storage version record into the saved PCs once and deletes 
   expect([...observedVersions()]).toEqual([[saved, { version: "0.0.1", outdated: true }]]);
 });
 
+it("deletes an old version record it cannot read", async () => {
+  const storage = webStorage();
+  storage.local.set("ovis-relay-versions", "{not json");
+  storage.session.set("ovis-relay-versions", "[]");
+  const session = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage")?.value;
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { ...session, getItem: () => { throw new DOMException("denied", "SecurityError"); } } });
+  await loadObservedVersions(memoryStore(new Map()));
+  expect([...storage.local, ...storage.session]).toEqual([]);
+  expect(observedVersions().size).toBe(0);
+});
+
 it("never installs after cancellation while an update-status read was pending", async () => {
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: "unused", relay: "wss://relay.ovis.sh" };
   const held = Promise.withResolvers<Response>();

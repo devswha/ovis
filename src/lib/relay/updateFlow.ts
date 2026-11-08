@@ -50,8 +50,9 @@ function takeLegacyVersions(): ReadonlyMap<string, ObservedVersion> {
   for (const storage of [() => localStorage, () => sessionStorage]) {
     try {
       const area = storage();
-      const value: unknown = JSON.parse(area.getItem(LEGACY_VERSION_KEY) ?? "[]");
-      area.removeItem(LEGACY_VERSION_KEY);
+      let value: unknown;
+      // the record goes even when it cannot be read: a damaged one would otherwise stay forever
+      try { value = JSON.parse(area.getItem(LEGACY_VERSION_KEY) ?? "[]"); } finally { area.removeItem(LEGACY_VERSION_KEY); }
       if (!Array.isArray(value)) continue;
       for (const item of value) {
         if (Array.isArray(item) && typeof item[0] === "string" && /^[0-9a-f]{32}$/.test(item[0]) && typeof item[1] === "object" && item[1] !== null
