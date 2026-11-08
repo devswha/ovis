@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
@@ -698,6 +698,8 @@ const subagentsDir = (parentPath: string): string => join(parentPath.replace(/\.
 function folderVersion(dir: string): { sig: string; latestMs: number } {
   try {
     const stat = lstatSync(dir);
+    // a link leads to another session's folder, whose agents are none of this one's
+    if (!stat.isDirectory()) return { sig: "-", latestMs: 0 };
     return { sig: `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`, latestMs: Math.max(stat.mtimeMs, stat.ctimeMs) };
   } catch { return { sig: "-", latestMs: 0 }; }
 }
@@ -714,13 +716,18 @@ function agentIds(parentPath: string): string[] {
   if (sig === "-") { listings.delete(dir); return []; }
   const known = listings.get(dir);
   if (known?.sig === sig && known.readAt - latestMs >= 1000) return known.ids;
-  let ids: string[];
+  const ids: string[] = [];
+  let folder: Dir | undefined;
+  // read entry by entry: a folder of any size costs at most MAX_NAMES names
   try {
-    ids = readdirSync(dir).slice(0, MAX_NAMES).flatMap((name) => {
-      const id = /^agent-(.+)\.meta\.json$/.exec(name)?.[1];
-      return id !== undefined && AGENT_ID.test(id) ? [id] : [];
-    });
-  } catch { return []; }
+    folder = opendirSync(dir);
+    for (let read = 0; read < MAX_NAMES; read += 1) {
+      const entry = folder.readSync();
+      if (entry === null) break;
+      const id = /^agent-(.+)\.meta\.json$/.exec(entry.name)?.[1];
+      if (id !== undefined && AGENT_ID.test(id)) ids.push(id);
+    }
+  } catch { return []; } finally { folder?.closeSync(); }
   remember(listings, dir, { sig, readAt: Date.now(), ids }, 256);
   return ids;
 }
@@ -1334,6 +1341,8 @@ interface Tracked {
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
   live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; sig: string | null;
+  /** the session's turn has rested since background work last ran: herdr's working from then is still that work's */
+  restedOnWork?: boolean;
   reset?: boolean;
   /** the turns of the transcript read, and the busy signals matched to them */
   turns?: Turns;
@@ -1446,11 +1455,12 @@ export class ClaudeSubagentStatus {
 
   /**
    * The session's own turn ended while subagents or commands still run: Claude keeps its busy
-   * title up while a background subagent works, and herdr reads that as `working` (#2069).
+   * title up while a background subagent works, and herdr reads that as `working` (#2069). The
+   * last of that work ending keeps the rest until a turn begins: herdr's working may be from before.
    */
   restsOn(paneId: string): boolean {
     const tracked = this.panes.get(paneId);
-    return tracked !== undefined && tracked.resting && tracked.running > 0;
+    return tracked !== undefined && tracked.resting && (tracked.running > 0 || tracked.restedOnWork === true);
   }
 
   /**
@@ -1656,6 +1666,9 @@ export class ClaudeSubagentStatus {
       const holding = this.holdsQueue(paneId);
       if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false)) continue;
       tracked.holding = holding;
+      // the last of its work ending keeps the rest: herdr's working may be the busy title it had, said before
+      // that work ended, until a turn begins (a busy signal, or one written) and the rest is gone
+      tracked.restedOnWork = resting && (running > 0 || (!tracked.reset && tracked.resting && (tracked.running > 0 || tracked.restedOnWork === true)));
       tracked.reset = false;
       tracked.running = running;
       tracked.turnRunning = turnRunning;

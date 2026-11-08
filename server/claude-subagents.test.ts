@@ -430,6 +430,18 @@ describe("backgroundAgentDetail", () => {
     expect(backgroundAgentDetail(join(s.path, "..", "none.jsonl"), "a1")).toEqual({ refusal: "not_found" });
   });
 
+  it("counts nothing of a subagents folder that is a link to another session's (#3348)", () => {
+    const s = session();
+    s.agent("a1");
+    expect(claudeSubagentState(s.path, true, NOW).running).toBe(1);
+    const linkedSession = join(s.path, "..", "22222222-2222-4222-8222-222222222222");
+    const linkedParent = `${linkedSession}.jsonl`;
+    writeFileSync(linkedParent, json({ type: "user", timestamp: at(0), message: { role: "user", content: "go" } }));
+    mkdirSync(linkedSession);
+    symlinkSync(join(s.path, "..", SESSION, "subagents"), join(linkedSession, "subagents"));
+    expect(claudeSubagentState(linkedParent, true, NOW)).toMatchObject({ tasks: [], running: 0 });
+  });
+
   it("an unreadable dispatch is no prompt, and no later instruction is taken for it", () => {
     const s = session();
     const file = s.agent("a1", { steps: [] });
@@ -2010,6 +2022,27 @@ describe("claudeSubagents, a long-lived session's old history (#2510)", () => {
       expect(stats.mock.calls.filter(([path]) => basename(String(path)).startsWith("agent-old"))).toEqual([]);
       expect(claudeSubagents(s.path, true, NOW + 60_000).map((task) => `${task.id}:${task.status}`)).toContain("old7:running");
     } finally { stats.mockRestore(); }
+  });
+
+  it("lists a folder of any size reading at most MAX_NAMES of its names (#3348)", () => {
+    const s = session();
+    const dir = dirname(s.agent("a1"));
+    for (let i = 0; i < 6000; i += 1) writeFileSync(join(dir, `junk-${i}`), "");
+    const open = fs.opendirSync;
+    let names = 0;
+    const listed = spyOn(fs, "readdirSync");
+    const opened = spyOn(fs, "opendirSync").mockImplementation((path, options) => {
+      const folder = open(path, options);
+      const next = folder.readSync.bind(folder);
+      folder.readSync = () => { const entry = next(); if (entry !== null) names += 1; return entry; };
+      return folder;
+    });
+    try {
+      claudeSubagentState(s.path, true, NOW);
+      expect(listed.mock.calls.filter(([path]) => String(path) === dir)).toEqual([]);
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(names).toBe(5000);
+    } finally { opened.mockRestore(); listed.mockRestore(); }
   });
 
   it("counts an old agent resumed while the session's transcript stays quiet, once its minute is up", async () => {

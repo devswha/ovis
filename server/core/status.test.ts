@@ -398,10 +398,11 @@ describe("Claude rest evidence regressions (#2072)", () => {
     appendFileSync(h.child, line({ type: "assistant", isSidechain: true, timestamp: new Date(at + 500).toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [] } }));
     // When the snapshot discovers the child end instead of the timer (omo M1).
     const snapshot = await h.snapshot();
-    // Then the old BG frame is replaced and alerts use the current status.
-    expect(h.last()).toEqual({ status: "working", tasks: 0, bg: false });
-    expect(snapshot.panes[0]).toMatchObject({ agent_status: "working" });
-    expect(h.pending.current(h.pane.pane_id)).toBe("working");
+    // Then the old BG frame is replaced, the transcript's rest stands over herdr's working from before
+    // the child ended (#3348), and the alerts take the wait for the child's notice for working.
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: true });
+    expect(snapshot.panes[0]).toMatchObject({ agent_status: "done" });
+    expect(h.pending.current(h.pane.pane_id)).toBe("done");
     expect(h.alerts.at(-1)).toBe("working");
   });
 
@@ -849,6 +850,40 @@ describe("the status hub's Claude turn at rest under its background subagent", (
     appendFileSync(path, line({ type: "user", origin: { kind: "human" }, timestamp: ts(5000), permissionMode: "default", message: { role: "user", content: "next" } }));
     h.poll();
     expect(h.last().status).toBe("working");
+  });
+});
+
+describe("the status hub's Claude turn at rest when its last background task ends", () => {
+  const RESTING = "55555555-5555-4555-8555-555555555555";
+  const path = join(root, `${RESTING}.jsonl`);
+  const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+  const ts = (ms: number) => new Date(at + ms).toISOString();
+  const agentFile = join(root, RESTING, "subagents", "agent-b1.jsonl");
+  mkdirSync(join(root, RESTING, "subagents"), { recursive: true });
+  writeFileSync(path, line({ type: "user", origin: { kind: "human" }, timestamp: ts(-1000), permissionMode: "default", message: { role: "user", content: "go" } }));
+  writeFileSync(join(root, RESTING, "subagents", "agent-b1.meta.json"), JSON.stringify({ agentType: "general-purpose", description: "essays", toolUseId: "toolu_b1", requestShape: "background" }));
+  writeFileSync(agentFile, line({ isSidechain: true, sessionId: RESTING, agentId: "b1", type: "user", timestamp: ts(0), message: { role: "user", content: "write" } }));
+  const pane = { ...claude, agent_session: { ...claude.agent_session, value: RESTING } };
+
+  it("keeps the transcript's rest when the last one ends while herdr's last word is still working (#3348)", async () => {
+    // Given a turn at rest under its background subagent, herdr still reading Claude's busy title as working
+    const h = hub(path);
+    h.herdrSays(pane);
+    handlers.onBaseline([pane]);
+    await h.snapshot();
+    h.herdrSays({ ...pane, agent_status: "working" });
+    handlers.onStatus("w1:p1", "working", "claude");
+    appendFileSync(path, line({ type: "assistant", isSidechain: false, timestamp: ts(200), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "OK" }] } })
+      + line({ type: "system", subtype: "turn_duration", isSidechain: false, timestamp: ts(300), pendingBackgroundAgentCount: 1 }));
+    h.poll();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When the subagent's own turn ends before herdr says anything new
+    appendFileSync(agentFile, line({ isSidechain: true, sessionId: RESTING, agentId: "b1", type: "assistant", timestamp: ts(400), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } }));
+    h.poll();
+    // Then the pane stays at rest with nothing running, and a snapshot repeating herdr's stale word keeps it so
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: true });
+    await h.snapshot();
+    expect(h.last()).toEqual({ status: "done", tasks: 0, bg: true });
   });
 });
 
