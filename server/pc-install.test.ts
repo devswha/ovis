@@ -358,4 +358,18 @@ describe.skipIf(!Bun.which("setsid") || !Bun.which("curl"))("the installer's run
     download.end();
     expect(existsSync(join(dir, "ran"))).toBe(false);
   }, 20_000);
+
+  it("starts no installer when the connection closed just before the download ended, before the watcher writes again", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-installer-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const pipe = join(dir, "install.sh"), source = join(dir, "source.sh");
+    writeFileSync(source, "#!/bin/sh\necho ran > " + join(dir, "ran") + "\n");
+    expect(await Bun.spawn(["mkfifo", pipe]).exited).toBe(0);
+    // the reader stands in for SSH: it closes the connection, then lets the download end at once, well inside the
+    // watcher's two seconds
+    const run = Bun.spawn(["setsid", "-w", "sh", "-c", 'sh -c "$1" | { IFS= read -r line; exec 0<&-; cat "$2" > "$3"; }', "ssh", installerRun("v0.5.1", "file://" + pipe), source, pipe], { stdout: "ignore", stderr: "ignore" });
+    cleanups.push(() => run.kill());
+    await run.exited;
+    expect(existsSync(join(dir, "ran"))).toBe(false);
+  }, 20_000);
 });

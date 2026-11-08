@@ -34,13 +34,16 @@ const STOP_WAIT_MS = 15_000;
  * A command run over SSH without a terminal keeps running once the connection ends, as a cancel ends it: so a watcher,
  * started before the download, writes an empty line to the connection every two seconds, and once it cannot (nobody reads there
  * any more) stops the command's whole process group, the download or the installer with it; the command then ends
- * without starting anything more. It is stopped itself when the installer ends. Empty lines are no
+ * without starting anything more. Right before the installer starts, the command itself writes to the connection too,
+ * so one closed since the watcher last wrote starts no installer. It is stopped itself when the installer ends. Empty lines are no
  * output to the reader.
  */
 export const installerRun = (release: string, from = installerAt(release)): string =>
   `${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT; trap 'exit 143' HUP INT TERM; `
   + `( trap '' PIPE; while printf '\\n' 2>/dev/null; do sleep 2 >/dev/null 2>&1; done; kill -TERM 0 ) </dev/null 2>/dev/null & watch=$!; `
   + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then kill "$watch" 2>/dev/null; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
+  // a connection closed since the watcher last wrote ends the command here (SIGPIPE, or the write's error), not the installer
+  + `printf '\\n' || exit 141; `
   + `OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; `
   + `kill "$watch" 2>/dev/null; printf '\\novis-install-exit=%s\\n' "$status"`;
 /** connects the PC once Ovis answers there (MachineManager.setup, keys only): resolves null once connected, else why not */
