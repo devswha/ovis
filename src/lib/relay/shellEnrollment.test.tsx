@@ -94,9 +94,10 @@ describe("account pairing completion", () => {
     expect(run.apps()).toBe(0);
   });
 
-  it("keeps the local pairing Ready on failure and retries enrollment", async () => {
+  it.each(["rejection", "timeout"] as const)("keeps the local pairing Ready on %s and retries enrollment", async (failure) => {
     const run = await pairing();
-    run.enrollment.resolve(Response.json({ error: { code: "account_unavailable", message: "private enrollment diagnostic" } }, { status: 503 }));
+    if (failure === "timeout") run.enrollment.reject(new DOMException("private enrollment diagnostic", "TimeoutError"));
+    else run.enrollment.resolve(Response.json({ error: { code: "account_unavailable", message: "private enrollment diagnostic" } }, { status: 503 }));
     await until(() => { const state = run.current().state; return state.kind === "failed" || state.kind === "ready" && state.enrollment === "failed"; });
     const state = run.current().state;
     expect(state).toMatchObject({ kind: "ready", enrollment: "failed" });
