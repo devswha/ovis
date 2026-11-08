@@ -382,6 +382,20 @@ describe("managed source updates with real Git repositories and builds", () => {
     watched.stop();
   });
 
+  it("ends the offer when the checkout becomes blocked while the release builds (#3325)", async () => {
+    await release("second", "v0.2.0");
+    // the checkout changes while the release builds: the check after the build finds it blocked
+    const building = new Updater({ ...updater.options, publish(status) {
+      if (status.step === "build" && !existsSync(join(root, "local-change.txt"))) writeFileSync(join(root, "local-change.txt"), "x");
+    } });
+    await building.initialize();
+    await building.request("install");
+    expect(building.status.phase).toBe("error");
+    expect(building.status.blocked_reason).toContain("local changes");
+    expect(building.status.available).toBe(false);
+    building.stop();
+  });
+
   it("never shows an offer under a channel it was not made on while the check runs (#3325)", async () => {
     const appState = join(directory, "app-state");
     mkdirSync(appState);

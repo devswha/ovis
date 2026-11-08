@@ -511,7 +511,11 @@ export class Updater {
           catch (error) { console.error("Rust PTY host install failed; the release uses the Node PTY sidecar", error); }
         }
         const reason = await this.sourceBlock();
-        if (reason) throw new Error(reason);
+        // the checkout changed while the release built: the offer ends with the block, as a check's would
+        if (reason) {
+          this.patch({ blocked_reason: reason, available: false });
+          throw new Error(reason);
+        }
         this.controller.signal.throwIfAborted();
         const previous = this.release;
         // what it replaces, on record for the supervisor the release starts: that one was not here for the install
