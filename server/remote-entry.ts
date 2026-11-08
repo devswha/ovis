@@ -8,10 +8,11 @@ import { parseProcessLine, refusedSocket, staleMarker } from "./herdr-marker.ts"
 import { startHeadlessWindowsHerdr, startInteractiveWindowsHerdr, windowsStartupStatus } from "./windows-herdr-start.ts";
 import { ShellAgentLocator } from "./shell-agent.ts";
 import { AgentDetector, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
+import { discoverHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
 
 process.env["OVIS_REMOTE"] = "1";
 const windows = process.platform === "win32";
@@ -25,6 +26,11 @@ const session = process.env["HERDR_REMOTE_SESSION"];
 // Windows they live under XDG_CONFIG_HOME when set, then %APPDATA%\herdr (`herdr status server`)
 const herdrConfig = windows ? join(process.env["XDG_CONFIG_HOME"] || process.env["APPDATA"] || join(homedir(), "AppData", "Roaming"), "herdr") : join(process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "herdr");
 process.env["HERDR_SOCKET"] = session ? join(herdrConfig, "sessions", session, "herdr.sock") : join(herdrConfig, "herdr.sock");
+const chosenSocket = windows ? undefined : process.env["HERDR_REMOTE_SOCKET"];
+if (chosenSocket) {
+  if (!validHerdrSocket(chosenSocket)) throw new Error("The herdr socket must be an absolute path ending in /herdr.sock");
+  process.env["HERDR_SOCKET"] = chosenSocket;
+}
 function staleWindowsMarker(path: string): boolean {
   return staleMarker(readFileSync(path, "utf8"), (pid) => {
     try {
@@ -53,6 +59,19 @@ try {
     // leaves the socket file, and a refused connection says nobody listens on it
     const socket = process.env["HERDR_SOCKET"]!;
     if (existsSync(socket) && !(windows ? staleWindowsMarker(socket) : await refusedSocket(socket))) throw error;
+    // A selected socket is an existing daemon's identity, never permission to create its replacement.
+    if (chosenSocket) throw new Error("The chosen herdr session is no longer running. Start it on that PC, then reconnect.");
+    if (!windows && process.env["HERDR_REMOTE_START_NEW"] !== "1") {
+      const sessions = await discoverHerdrSessions();
+      if (sessions.length) {
+        const result = JSON.stringify({ code: "herdr_sessions_found", sessions });
+        const resultPath = process.env["HERDR_REMOTE_RESULT"];
+        if (resultPath) { writeFileSync(resultPath + ".tmp", result, { mode: 0o600 }); renameSync(resultPath + ".tmp", resultPath); }
+        console.error(result);
+        process.exitCode = 2;
+        return;
+      }
+    }
     // a Windows bundle carries no herdr: its installer is herdr's own, and setup ran it
     const herdr = process.env["OVIS_HERDR_BIN"] || join(bundle, "bin/herdr");
     if (windows && !existsSync(herdr)) throw new Error(`herdr is not installed at ${herdr}; install it with herdr.dev/install.cmd`);

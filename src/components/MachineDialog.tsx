@@ -10,6 +10,7 @@ import { machineErrorText } from "../lib/userError.ts";
 import { BridgeUpdateProgress, OwnOvisAddress, ownOvisAction } from "./MachineSidebar.tsx";
 import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
+import { FoundHerdrChoices, type HerdrChoice } from "./FoundHerdrChoices.tsx";
 
 export function MachineDialog({ machine, preset, updateRemote = false, onClose, onConnected }: { machine?: Machine; /** a new PC's address and name, picked under Add a connection → SSH */ preset?: AddPcPreset; updateRemote?: boolean; onClose(): void; onConnected(id: string): void }) {
   const t = useT();
@@ -20,6 +21,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [port, setPort] = useState(String(machine?.target?.port ?? ""));
   const [key, setKey] = useState(machine?.target?.identity_file ?? "");
   const [session, setSession] = useState(machine?.target?.session ?? "");
+  const [herdrSocket, setHerdrSocket] = useState(machine?.target?.herdr_socket ?? "");
+  const [startNewHerdr, setStartNewHerdr] = useState(machine?.target?.start_new_herdr === true);
   const [job, setJob] = useState<SetupJob | null>(null);
   const mounted = useRef(true);
   const jobRef = useRef(job); jobRef.current = job;
@@ -56,11 +59,12 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   }, [job?.id, finished]);
   useEffect(() => setSecret(""), [job?.challenge?.id]);
 
-  const begin = async () => {
+  const begin = async (choice?: HerdrChoice) => {
     if (pending) return;
     setError(null); setPending(true);
     // a PC saved in herdr keeps its catalog name, which the server does not read from here
-    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
+    if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); }
+    try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr ? { start_new_herdr: true } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
       if (mounted.current) setJob(next);
       else if (!["connected", "failed", "cancelled"].includes(next.phase) && (next.windows_startup || !["installing", "starting"].includes(next.phase))) await answerMachineSetup(next.id, { action: "cancel" });
     }
@@ -69,7 +73,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   };
   const inheritedStarted = useRef(false);
   useEffect(() => {
-    if ((!machine?.herdr_profile_id && machine?.action_required !== "windows_login" && machine?.action_required !== "windows_start_failed") || inheritedStarted.current) return;
+    if ((!machine?.herdr_profile_id && machine?.action_required !== "choose_herdr" && machine?.action_required !== "windows_login" && machine?.action_required !== "windows_start_failed") || inheritedStarted.current) return;
     inheritedStarted.current = true;
     void begin();
   }, []);
@@ -96,6 +100,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         </>}
       </form>}
       {job && job.challenge?.kind !== "host_key" && <div className="machine-progress" role="status">{waitingForLogin ? <strong>{t(startupFailed ? "Windows desktop startup failed" : "Waiting for Windows sign-in")}</strong> : running && job.progress ? <BridgeUpdateProgress update={{ job_id: job.id, step: job.step, progress: job.progress }} /> : <strong>{job.step === "Starting without Windows sign-in…" ? t("Starting without Windows sign-in…") : job.step}</strong>}{waitingForLogin && job.step !== "Waiting for Windows sign-in on this PC." && <p>{machineErrorText(job.step, t)}</p>}{job.error && <p>{machineErrorText(job.error, t)}</p>}{job.ssh_output && <SshOutput text={job.ssh_output} />}</div>}
+      {job?.action_required === "choose_herdr" && job.found_herdr_sessions && <FoundHerdrChoices sessions={job.found_herdr_sessions} busy={pending} onChoose={(choice) => void begin(choice)} />}
       {waitingForLogin && <p className="field-hint">{t("Starting without Windows sign-in can break Codex sandbox commands, and desktop-control tools may be unavailable. This choice applies to one start.")}</p>}
       {waitingForLogin && <p className="field-hint">{t("Signing out of Windows ends herdr and its panes; lock the PC instead.")}</p>}
       {needsBridgeUpdate && <p className="field-hint">{t(ownUpdate ? "It updates itself through its own updater, then this PC reconnects; herdr sessions keep running." : "This PC runs a bridge from a different version of Ovis. Update it to reconnect; herdr sessions keep running.")}</p>}

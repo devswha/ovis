@@ -77,11 +77,11 @@ describe("remote entry startup lock", () => {
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, generation: "earlier-start", birth }));
   }
   /** One run of the entry; one still running after 30 s (a bridge left serving) is killed and reported as such. */
-  async function start(preload?: string) {
+  async function start(preload?: string, choice: Record<string, string> = {}) {
     const entry = join(import.meta.dir, "remote-entry.ts");
     const proc = Bun.spawn([process.execPath, ...(preload ? ["--preload", preload] : []), entry], {
       cwd: home, stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true,
-      env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "config"), OVIS_HERDR_BIN: join(home, "missing-herdr"), HERDR_REMOTE_SESSION: "", HERDR_SOCKET: "" },
+      env: { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, "config"), OVIS_HERDR_BIN: join(home, "missing-herdr"), HERDR_REMOTE_SESSION: "", HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_START_NEW: "", HERDR_REMOTE_RESULT: "", HERDR_SOCKET: "", ...choice },
     });
     let serving = false;
     const deadline = setTimeout(() => { serving = true; proc.kill("SIGKILL"); }, 30_000);
@@ -115,6 +115,30 @@ describe("remote entry startup lock", () => {
     });
     return { socket: realpathSync(socket), stop: () => listener.stop(true) };
   }
+
+  it.skipIf(process.platform === "win32")("refuses a second daemon and accepts only an explicit new-start choice", async () => {
+    const socket = join(home, "config/herdr/sessions/work/herdr.sock");
+    mkdirSync(dirname(socket), { recursive: true });
+    const listener = Bun.listen({ unix: socket, socket: { data() {} } });
+    const result = join(home, "startup.result");
+    try {
+      const refused = await start(undefined, { HERDR_REMOTE_RESULT: result });
+      expect(refused.code).toBe(2);
+      expect(JSON.parse(readFileSync(result, "utf8"))).toEqual({ code: "herdr_sessions_found", sessions: [{ socket_path: realpathSync(socket), session: "work", label: "work" }] });
+      expect(refused.output).not.toContain(join(home, "missing-herdr"));
+      // Explicit consent alone reaches the attempted daemon spawn (a nonexistent test binary).
+      const allowed = await start(undefined, { HERDR_REMOTE_START_NEW: "1" });
+      expect(allowed.code).not.toBe(0);
+      expect(allowed.output).toContain(join(home, "missing-herdr"));
+    } finally { listener.stop(true); }
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("never creates a daemon for a selected socket that has disappeared", async () => {
+    const result = await start(undefined, { HERDR_REMOTE_SOCKET: join(home, "desktop/herdr/herdr.sock") });
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("chosen herdr session is no longer running");
+    expect(result.output).not.toContain(join(home, "missing-herdr"));
+  }, 60_000);
 
   it("reclaims a startup lock whose PID another process now holds", async () => {
     // regression (fails on main, which waited for any live PID): a reused PID is not a starter

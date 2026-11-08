@@ -99,6 +99,35 @@ try {
           console.log(`PASS ${width}px: version failure → validated update by Enter → separate approval → Open PC`);
 
           await page.unroute("**/api/machines/setup**");
+          for (const choice of ["Use work", "Start a new herdr here"] as const) {
+            const selected: SetupRequest[] = [];
+            const socket = "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                selected.push(route.request().postDataJSON());
+                job = { id: "found", machine_id: "fixture", target: { destination: "fixture-only" },
+                  phase: selected.length === 1 ? "failed" : "connected", step: selected.length === 1 ? "Choose a herdr session" : "Connected",
+                  action_required: selected.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: socket, session: "work", label: "work" }],
+                  installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await page.reload();
+            await destination.fill("fixture-only");
+            await destination.press("Enter");
+            await dialog.getByRole("button", { name: choice, exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+            const shots = join(repo, "evidence/found-herdr"); mkdirSync(shots, { recursive: true });
+            await page.screenshot({ path: join(shots, `choice-${width}.png`) });
+            await dialog.getByRole("button", { name: choice, exact: true }).click();
+            await dialog.getByRole("button", { name: "Open PC", exact: true }).waitFor();
+            assert.deepEqual(selected, [{ destination: "fixture-only" }, choice === "Use work"
+              ? { destination: "fixture-only", session: "work", herdr_socket: socket }
+              : { destination: "fixture-only", start_new_herdr: true }]);
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: found session offers reuse or explicit new start and sends the chosen identity`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {

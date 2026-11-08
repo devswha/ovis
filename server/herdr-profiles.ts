@@ -45,7 +45,7 @@ export function parseHerdrProfiles(text: string): HerdrMachineProfile[] {
 export function sameSshSession(a: SshTarget, b: SshTarget): boolean {
   // An omitted port is resolved by OpenSSH config, and need not be 22. Do not guess
   // that two aliases or an implicit and explicit port name the same destination.
-  return a.destination === b.destination && a.port === b.port && (a.session || "default") === (b.session || "default");
+  return a.destination === b.destination && a.port === b.port && (a.session || "default") === (b.session || "default") && a.herdr_socket === b.herdr_socket;
 }
 
 export async function readHerdrProfiles(): Promise<HerdrMachineProfile[]> {
