@@ -4385,9 +4385,9 @@ describe("an answer and the menu it was made for", () => {
     return ((await (await handlePromptRequest(new Request(url), url, { codexHome }))!.json()) as { prompt: InteractivePrompt | null }).prompt;
   }
 
-  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
+  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string; beforeKey?: () => Promise<void> } = {}): Promise<{ status: number; code?: string }> {
     const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
-    const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome }))!;
+    const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome, ...(more.beforeKey ? { beforeKey: more.beforeKey } : {}) }))!;
     const body = await response.json() as { error?: { code: string } };
     return { status: response.status, code: body.error?.code };
   }
@@ -5762,6 +5762,19 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         // Esc in the terminal right after the first key: the composer would take the rest
         pane.onSent = (sent) => { if (sent === "text:a") pane.screen = "\n> \n"; };
         const result = await answer(prompt.id, { custom_text: "abc" });
+        expect(pane.sent, "a closed picker must not receive the remaining keys").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
+      });
+    });
+
+    test("sends no further key into Letta's input when the picker closes during the look before it", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { search += sent.slice(5); pane.screen = lettaModels(search); };
+        // Esc in the terminal after the picker showed `a`, while the look before `b` is under way
+        const beforeKey = async (): Promise<void> => { if (pane.sent.length === 1) pane.screen = "\n> \n"; };
+        const result = await answer(prompt.id, { custom_text: "abc" }, { beforeKey });
         expect(pane.sent, "a closed picker must not receive the remaining keys").toEqual(["text:a"]);
         expect(result).toEqual({ status: 409, code: "prompt_changed" });
       });

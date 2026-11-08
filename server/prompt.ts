@@ -1972,11 +1972,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           // with, as before. pi's look is as it was (pi-ask's own check, awaited with the request's deadline).
           const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
           const guardUntil = agent === "pi" ? null : Date.now() + SETTLE_MS;
-          if (!committed || togglesInPlace) {
+          // Letta's search: each key after the first is looked for as the first was, in the picker showing the search
+          // the keys before it left (customEditorReady waited for that drawing); a picker closed meanwhile gets none
+          const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
+          if (!committed || togglesInPlace || lettaTyping) {
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
-              (shown, screen, settled) => sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
+              (shown, screen, settled) => lettaTyping ? shown?.responder === "letta-model" && shown.lettaSearch === lettaSearch.trimEnd()
+                : sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
               interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
