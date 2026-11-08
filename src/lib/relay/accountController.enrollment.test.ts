@@ -86,6 +86,29 @@ describe("account enrollment ownership", () => {
     expect(run.putPcs).toEqual([]);
   });
 
+  it("does not save an introduced pairing after Forget releases its held update", async () => {
+    const run = await fixture("/api/account/introduction");
+    const identity = generateKeyPair();
+    const introduced = { server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: run.original.relay, name: "Introduced" };
+    const updating = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const update = run.store.update;
+    run.store.update = async (id, change) => {
+      if (id === introduced.server_id) { updating.resolve(); await release.promise; }
+      return update(id, change);
+    };
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await run.requested.promise;
+    run.response.resolve(Response.json({ pcs: [introduced] }));
+    await updating.promise;
+    run.controller.cancelEnrollment(run.original.server_id);
+    await forgetSavedPc(run.original.server_id, run.store);
+    release.resolve();
+    await pending;
+    expect(await run.store.get(introduced.server_id)).toBeUndefined();
+  });
+
+
   it.each([
     ["/api/account/status", false], ["/api/account/link", true], ["/api/account/enroll", false], ["/api/account/introduction", false],
   ] as const)("does not restore a forgotten pairing after %s returns", async (path, linking) => {

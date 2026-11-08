@@ -168,7 +168,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       update: async (id, change) => {
         assertPairing(await store.get(serverId));
         return store.update(id, (current) => {
-          if (id === serverId) { pairing = change(assertPairing(current)); return pairing; }
+          // Introductions write another id, but still belong to the source enrollment's epoch.
+          assertPairing(id === serverId ? current : pairing);
+          if (id === serverId) { pairing = change(current); return pairing; }
           return change(current);
         });
       },
