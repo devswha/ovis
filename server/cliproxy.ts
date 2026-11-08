@@ -26,6 +26,8 @@ export class CLIProxyService {
   private requests: Promise<void> = Promise.resolve();
   /** the hidden or removed accounts of the last report: their credentials are not used (#3333) */
   private skipped: ReadonlySet<string> = new Set();
+  /** the account (email, ChatGPT workspace) each row's file named when it was read; never reported */
+  private readonly holders = new WeakMap<ProviderUsage, string>();
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "cliproxy.json");
@@ -191,9 +193,12 @@ export class CLIProxyService {
         const workspace = isJsonObject(claims) && typeof claims["chatgpt_account_id"] === "string" ? claims["chatgpt_account_id"] : null;
         const entry: ProviderUsage = { id: provider.id, key: `${provider.id}:cliproxy:${encodeURIComponent(name)}`, account, plan: null, windows: [], problem: "failed", checked_at: null };
         // a hidden or removed account keeps its last row; one never read yet is read once, so it can be listed
-        const kept = skipped.has(entry.key) ? this.entries.find((held) => held.key === entry.key) : undefined;
+        // only while the file still names that account: another one under the same name is read anew
+        const holder = JSON.stringify([typeof file["email"] === "string" ? file["email"] : null, workspace]);
+        const kept = skipped.has(entry.key) ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         if (kept) return [Promise.resolve(kept)];
-        if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(entry)];
+        const held = (row: ProviderUsage): ProviderUsage => { this.holders.set(row, holder); return row; };
+        if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {
           try {
             const reading = await provider.read({ ...ctx, fetch: async (url, init) => {
@@ -208,7 +213,7 @@ export class CLIProxyService {
           } catch (error) {
             return { ...entry, problem: error instanceof UsageHttpError && (error.status === 401 || error.status === 403) ? "expired" : "failed" };
           }
-        })()];
+        })().then(held)];
       }));
     } catch (error) {
       if (!(error instanceof CLIProxyError)) throw error;

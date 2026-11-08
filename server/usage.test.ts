@@ -1259,6 +1259,22 @@ describe("the service", () => {
     expect(searches).toBe(2);
   });
 
+  it("reads a hidden account's place anew once it holds another account's sign-in", async () => {
+    const holders = new Map([["x", "alice"], ["y", "carol"]]);
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { return [...holders].map(([source, id]) => ({ source, token: `token-${id}`, expiresAt: null, account: { id, label: `${id}@example.test` } })); },
+      async read() { return { plan: "pro", windows: [] }; },
+    };
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => new Set(["copilot:alice"]));
+    await service.report();
+    holders.set("x", "bob");
+    now += FRESH_MS;
+    const report = await service.report();
+    expect(report.providers.map((usage) => usage.account)).toEqual(["bob@example.test", "carol@example.test"]);
+  });
+
   it("marks a failed request and asks again after RETRY_MS", async () => {
     signInCodex(NOW / 1000 + 24 * 3600);
     replies.set(CODEX_USAGE, { status: 500 });

@@ -138,13 +138,33 @@ describe("CLIProxyAPI v8", () => {
     const hidden = new Set((await service.report()).map((entry) => entry.key));
     await service.report(false, hidden);
     const other = startFakeCLIProxy(KEY);
+    other.files.forEach((file) => { file.email = `other-${file.email}`; });
     try {
       // When
       await send("", { url: other.server.url.origin, management_key: KEY });
-      await service.report(false, hidden);
+      const after = await service.report(false, hidden);
       // Then
-      expect(other.calls.filter((entry) => entry.path === "/requests/api-call").length).toBe(2);
+      expect(after.map((entry) => [entry.account, entry.windows[0]?.used_percent])).toEqual([
+        ["other-claude-a@example.test", 25],
+        ["other-codex-b@example.test", 32],
+      ]);
     } finally { other.server.stop(true); }
+  });
+
+  it("reads a hidden Hub file anew once it names another account under the same name", async () => {
+    // Given
+    await configure();
+    const hidden = new Set((await service.report()).map((entry) => entry.key));
+    await service.report(false, hidden);
+    fake.files[0]!.email = "bob@example.test";
+    // When
+    service.invalidate();
+    const after = await service.report(false, hidden);
+    // Then
+    expect(after.map((entry) => [entry.key, entry.account])).toEqual([
+      ["claude:cliproxy:claude-a.json", "bob@example.test"],
+      ["codex:cliproxy:codex-b.json", "codex-b@example.test"],
+    ]);
   });
 
   it("persists the key privately without returning it when saved or reloaded", async () => {

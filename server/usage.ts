@@ -1039,6 +1039,8 @@ interface Entry {
   usage: ProviderUsage | null;
   readAt: number;
   nextAt: number;
+  /** whose sign-in the place held when this was read (holderOf) */
+  holder: string;
 }
 
 /** when a provider's sign-ins were last looked for, and the sources found then */
@@ -1174,8 +1176,10 @@ export class UsageService {
       // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
-      const current = entry !== undefined && (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
-      return [source, current ? entry : await this.read(provider, signIn, entry?.usage ?? null, now)];
+      // only while the place still holds that account: another one there is read anew, without the hidden one's row
+      const held = hidden && entry?.holder === holderOf(signIn);
+      const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+      return [source, current ? entry : await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
     }));
     for (const source of search?.sources ?? []) if (!read.some(([found]) => found === source)) this.entries.delete(source);
     for (const [source, entry] of read) this.entries.set(source, entry);
@@ -1187,7 +1191,7 @@ export class UsageService {
   }
 
   private async read(provider: UsageProvider, found: Found, previous: ProviderUsage | null, now: number): Promise<Entry> {
-    const settle = (usage: ProviderUsage | null, wait: number): Entry => ({ usage, readAt: now, nextAt: now + wait });
+    const settle = (usage: ProviderUsage | null, wait: number): Entry => ({ usage, readAt: now, nextAt: now + wait, holder: holderOf(found) });
     // an account is known by its id; one the sign-in does not name, by where it was found (hashed:
     // the key reaches the browser, the credential's path must not)
     const identity = (account: Account | null | undefined) => {
@@ -1247,6 +1251,12 @@ export class UsageService {
       return keep("failed", signIn.plan ?? null, RETRY_MS);
     }
   }
+}
+
+/** Whose sign-in a place holds: the account it names, else its token, hashed (kept in memory only, never reported). */
+function holderOf(found: Found): string {
+  if (found.account) return `account:${found.account.id}`;
+  return "locked" in found ? "locked" : `token:${createHash("sha256").update(found.token).digest("hex")}`;
 }
 
 /** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
