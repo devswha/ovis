@@ -7,7 +7,7 @@ import type { RelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { DIRECT_CARRIER, DIRECT_TAILNET, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
-import { CHECK_GAP_MS, SignedInSessions } from "./admissions.ts";
+import { CANDIDATE_MS, CHECK_GAP_MS, SignedInSessions } from "./admissions.ts";
 import type { Access } from "../access.ts";
 import { handleDeviceRequest } from "../devices.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -421,16 +421,38 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.connections().get("phone")?.route).toBe("relay");
   });
 
-  it("hold never-used carriers past every place to one device's racing ones", () => {
-    // Given every place taken by two devices at their share
+  it("let each device at its share race its own carriers past every place, so one device's never shut another out (#3243)", () => {
+    // Given every place taken by two devices at their share, and one of them holding three carriers it never uses
     const sessions = new SignedInSessions(8, 4, 3);
     const closed: string[] = [];
     for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
-    // When both sign in three carriers each and never use them
-    for (const device of ["a", "b"]) for (let index = 1; index <= 3; index++) sessions.candidate(device, () => closed.push(`${device}-c${index}`));
-    // Then only three get past every place
-    expect(sessions.size).toBe(11);
-    expect(closed).toEqual(["b-c1", "b-c2", "b-c3"]);
+    for (let index = 1; index <= 3; index++) sessions.candidate("a", () => closed.push(`a-c${index}`));
+    // When the other signs in a carrier and uses it
+    sessions.candidate("b", () => closed.push("b-new")).chosen();
+    // Then it replaces its own oldest session, and nothing of the first device's is closed
+    expect(closed).toEqual(["b1"]);
+  });
+
+  it("still turn away a carrier past every place from a device below its share", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    sessions.candidate("c", () => closed.push("c-c1"));
+    expect(closed).toEqual(["c-c1"]);
+    expect(sessions.size).toBe(8);
+  });
+
+  it("close a carrier its app never uses once its time to be chosen is up, and keep one that was chosen", () => {
+    const clock = new TestClock();
+    const sessions = new SignedInSessions(8, 4, 3, clock);
+    const closed: string[] = [];
+    sessions.candidate("phone", () => closed.push("unused"));
+    sessions.candidate("phone", () => closed.push("used")).chosen();
+    clock.advance(CANDIDATE_MS - 1);
+    expect(closed).toEqual([]);
+    clock.advance(1);
+    expect(closed).toEqual(["unused"]);
+    expect(sessions.size).toBe(1);
   });
 
   it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {
