@@ -5,7 +5,7 @@
  * their MagicDNS name, over SSH like any other address, never through the relay).
  */
 import { constants } from "node:fs";
-import { open, realpath, type FileHandle } from "node:fs/promises";
+import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -87,21 +87,45 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
     const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
     const paths: string[] = [];
     // a scan cut short may have missed a file sorted before the ones it found; a read cut short misses only later ones
-    let [scanCut, truncated] = [false, false];
+    // a folder left unlisted (out of the home or ssh folder) may hold files sorted anywhere among the ones found
+    let [scanCut, refused, truncated] = [false, false, false];
     const wildcard = expanded.search(/[*?[]/);
     if (wildcard >= 0) {
       // the folder before the first wildcard is scanned only inside the home or ssh folder
       const literal = expanded.slice(0, wildcard);
-      const base = await realpath(literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1) || ".").catch(() => null);
+      const prefix = literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1);
+      const base = await realpath(prefix || ".").catch(() => null);
       if (base === null) return [];
       if (!allowed.some((root) => inside(base, root))) return [null];
-      // links are followed as ssh's glob(3) does (a dotfiles repo linked in); each path is still read only when its real
-      // target is inside the home or ssh folder, below, and one that is not comes back as null
-      for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true, followSymlinks: true })) {
-        if (paths.length >= budget.files) { scanCut = true; break; }
-        paths.push(path);
+      // walked one component at a time, links followed as ssh's glob(3) does (a dotfiles repo linked in), but a folder is
+      // listed or gone through only when it really is inside the home or ssh folder; each file is still read only when
+      // its real target is, below, and one that is not comes back as null. Every entry the walk takes counts against the
+      // file budget, so a wide tree costs a bounded scan
+      let [level, taken] = [[base], 0];
+      const components = expanded.slice(prefix.length).split(sep === "/" ? "/" : /[\\/]/).filter((part) => part !== "");
+      for (const [index, component] of components.entries()) {
+        const glob = /[*?[]/.test(component) ? new Bun.Glob(component) : null;
+        const next: string[] = [];
+        for (const dir of level) {
+          const real = await realpath(dir).catch(() => null);
+          if (real === null) continue;
+          if (!allowed.some((root) => inside(real, root))) { refused = true; continue; }
+          // glob(3) matches a leading dot only when the pattern spells it
+          const names = glob === null ? [component] : (await readdir(real).catch(() => [])).filter((name) => (!name.startsWith(".") || component.startsWith(".")) && glob.match(name)).sort();
+          for (const name of names) {
+            if (taken >= budget.files) { scanCut = true; break; }
+            taken++;
+            next.push(join(real, name));
+          }
+          if (scanCut) break;
+        }
+        level = next;
+        // a walk cut short keeps the files it found, but goes no deeper
+        if (index < components.length - 1) { if (scanCut) break; continue; }
+        // ssh reads the files glob(3) returns; a folder among them is no config
+        const folders = await Promise.all(level.map((path) => stat(path).then((found) => found.isDirectory(), () => false)));
+        paths.push(...level.filter((_, at) => !folders[at]).sort());
       }
-      paths.sort();
     } else paths.push(expanded);
     const texts: (string | null)[] = [];
     for (const path of paths) {
@@ -114,7 +138,7 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
       if (text !== null) budget.bytes -= Buffer.byteLength(text);
       texts.push(text);
     }
-    return [...(scanCut ? [null] : []), ...texts, ...(truncated ? [null] : [])];
+    return [...(scanCut || refused ? [null] : []), ...texts, ...(truncated ? [null] : [])];
   };
 }
 
@@ -159,19 +183,24 @@ async function listCandidates(options: SshCandidatesOptions): Promise<SshCandida
     const owners = new Set(addresses.map((address) => peerByIp.get(address)));
     return owners.size === 1 ? [...owners][0] : undefined;
   };
+  // every Tailscale PC keeps a row within the list limit: the first config row that claims it, else its own Tailscale
+  // row; config rows that claim no PC not yet claimed fill only what is left
   const claimed = new Set<string>();
-  const fromConfig: SshCandidate[] = hosts.map((host) => {
+  const fromConfig: SshCandidate[] = [];
+  for (const host of hosts) {
     const { alias, hostname, user } = host;
     const peer = peerOf(host);
-    if (peer !== undefined) claimed.add(peer.dnsName);
-    return {
+    const claims = peer !== undefined && !claimed.has(peer.dnsName);
+    if (!claims && fromConfig.length + peers.length - claimed.size >= MAX_HOSTS) continue;
+    if (claims) claimed.add(peer.dnsName);
+    fromConfig.push({
       name: alias,
       destination: alias,
       detail: hostname === null ? (user === null ? null : `${user}@${alias}`) : user === null ? hostname : `${user}@${hostname}`,
       source: "ssh_config",
       ...(peer === undefined ? {} : { tailnet: peer.dnsName }),
-    };
-  });
+    });
+  }
   const fromTailnet: SshCandidate[] = peers
     .filter(({ dnsName }) => !claimed.has(dnsName))
     .map(({ name, dnsName }) => ({ name, destination: dnsName, detail: dnsName, source: "tailscale", tailnet: dnsName }));
