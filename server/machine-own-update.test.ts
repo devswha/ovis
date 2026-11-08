@@ -733,6 +733,7 @@ describe("a PC whose own Ovis is older than this app", () => {
     ["blocked there", { status: managedOffer({ blocked_reason: "The source checkout changed. Restart the app before updating." }) }, /cannot update itself now: The source checkout changed/, null],
     ["asks for its own token", { status: null }, /OVIS_TOKEN/, null],
     ["too old to install a named revision", { status: managedOffer({ revision_bound_install: undefined }) }, /too old to take an update/, "restart"],
+    ["too old, with no newer release a restart would install", { status: managedOffer({ revision_bound_install: undefined, available: false, latest_revision: null }) }, /too old to take an update/, null],
     ["without a newer release on offer", { status: managedOffer({ available: false, latest_revision: null }) }, /no newer release on offer than v0\.4\.16/, null],
   ];
   for (const [name, remote, reason, fix] of refusals) it(`says why it cannot be updated from here when it is ${name}`, async () => {

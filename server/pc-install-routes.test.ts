@@ -23,11 +23,14 @@ function fixture() {
   writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id: SAVED, name: "Lab", target: { destination: "me@lab.invalid" }, enabled: true }]));
   const reconnect = spyOn(MachineManager.prototype as unknown as Internals, "reconnect").mockImplementation(async () => {});
   const real = { start: SshConnection.prototype.start, close: SshConnection.prototype.close };
-  /** the SSH connections waiting to be let in, by destination */
+  /** the SSH connections waiting to be let in, by destination, and a promise for each one's first try */
   const waiting = new Map<string, { refuse(words: string): void }>();
+  const tried = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
+  const reached = (destination: string) => { if (!tried.has(destination)) tried.set(destination, Promise.withResolvers<void>()); return tried.get(destination)!.promise; };
   SshConnection.prototype.start = function (this: SshConnection) {
     return new Promise<void>((_, reject) => {
       waiting.set(this.target.destination, { refuse: (words) => reject(new Error(words)) });
+      void reached(this.target.destination); tried.get(this.target.destination)!.resolve();
       (this as unknown as { refuse?: () => void }).refuse = () => reject(new Error("SSH connection closed"));
     });
   };
@@ -37,12 +40,13 @@ function fixture() {
   /** as this PC's owner from this app's own page, unless the test says otherwise */
   const call = (path: string, method = "POST", body?: unknown, readOnly = false, owner = !readOnly, headers: Record<string, string> = { "x-herdr-update": "1" }) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`,
     { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner);
-  const until = async (done: () => boolean) => { const deadline = Date.now() + 2000; while (!done()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(5); } };
-  return { manager, internals: manager as unknown as Internals, waiting, call, until };
+  /** an install job once it has ended, as the installer itself settles it */
+  const ended = async (id: string) => { await (manager as unknown as { installer: { finished(id: string): Promise<void> } }).installer.finished(id); return manager.installJob(id)!; };
+  return { manager, internals: manager as unknown as Internals, waiting, reached, call, ended };
 }
 
 it("starts an install on a PC not added here, tells its job, refuses a watching device and an address already added", async () => {
-  const { manager, waiting, call, until } = fixture();
+  const { manager, waiting, reached, call, ended } = fixture();
   expect((await call("install", "POST", { destination: "me@new.invalid" }, true)).status).toBe(403);
   // running the installer on another PC is the owner's only (access.ts ownerAccess), from this app's own page
   for (const refused of [await call("install", "POST", { destination: "me@new.invalid" }, false, false), await call("install", "POST", { destination: "me@new.invalid" }, false, true, {}), await call("install/any-job", "GET", undefined, false, false)]) {
@@ -59,15 +63,15 @@ it("starts an install on a PC not added here, tells its job, refuses a watching 
   // one job at a time per PC: neither another install nor a setup goes there meanwhile
   expect((await call("install", "POST", { destination: "me@new.invalid" })).status).toBe(409);
   expect(() => manager.setup({ destination: "me@new.invalid" })).toThrow("Ovis is being installed on this PC");
-  await until(() => waiting.has("me@new.invalid"));
+  await reached("me@new.invalid");
   waiting.get("me@new.invalid")!.refuse("me@new.invalid: Permission denied (publickey).");
-  await until(() => manager.installJob(job.id)?.phase === "failed");
+  expect((await ended(job.id)).phase).toBe("failed");
   expect(await (await call(`install/${job.id}`, "GET")).json()).toMatchObject({ phase: "failed", error_code: "ssh_refused" });
   expect((await call("install/no-such-job", "GET")).status).toBe(404);
 });
 
 it("cancels a running install with DELETE, and with the PC's own update cancel or its removal", async () => {
-  const { manager, internals, waiting, call, until } = fixture();
+  const { manager, internals, reached, call, ended } = fixture();
   const own: RemoteOvis = { version: "0.4.9", latest_version: null, updatable: false, reason: "That PC's Ovis does not update itself: it was not started by its updater.", address: "lab.invalid:7317", url: null };
   const offerInstall = () => {
     const runtime = internals.machines.get(SAVED)!;
@@ -76,16 +80,44 @@ it("cancels a running install with DELETE, and with the PC's own update cancel o
   };
   offerInstall();
   expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: true });
+  // Update all never starts it: it changes more on that PC than an update, so its card starts it once its steps are read
+  expect(await (await call("update-all")).json()).toEqual({ started: [], queued: [], skipped: [{ machine_id: SAVED, reason: expect.stringContaining("start it from its card") }] });
+  expect(manager.installJob("none")).toBeUndefined();
   const byRoute = await (await call("install", "POST", { machine_id: SAVED })).json() as PcInstallJob;
   expect(byRoute).toMatchObject({ machine_id: SAVED, mode: "replace" });
   expect((await (await call(`install/${byRoute.id}`, "DELETE")).json() as PcInstallJob).phase).toBe("cancelled");
   // through the update the devices list asks for, cancelled as any update is
   const { job_id } = await (await call(`${SAVED}/update`)).json() as { job_id: string };
-  await until(() => waiting.has("me@lab.invalid"));
+  await reached("me@lab.invalid");
   expect(await (await call(`${SAVED}/update`, "DELETE")).json()).toEqual({ cancelled: true });
-  await until(() => manager.installJob(job_id)?.phase === "cancelled");
+  expect((await ended(job_id)).phase).toBe("cancelled");
   // and when the PC is removed while it installs
   const third = await (await call(`${SAVED}/update`)).json() as { job_id: string };
   manager.remove(SAVED);
-  await until(() => manager.installJob(third.job_id)?.phase === "cancelled");
+  expect((await ended(third.job_id)).phase).toBe("cancelled");
+});
+
+it("connects after an install without updating, and asks for the update only when that PC is still older than this app", async () => {
+  const { manager } = fixture();
+  type Job = { id: string; phase: string; error: string | null; step: string; action_required?: string | null };
+  const asked: boolean[] = [];
+  /** what each connect ends as, in turn */
+  const outcomes: Partial<Job>[] = [];
+  const jobs = (manager as unknown as { jobs: Map<string, { finished: Promise<void>; public: Job }> }).jobs;
+  spyOn(manager, "setup").mockImplementation((request) => {
+    asked.push(request.update_remote === true);
+    const job: Job = { id: `job-${asked.length}`, phase: "connecting", error: null, step: "", ...outcomes.shift() };
+    jobs.set(job.id, { finished: Promise.resolve(), public: job });
+    return job as unknown as ReturnType<MachineManager["setup"]>;
+  });
+  const connect = (manager as unknown as { installConnect(request: { target: SshTarget; machine_id?: string; update: boolean }): { finished: Promise<string | null> } }).installConnect;
+  // the same version as this app once restarted: connected, and no update is asked of a PC with none to take
+  outcomes.push({ phase: "connected" });
+  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true }).finished).toBeNull();
+  expect(asked).toEqual([false]);
+  // still older: its own update follows
+  asked.length = 0;
+  outcomes.push({ phase: "failed", action_required: "update_bridge", error: "older" }, { phase: "connected" });
+  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true }).finished).toBeNull();
+  expect(asked).toEqual([false, true]);
 });

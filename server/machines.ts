@@ -917,10 +917,17 @@ export class MachineManager {
   /** the connect an install ends with: the usual setup, with the update asked for when the install restarted it */
   private installConnect: InstallConnect = (request) => {
     // keys only, as the install itself: a PC that asks for a password or a new host key by now fails with why
-    const job = this.setup({ ...request.target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), ...(request.update ? { update_remote: true } : {}) }, { ...(request.update ? { auto: true } : {}), keysOnly: true, fromInstall: true });
-    const state = this.jobs.get(job.id)!;
-    return { job_id: job.id, cancel: () => this.cancelJob(job.id),
-      finished: state.finished.then(() => state.public.phase === "connected" ? null : state.public.error ?? `The connection to that PC ended: ${state.public.step}`) };
+    const start = (update: boolean) => this.setup({ ...request.target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), ...(update ? { update_remote: true } : {}) },
+      { ...(update ? { auto: true } : {}), keysOnly: true, fromInstall: true });
+    const ended = async (job: SetupJob) => { await this.jobs.get(job.id)?.finished; return this.jobs.get(job.id)?.public ?? job; };
+    let current = start(false);
+    const finished = (async () => {
+      let result = await ended(current);
+      // still older than this app (a restarted supervisor, or an install kept as it was): its own update now, as its steps said
+      if (request.update && result.phase === "failed" && result.action_required === "update_bridge" && request.machine_id) { current = start(true); result = await ended(current); }
+      return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
+    })();
+    return { job_id: current.id, cancel: () => this.cancelJob(current.id), finished };
   };
   /** an install for a PC added here shows on its card as its update does */
   private showInstall(job: PcInstallJob): void {
@@ -1024,7 +1031,7 @@ export class MachineManager {
       runtime.machine.updating = null;
       // still offered, and still connected: an update before its turn may have done it, or the PC went away
       const offer = this.updateOffer(runtime);
-      if (!offer?.updatable || this.updateRunning(runtime) || !(runtime.machine.state === "connected" || offer.how === "own")) continue;
+      if (!offer?.updatable || this.updateRunning(runtime) || offer.how === "install" || !(runtime.machine.state === "connected" || offer.how === "own")) continue;
       // the release it was queued for: another one on offer by its turn is told, never installed unseen
       if (shown !== undefined && typeof offer.revision === "string" && offer.revision !== shown) { runtime.machine.update_error = CHANGED_OFFER; continue; }
       try { this.startOwn(runtime, shown); } catch (error) { runtime.machine.update_error = error instanceof Error ? error.message : String(error); }
@@ -1637,7 +1644,9 @@ export class MachineManager {
     const blocked = remoteWords(status.blocked_reason);
     if (blocked) return answer(status, `That PC's Ovis cannot update itself now: ${blocked}`);
     // its supervisor predates the bridge: a restart through its own launcher runs the one that installs by revision
-    if (status.revision_bound_install !== true) return { ...answer(status, `That PC's Ovis is too old to take an update asked for from another PC. ${there}`), fix: "restart" };
+    // restarted, it would install the release its updater offers: only worth it when there is one
+    const offered = status.available === true && typeof status.latest_revision === "string" && REVISION.test(status.latest_revision);
+    if (status.revision_bound_install !== true) return { ...answer(status, `That PC's Ovis is too old to take an update asked for from another PC. ${there}`), ...(offered ? { fix: "restart" as const } : {}) };
     if (status.phase === "checking") return answer(status, OWN_CHECK_RUNNING);
     // one already installing is followed, not asked again (runOwnUpdate)
     if (ownInstallRunning(status)) return answer(status, null);

@@ -119,7 +119,11 @@ export class PcInstaller {
   runningAt(target: SshTarget): PcInstallJob | undefined {
     return [...this.jobs.values()].find((state) => !["connected", "failed", "cancelled"].includes(state.public.phase) && sameSshSession(state.public.target, target))?.public;
   }
-  /** Ends the job here, and the connect it handed over to; what already ran there (an installer midway) runs on to its end. */
+  /**
+   * Ends the job here, and the connect it handed over to. Its SSH connection closes, which ends an installer running
+   * there part-way (what it installed so far stays, and a later install goes on from there); a server already
+   * stopped stays stopped, as the job then says.
+   */
   cancel(id: string): void {
     const state = this.jobs.get(id);
     if (!state || ["connected", "failed", "cancelled"].includes(state.public.phase)) return;
@@ -221,7 +225,7 @@ export class PcInstaller {
         // downloaded first, so a failed download is told as one (piped, sh would run an empty script and exit 0), then
         // run with nothing on stdin, on herdr (a herdr plugin that updates itself, as the steps shown say). The exit
         // status is printed rather than returned, so the installer's own last words come back either way
-        const out = await ssh.run(`${REMOTE_PATH}script=$(mktemp) || exit 1; if ! curl -fsSL --max-time 120 ${INSTALLER} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer from ${INSTALLER}"; printf '\\novis-install-exit=1\\n'; exit 0; fi; OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`, undefined, INSTALL_TIMEOUT_MS);
+        const out = await ssh.run(`${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; if ! curl -fsSL --max-time 120 ${INSTALLER} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer from ${INSTALLER}"; printf '\\novis-install-exit=1\\n'; exit 0; fi; OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`, undefined, INSTALL_TIMEOUT_MS);
         const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
         if (lines.at(-1) !== "ovis-install-exit=0") {
           const said = lines.filter((line) => !line.startsWith("ovis-install-exit=")).slice(-3).join(" ").slice(0, 500);
@@ -250,7 +254,10 @@ export class PcInstaller {
       if (refused) throw new InstallFailed("connect_failed", refused);
       job.phase = "connected"; job.step = "Connected";
     } catch (error) {
-      if (abort.signal.aborted) { job.phase = "cancelled"; job.step = "Cancelled"; }
+      if (abort.signal.aborted) {
+        job.phase = "cancelled"; job.step = "Cancelled";
+        if (stopped) job.error = "Cancelled after the Ovis started by hand on that PC was stopped, so none runs there now; Update tries the install again.";
+      }
       else {
         job.phase = "failed"; job.step = "Install failed";
         job.error_code = error instanceof InstallFailed ? error.code : null;

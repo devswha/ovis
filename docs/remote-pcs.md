@@ -174,7 +174,8 @@ there runs on).
 `POST /api/machines/update-all` starts every PC's update at once: 202 `{ started, queued, skipped }`.
 Own updates run side by side; bridge updates run one after another, sharing one bundle download,
 and show `updating.queued` until their turn; a PC with an update it cannot take is `skipped` with
-why. Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
+why (a PC whose update is an install over SSH is always skipped: its card starts that, once its
+steps are read). Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
 `updating.queued` and start as one ends.
 
 ### Who may change PCs from here
