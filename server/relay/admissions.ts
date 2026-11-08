@@ -1,5 +1,4 @@
 import type { DeviceConnection, DeviceRoute } from "../../shared/access.ts";
-import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 
 /** What a signed-in session tells of its way in (SignedInSessions.connections). */
 export interface SessionLine {
@@ -14,19 +13,9 @@ export interface SessionLine {
 
 /** A check this soon after the last one answers with what that one measured. */
 export const CHECK_GAP_MS = 5_000;
-/**
- * A racing carrier its app never used (src/lib/relay/transport.ts closes the ones that lose at once) is closed this
- * long after it signed in, so a device cannot keep places with sessions it does not use.
- */
-export const CANDIDATE_MS = 30_000;
 
 /** nearest first: of a device's sessions, the one it is best connected by is the one shown */
 const NEAR: Record<DeviceRoute, number> = { lan: 0, tailscale: 1, relay: 2 };
-
-const systemClock: MuxClock = {
-  now: () => Date.now(),
-  setTimeout: (callback, milliseconds) => { const timer = setTimeout(callback, milliseconds); return () => clearTimeout(timer); },
-};
 
 /**
  * The signed-in sessions one PC serves, whichever way they came: the relay links (global and regional)
@@ -34,13 +23,13 @@ const systemClock: MuxClock = {
  */
 export class SignedInSessions {
   private order = 0;
-  private readonly entries = new Set<{ readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine; expire?: () => void }>();
+  private readonly entries = new Set<{ readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine }>();
 
   /**
    * at most `max` at once, and `perDevice` chosen for one device key, whose oldest gives way; at most `perDeviceCandidates`
-   * not chosen yet for one device key (an app races its carriers: two direct ones and the relay), each for CANDIDATE_MS
+   * not chosen yet for one device key (an app races its carriers: two direct ones and the relay)
    */
-  constructor(private readonly max = 8, private readonly perDevice = 4, private readonly perDeviceCandidates = 3, private readonly clock: MuxClock = systemClock) {}
+  constructor(private readonly max = 8, private readonly perDevice = 4, private readonly perDeviceCandidates = 3) {}
 
   get size(): number { return this.entries.size; }
 
@@ -62,31 +51,38 @@ export class SignedInSessions {
    * candidates, the oldest of them is. `release` ends its count (idempotent).
    */
   candidate(deviceId: string, close: () => void, line?: SessionLine): { readonly release: () => void; readonly chosen: () => void } {
-    const entry: { deviceId: string; order: number; chosen: boolean; close: () => void; line?: SessionLine; expire?: () => void } = { deviceId, order: ++this.order, chosen: false, close, ...(line ? { line } : {}) };
+    const entry = { deviceId, order: ++this.order, chosen: false, close, ...(line ? { line } : {}) };
     this.entries.add(entry);
-    const release = (): void => { entry.expire?.(); this.entries.delete(entry); };
-    // one its app has not used by then lost its race, or was never meant to win it
-    entry.expire = this.clock.setTimeout(() => { if (!entry.chosen && this.entries.delete(entry)) close(); }, CANDIDATE_MS);
+    const release = (): void => { this.entries.delete(entry); };
     // past its device's racing carriers, the oldest of them gives way: one that never opened a stream was dropped,
     // or lost on its way (a newest-gives-way rule would keep such a dead one and shut the device out)
     const waiting = [...this.entries].filter((other) => other.deviceId === deviceId && !other.chosen).sort((left, right) => left.order - right.order);
     for (const oldest of waiting.slice(0, Math.max(0, waiting.length - this.perDeviceCandidates))) {
-      oldest.expire?.();
       this.entries.delete(oldest);
       oldest.close();
     }
     // with every place taken, a device at its share still gets in (once used, its own oldest gives way) with its own racing
-    // carriers, counted per device above: another device's carriers never use up its way in (#3243)
+    // carriers, counted per device above: another device's carriers never use up its way in (#3243), and past every place
+    // there are at most `perDeviceCandidates` for each device at its share. A device below its share gets in while sessions
+    // in use leave a place: other devices' unused carriers give way, the oldest first. Nothing else ends an unused carrier:
+    // the app keeps the one that won its race, which may open no stream for a while.
     if (this.entries.size > this.max && this.chosenOf(deviceId) < this.perDevice) {
-      release();
-      close();
+      const used = [...this.entries].filter((other) => other.chosen).length;
+      const spare = [...this.entries].filter((other) => !other.chosen && other.deviceId !== deviceId).sort((left, right) => left.order - right.order);
+      for (const oldest of used < this.max ? spare.slice(0, this.entries.size - this.max) : []) {
+        this.entries.delete(oldest);
+        oldest.close();
+      }
+      if (this.entries.size > this.max) {
+        release();
+        close();
+      }
     }
     return {
       release,
       chosen: () => {
         if (entry.chosen || !this.entries.has(entry)) return;
         entry.chosen = true;
-        entry.expire?.();
         entry.order = ++this.order;
         // the device's own oldest give way, so a device at its share always gets its new session in
         const own = [...this.entries].filter((other) => other.deviceId === deviceId && other.chosen).sort((a, b) => a.order - b.order);
