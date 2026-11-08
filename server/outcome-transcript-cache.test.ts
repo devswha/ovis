@@ -255,6 +255,57 @@ it("does not observe an omp command from a transcript swapped in after its resol
   }
 });
 
+it("does not observe a pi command from a transcript renamed over the one its resolver authorized (#3398)", async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "command-pi-swap-")));
+  const saved = { HOME: process.env["HOME"], PI_CODING_AGENT_DIR: process.env["PI_CODING_AGENT_DIR"], PI_CODING_AGENT_SESSION_DIR: process.env["PI_CODING_AGENT_SESSION_DIR"] };
+  process.env["HOME"] = home;
+  process.env["PI_CODING_AGENT_DIR"] = join(home, ".pi/agent");
+  delete process.env["PI_CODING_AGENT_SESSION_DIR"];
+  const cwd = join(home, "project");
+  fs.mkdirSync(cwd);
+  const store = join(home, ".pi/agent/sessions", cwd.replaceAll("/", "-"));
+  fs.mkdirSync(store, { recursive: true });
+  const path = join(store, "2026-10-01_s1.jsonl");
+  const foreign = join(home, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const header = JSON.stringify({ type: "session", version: 3, id: "s1", cwd }) + "\n";
+  fs.writeFileSync(path, header);
+  fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", id: "a1", parentId: null,
+    timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
+  const pane = { pane_id: "pane-pi", cwd, foreground_cwd: cwd, agent: "pi" } as HerdrPane;
+  const snapshot = spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] } as SessionSnapshot));
+  const rpc = spyOn(client, "herdrRpc").mockImplementation(async (method: string) => {
+    if (method === "agent.get") return { agent: { agent: "pi", agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: path } } } as never;
+    if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
+    throw new Error(`unexpected RPC: ${method}`);
+  });
+  // the resolver's proof is its exact fstat of the file it opened (authorizedTranscript): the foreign file
+  // is renamed over the pane's right after it
+  const fstat = fs.fstatSync;
+  let swapped = false;
+  const proofs = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
+    const stat = fstat(...args);
+    if (!swapped && args[1]?.bigint === true) { swapped = true; fs.renameSync(foreign, path); }
+    return stat;
+  }) as typeof fs.fstatSync);
+  const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
+    forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+  const sent = { id: "pi-thinking", text: "/thinking high", at, agent: "pi", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("pi", "/thinking high", [thinking]) };
+  try {
+    const read = await conversation.readCommandTranscript(pane.pane_id);
+    expect(swapped).toBe(true);
+    expect(commandOutcome(pane.pane_id, sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    proofs.mockRestore();
+    rpc.mockRestore();
+    snapshot.mockRestore();
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    conversation.forgetTranscriptState();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("discards the old echo when a transcript is rewritten after a torn append", async () => {
   const root = fs.mkdtempSync(join(tmpdir(), "command-partial-boundary-"));
   const path = join(root, "session.jsonl");

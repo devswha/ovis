@@ -2116,7 +2116,9 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 type ResolvedTranscript =
   | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null;
     /** omp: the exact dev:ino of the file its resolver authorized (ompTranscriptPath) */
-    ompFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
+    ompFile?: string;
+    /** pi: the exact dev:ino of the file its resolver authorized (piTranscriptPath) */
+    piFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -2233,7 +2235,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       const found = await piTranscriptPath(paneId, undefined, known === undefined ? {} : { processes: known?.foreground_processes ?? [] });
       if (found === null) throw new ConversationUnavailable("no_session_path");
       if ("unwritten" in found) throw new ConversationNotStarted(found.unwritten.id, "pi-transcript", found.unwritten.path);
-      return { source: "pi-transcript", path: found.path, piAgentDir: found.agentDir };
+      return { source: "pi-transcript", path: found.path, piAgentDir: found.agentDir, piFile: found.identity };
     }
     if (agent === "cmd") {
       const found = await cmdTranscriptPath(paneId);
@@ -2662,10 +2664,11 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
-  // one exact stat: a file the resolver itself authorized (omp) is the only one read, compared whole as
+  // one exact stat: a file the resolver itself authorized (omp, pi) is the only one read, compared whole as
   // Windows' file indexes need; the read below is then held to this stat's file (#3398)
   const exact = statSync(path, { bigint: true });
-  if (resolved.source === "omp-transcript" && resolved.ompFile !== undefined && resolved.ompFile !== `${exact.dev}:${exact.ino}`) return null;
+  const authorized = resolved.source === "omp-transcript" ? resolved.ompFile : resolved.source === "pi-transcript" ? resolved.piFile : undefined;
+  if (authorized !== undefined && authorized !== `${exact.dev}:${exact.ino}`) return null;
   const stat = { dev: Number(exact.dev), ino: Number(exact.ino), size: Number(exact.size), mtimeMs: Number(exact.mtimeNs) / 1e6 };
   const file = `${source}:${stat.dev}:${stat.ino}`;
   const signature = `${source}\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
