@@ -60,12 +60,12 @@ function words(text: string): string[] {
 }
 
 /** `Key value`, `Key=value` and `Key "quoted value"`, as ssh reads a line; null for a blank line or a comment */
-function keyword(line: string): { key: string; values: string[] } | null {
+function keyword(line: string): { key: string; values: string[]; raw: string } | null {
   const trimmed = line.trim();
   if (trimmed === "" || trimmed.startsWith("#")) return null;
   const match = /^(\S+?)(?:\s*=\s*|\s+)(.*)$/.exec(trimmed);
   if (match === null) return null;
-  return { key: match[1]!.toLowerCase(), values: words(match[2]!) };
+  return { key: match[1]!.toLowerCase(), values: words(match[2]!), raw: match[2]! };
 }
 
 type Criterion = { negate: boolean } & ({ on: "all" | "unknown" } | { on: "final"; asksFinal: boolean } | { on: (typeof WEIGHED)[number]; patterns: string[] });
@@ -167,7 +167,7 @@ function pass(entries: Entry[], weighing: Weighing): void {
         // ssh sets the HostName to the name it connects to before the final pass, so a HostName there changes nothing
         if (weighing.effective.has(entry.key) || (weighing.final && entry.key === "hostname")) break;
         // a ProxyJump other than `none` is ignored once a ProxyCommand (`none` too) is set, and sets it to `none` itself
-        const jumps = entry.key === "proxyjump" && entry.value.toLowerCase() !== "none";
+        const jumps = entry.key === "proxyjump" && entry.value !== "none";
         if (jumps && weighing.effective.has("proxycommand")) break;
         const verdict = applies(weighing, entry.block);
         // a block that may apply makes the option unknown: whichever way it goes, no later block sets it
@@ -226,7 +226,7 @@ function ruledOut(block: Block, alias: string, localUser: string | null): boolea
 function describe(alias: string, effective: Map<string, string | null>, named: boolean): ConfigHost {
   const [hostname, user] = [effective.get("hostname"), effective.get("user")];
   const family = effective.get("addressfamily")?.toLowerCase();
-  const proxied = ["proxycommand", "proxyjump"].some((key) => (effective.get(key) ?? "none").toLowerCase() !== "none");
+  const proxied = ["proxycommand", "proxyjump"].some((key) => (effective.get(key) ?? "none") !== "none");
   // a canonical name only DNS gives (CanonicalDomains) may lead elsewhere, even with every route option set
   const canonical = effective.get("canonicalizehostname");
   const undetermined = !named || ROUTE_KEYS.some((key) => effective.get(key) === null) || (canonical !== undefined && canonical?.toLowerCase() !== "no");
@@ -284,7 +284,9 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
         }
         current = outer;
       } else if ((EFFECTIVE_KEYS as readonly string[]).includes(parsed.key) && parsed.values[0] !== undefined) {
-        entries.push({ kind: "option", block: current, key: parsed.key, value: parsed.values[0] });
+        // a proxy is off only for the bare word none: `'none' || ssh -W %h:%p bastion` still proxies, as in ssh
+        const value = parsed.key === "proxycommand" || parsed.key === "proxyjump" ? parsed.raw : parsed.values[0];
+        entries.push({ kind: "option", block: current, key: parsed.key, value });
       }
     }
   };

@@ -125,6 +125,12 @@ it("takes ProxyCommand and ProxyJump as ssh does: a ProxyJump after a ProxyComma
   ]);
 });
 
+it("turns a proxy off only for the bare word none: a command that starts with a quoted 'none' still proxies, as in ssh", async () => {
+  expect(await sshConfigHosts("Host box\n  HostName 100.64.0.1\n  ProxyCommand 'none' || ssh -W %h:%p bastion\nHost jump\n  HostName 100.64.0.2\n  ProxyJump \"none\",bastion\n")).toEqual([
+    { alias: "box", hostname: "100.64.0.1", user: null, proxied: true }, { alias: "jump", hostname: "100.64.0.2", user: null, proxied: true },
+  ]);
+});
+
 it("leaves a host undetermined while CanonicalizeHostname may change its name, even with every route option set", async () => {
   expect(await sshConfigHosts("Host box\n  CanonicalizeHostname yes\n  HostName box\n  AddressFamily inet\n  ProxyCommand none\n  ProxyJump none\n"))
     .toEqual([{ alias: "box", hostname: "box", user: null, addressFamily: "inet", undetermined: true }]);
