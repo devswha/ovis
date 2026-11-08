@@ -275,10 +275,12 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
     for (const entry of held) {
       if (openFilesOf) {
         const target = listedSession(roots, root, entry);
-        const header = target === null || target === "unproved" ? null : transcriptCwd(target);
-        const same = header === null ? false : sameCwd(header, cwd);
-        if (target === "unproved" || same === null) unreadable = true;
-        else if (same) open.add(target!);
+        if (target === null) continue;
+        // a held session whose header cannot be read, or is no session header, may be the pane's: unproved
+        const header = target === "unproved" ? null : transcriptCwd(target);
+        const same = header === null ? null : sameCwd(header, cwd);
+        if (same === null) unreadable = true;
+        else if (same) open.add(target);
         continue;
       }
       try {

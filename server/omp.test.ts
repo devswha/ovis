@@ -11,7 +11,7 @@ import { darwinProcess } from "./claude-store.ts";
 import * as darwinKernel from "./darwin-process.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { terminalBreadcrumb } from "./gjc-runtime.ts";
-import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompStoreLayout, readOmpHeldFilesSetting } from "./omp.ts";
+import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldOpen, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompPaneRoute, ompRouteTranscript, ompStoreLayout, readOmpHeldFilesSetting } from "./omp.ts";
 import layouts from "./fixtures/omp-18.8.7-store-layouts.json";
 import * as ompProbe from "./omp-process.ts";
 import * as omo from "./omo.ts";
@@ -790,6 +790,53 @@ describe("an omp pane's chat", () => {
       startOf = (asked) => asked === pid ? later : null;
       expect(await held()).toBeNull();
       expect(lsofCalls).toEqual([]);
+    });
+
+    it("times a caller's earlier sample by its own ask, not by when it is read", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      const asked = Date.now() - 60_000;
+      const now = spyOn(Date, "now").mockReturnValue(asked);
+      try {
+        // the caller's poll asked herdr then; its answer is read here a minute later
+        const known = await herdr.paneProcessInfo(pane.pane_id);
+        now.mockReturnValue(asked + 60_000);
+        const heldBy = async () => {
+          clock += 10_000;
+          const route = await ompPaneRoute(pane.pane_id, known);
+          return route === null || route === "unproved" ? null : ompRouteTranscript(await ompHeldOpen(route, true), pane.cwd!);
+        };
+        // an omp started after that ask is not the one herdr named
+        startOf = (asking) => asking === pid ? BigInt(asked + 30_000) * 1000n : null;
+        expect(await heldBy()).toBeNull();
+        // one started before it is
+        startOf = (asking) => asking === pid ? BigInt(asked - 30_000) * 1000n : null;
+        expect(await heldBy()).toBe(continued);
+      } finally { now.mockRestore(); }
+    });
+
+    it("refuses a process that started in the very instant herdr was asked", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      const asked = Date.now();
+      const now = spyOn(Date, "now").mockReturnValue(asked);
+      try {
+        startOf = (asking) => asking === pid ? BigInt(asked) * 1000n : null;
+        expect(await held()).toBeNull();
+        // a microsecond before the ask's millisecond counts
+        startOf = (asking) => asking === pid ? BigInt(asked) * 1000n - 1n : null;
+        expect(await held()).toBe(continued);
+      } finally { now.mockRestore(); }
+    });
+
+    it("binds nothing when a held session's header cannot be read as one", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      const malformed = storeTranscript(pane.cwd!, "2026-10-02_bad.jsonl");
+      writeFileSync(malformed, "not a session header\n");
+      listing = listed([malformed, continued]);
+      expect(await held()).toBeNull();
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
     });
 
     it("binds nothing when another pid is gone while lsof lists and lsof exits 1", async () => {

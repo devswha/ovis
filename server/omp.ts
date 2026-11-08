@@ -8,7 +8,8 @@ import { userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { darwinProcess } from "./claude-store.ts";
-import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
+import { darwinStartTime } from "./darwin-process.ts";
+import { paneProcessInfo, processInfoAskedAt, type ProcessInfo } from "./herdr/client.ts";
 import { heldTranscript, runsAgent, storeRelative, type StoreRoots, transcriptHeader } from "./gjc-runtime.ts";
 import { ompProcessMemory, ompRoutingEnviron, processStartTicks } from "./omp-process.ts";
 import { processStartIdentity } from "./process-start.ts";
@@ -442,6 +443,11 @@ function sameStarts(open: Map<number, HeldName[] | null>, identities: ReadonlyMa
   return names;
 }
 
+/** The kernel's start of a process on macOS, in microseconds, or null. */
+function sampledStart(pid: number): bigint | null {
+  try { return darwinStartTime(pid); } catch { return null; }
+}
+
 /**
  * Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open (src/lib/settings.ts
  * ompHeldFiles), as the server's shared preferences hold it. Off until the server's start points it there, and
@@ -479,26 +485,31 @@ export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRo
 export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): Promise<OmpRoute | "unproved" | null> {
   // `known`: herdr's answer the caller's poll already read for this pane. One that named no processes is asked again:
   // with no omp seen herdr's reported session is trusted, and an omp started since may keep another store
-  // A process that started after herdr was asked is not the one its sample named, but a pid reused since:
-  // its start is not taken, so lsof never lists it (ompHeldOpen). herdr's sample carries no start, so a
-  // pid reused by a process started before `askedAt` cannot be told: with `known`, one reused between the
-  // caller's own ask and this call; otherwise only a start in askedAt's millisecond, or a clock stepped back.
-  const askedAt = Date.now();
-  const info = known ?? await paneProcessInfo(paneId).catch(() => null);
+  // lsof may list these processes later (ompHeldOpen): each one's start is read with the sample that names it
+  const sampleStarts = process.platform === "darwin" && heldFilesOn();
+  // A process that started at or after herdr was asked is not the one its sample named, but a pid reused
+  // since: its start is not taken, so lsof never lists it (ompHeldOpen). `askedAt` is never later than the
+  // real ask: a caller's sample counts with its own ask time (paneProcessInfo keeps it), and one whose ask
+  // time is unknown is asked again. The kernel's start is in microseconds and askedAt a floored millisecond,
+  // so any start in the ask's millisecond is refused too. herdr's sample carries no start, so a pid reused
+  // by a process started before the ask cannot be told, nor a start under a wall clock stepped back since.
+  const askedTime = known ? processInfoAskedAt(known) : undefined;
+  const reuse = known != null && (!sampleStarts || askedTime !== undefined);
+  const askedAt = reuse ? askedTime ?? Date.now() : Date.now();
+  const info = reuse ? known : await paneProcessInfo(paneId).catch(() => null);
   let layout: OmpLayout | null = null;
   const pids: number[] = [];
   const launchDirs = new Set<string | null>();
   const environs = new Map<number, readonly string[]>();
   const starts = new Map<number, number>();
-  // lsof may list these processes later (ompHeldOpen): each one's start is read with the sample that names it
-  const sampleStarts = process.platform === "darwin" && heldFilesOn();
   let unread = false;
   for (const foreground of info?.foreground_processes ?? []) {
     if (typeof foreground.pid !== "number") continue;
     let argv = Array.isArray(foreground.argv) ? foreground.argv.map(String) : [];
     if (argv.length > 0 && (!isOmpProcess(argv) || isOmpHelper(argv))) continue;
-    const start = sampleStarts ? processStartIdentity(foreground.pid) : null;
-    if (start !== null && start <= askedAt) starts.set(foreground.pid, start);
+    const start = sampleStarts ? sampledStart(foreground.pid) : null;
+    // processStartIdentity's own form (whole milliseconds), as darwinOpenFiles reads it again
+    if (start !== null && start < BigInt(askedAt) * 1000n) starts.set(foreground.pid, Number(start / 1000n));
     // Herdr omits a recognized agent's argv (on Linux, WSL included). A procfs memory read blocks
     // while the process holds its memory map locked (omp does while it pages in, and on WSL while
     // it exits), so on Linux every read goes through the bounded helper, never the bridge itself.
