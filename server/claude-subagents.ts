@@ -131,11 +131,12 @@ export function lineNotifications(line: string): TaskNotification[] {
  * begins inside a line that is not wanted (a window's start, or a line too long to take), which
  * is passed over to its end. A line that does not fit `limit` waits for a call with more, and
  * one that does not fit READ_BUDGET is skipped, not waited for. `more`: the file goes on past
- * what this read looked at.
+ * what this read looked at. `file`: the plain file `plain` looked at, which the open must still be.
  */
-export function readLines(path: string, from: number, size: number, limit: number, each: (line: string, end: number) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
-  let fd: number;
-  try { fd = openSync(path, "r"); } catch { return { offset: from, skipping, more: true, failed: true }; }
+export function readLines(path: string, from: number, file: { size: number; id: string }, limit: number, each: (line: string, end: number) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
+  const size = file.size;
+  const fd = openPlain(path, file.id)?.fd;
+  if (fd === undefined) return { offset: from, skipping, more: true, failed: true };
   try {
     const length = Math.min(size - from, limit);
     const buffer = Buffer.alloc(length);
@@ -173,6 +174,22 @@ export function plain(path: string, max = Infinity): { size: number; mtimeMs: nu
     const stat = lstatSync(path);
     return stat.isFile() && stat.size <= max ? { size: stat.size, mtimeMs: stat.mtimeMs, id: `${stat.dev}:${stat.ino}` } : null;
   } catch { return null; }
+}
+
+/**
+ * `path` opened as the plain file `id` (as `plain` gives it) names, of at most `max` bytes: its descriptor and size, or
+ * null. Not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs the read nor
+ * leads elsewhere, and another file put there is not the one looked at.
+ */
+function openPlain(path: string, id: string, max = Infinity): { fd: number; size: number } | null {
+  let fd: number;
+  try { fd = detailIo.openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+  try {
+    const opened = fstatSync(fd);
+    if (opened.isFile() && opened.size <= max && `${opened.dev}:${opened.ino}` === id) return { fd, size: opened.size };
+  } catch { /* refused below */ }
+  closeSync(fd);
+  return null;
 }
 
 /** What one transcript says of background commands: those it started, by task id, and how those it heard of ended. */
@@ -337,7 +354,7 @@ function scanParent(path: string): Parent | null {
   // the first read takes the whole window, a chunk at a time; after that a call reads what was appended
   for (let left = PARENT_WINDOW; state.offset < stat.size && left > 0;) {
     if (state.skipping) state.restAt = null;
-    const read = readLines(path, state.offset, stat.size, READ_BUDGET, (line, end) => {
+    const read = readLines(path, state.offset, stat, READ_BUDGET, (line, end) => {
       if (state.firstAt === null) state.firstAt = stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]);
       scanParentLine(state, line, end);
     }, state.skipping);
@@ -528,12 +545,10 @@ function readMeta(path: string): Meta | null {
   const known = metas.get(path);
   if (known?.key === key) return known.meta;
   let meta: Meta | null = null;
-  let fd: number;
-  // not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs the read nor leads elsewhere
-  try { fd = detailIo.openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
+  const opened = openPlain(path, stat.id, MAX_META_BYTES);
+  if (opened === null) return null;
+  const fd = opened.fd;
   try {
-    const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.size > MAX_META_BYTES) return null;
     const record = row(JSON.parse(readAt(fd, 0, opened.size).toString("utf8")));
     if (record !== null) meta = { title: text(record["description"]) ?? text(record["name"]), name: text(record["name"]), agent: text(record["agentType"]), toolUseId: text(record["toolUseId"]) };
   } catch { return null; } finally { closeSync(fd); } // being written
@@ -577,7 +592,7 @@ function scanWork(path: string, budget: { left: number }): Work | null {
   if (budget.left <= 0) { work.behind = true; work.hungry = true; return work; }
   const state = work;
   const limit = Math.min(budget.left, READ_BUDGET);
-  const read = readLines(path, state.offset, stat.size, limit, (line) => {
+  const read = readLines(path, state.offset, stat, limit, (line) => {
     let entry: Row | null;
     try { entry = row(JSON.parse(line)); } catch { return; }
     if (entry === null) return;
@@ -637,9 +652,9 @@ function turnAfter(entry: Row, at: number | null, turnEndedAt: number | null): n
   return row(row(entry["message"]))?.["stop_reason"] === "end_turn" ? at : null;
 }
 
-function readBytes(path: string, from: number, length: number): Buffer | null {
-  let fd: number;
-  try { fd = openSync(path, "r"); } catch { return null; }
+function readBytes(path: string, id: string, from: number, length: number): Buffer | null {
+  const fd = openPlain(path, id)?.fd;
+  if (fd === undefined) return null;
   try {
     const buffer = Buffer.alloc(length);
     let got = 0;
@@ -669,7 +684,7 @@ function readTail(path: string, stat: { size: number; mtimeMs: number; id: strin
   const tail: Tail = { known: false, firstAt: kept?.id === stat.id ? kept.tail.firstAt : null, lastAt: null, dispatchAt: null, turnEndedAt: null };
   if (stat.size === 0) { tail.known = true; return tail; }
   const from = Math.max(0, stat.size - TAIL_BYTES);
-  const chunk = readBytes(path, from, stat.size - from);
+  const chunk = readBytes(path, stat.id, from, stat.size - from);
   if (chunk === null) return tail;
   const end = chunk.lastIndexOf(0x0a) + 1;
   const start = from === 0 ? 0 : chunk.indexOf(0x0a) + 1;
@@ -690,7 +705,7 @@ function readTail(path: string, stat: { size: number; mtimeMs: number; id: strin
   }
   tail.known = (from === 0 && end > 0) || decisive;
   if (tail.firstAt === null && from > 0) {
-    const head = readBytes(path, 0, TAIL_BYTES);
+    const head = readBytes(path, stat.id, 0, TAIL_BYTES);
     const newline = head?.indexOf(0x0a) ?? -1;
     if (head !== null && newline !== -1) { try { tail.firstAt = stamp(row(JSON.parse(head.subarray(0, newline).toString("utf8")))?.["timestamp"]); } catch { /* a long first line: no start yet */ } }
   }

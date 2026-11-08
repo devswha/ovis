@@ -543,6 +543,42 @@ describe("backgroundAgentDetail", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("reads no transcript swapped for a FIFO before its open, and does not wait on it (#3363)", () => {
+    const s = session();
+    const file = s.agent("a1");
+    const { openSync } = detailIo;
+    let swapped = false;
+    detailIo.openSync = ((path: string, flags: number) => {
+      if (!swapped && path === file) {
+        swapped = true;
+        rmSync(file);
+        expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
+      }
+      return openSync(path, flags);
+    }) as typeof openSync;
+    let tasks: OmoTask[];
+    try { tasks = claudeSubagentState(s.path, true, NOW).tasks; } finally { detailIo.openSync = openSync; }
+    expect([swapped, tasks]).toEqual([true, []]);
+  });
+
+  it.skipIf(process.platform === "win32")("reads no transcript swapped for a link before its open (#3363)", () => {
+    const s = session();
+    const file = s.agent("a1");
+    const outside = mkdtempSync(join(tmpdir(), "herdr-subagents-link-"));
+    roots.push(outside);
+    const target = join(outside, "agent-a1.jsonl");
+    writeFileSync(target, json({ isSidechain: true, sessionId: SESSION, agentId: "a1", type: "assistant", timestamp: at(3), message: { id: "m3", model: "outside-model", content: [] } }));
+    const { openSync } = detailIo;
+    let swapped = false;
+    detailIo.openSync = ((path: string, flags: number) => {
+      if (!swapped && path === file) { swapped = true; rmSync(file); symlinkSync(target, file); }
+      return openSync(path, flags);
+    }) as typeof openSync;
+    let tasks: OmoTask[];
+    try { tasks = claudeSubagentState(s.path, true, NOW).tasks; } finally { detailIo.openSync = openSync; }
+    expect([swapped, tasks]).toEqual([true, []]);
+  });
+
   it("an unreadable dispatch is no prompt, and no later instruction is taken for it", () => {
     const s = session();
     const file = s.agent("a1", { steps: [] });
@@ -957,7 +993,7 @@ describe("claudeSubagents reading", () => {
   it("keeps a failed open or read unfinished instead of reporting the end of the file", () => {
     const s = session();
     for (const path of [join(s.path, "..", "missing.jsonl"), join(s.path, "..")]) {
-      expect(readLines(path, 0, 10, 10, () => { throw new Error("no line should be read"); }, false)).toEqual({ offset: 0, skipping: false, more: true, failed: true });
+      expect(readLines(path, 0, { size: 10, id: "" }, 10, () => { throw new Error("no line should be read"); }, false)).toEqual({ offset: 0, skipping: false, more: true, failed: true });
     }
   });
 
