@@ -11,7 +11,7 @@ import { myPcs } from "../account/myPcs.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { dashboardModel } from "./dashboard.ts";
+import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -78,7 +78,8 @@ describe("account pairing completion", () => {
     current().onPair();
     await until(() => enrolls > 0);
     const rows = async () => myPcs([], await store.list(), { now: Date.now(), accountKey: key.public_spki, account: "acct-test" });
-    return { current, enrollment, rows, mountAt, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
+    const dashboard = async () => dashboardPcs(await rows(), await store.list());
+    return { current, enrollment, rows, dashboard, mountAt, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
   }
 
   it("shows Ready and opens the PC while account enrollment is pending", async () => {
@@ -141,7 +142,7 @@ describe("account pairing completion", () => {
     run.current().onCancel();
     run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
     await until(async () => (await run.rows())[0]?.enrollment === "failed");
-    const model = dashboardModel(await run.rows(), { label: "Phone", now: Date.now() }, "wss://relay.ovis.sh");
+    const model = dashboardModel(await run.dashboard(), { label: "Phone", now: Date.now() }, "wss://relay.ovis.sh");
     const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayPcTable, { rows: model.rows, onSelect() {}, onOpenSheet() {} }) }));
     const action = /<a[^>]*href="([^"]+)"[^>]*data-pc-action="open"[^>]*>([^<]+)<\/a>/.exec(html);
     const line = /data-pc-enrollment="">([^<]+)</.exec(html)?.[1];
