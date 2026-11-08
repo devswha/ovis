@@ -112,9 +112,16 @@ export function agentOfStatus(status: HcStatus | null | undefined): string | nul
 }
 
 /** The agent a terminal runs (agent-identity.ts): its program's report, else the process in front of it. */
-export function agentOf(terminal: HcTerminal): string | null {
+export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground">): string | null {
   const front = terminal.foreground;
   return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null });
+}
+
+/** hc's record of the process in front of a terminal (a record's `foreground`, a `foreground` event's data); null for none or another shape. */
+export function foregroundOf(value: unknown): HcForeground | null {
+  if (!isRecord(value) || typeof value["pid"] !== "number" || typeof value["name"] !== "string") return null;
+  const argv = value["argv"];
+  return { pid: value["pid"], name: value["name"], ...(Array.isArray(argv) && argv.every((word) => typeof word === "string") ? { argv } : {}) };
 }
 
 /**

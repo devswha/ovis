@@ -21,11 +21,12 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ foreground: ["devin"] }, "linux")).toBe("devin");
     expect(paneAgent({ foreground: ["/home/u/.local/bin/hermes", "chat"] }, "macos")).toBe("hermes");
     expect(paneAgent({ foreground: ["C:\\Users\\u\\AppData\\Roaming\\npm\\letta.cmd"] }, "windows")).toBe("letta");
-    expect(paneAgent({ foreground: ["bun", "/opt/x/dsh-tui.js"] }, "linux")).toBe("dsh-tui");
+    expect(paneAgent({ foreground: ["bun", "/opt/x/node_modules/.bin/dsh-tui"] }, "linux")).toBe("dsh-tui");
+    expect(paneAgent({ foreground: ["C:\\Program Files\\Claude\\Claude.EXE"] }, "windows")).toBe("claude");
   });
 
   it("names none for a shell, an unknown program, or a program merely given an agent's name", () => {
-    for (const foreground of [["bash"], ["-zsh"], ["vim", "letta"], ["sh", "-c", "letta"], ["node", "/srv/app/server.js"], ["python3", "-m", "letta"], []]) {
+    for (const foreground of [["bash"], ["-zsh"], ["vim", "letta"], ["sh", "-c", "letta"], ["node", "/srv/app/server.js"], ["python3", "-m", "letta"], ["node", "/srv/project/pi.js"], ["bun", "letta.ts"], ["/opt/x/letta.cmd"], []]) {
       expect(paneAgent({ foreground }, "linux")).toBeNull();
     }
     expect(paneAgent({}, "linux")).toBeNull();

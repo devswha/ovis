@@ -30,14 +30,22 @@ export function reportedAgent(app: string | null | undefined): string | null {
   return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
 }
 
+/** A path's last part as `platform` names files: on Windows in any case, a program without its `.exe` or `.cmd`. */
+function fileName(word: string, platform: CatalogPlatform | null, program: boolean): string {
+  const name = nodePath.posix.basename(word.replace(/\\/g, "/"));
+  if (platform !== "windows") return name;
+  return program ? name.toLowerCase().replace(/\.(?:exe|cmd)$/, "") : name.toLowerCase();
+}
+
 /**
- * The catalog agent a foreground process is: one of its detect binaries run directly, or as the
- * script an interpreter runs. A binary whose name proves nothing on `platform` (Windows' own cmd)
- * names none there.
+ * The catalog agent a foreground process is: one of its detect binaries run directly, or the
+ * extensionless script by that name an interpreter runs (npm's bin, a Python entry point), never
+ * any `pi.js` that shares a name. A binary whose name proves nothing on `platform` (Windows' own
+ * cmd) names none there.
  */
 export function processAgent(argv: readonly string[], platform: CatalogPlatform | null): string | null {
-  const first = programName(argv[0] ?? "");
-  const program = INTERPRETERS.has(first) ? programName(argv[1] ?? "") : first;
+  const first = fileName(argv[0] ?? "", platform, true);
+  const program = INTERPRETERS.has(first) ? fileName(argv[1] ?? "", platform, false) : first;
   if (!program) return null;
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !(platform && candidate.detect.unreliable_on?.[platform]));
   return entry?.id ?? null;
