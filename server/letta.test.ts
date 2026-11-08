@@ -8,7 +8,7 @@ import { ConversationUnavailable } from "./conversation-shared.ts";
 import * as herdr from "./herdr/client.ts";
 import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
 import * as lettaStore from "./letta-store.ts";
-import { isLettaProcess, type LettaProcess, lettaBinding, lettaInStartFolder, lettaLocalOwner, lettaLocalSettings, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
+import { isLettaProcess, type LettaProcess, lettaBinding, paneLettaProcess, lettaInStartFolder, lettaLocalOwner, lettaLocalSettings, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 // Recorded from letta-code 0.34.27 in an isolated herdr session (local backend, herdr's Letta
@@ -87,6 +87,10 @@ describe("Letta transcript", () => {
     expect(lettaToolOutput(path, "Bash-1-1")).toBe(long);
     expect(transcriptToolOutput("letta-transcript", path, "Bash-1-1")?.startsWith("yyy")).toBe(true);
     expect(lettaToolOutput(path, "Bash-9-9")).toBeNull();
+    // a link put where the transcript was is not followed
+    const link = join(root, "linked.jsonl");
+    symlinkSync(path, link);
+    expect(lettaToolOutput(link, "Bash-1-1")).toBeNull();
   });
 
   test("a field the reader does not know falls back, and a ref the output route refuses is not offered", () => {
@@ -117,7 +121,7 @@ describe("Letta conversation binding", () => {
       writeFileSync(join(cwd, ".letta", "settings.local.json"), settings);
       utimesSync(join(cwd, ".letta", "settings.local.json"), at / 1000, at / 1000);
     }
-    return { pid: 4242, cwd, startedAt: started, identity: started, env: { HOME: root, ...env }, argv: ["letta"] };
+    return { pid: 4242, cwd, startedAt: started, startedBy: started, identity: started, env: { HOME: root, ...env }, argv: ["letta"] };
   };
   const now = Date.now();
 
@@ -211,6 +215,26 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(target, [target], owner)?.path).toBe(path);
   });
 
+  test("without a report, a transcript between the start's lower bound and its real start is another letta's", () => {
+    // the start is known only as 4 s to 5 s ago on this read; a write 4.5 s ago may be from before it
+    const owner = { ...setup(settingsAfterNew, now - 60_000, now, {}, false), startedAt: now - 5_000, startedBy: now - 4_000 };
+    const target = pane("w1:p1", null, owner.cwd);
+    const path = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1");
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, newLog);
+    utimesSync(path, (now - 4_500) / 1000, (now - 4_500) / 1000);
+    expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
+    utimesSync(path, (now - 3_000) / 1000, (now - 3_000) / 1000);
+    expect(lettaTranscriptFor(target, [target], owner)?.path).toBe(path);
+    // a start not known from above binds nothing
+    expect(lettaTranscriptFor(target, [target], { ...owner, startedBy: null })).toBeNull();
+  });
+
+  test("a pid whose live command line is not the letta herdr reported is someone else's: its start and environment are not read", async () => {
+    // this test's own runtime under a reported letta argv: a reused pid
+    expect(await paneLettaProcess("w1:p1", { pane_id: "w1:p1", foreground_processes: [{ pid: process.pid, name: "letta", argv: ["letta"], cwd: root }] } as never)).toBeNull();
+  });
+
   test("without a report, a letta that picked its conversation itself, or saves none, binds nothing", () => {
     const silent = pane("w1:p1", null, root);
     const owner = setup(settingsAfterNew, now - 60_000, now);
@@ -235,25 +259,26 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-7", join(root, "elsewhere"))], owner)).not.toBeNull();
   });
 
-  test("a conversation another Letta pane's folder record also names binds nothing, reported or not", () => {
+  test("without a report, a conversation another Letta pane's folder record also names binds nothing; with one, it binds", () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const other = join(root, "other");
     mkdirSync(join(other, ".letta"), { recursive: true });
     writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
-    for (const value of [null, "local-conv-1"]) {
-      const target = pane("w1:p1", value, owner.cwd);
-      // a peer's report may be the first it made, before a /resume: its folder record still counts
-      expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-9", other)], owner)).toBeNull();
-      expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
-      // a Letta in another folder resumed the same conversation: which pane shows it cannot be told
-      expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).toBeNull();
-      // one whose record names another conversation there is no claim on this one; without a report of its own,
-      // a pane with none is still left unbound by it (it may have moved there)
-      writeFileSync(join(other, ".letta", "settings.local.json"), JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-9" } } }));
-      const peer = lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner);
-      if (value === null) expect(peer).toBeNull(); else expect(peer).not.toBeNull();
-      writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
-    }
+    const silent = pane("w1:p1", null, owner.cwd);
+    expect(lettaTranscriptFor(silent, [silent], owner)).not.toBeNull();
+    // a peer's report may be the first it made, before a /resume: its folder record still counts
+    expect(lettaTranscriptFor(silent, [silent, pane("w2:p1", "local-conv-9", other)], owner)).toBeNull();
+    // a record reached through a link is not read as that folder's: it binds nothing either
+    const linked = join(root, "linked");
+    mkdirSync(linked);
+    symlinkSync(join(other, ".letta"), join(linked, ".letta"));
+    expect(lettaTranscriptFor(silent, [silent, pane("w2:p1", "local-conv-9", linked)], owner)).toBeNull();
+    // a pane with a report keeps it: another folder's old record is no evidence against it
+    const reported = pane("w1:p1", "local-conv-1", owner.cwd);
+    expect(lettaTranscriptFor(reported, [reported, pane("w2:p1", "local-conv-9", other)], owner)).not.toBeNull();
+    // a peer whose record names another conversation makes no claim
+    writeFileSync(join(other, ".letta", "settings.local.json"), JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-9" } } }));
+    expect(lettaTranscriptFor(silent, [silent, pane("w2:p1", "local-conv-9", other)], owner)).not.toBeNull();
   });
 
   test("a record Letta cannot rewrite binds nothing: its switch would fail and leave the old one standing", () => {
@@ -269,7 +294,7 @@ describe("Letta conversation binding", () => {
     const other = join(root, "project2");
     mkdirSync(start); mkdirSync(other);
     symlinkSync(start, join(root, "link1"));
-    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, identity: now, env, argv: ["letta"] });
+    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, startedBy: startedAt, identity: now, env, argv: ["letta"] });
     expect(lettaInStartFolder(at(101, start, { PWD: start }))).toBe(true);
     expect(lettaInStartFolder(at(102, start, { PWD: join(root, "link1") }))).toBe(true);
     // no start folder to compare: its shell set no PWD
@@ -524,13 +549,18 @@ describe("Letta conversation binding", () => {
     utimesSync(join(project, ".letta", "settings.local.json"), (Date.now() - 60_000) / 1000, (Date.now() - 60_000) / 1000);
     const config = join(root, "config");
     // a real process whose own environment names the store, as the pane's letta would
-    const child = Bun.spawn(["sleep", "300"], { env: { HOME: root, PWD: project, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    // a script named as Letta's entry, which the pane's runtime runs as a letta would, so its live command line is the reported one
+    const script = join(root, "bin", "letta");
+    mkdirSync(join(root, "bin"));
+    writeFileSync(script, "setInterval(() => {}, 60_000);\n");
+    const lettaArgv = [process.execPath, script];
+    const child = Bun.spawn(lettaArgv, { env: { HOME: root, PWD: project, LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
     // the same process after SetWorkingDirectory moved it from project1 into this project: its environment keeps project1
     mkdirSync(join(root, "project1"));
-    const movedIn = Bun.spawn(["sleep", "300"], { env: { HOME: root, PWD: join(root, "project1"), LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
+    const movedIn = Bun.spawn(lettaArgv, { env: { HOME: root, PWD: join(root, "project1"), LETTA_CONFIG_DIR: config, PATH: process.env["PATH"] ?? "" }, cwd: project });
     let foreground = child.pid;
     const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({
-      pane_id: "w1:p1", foreground_processes: [{ pid: foreground, argv: ["node", "/opt/letta/bin/letta"], cwd: project }],
+      pane_id: "w1:p1", foreground_processes: [{ pid: foreground, argv: lettaArgv, cwd: project }],
     }) as never);
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never);
     const resolve = (target: HerdrPane) => paneTranscript(target.pane_id, undefined, { panes: [target] } as SessionSnapshot);
@@ -549,7 +579,9 @@ describe("Letta conversation binding", () => {
       expect(await resolve(bound)).toEqual({ source: "letta-transcript", path,
         letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       await expect(resolve(pane("w1:p1", `default:${AGENT}`, project))).rejects.toThrow("no_session_path");
-      // no report at all (herdr-core, or herdr without its Letta integration): Letta's record alone
+      // no report at all (herdr-core, or herdr without its Letta integration): Letta's record alone, once the
+      // process has written its transcript provably after it started (the unit test above covers a write inside the start's uncertainty)
+      utimesSync(path, (Date.now() + 2_000) / 1000, (Date.now() + 2_000) / 1000);
       expect(await resolve(pane("w1:p1", null, project))).toEqual({ source: "letta-transcript", path,
         letta: { store: join(config, "lc-local-backend"), agent: AGENT, conversation: "local-conv-1" } });
       // another pane running Letta in the folder writes the same record

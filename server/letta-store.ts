@@ -28,7 +28,7 @@ import { basename, isAbsolute, join, normalize } from "node:path";
 import type { ConversationMetadata, HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
-import { processStartIdentity, processStartLowerBound } from "./process-start.ts";
+import { processStartIdentity, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
 
 /** Letta's ids: `conv-<uuid>`, `local-conv-<n>`, `agent-<uuid>`, `agent-local-<uuid>`, and `default`. */
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
@@ -158,9 +158,22 @@ export function isLettaProcess(argv: readonly string[]): boolean {
 
 /**
  * `startedAt`: no later than the process started (processStartLowerBound), which may read differently each time;
- * `identity`: processStartIdentity, the same on every read, so with the pid it names the process
+ * `startedBy`: no earlier than it started (processStartUpperBound), null where that is not known;
+ * `identity`: processStartIdentity, the same on every read, so with the pid it names the process;
+ * `verified`: the pid's live command line was read and is the one herdr reported, so its start and
+ * environment are this letta's and not those of a process that reused the pid (Linux)
  */
-export interface LettaProcess { pid: number; cwd: string; startedAt: number; identity: number; env: Env; argv: readonly string[] }
+export interface LettaProcess { pid: number; cwd: string; startedAt: number; startedBy: number | null; identity: number; env: Env; argv: readonly string[]; verified?: boolean }
+
+/** A process's live command line, where the system tells it (Linux's /proc); null otherwise. */
+function liveArgv(pid: number): string[] | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const words = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    if (words.at(-1) === "") words.pop();
+    return words;
+  } catch { return null; }
+}
 
 /** Letta processes, by pid and start identity, seen in a folder other than the one they started in. */
 const moved = new Set<string>();
@@ -193,10 +206,16 @@ export async function paneLettaProcess(paneId: string, known?: ProcessInfo | nul
   const { pid, cwd } = found[0]!;
   const argv = (found[0]!.argv ?? []).map(String);
   if (typeof cwd !== "string" || !isAbsolute(cwd)) return null;
-  const startedAt = processStartLowerBound(pid);
+  // herdr named the process a moment ago: the pid now may be another one's. Its live command line must be
+  // the reported one, and its start the same before and after its start and environment are read
+  const live = liveArgv(pid);
+  if (live !== null && (live.length !== argv.length || live.some((word, at) => word !== argv[at]))) return null;
   const identity = processStartIdentity(pid);
+  const startedAt = processStartLowerBound(pid);
+  const startedBy = processStartUpperBound(pid);
   const env = processEnvironment(pid);
-  return startedAt === null || identity === null || env === null ? null : { pid, cwd, startedAt, identity, env, argv };
+  if (startedAt === null || identity === null || env === null || processStartIdentity(pid) !== identity) return null;
+  return { pid, cwd, startedAt, startedBy, identity, env, argv, verified: live !== null };
 }
 
 export type LettaTranscript = { path: string; session: string; agent: string; conversation: string };
@@ -215,10 +234,10 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
   const opened = text === null ? null : lettaOpenedSessions(text);
   const bound = opened === null ? null : session === null ? lettaRecordedBinding(opened) : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
-  if (bound === null || root === null || claimedElsewhere(pane, panes, owner, bound)) return null;
+  if (bound === null || root === null || (session === null && claimedElsewhere(pane, panes, owner, bound))) return null;
   const path = lettaTranscriptPath(root, bound.agent, bound.conversation);
   // without a report the record only proves the process has not written yet: its own use of the conversation must show
-  if (session === null && !writtenSince(path, owner.startedAt)) return null;
+  if (session === null && (owner.startedBy === null || !writtenSince(path, owner.startedBy))) return null;
   const reported = session?.reported ?? (bound.conversation === "default" ? `default:${bound.agent}` : bound.conversation);
   return { path, session: reported, ...bound };
 }
@@ -234,6 +253,8 @@ const RESUMING_OPTIONS = new Set(["-m", "--model", "--backend", "--toolset", "-s
  * report may have moved here from a folder with the same record, so it leaves both unbound.
  */
 function lettaRecordSpeaksAlone(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): boolean {
+  // a process whose command line could not be checked live may be another one under a reused pid
+  if (owner.verified === false) return false;
   if (owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== undefined || owner.env["LETTA_CODE_AGENT_ROLE"] === "subagent") return false;
   const program = owner.argv.findIndex((word) => /(^|[\\/])letta(\.(?:js|cmd|exe))?$/i.test(word));
   if (program === -1) return false;
@@ -262,7 +283,11 @@ function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: L
     if (other.pane_id === pane.pane_id || (other.agent !== "letta" && other.agent_session?.agent !== "letta")) return false;
     const folder = [other.foreground_cwd, other.cwd].find((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd));
     if (folder === undefined || canonical(folder) === own) return false;
-    const text = readBounded(join(folder, ".letta", "settings.local.json"), SETTINGS_BYTES);
+    const record = join(folder, ".letta", "settings.local.json");
+    const real = canonical(record);
+    // a record reached through a link in the folder is not that folder's own: it claims the conversation unread
+    if (real !== null && real !== join(canonical(folder) ?? folder, ".letta", "settings.local.json")) return true;
+    const text = readBounded(record, SETTINGS_BYTES);
     const opened = text === null ? null : lettaOpenedSessions(text);
     return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
   });
