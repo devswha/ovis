@@ -39,7 +39,7 @@ import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { ShortcutOverrides } from "./shortcutBindings.ts";
-import { takeTypeAhead, type TypeAheadItem } from "./typeAhead.ts";
+import { takeTypeAhead, WORD_BACKSPACE, type TypeAheadItem } from "./typeAhead.ts";
 import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_MS, VIEW_BUFFER_MAX, afterSwitch, dropViewChange, holdViews, inUse, connectedSockets, plainError, releaseViews, CONTROL_CHARACTER } from "./paneTerminalShared.ts";
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
@@ -1639,6 +1639,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           && event.key === "Backspace" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
           && !event.isComposing && event.keyCode !== 229;
       });
+      // xterm sends Ctrl+H for Ctrl+Backspace. Rewrite that one chord to Ctrl+W after IME drain.
+      // A typed Ctrl+H is a different DOM key, so it stays \b.
+      let wordBackspace = false;
+      const onWordBackspace = term.onKey(({ key, domEvent: event }) => {
+        wordBackspace = !term.options.disableStdin && key === "\b" && event.type === "keydown"
+          && event.key === "Backspace" && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+          && !event.isComposing && event.keyCode !== 229;
+      });
       // A paste is text, even when it happens to contain just one letter. xterm
       // handles the DOM paste synchronously after this capture-phase listener.
       let pasting = false;
@@ -1732,6 +1740,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         enterKey = null;
         if (commandBackspace && data === "\x7f") data = "\x15";
         commandBackspace = false;
+        if (wordBackspace && data === "\b") data = WORD_BACKSPACE;
+        wordBackspace = false;
         const current = paneRef.current;
         // Hiding a cached pane blurs xterm, which may commit its pending IME text.
         // That abandoned input must reach neither the old PTY nor its held draft.
@@ -2580,6 +2590,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         document.removeEventListener("visibilitychange", onVisibility);
         onModifiedEnter.dispose();
         onCommandBackspace.dispose();
+        onWordBackspace.dispose();
         inputViewportResize.dispose();
         frameResize.dispose();
         inputScreenResize.disconnect();

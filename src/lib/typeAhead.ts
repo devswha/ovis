@@ -67,17 +67,30 @@ const ARROW_INPUT: Record<string, string> = { ArrowUp: "\x1b[A", ArrowDown: "\x1
 const PLAIN_INPUT: Record<string, string> = { Enter: "\r", Tab: "\t", Escape: "\x1b", Delete: "\x1b[3~", Home: "\x1b[H", End: "\x1b[F" };
 const EDITING = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home", "End", ...Object.keys(ARROW_INPUT)]);
 
+/** Ctrl+W. xterm sends Ctrl+H for Ctrl+Backspace; a shell treats that as delete-char. */
+export const WORD_BACKSPACE = "\x17";
+
 /**
- * The input a key typed in the field stands for, as the terminal (xterm) sends it; "hold" for an editing key the
+ * Bytes for Backspace, as the live terminal rewrites them (useTerminalMount). "hold" when Cmd is
+ * combined with Ctrl or Alt: the catch cannot be sure what the terminal would send.
+ */
+export function backspaceSequence(ctrl: boolean, meta: boolean, alt: boolean, shift: boolean): string | "hold" {
+  if (meta) return ctrl || alt ? "hold" : "\x15";
+  // plain Ctrl+Backspace only. Ctrl+H, typed as the letter, stays \b. Alt stays xterm's Esc prefix.
+  if (ctrl && !alt && !shift) return WORD_BACKSPACE;
+  return `${alt ? "\x1b" : ""}${ctrl ? "\b" : "\x7f"}`;
+}
+
+/**
+ * The input a key typed in the field stands for, as the live terminal sends it; "hold" for an editing key the
  * field cannot be sure of (a word move, a modified Enter): the catch is then held for review, so nothing runs that
  * the user did not see. null for one the field leaves to the browser (text, its own shortcuts).
  */
 export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | "hold" | null {
   const { key, ctrlKey: ctrl, metaKey: meta, altKey: alt, shiftKey: shift } = event;
   if (key === "Backspace") {
-    // Cmd+Backspace erases the line as the terminal's own does (useTerminalMount); Alt and Ctrl as xterm sends them
-    if (meta) return ctrl || alt ? "hold" : { input: "\x15" };
-    return { input: `${alt ? "\x1b" : ""}${ctrl ? "\b" : "\x7f"}` };
+    const sequence = backspaceSequence(ctrl, meta, alt, shift);
+    return sequence === "hold" ? "hold" : { input: sequence };
   }
   if (ctrl && !meta && !alt && !shift && /^[a-z]$/i.test(key)) {
     // a control character; Ctrl+V stays the browser's paste

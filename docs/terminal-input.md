@@ -106,7 +106,9 @@ beginning and end of the input line in shells and agents that use those bindings
 Pending IME text is sent first. Additional modifiers retain xterm's behavior; the input line
 and chat composer keep their native text editing. Ctrl+Left and Ctrl+Right are sent as xterm
 sends them on every platform, so a program in the pane that binds them (tmux, an editor) still
-receives them; Option+Left and Option+Right move by word.
+receives them; Option+Left and Option+Right move by word. Ctrl+Backspace sends Ctrl+W, which
+deletes the previous word in a shell and in agents that bind that chord. xterm would send
+Ctrl+H, which deletes one character. Ctrl+H typed as a letter chord is unchanged.
 
 ## Readiness and failures
 
