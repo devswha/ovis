@@ -48,12 +48,17 @@ const NOT_PROMPT_TEXT_RE = /^(?:[❯›>"'“]|\$ )/;
  * ellipsis, and in parentheses the time it has taken and the tokens it has used, then maybe the
  * interrupt hint: "✢ Tempering… (1m 55s · ↓ 10.0k tokens)".
  */
-/**
- * omp's status row under its panel while a question waits (omp 18.12.6): a spinner and the elapsed time, or `π` at
- * rest, then `· ⬢` and the model, folder and context: "⠋ 6m 0s · ⬢ Ask fixture · 🗑 …/home/fixture · ◫ 5.7%/131K ⟲".
- */
-const OMP_STATUS_ROW_RE = /^(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (?:\d+h )?(?:\d+m )?\d+s|π) · ⬢ (.+)$/u;
 const WORKING_LINE_RE = /^[·✢✳✶✻✽*] (\S(?:.*\S)?…) \((?:\d+h )?(?:\d+m )?\d+s · [↑↓] [\d.,]+[kKmM]? tokens( · esc to interrupt)?\)$/u;
+
+/**
+ * The ticking start of omp's status row under its panel while a question waits, in every status-line preset its fixtures
+ * hold (omp 18.12-18.13): a spinner frame, braille or the ascii preset's `/-\|`, and the elapsed time, or `π` at rest.
+ * The separator and segments after it are the user's choice (" · ⬢ …", " > ⬢ … ▶──6%", " > [M] …", Nerd Font gaps)
+ * and stay in the id, as do the model, folder and context they name (#3412, #3416). It may follow the Nerd Font
+ * band's powerline cap or the box shape's top border (`╭── `), and its rest must hold the context gauge every preset
+ * draws (`◫ 5.7%`, `▶──6%`, `>--6%`, `──6%`): a question's "- 5s delay" or "| 30s timeout" is no status row.
+ */
+const OMP_STATUS_ROW_RE = /^((?:[\ue0b0-\ue0d4] |╭─+ )?)(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏/\\|-] (?:\d+h )?(?:\d+m )?\d+s|π)( +\S.*(?:◫ |[─-])\d+(?:\.\d+)?%.*)$/u;
 
 /**
  * How a fallback card's id reads a line of the screen. Claude Code keeps its working line on the
@@ -81,7 +86,7 @@ function steadyReader(agent: string, shown: string[]): SteadyReader {
   const line = shown[at]!;
   const steady = agent === "omp"
     // the spinner and the elapsed time, or the resting π, are omp's ticking part; the model, folder and context stay (#3412)
-    ? line.replace(OMP_STATUS_ROW_RE, (_all, rest: string) => `<status> · ⬢ ${rest}`)
+    ? line.replace(OMP_STATUS_ROW_RE, (_all, lead: string, rest: string) => `${lead}<status>${rest}`)
     : line.replace(WORKING_LINE_RE, (_all, doing: string, hint: string | undefined) => `* ${doing} (<time> · <tokens>${hint ?? ""})`);
   return { read: (other) => other === line ? steady : other, working: at };
 }
