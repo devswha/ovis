@@ -364,12 +364,34 @@ try {
   await reload();
   await unproven(otherBrowser.text, "another browser session");
 
-  // (b) past the ten minutes the bridge keeps a held receipt
+  // (b) past the ten minutes the bridge keeps a held receipt. A witness tab with this browser's resume
+  // ID but storage of its own is told the receipt once the bridge kept it: only then does the clock move.
   const expired = await queue("unproven after the receipt expired");
+  const resumeId = await page.evaluate(() => localStorage.getItem("ovis:pi-receipt-resume"));
+  assert.ok(resumeId, "this browser has a resume ID");
+  const witness = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  await witness.addInitScript((id) => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", alertsOn: false }));
+    localStorage.setItem("ovis:pi-receipt-resume", id);
+  }, resumeId);
+  const witnessPage = await witness.newPage();
+  let witnessAttached = false, witnessTold = false;
+  witnessPage.on("websocket", (socket) => socket.on("framereceived", ({ payload }) => {
+    const message = JSON.parse(String(payload)) as ServerMessage;
+    if (message.type === "input-ready" && message.pane_id === pane) witnessAttached = true;
+    if (message.type === "pending-messages" && message.pane_id === pane && message.held?.includes(expired.id)) witnessTold = true;
+  }));
+  await witnessPage.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
+  await until(() => witnessAttached, "the witness tab attached the pane");
+  admit = false; await routed!.close();
+  await page.locator(".conn-live").waitFor({ state: "hidden" });
+  await until(() => witnessTold, "the bridge kept the held receipt as the connection closed");
+  await witness.close();
   const ambient = Date.now;
   try {
     Date.now = () => ambient() + 10 * 60 * 1000 + 1000;
-    await reload();
+    admit = true;
+    await page.locator(".conn-live").waitFor(); await inputReady(pane);
     await unproven(expired.text, "expired receipt");
   } finally { Date.now = ambient; }
 
