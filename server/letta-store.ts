@@ -281,15 +281,18 @@ function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: L
   const own = canonical(owner.cwd);
   return panes.some((other) => {
     if (other.pane_id === pane.pane_id || (other.agent !== "letta" && other.agent_session?.agent !== "letta")) return false;
-    const folder = [other.foreground_cwd, other.cwd].find((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd));
-    if (folder === undefined || canonical(folder) === own) return false;
-    const record = join(folder, ".letta", "settings.local.json");
-    const real = canonical(record);
-    // a record reached through a link in the folder is not that folder's own: it claims the conversation unread
-    if (real !== null && real !== join(canonical(folder) ?? folder, ".letta", "settings.local.json")) return true;
-    const text = readBounded(record, SETTINGS_BYTES);
-    const opened = text === null ? null : lettaOpenedSessions(text);
-    return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
+    // its process may run in a folder other than where the pane started: each folder's record counts
+    const folders = new Set([other.foreground_cwd, other.cwd].filter((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd)));
+    return [...folders].some((folder) => {
+      if (canonical(folder) === own) return false;
+      const record = join(folder, ".letta", "settings.local.json");
+      const real = canonical(record);
+      // a record reached through a link in the folder is not that folder's own: it claims the conversation unread
+      if (real !== null && real !== join(canonical(folder) ?? folder, ".letta", "settings.local.json")) return true;
+      const text = readBounded(record, SETTINGS_BYTES);
+      const opened = text === null ? null : lettaOpenedSessions(text);
+      return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
+    });
   });
 }
 

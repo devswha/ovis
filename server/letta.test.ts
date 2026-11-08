@@ -273,6 +273,11 @@ describe("Letta conversation binding", () => {
     mkdirSync(linked);
     symlinkSync(join(other, ".letta"), join(linked, ".letta"));
     expect(lettaTranscriptFor(silent, [silent, pane("w2:p1", "local-conv-9", linked)], owner)).toBeNull();
+    // its process may run in a folder other than where the pane started: both folders' records count
+    const elsewhere = join(root, "wrapper-dir");
+    mkdirSync(elsewhere);
+    const split = { ...pane("w2:p1", "local-conv-9", other), foreground_cwd: elsewhere } as HerdrPane;
+    expect(lettaTranscriptFor(silent, [silent, split], owner)).toBeNull();
     // a pane with a report keeps it: another folder's old record is no evidence against it
     const reported = pane("w1:p1", "local-conv-1", owner.cwd);
     expect(lettaTranscriptFor(reported, [reported, pane("w2:p1", "local-conv-9", other)], owner)).not.toBeNull();
