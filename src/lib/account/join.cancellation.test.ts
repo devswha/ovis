@@ -29,3 +29,21 @@ it("stops the introduction loop without acknowledging its plan when ownership is
   expect(delivered).toEqual([{ key: "first-key", pcs: [plan.introduce.pc] }]);
   expect(await store.get("enrolls")).toEqual({ source: plan });
 });
+
+it("keeps the pending introduction when ownership is lost at acknowledgement", async () => {
+  const store = memoryAccountStore();
+  const plan = { account: "account", done: [], introduce: {
+    keys: ["last-key"], pc: { server_id: "source", server_public_key: "server-key", relay: "wss://relay.invalid", name: "Desk" }, to: ["peer"],
+  } };
+  await store.set("enrolls", { source: plan });
+  let owned = true;
+  const cancellation = new DOMException("Source pairing was forgotten", "AbortError");
+  const result = await enrollPc({
+    store, account: "account", serverId: "source",
+    fetch: async () => { throw new TypeError("An introduction-only retry must not enroll again"); },
+    others: [{ serverId: "peer", fetch: async () => { owned = false; return Response.json({}); } }],
+    assertOwned: async () => { if (!owned) throw cancellation; },
+  }).catch((error: unknown) => error);
+  expect(result).toBe(cancellation);
+  expect(await store.get("enrolls")).toEqual({ source: plan });
+});

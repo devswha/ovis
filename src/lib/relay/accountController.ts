@@ -235,7 +235,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
             const timer = setTimeout(() => controller.abort(), PEER_STATUS_MS);
             const peer = await open(offerOf(other), { store, label, signal: controller.signal }).finally(() => clearTimeout(timer));
             peers.push(peer);
-            return { serverId: other.server_id, fetch: async (path: string, init?: RequestInit) => {
+            return { serverId: other.server_id, assertOwned: async () => { assertPairing(await store.get(serverId)); }, fetch: async (path: string, init?: RequestInit) => {
               assertPairing(await store.get(serverId));
               const response = await peer.fetch(path, init);
               assertPairing(await store.get(serverId));
@@ -252,7 +252,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
               const response = await signedIn.fetch(path, init);
               assertPairing(await store.get(serverId));
               return response;
-            }, store: accountStore, account: session.account, serverId, pc, listed,
+            }, store: accountStore, account: session.account, serverId, pc, listed, assertOwned: async () => { assertPairing(await store.get(serverId)); },
             // a PC that could not be opened is one more that was not checked
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });
