@@ -537,6 +537,25 @@ describe("RelayDashboard frame and routes", () => {
     expect(localHtml).toContain("Paired · not checked");
     expect(localHtml).not.toContain('data-strip-cell="ready"');
     expect(localHtml).not.toContain(">Ready<");
+
+    // 6. Empty fleet (F0) on Overview/PCs keeps only the empty state's Add a PC as .btn-primary while making the header action quiet, and restores the header .btn-primary on Devices/Relay/Settings
+    await act(async () => {
+      renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, baseProps({ pcs: [] })) }));
+    });
+    await navigateHash("#overview");
+    const primaries = () => renderer!.root.findAll((n) => n.type === "button" && String(n.props.className ?? "").includes("btn-primary"));
+    const headerAdd = () => renderer!.root.findByProps({ className: "relay-dash-top" }).find((n) => n.type === "button" && n.props["data-action"] === "add-pc");
+    expect(primaries()).toHaveLength(1);
+    expect(String(headerAdd().props.className)).toBe("btn");
+    await navigateHash("#pcs");
+    expect(primaries()).toHaveLength(1);
+    expect(String(headerAdd().props.className)).toBe("btn");
+    await navigateHash("#relay");
+    expect(primaries()).toHaveLength(1);
+    expect(String(headerAdd().props.className)).toBe("btn btn-primary");
+    await navigateHash("#devices");
+    expect(primaries()).toHaveLength(1);
+    expect(String(headerAdd().props.className)).toBe("btn btn-primary");
   });
 
   // the page heading's ring and the phone map's rail are what the browser draws: scripts/relay-dashboard-browser-qa.ts

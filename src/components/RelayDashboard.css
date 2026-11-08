@@ -241,13 +241,13 @@
 
   .relay-dash-tab {
     display: grid; gap: var(--space-1); align-content: center; justify-items: center; min-width: 0; min-height: var(--touch-target);
-    padding: var(--space-1); border-radius: var(--radius-md); color: var(--text-dim);
-    font-size: max(var(--relay-fs-min), var(--fs-2xs)); font-weight: var(--fw-medium); line-height: var(--lh-tight); text-decoration: none;
+    padding: var(--space-1) 0; border-radius: var(--radius-md); color: var(--text-dim);
+    font-size: max(var(--relay-fs-min), var(--fs-2xs)); font-weight: var(--fw-medium); line-height: var(--lh-tight); text-align: center; text-decoration: none;
     transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
 
   .relay-dash-tab svg { width: var(--mark-size); height: var(--mark-size); color: currentColor; }
-  .relay-dash-tab > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .relay-dash-tab > span { max-width: 100%; overflow-wrap: anywhere; }
 
   @media (max-width: 360px) {
     .relay-dash-tabs {
@@ -256,7 +256,7 @@
     }
 
     .relay-dash-tab {
-      padding-inline: 0;
+      font-size: var(--relay-fs-min);
     }
   }
 
