@@ -100,15 +100,24 @@ describe("Letta transcript", () => {
 
 describe("Letta conversation binding", () => {
   const opened = lettaOpenedSessions(settingsAfterNew)!;
-  /** A project whose Letta record is `settings`, written `at`, and the pane's letta process started `started`. */
-  const setup = (settings: string | null, at: number, started: number, env: Record<string, string> = {}): LettaProcess => {
+  /**
+   * A project whose Letta record is `settings`, written `at`, and the pane's letta process started `started`.
+   * `used`: the process has written the transcripts of the conversations the fixture names since it started.
+   */
+  const setup = (settings: string | null, at: number, started: number, env: Record<string, string> = {}, used = true): LettaProcess => {
+    if (used) for (const conversation of ["local-conv-1", "default"]) {
+      const transcript = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, conversation);
+      mkdirSync(join(transcript, ".."), { recursive: true });
+      writeFileSync(transcript, newLog);
+      utimesSync(transcript, (started + 5_000) / 1000, (started + 5_000) / 1000);
+    }
     const cwd = join(root, "proj");
     mkdirSync(join(cwd, ".letta"), { recursive: true });
     if (settings !== null) {
       writeFileSync(join(cwd, ".letta", "settings.local.json"), settings);
       utimesSync(join(cwd, ".letta", "settings.local.json"), at / 1000, at / 1000);
     }
-    return { pid: 4242, cwd, startedAt: started, identity: started, env: { HOME: root, ...env } };
+    return { pid: 4242, cwd, startedAt: started, identity: started, env: { HOME: root, ...env }, argv: ["letta"] };
   };
   const now = Date.now();
 
@@ -184,6 +193,44 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(other, [other], owner)).toBeNull();
   });
 
+  test("without a report, the conversation must show this process's own use: a transcript written since it started", () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now, {}, false);
+    const target = pane("w1:p1", null, owner.cwd);
+    const path = lettaTranscriptPath(join(root, ".letta", "transcripts"), AGENT, "local-conv-1");
+    // no transcript yet: a process still loading what it opens says nothing
+    expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, newLog);
+    // an older transcript is the previous process's
+    utimesSync(path, (now - 60_000) / 1000, (now - 60_000) / 1000);
+    expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
+    utimesSync(path, (now + 5_000) / 1000, (now + 5_000) / 1000);
+    expect(lettaTranscriptFor(target, [target], owner)?.path).toBe(path);
+  });
+
+  test("without a report, a letta that picked its conversation itself, or saves none, binds nothing", () => {
+    const silent = pane("w1:p1", null, root);
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const at = (argv: string[], env: Record<string, string> = {}) => lettaTranscriptFor({ ...silent, cwd: owner.cwd, foreground_cwd: owner.cwd }, [], { ...owner, argv, env: { ...owner.env, ...env } });
+    // plain letta resumes the project's last conversation, the one its record names; the model, backend and tools change nothing of that
+    expect(at(["node", "/x/.bin/letta"])).not.toBeNull();
+    expect(at(["letta", "--backend", "local", "-m", "openai-compatible/claude-haiku-4-5", "--toolset", "auto"])).not.toBeNull();
+    for (const argv of [["letta", "--new"], ["letta", "-r"], ["letta", "--resume"], ["letta", "--agent", "agent-x"], ["letta", "-n", "bob"], ["letta", "--conversation", "conv-b"], ["letta", "--new-agent"], ["letta", "--some-future-flag"]]) {
+      expect(at(argv)).toBeNull();
+    }
+    // Letta then writes no record of what it opened
+    expect(at(["letta"], { LETTA_DISABLE_SESSION_PERSIST: "1" })).toBeNull();
+  });
+
+  test("without a report, another Letta pane that reports nothing binds nothing either: it may have moved from a folder with the same record", () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const target = pane("w1:p1", null, owner.cwd);
+    expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
+    expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, join(root, "elsewhere"))], owner)).toBeNull();
+    // a peer that reports its own conversation is told apart by its report
+    expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-7", join(root, "elsewhere"))], owner)).not.toBeNull();
+  });
+
   test("a conversation another Letta pane's folder record also names binds nothing, reported or not", () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const other = join(root, "other");
@@ -191,12 +238,16 @@ describe("Letta conversation binding", () => {
     writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
     for (const value of [null, "local-conv-1"]) {
       const target = pane("w1:p1", value, owner.cwd);
+      // a peer whose own report names another conversation makes no claim on this one
+      if (value !== null) expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-9", other)], owner)).not.toBeNull();
       expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
       // a Letta in another folder resumed the same conversation: which pane shows it cannot be told
       expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).toBeNull();
-      // one that names another conversation there is no claim on this one
+      // one whose record names another conversation there is no claim on this one; without a report of its own,
+      // a pane with none is still left unbound by it (it may have moved there)
       writeFileSync(join(other, ".letta", "settings.local.json"), JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-9" } } }));
-      expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).not.toBeNull();
+      const peer = lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner);
+      if (value === null) expect(peer).toBeNull(); else expect(peer).not.toBeNull();
       writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
     }
   });
@@ -214,7 +265,7 @@ describe("Letta conversation binding", () => {
     const other = join(root, "project2");
     mkdirSync(start); mkdirSync(other);
     symlinkSync(start, join(root, "link1"));
-    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, identity: now, env });
+    const at = (pid: number, cwd: string, env: Record<string, string>, startedAt = now): LettaProcess => ({ pid, cwd, startedAt, identity: now, env, argv: ["letta"] });
     expect(lettaInStartFolder(at(101, start, { PWD: start }))).toBe(true);
     expect(lettaInStartFolder(at(102, start, { PWD: join(root, "link1") }))).toBe(true);
     // no start folder to compare: its shell set no PWD

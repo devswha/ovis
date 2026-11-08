@@ -1,8 +1,7 @@
 /**
  * Which Letta Code conversation a pane shows. These facts must agree, or Chat uses Terminal:
- * - herdr's report from its Letta integration (`herdr integration install letta`), when there is one
- *   (herdr-core sends none, and herdr none without the integration: Letta's record then speaks alone,
- *   lettaRecordedBinding): `herdr:letta`,
+ * - herdr's report from its Letta integration (`herdr integration install letta`), when there is one:
+ *   `herdr:letta`,
  *   the conversation id, or `default:<agent id>` for an agent's default conversation. herdr 0.9.5
  *   keeps the first report of a letta process, so after `/new` or `/resume` it still names the
  *   conversation the pane left.
@@ -18,6 +17,11 @@
  *   (Windows has no such read, and uses Terminal), and the folder it started in (lettaInStartFolder),
  *   whose record is the only one read, while the process is still there.
  * The transcript must then be a regular file at exactly the path Letta derives from the two ids.
+ *
+ * herdr-core sends no report for Letta, and herdr none without the integration. Then nothing backs the
+ * record but its own age, so more must hold (lettaRecordSpeaksAlone): the letta was started plainly,
+ * which resumes the record's conversation; it saves its sessions; no other Letta pane goes unreported;
+ * and the transcript was written since the process started, the process's own use of it.
  */
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, normalize } from "node:path";
@@ -156,7 +160,7 @@ export function isLettaProcess(argv: readonly string[]): boolean {
  * `startedAt`: no later than the process started (processStartLowerBound), which may read differently each time;
  * `identity`: processStartIdentity, the same on every read, so with the pid it names the process
  */
-export interface LettaProcess { pid: number; cwd: string; startedAt: number; identity: number; env: Env }
+export interface LettaProcess { pid: number; cwd: string; startedAt: number; identity: number; env: Env; argv: readonly string[] }
 
 /** Letta processes, by pid and start identity, seen in a folder other than the one they started in. */
 const moved = new Set<string>();
@@ -187,11 +191,12 @@ export async function paneLettaProcess(paneId: string, known?: ProcessInfo | nul
     Number.isSafeInteger(process.pid) && process.pid > 1 && Array.isArray(process.argv) && isLettaProcess(process.argv.map(String)));
   if (found.length !== 1) return null;
   const { pid, cwd } = found[0]!;
+  const argv = (found[0]!.argv ?? []).map(String);
   if (typeof cwd !== "string" || !isAbsolute(cwd)) return null;
   const startedAt = processStartLowerBound(pid);
   const identity = processStartIdentity(pid);
   const env = processEnvironment(pid);
-  return startedAt === null || identity === null || env === null ? null : { pid, cwd, startedAt, identity, env };
+  return startedAt === null || identity === null || env === null ? null : { pid, cwd, startedAt, identity, env, argv };
 }
 
 export type LettaTranscript = { path: string; session: string; agent: string; conversation: string };
@@ -204,14 +209,46 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
   const session = lettaSessionOf(pane);
   // a report in another form is not the absence of one
   if (session === null && pane.agent_session) return null;
+  if (session === null && !lettaRecordSpeaksAlone(pane, panes, owner)) return null;
   if (session !== null && panes.some((other) => other.pane_id !== pane.pane_id && lettaSessionOf(other)?.reported === session.reported)) return null;
   const text = recordOlderThan(join(owner.cwd, ".letta", "settings.local.json"), owner.startedAt);
   const opened = text === null ? null : lettaOpenedSessions(text);
   const bound = opened === null ? null : session === null ? lettaRecordedBinding(opened) : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
   if (bound === null || root === null || claimedElsewhere(pane, panes, owner, bound)) return null;
+  const path = lettaTranscriptPath(root, bound.agent, bound.conversation);
+  // without a report the record only proves the process has not written yet: its own use of the conversation must show
+  if (session === null && !writtenSince(path, owner.startedAt)) return null;
   const reported = session?.reported ?? (bound.conversation === "default" ? `default:${bound.agent}` : bound.conversation);
-  return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: reported, ...bound };
+  return { path, session: reported, ...bound };
+}
+
+/** The words a letta may start with and still resume its project's last conversation: model, backend, tools and prompt preset (letta-code 0.34.44 --help). */
+const RESUMING_OPTIONS = new Set(["-m", "--model", "--backend", "--toolset", "-s", "--system"]);
+
+/**
+ * Whether Letta's record may speak for a pane with no report at all. Plain `letta` resumes the
+ * project's last conversation, the one the record names; any other option may pick another
+ * (`--new`, `--resume`, `--agent`, `--name`, a flag this does not know). With session saving off
+ * (LETTA_DISABLE_SESSION_PERSIST) the record is not this process's. Another Letta pane with no
+ * report may have moved here from a folder with the same record, so it leaves both unbound.
+ */
+function lettaRecordSpeaksAlone(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): boolean {
+  if (owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== undefined && owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== "" && owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== "0") return false;
+  const program = owner.argv.findIndex((word) => /(^|[\\/])letta(\.(?:js|cmd|exe))?$/i.test(word));
+  if (program === -1) return false;
+  for (let at = program + 1; at < owner.argv.length; at += 2) {
+    if (!RESUMING_OPTIONS.has(owner.argv[at]!) || at + 1 >= owner.argv.length) return false;
+  }
+  return !panes.some((other) => other.pane_id !== pane.pane_id && other.agent === "letta" && lettaSessionOf(other) === null);
+}
+
+/** Whether `path` is a regular file last written at or after `startedAt` (less the clock's coarseness). */
+function writtenSince(path: string, startedAt: number): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isFile() && stat.mtimeMs >= startedAt - MTIME_SLACK_MS;
+  } catch { return false; }
 }
 
 /**
@@ -223,6 +260,9 @@ function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: L
   const own = canonical(owner.cwd);
   return panes.some((other) => {
     if (other.pane_id === pane.pane_id || (other.agent !== "letta" && other.agent_session?.agent !== "letta")) return false;
+    // a peer whose own report names another conversation makes no claim on this one
+    const report = lettaSessionOf(other);
+    if (report !== null && report.conversation !== bound.conversation) return false;
     const folder = [other.foreground_cwd, other.cwd].find((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd));
     if (folder === undefined || canonical(folder) === own) return false;
     const text = readBounded(join(folder, ".letta", "settings.local.json"), SETTINGS_BYTES);
