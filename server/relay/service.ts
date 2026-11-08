@@ -63,6 +63,20 @@ export interface RelayServiceOptions {
   readonly ovisRelays?: readonly string[];
 }
 
+/** Ovis's staging account service (ovis-sh/account `[env.staging]`): the only one whose passes go to a staging relay. */
+export const STAGING_ACCOUNT_SERVICE = "https://account-staging.devswha.workers.dev";
+
+/** An origin as compared here: lowercase (as URL makes it), with no trailing dot on its host; null for anything else. */
+function originKey(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    return `${url.protocol}//${url.hostname.replace(/\.$/, "")}${url.port ? `:${url.port}` : ""}`;
+  } catch { return null; }
+}
+
+const PRODUCTION_SERVICE = originKey(DEFAULT_ACCOUNT_SERVICE);
+const STAGING_SERVICE = originKey(STAGING_ACCOUNT_SERVICE);
+
 /** A regional relay is advertised only when it answers in at most this share of the global one's round trip. */
 const REGIONAL_SHARE = 0.5;
 const PROBE_TIMEOUT_MS = 5_000;
@@ -113,6 +127,8 @@ export class RelayService {
   /** A regional relay named by OVIS_RELAY_URL: used with no measuring, and still beside the global one. */
   private readonly pinned: string | null;
   private readonly ovisRelays: readonly string[];
+  /** The staging relay OVIS_RELAY_URL names with OVIS_RELAY_STAGING=1 and the staging account service, or null. */
+  private readonly stagingRelay: string | null;
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
@@ -142,12 +158,13 @@ export class RelayService {
   constructor(private readonly options: RelayServiceOptions) {
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
     const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
-    // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), with a staging account service: that
-    // relay alone, and its passes go there only. Never with the production service, whose passes are live.
+    // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), and only with Ovis's staging account
+    // service, matched as such: that relay alone, and the staging service's passes go there only.
     const asked = origin !== undefined && process.env["OVIS_RELAY_STAGING"] === "1";
     const service = options.accountService;
-    const staging = asked && typeof service === "string" && service !== DEFAULT_ACCOUNT_SERVICE;
-    if (asked && !staging) console.error(JSON.stringify({ event: "relay.staging.ignored", reason: "OVIS_RELAY_STAGING needs OVIS_ACCOUNT_SERVICE_URL naming a staging account service" }));
+    const staging = asked && typeof service === "string" && originKey(service) === STAGING_SERVICE;
+    if (asked && !staging) console.error(JSON.stringify({ event: "relay.staging.ignored", reason: `OVIS_RELAY_STAGING needs OVIS_ACCOUNT_SERVICE_URL=${STAGING_ACCOUNT_SERVICE}` }));
+    this.stagingRelay = staging ? origin : null;
     // A phone falls back from Ovis's regional relays to the global one, so a PC on one is always on both.
     this.pinned = !staging && origin !== undefined && REGIONAL_RELAYS.includes(origin) ? origin : null;
     this.relay = origin === undefined || this.pinned ? GLOBAL_RELAY : origin;
@@ -202,7 +219,12 @@ export class RelayService {
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
       blocked: this.blocked, error: this.error,
       ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
-      ...(this.passKeeper ? { pass: { state: this.passKeeper.state, relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused } } : {}) };
+      ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused } } : {}) };
+  }
+
+  /** Where getting a pass stands, as the global link sees it: a pass held that its relay does not take is none. */
+  private passState(keeper: RelayPassKeeper): RelayPassKeeper["state"] {
+    return keeper.state === "ok" && this.passFor(this.relay) === null ? "unavailable" : keeper.state;
   }
 
   private relayAccountPath(): string { return join(this.options.stateDir, "relay", "account.json"); }
@@ -237,6 +259,25 @@ export class RelayService {
     return relay !== null && this.ovisRelays.includes(relay);
   }
 
+  /**
+   * Whether a pass the account service `issuer` signed may go to `relay`: the production service's to Ovis's production
+   * relays, the staging service's to the staging relay, and nobody else's anywhere (tests name the relays they take).
+   */
+  private takes(relay: string | null, issuer: string | null): boolean {
+    if (relay === null || issuer === null) return false;
+    if (this.options.ovisRelays) return this.options.ovisRelays.includes(relay);
+    const key = originKey(issuer);
+    if (key !== null && key === PRODUCTION_SERVICE) return relay === GLOBAL_RELAY || REGIONAL_RELAYS.includes(relay);
+    return key !== null && key === STAGING_SERVICE && relay === this.stagingRelay;
+  }
+
+  /** The pass `relay` gets: the one held, when its own service's passes go there. */
+  private passFor(relay: string | null): string | null {
+    const keeper = this.passKeeper;
+    const pass = keeper?.current() ?? null;
+    return pass !== null && keeper && this.takes(relay, keeper.issuer()) ? pass : null;
+  }
+
   private startPass(identity: RelayIdentity): void {
     const service = this.options.accountService;
     // a pass goes only to Ovis's own relays, and only from an account service that can be used
@@ -247,7 +288,8 @@ export class RelayService {
       onPass: (pass) => {
         // the relay takes a renewal on the open control socket without a word: a notice that the pass was missing is over
         if (this.passNotice !== null && this.passNotice.state !== "ok") this.passNotice = { state: "ok", enforce_at: this.passNotice.enforce_at };
-        this.link?.renewPass(pass); if (this.isOvisRelay(this.regionalRelay)) this.regionalLink?.renewPass(pass); },
+        if (this.passFor(this.relay) === pass) this.link?.renewPass(pass);
+        if (this.passFor(this.regionalRelay) === pass) this.regionalLink?.renewPass(pass); },
     });
     this.passKeeper.start();
   }
@@ -257,7 +299,7 @@ export class RelayService {
     // a relay that is not Ovis's (a regional one named otherwise) never gets the pass
     if (!this.isOvisRelay(relay)) return {};
     return {
-      pass: () => this.passKeeper?.current() ?? null,
+      pass: () => this.passFor(relay),
       onPassNotice: (notice) => {
         // the status is the global link's, so only its relay's word is shown
         if (global) { this.passNotice = notice; this.passRefused = false; }

@@ -112,6 +112,12 @@ export class RelayPassKeeper {
     return typeof service === "string" && saved.service !== service ? null : saved.pass;
   }
 
+  /** The account service that signed the pass `current` gives, which decides the relays it may go to; null with none. */
+  issuer(): string | null {
+    const saved = this.saved;
+    return saved !== null && this.current() !== null ? saved.service : null;
+  }
+
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
@@ -190,7 +196,8 @@ export class RelayPassKeeper {
     const service = this.options.service;
     const account = this.options.account();
     if (this.stopped) return;
-    if (!identity || service instanceof Error) { this.state = "unavailable"; return; }
+    // with the service's address unusable nothing can be asked; a saved pass that still holds is still the one in use
+    if (!identity || service instanceof Error) { this.state = this.current() !== null ? "ok" : "unavailable"; return; }
     if (account === null) {
       this.state = this.current() !== null ? "ok" : "no_account";
       this.schedule(WAIT_ACCOUNT_MS);

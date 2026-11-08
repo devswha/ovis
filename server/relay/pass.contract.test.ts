@@ -6,11 +6,11 @@ import { startBunRelay } from "../../relay/bun.ts";
 import { passPolicy } from "../../relay/pass.ts";
 import { RELAY_PASS_HEADER, signRelayPass } from "../../shared/relay-pass.ts";
 import { proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
-import { REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
+import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
-import { RelayService } from "./service.ts";
+import { RelayService, STAGING_ACCOUNT_SERVICE } from "./service.ts";
 import { loadRelayIdentity } from "./identity.ts";
 import { bounded, deferred } from "./test-helpers.ts";
 
@@ -163,6 +163,24 @@ test("a pass saved before the account service's address stopped parsing still le
   await f.restart({ accountService: new Error("Invalid OVIS_ACCOUNT_SERVICE_URL") });
   await f.start();
   expect(await bounded(Promise.race([f.synced.then((sync) => sync["relay_pass"]), f.refused]))).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  // the status says so too, after a refresh as well (naming another account asks again): a pass is in use, though no
+  // new one can be asked for
+  expect((await f.nameAccount("acct_2")).status).toBe(204);
+  expect(f.service.status().pass?.state).toBe("ok");
+});
+
+test("a staging pass kept from before goes to no production relay while the account service's address does not parse", async () => {
+  const f = await fixture();
+  const identity = loadRelayIdentity(f.stateDir);
+  const stale = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+  writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, service: STAGING_ACCOUNT_SERVICE, expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
+  // Ovis's global relay, as a PC with no OVIS_RELAY_URL has it, and no relays named by the test
+  await f.restart({ relay: GLOBAL_RELAY, ovisRelays: undefined, accountService: new Error("Invalid OVIS_ACCOUNT_SERVICE_URL") });
+  await f.start();
+  expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass required" });
+  expect(f.dialed.every((socket) => socket.pass === null)).toBe(true);
+  expect(f.service.status().pass?.state).toBe("unavailable");
 });
 
 test("a relay that is not Ovis's gets no pass, and the account service is never asked", async () => {
@@ -180,23 +198,27 @@ test("a test PC on a staging copy of Ovis's relay (OVIS_RELAY_STAGING=1 with OVI
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: f.origin });
-  // the relay from the environment, and no list of Ovis's relays named by the test: it counts as Ovis's for the setting alone
-  await f.restart({ relay: undefined, ovisRelays: undefined });
+  // the relay from the environment, no list of Ovis's relays named by the test, and Ovis's staging account service (as
+  // written by hand: any case, a trailing dot): the relay counts as Ovis's for the setting alone
+  await f.restart({ relay: undefined, ovisRelays: undefined, accountService: "https://Account-Staging.devswha.workers.dev." });
   await f.start();
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
 });
 
-test("the staging setting is no use with Ovis's production account service: the relay it names gets no pass", async () => {
+test("the staging setting does nothing with any account service but Ovis's staging one: the relay it names gets no pass", async () => {
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: f.origin });
-  await f.restart({ relay: undefined, ovisRelays: undefined, accountService: DEFAULT_ACCOUNT_SERVICE });
-  await f.start();
-  // a relay of anyone's: no pass is asked for or sent to it
-  expect(f.service.status().pass).toBeUndefined();
-  await bounded(f.refused);
-  expect(f.dialed.every((socket) => socket.pass === null)).toBe(true);
+  for (const accountService of [DEFAULT_ACCOUNT_SERVICE, "https://account.ovis.sh.", "https://ACCOUNT.ovis.sh", "https://account.test"]) {
+    const before = f.dialed.length;
+    await f.restart({ relay: undefined, ovisRelays: undefined, accountService });
+    await f.start();
+    // a relay of anyone's: no pass is asked for or sent to it
+    expect([accountService, f.service.status().pass]).toEqual([accountService, undefined]);
+    await bounded(f.refused);
+    expect(f.dialed.slice(before).every((socket) => socket.pass === null)).toBe(true);
+  }
 });
 
 test("with the staging setting the PC uses the one relay OVIS_RELAY_URL names, a regional Ovis one included, and sends its pass there only", async () => {
@@ -204,7 +226,7 @@ test("with the staging setting the PC uses the one relay OVIS_RELAY_URL names, a
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: regional });
-  await f.restart({ relay: undefined, ovisRelays: undefined });
+  await f.restart({ relay: undefined, ovisRelays: undefined, accountService: STAGING_ACCOUNT_SERVICE });
   await f.start();
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.dialed.map((socket) => socket.origin)).toEqual(f.dialed.map(() => regional));
