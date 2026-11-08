@@ -675,14 +675,58 @@ describe("backgroundAgentDetail", () => {
     // an NTFS file ID can pass 2^53: looked at as 2^53 + 1 and opened as 2^53, two files read as one number
     const big = 2n ** 53n;
     const as = <T extends object>(stat: T, ino: bigint): T => Object.assign(Object.create(Object.getPrototypeOf(stat) as object) as T, stat, { ino: typeof (stat as { ino: unknown }).ino === "bigint" ? ino : Number(ino) });
-    const looks = spyOn(fs, "lstatSync").mockImplementation(((path: string, options?: object) => { const stat = look(path, options); return path === file && stat ? as(stat, big + 1n) : stat; }) as typeof look);
-    const opens = spyOn(fs, "fstatSync").mockImplementation(((fd: number, options?: object) => as(opened(fd, options), big)) as typeof opened);
-    let read: ReturnType<typeof readLines>;
-    try {
-      const seen = plain(file)!;
-      read = readLines(file, 0, seen, seen.size, () => undefined, false);
-    } finally { looks.mockRestore(); opens.mockRestore(); }
-    expect(read).toEqual({ offset: 0, skipping: false, more: true, failed: true });
+    // the file opened as 2^53; replaced only after the first look, every later look sees it too
+    for (const replaced of [false, true]) {
+      let looked = big + 1n;
+      const looks = spyOn(fs, "lstatSync").mockImplementation(((path: string, options?: object) => { const stat = look(path, options); return path === file && stat ? as(stat, looked) : stat; }) as typeof look);
+      const opens = spyOn(fs, "fstatSync").mockImplementation(((fd: number, options?: object) => as(opened(fd, options), big)) as typeof opened);
+      let read: ReturnType<typeof readLines>;
+      try {
+        const seen = plain(file)!;
+        if (replaced) looked = big;
+        read = readLines(file, 0, seen, seen.size, () => undefined, false);
+      } finally { looks.mockRestore(); opens.mockRestore(); }
+      expect([replaced, read]).toEqual([replaced, { offset: 0, skipping: false, more: true, failed: true }]);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("lists afresh after a folder swapped while it was read by its path, and skips none of its agents as old (#3363)", () => {
+    const s = session();
+    const subagents = join(s.path, "..", SESSION, "subagents");
+    s.agent("a1", { description: "inside" });
+    const outside = mkdtempSync(join(tmpdir(), "herdr-subagents-stale-"));
+    roots.push(outside);
+    mkdirSync(join(outside, "subagents"));
+    writeFileSync(join(outside, "subagents", "agent-a1.meta.json"), JSON.stringify({ agentType: "x", description: "outside title", toolUseId: "toolu_a1" }));
+    const old = join(outside, "subagents", "agent-a1.jsonl");
+    writeFileSync(old, own({ type: "user", timestamp: at(1), message: { role: "user", content: "outside" } }));
+    // last written two days before the read: an agent the read would skip as old for a while
+    utimesSync(old, (NOW - 48 * 60 * 60 * 1000) / 1000, (NOW - 48 * 60 * 60 * 1000) / 1000);
+    // in a process of its own where no descriptor names its file, as off Linux: the files are read by their path, and
+    // the subagents folder is swapped for a link to the outside one at the first look at a transcript, then put back
+    const script = `
+      const fs = require("node:fs");
+      const look = fs.lstatSync;
+      const folder = process.env.SCAN_FOLDER;
+      let swapped = false;
+      fs.lstatSync = (path, ...rest) => {
+        if (path === "/proc/self/fd") throw Object.assign(new Error("no such folder"), { code: "ENOENT" });
+        if (!swapped && String(path).endsWith("/agent-a1.jsonl")) { swapped = true; fs.renameSync(folder, folder + ".moved"); fs.symlinkSync(process.env.SCAN_OUTSIDE, folder); }
+        return look(path, ...rest);
+      };
+      const { claudeSubagentState } = await import(process.env.SCAN_MODULE);
+      const now = Number(process.env.SCAN_NOW);
+      const first = claudeSubagentState(process.env.SCAN_PARENT, true, now).tasks.map((task) => task.title);
+      fs.rmSync(folder);
+      fs.renameSync(folder + ".moved", folder);
+      const next = claudeSubagentState(process.env.SCAN_PARENT, true, now).tasks.map((task) => task.title);
+      console.log(JSON.stringify({ swapped, first, next }));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      env: { ...process.env, SCAN_MODULE: join(import.meta.dir, "claude-subagents.ts"), SCAN_PARENT: s.path, SCAN_FOLDER: subagents, SCAN_OUTSIDE: join(outside, "subagents"), SCAN_NOW: String(NOW) },
+      timeout: 4_000,
+    });
+    expect([child.exitCode, child.stdout.toString().trim() || child.stderr.toString()]).toEqual([0, JSON.stringify({ swapped: true, first: [], next: ["inside"] })]);
   });
 
   it("an unreadable dispatch is no prompt, and no later instruction is taken for it", () => {
@@ -1100,8 +1144,8 @@ describe("claudeSubagents reading", () => {
     const s = session();
     for (const path of [join(s.path, "..", "missing.jsonl"), join(s.path, "..")]) {
       // the identity of what is there, if anything: each is refused for what it is
-      const id = ((): string => { try { const stat = lstatSync(path); return `${stat.dev}:${stat.ino}`; } catch { return "0:0"; } })();
-      expect(readLines(path, 0, { size: 10, id }, 10, () => { throw new Error("no line should be read"); }, false)).toEqual({ offset: 0, skipping: false, more: true, failed: true });
+      const exact = ((): string => { try { const stat = lstatSync(path, { bigint: true }); return `${stat.dev}:${stat.ino}`; } catch { return "0:0"; } })();
+      expect(readLines(path, 0, { size: 10, exact }, 10, () => { throw new Error("no line should be read"); }, false)).toEqual({ offset: 0, skipping: false, more: true, failed: true });
     }
   });
 

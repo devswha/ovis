@@ -1,4 +1,4 @@
-import { type BigIntStats, closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
@@ -133,9 +133,9 @@ export function lineNotifications(line: string): TaskNotification[] {
  * one that does not fit READ_BUDGET is skipped, not waited for. `more`: the file goes on past
  * what this read looked at. `file`: the plain file `plain` looked at, which the open must still be.
  */
-export function readLines(path: string, from: number, file: { size: number; id: string }, limit: number, each: (line: string, end: number) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
+export function readLines(path: string, from: number, file: { size: number; exact: string }, limit: number, each: (line: string, end: number) => void, skipping: boolean): { offset: number; skipping: boolean; more: boolean; failed?: true } {
   const size = file.size;
-  const fd = openPlain(path, file.id)?.fd;
+  const fd = openPlain(path, file.exact)?.fd;
   if (fd === undefined) return { offset: from, skipping, more: true, failed: true };
   try {
     const length = Math.min(size - from, limit);
@@ -169,29 +169,34 @@ export function readLines(path: string, from: number, file: { size: number; id: 
   } catch { return { offset: from, skipping, more: true, failed: true }; } finally { closeSync(fd); }
 }
 
-export function plain(path: string, max = Infinity): { size: number; mtimeMs: number; id: string } | null {
+/**
+ * A plain file at `path` as one look sees it: `id`, `size` and `mtimeMs` in the number form the versions share
+ * (historyVersion), and `exact`, its identity as BigInt, which a read's open must find (openPlain): two NTFS file IDs
+ * can round to one number.
+ */
+export function plain(path: string, max = Infinity): { size: number; mtimeMs: number; id: string; exact: string } | null {
   try {
-    const stat = lstatSync(path);
-    return stat.isFile() && stat.size <= max ? { size: stat.size, mtimeMs: stat.mtimeMs, id: `${stat.dev}:${stat.ino}` } : null;
+    const stat = lstatSync(path, { bigint: true });
+    const size = Number(stat.size);
+    if (!stat.isFile() || size > max) return null;
+    // as a number Stats gives it: seconds in milliseconds, then the nanoseconds
+    const mtimeMs = Number(stat.mtimeNs / 1_000_000_000n) * 1000 + Number(stat.mtimeNs % 1_000_000_000n) / 1e6;
+    return { size, mtimeMs, id: `${Number(stat.dev)}:${Number(stat.ino)}`, exact: identity(stat) };
   } catch { return null; }
 }
 
 /**
- * `path` opened as the plain file `id` (as `plain` gives it) names, of at most `max` bytes: its descriptor and size, or
- * null. Not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs the read nor
- * leads elsewhere, and another file put there is not the one looked at.
+ * `path` opened as the plain file whose identity `plain` looked at (`exact`), of at most `max` bytes: its descriptor
+ * and size, or null. Not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs
+ * the read nor leads elsewhere, and another file put there is not the one looked at.
  */
-function openPlain(path: string, id: string, max = Infinity): { fd: number; size: number } | null {
-  // compared exactly, as BigInt: `id` is the number form the versions share, and two NTFS file IDs can round to one number
-  let looked: BigIntStats;
-  try { looked = lstatSync(path, { bigint: true }); } catch { return null; }
-  if (!looked.isFile() || `${Number(looked.dev)}:${Number(looked.ino)}` !== id) return null;
+function openPlain(path: string, exact: string, max = Infinity): { fd: number; size: number } | null {
   let fd: number;
   try { fd = detailIo.openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
   try {
     const opened = fstatSync(fd, { bigint: true });
     const size = Number(opened.size);
-    if (opened.isFile() && size <= max && identity(opened) === identity(looked)) return { fd, size };
+    if (opened.isFile() && size <= max && identity(opened) === exact) return { fd, size };
   } catch { /* refused below */ }
   closeSync(fd);
   return null;
@@ -551,7 +556,7 @@ function readMeta(path: string, where: string): Meta | null {
   const known = metas.get(path);
   if (known?.key === key) return known.meta;
   let meta: Meta | null = null;
-  const opened = openPlain(where, stat.id, MAX_META_BYTES);
+  const opened = openPlain(where, stat.exact, MAX_META_BYTES);
   if (opened === null) return null;
   const fd = opened.fd;
   try {
@@ -658,8 +663,8 @@ function turnAfter(entry: Row, at: number | null, turnEndedAt: number | null): n
   return row(row(entry["message"]))?.["stop_reason"] === "end_turn" ? at : null;
 }
 
-function readBytes(path: string, id: string, from: number, length: number): Buffer | null {
-  const fd = openPlain(path, id)?.fd;
+function readBytes(path: string, exact: string, from: number, length: number): Buffer | null {
+  const fd = openPlain(path, exact)?.fd;
   if (fd === undefined) return null;
   try {
     const buffer = Buffer.alloc(length);
@@ -683,14 +688,14 @@ const tails = new Map<string, { id: string; key: string; tail: Tail }>();
  * first line its start. Read again only when the file changed; not counted against any budget.
  * `known` false: the tail holds no whole line of it (one very long entry, or a file being written).
  */
-function readTail(path: string, where: string, stat: { size: number; mtimeMs: number; id: string }): Tail {
+function readTail(path: string, where: string, stat: { size: number; mtimeMs: number; id: string; exact: string }): Tail {
   const key = `${stat.size}:${stat.mtimeMs}`;
   const kept = tails.get(path);
   if (kept?.id === stat.id && kept.key === key) return kept.tail;
   const tail: Tail = { known: false, firstAt: kept?.id === stat.id ? kept.tail.firstAt : null, lastAt: null, dispatchAt: null, turnEndedAt: null };
   if (stat.size === 0) { tail.known = true; return tail; }
   const from = Math.max(0, stat.size - TAIL_BYTES);
-  const chunk = readBytes(where, stat.id, from, stat.size - from);
+  const chunk = readBytes(where, stat.exact, from, stat.size - from);
   if (chunk === null) return tail;
   const end = chunk.lastIndexOf(0x0a) + 1;
   const start = from === 0 ? 0 : chunk.indexOf(0x0a) + 1;
@@ -711,7 +716,7 @@ function readTail(path: string, where: string, stat: { size: number; mtimeMs: nu
   }
   tail.known = (from === 0 && end > 0) || decisive;
   if (tail.firstAt === null && from > 0) {
-    const head = readBytes(where, stat.id, 0, TAIL_BYTES);
+    const head = readBytes(where, stat.exact, 0, TAIL_BYTES);
     const newline = head?.indexOf(0x0a) ?? -1;
     if (head !== null && newline !== -1) { try { tail.firstAt = stamp(row(JSON.parse(head.subarray(0, newline).toString("utf8")))?.["timestamp"]); } catch { /* a long first line: no start yet */ } }
   }
@@ -1276,9 +1281,11 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
     };
     keep(task, Math.max(tail.dispatchAt ?? 0, work.dispatchAt ?? 0, firstAt ?? 0));
   }
-  // a folder on the way swapped while its files were read: what was read, and kept, may be another folder's
+  // a folder on the way swapped while its files were read: what was read, and kept, may be another folder's, and an
+  // agent found old there may be a recent one here
   if (folder !== null && !intact(folder)) {
     listings.delete(dir);
+    staleAgents.delete(dir);
     for (const kept of [works, metas, tails]) for (const path of kept.keys()) if (path.startsWith(`${dir}${sep}`)) kept.delete(path);
     return { tasks: [], historyNeeded: false, historyPending: false, settled: false, behind: false, watch: [], running: 0, turnRunning: 0, promptAt: null, resting: false };
   }
