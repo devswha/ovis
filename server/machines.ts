@@ -650,9 +650,10 @@ export class MachineManager {
   }
   private mayConnect(runtime: Runtime): boolean {
     const machine = runtime.machine;
-    // Setup owns this PC until it settles; the saved runtime may still serve its previous session.
-    if ([...this.jobs.values()].some((job) => job.public.machine_id === machine.id && (!TERMINAL.has(job.public.phase) || job.closing))) return false;
     return !machine.herdr_profile_id || !!machine.target && this.profileState.connectionApproved(machine.herdr_profile_id, machine.target);
+  }
+  private setupOwns(runtime: Runtime): boolean {
+    return [...this.jobs.values()].some((job) => job.public.machine_id === runtime.machine.id && (!TERMINAL.has(job.public.phase) || job.closing));
   }
   private mayManageBridge(runtime: Runtime): boolean {
     const machine = runtime.machine;
@@ -2099,7 +2100,8 @@ export class MachineManager {
   private retryLater(runtime: Runtime): void {
     runtime.machine.state = "reconnecting";
     const delay = Math.min(60_000, 1000 * 2 ** Math.min(runtime.attempts++, 6));
-    runtime.retry = setTimeout(() => { runtime.retry = undefined; void this.reconnect(runtime); }, delay); runtime.retry.unref();
+    // Keep the waiting state (including Windows sign-in), but let setup own the next connection.
+    runtime.retry = setTimeout(() => { runtime.retry = undefined; if (!this.setupOwns(runtime)) void this.reconnect(runtime); }, delay); runtime.retry.unref();
     this.emit();
   }
   /**
@@ -2118,6 +2120,7 @@ export class MachineManager {
     void this.reconnect(runtime);
   }
   private async reconnect(runtime: Runtime): Promise<void> {
+    if (this.setupOwns(runtime)) return;
     if (!this.mayConnect(runtime)) return;
     if (this.stopped || !runtime.machine.enabled) return;
     this.disconnect(runtime);

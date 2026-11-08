@@ -87,28 +87,31 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
 }
 
 /** Shared by discovery and the remote bridge immediately before using an explicitly selected socket. */
-export async function validChosenHerdrSocket(path: string, host: HerdrDiscoveryHost = currentHost(), scope?: DiscoveryScope): Promise<boolean> {
-  if (!validHerdrSocket(path)) return false;
+export async function chosenHerdrSocketStatus(path: string, host: HerdrDiscoveryHost = currentHost(), scope?: DiscoveryScope): Promise<"usable" | "gone" | "refused"> {
+  if (!validHerdrSocket(path)) return "refused";
   const allowed = scope ?? await discoveryScope(host);
   try {
     const socket = lstatSync(path);
-    if (!socket.isSocket() || socket.uid !== allowed.uid || realpathSync(path) !== path) return false;
-    if (![...allowed.dirs].some((dir) => path.startsWith(dir + "/"))) return false;
-  } catch { return false; }
+    if (!socket.isSocket() || socket.uid !== allowed.uid || realpathSync(path) !== path) return "refused";
+    if (![...allowed.dirs].some((dir) => path.startsWith(dir + "/"))) return "refused";
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT" ? "gone" : "refused";
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const answering = await Promise.race([
       (host.probe ?? herdrAcceptsConnection)(path),
       new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS); }),
     ]);
-  } catch { return false; }
+    return answering ? "usable" : "gone";
+  } catch { return "gone"; }
   finally { clearTimeout(timer); }
 }
 
 export async function discoverHerdrSessions(host: HerdrDiscoveryHost = currentHost()): Promise<FoundHerdrSession[]> {
   const scope = await discoveryScope(host);
   const results = await Promise.all([...scope.paths].map(async (path): Promise<FoundHerdrSession | null> => {
-    if (!await validChosenHerdrSocket(path, host, scope)) return null;
+    if (await chosenHerdrSocketStatus(path, host, scope) !== "usable") return null;
     const session = /\/herdr\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
     return { socket_path: path, ...(session ? { session } : {}), label: session ?? "Default session" };
   }));

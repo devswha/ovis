@@ -95,8 +95,7 @@ describe("remote entry startup lock", () => {
     return preload;
   }
   /** A herdr that answers only ping, at the socket the entry looks for. */
-  function fakeHerdr(): { socket: string; stop(): void } {
-    const socket = join(home, "config", "herdr", "herdr.sock");
+  function fakeHerdr(socket = join(home, "config", "herdr", "herdr.sock")): { socket: string; stop(): void } {
     mkdirSync(dirname(socket), { recursive: true });
     const listener = Bun.listen<{ buffer: string }>({
       unix: socket,
@@ -141,6 +140,18 @@ describe("remote entry startup lock", () => {
     // setup reads it back and asks the owner again, among the sessions running now (none here)
     expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [] });
     expect(result.output).not.toContain(join(home, "missing-herdr"));
+  }, 60_000);
+
+  it.skipIf(process.platform === "win32")("offers another live session when the selected socket has disappeared", async () => {
+    const chosen = join(home, "config/herdr/sessions/gone/herdr.sock");
+    const other = fakeHerdr(join(home, "config/herdr/sessions/other/herdr.sock"));
+    const resultFile = join(home, "gone-with-other.result");
+    try {
+      const result = await start(undefined, { HERDR_REMOTE_SOCKET: chosen, HERDR_REMOTE_RESULT: resultFile });
+      expect(result.code).toBe(2);
+      expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [{ socket_path: other.socket, session: "other", label: "other" }] });
+      expect(result.output).not.toContain(join(home, "missing-herdr"));
+    } finally { other.stop(); }
   }, 60_000);
 
   it.skipIf(process.platform === "win32").each(["symlink", "parent symlink", "outside", "file"])("refuses a chosen %s before any bridge connection", async (kind) => {
