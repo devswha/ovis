@@ -63,17 +63,20 @@ export function AccountSignIn({
   providers = ["github"],
   busy = false,
   busyProvider = null,
+  failedProvider = null,
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
   readonly providers?: readonly AccountProvider[];
   readonly busy?: boolean;
   readonly busyProvider?: AccountProvider | null;
+  readonly failedProvider?: AccountProvider | null;
 }) {
   const t = useT();
   const [lastProvider, setLastProvider] = useState<AccountProvider | null>(null);
   const groupBusy = busy && (busyProvider === null || !providers.includes(busyProvider));
-  const retryProvider = busyProvider ?? (lastProvider && providers.includes(lastProvider) ? lastProvider : providers[0] ?? "github");
+  const preferredRetry = busyProvider ?? failedProvider ?? lastProvider;
+  const retryProvider = preferredRetry && providers.includes(preferredRetry) ? preferredRetry : providers[0] ?? "github";
   return (
     <div className="account-sign-in" {...(groupBusy ? { "aria-busy": "true" } : {})}>
       <div className="account-providers">

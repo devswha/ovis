@@ -149,6 +149,28 @@ describe("AccountSignIn", () => {
     } finally {
       await act(async () => { renderer?.unmount(); });
     }
+
+    // Remounted after an OAuth redirect failure with failedProvider="google" and no prior click
+    const redirectRetried: string[] = [];
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(SettingsProvider, {
+            children: createElement(AccountSignIn, {
+              onSignIn: (p) => redirectRetried.push(p),
+              error: "The sign-in did not finish. Try again.",
+              providers: ["github", "google"],
+              failedProvider: "google",
+            }),
+          }),
+        );
+      });
+      const retryBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "retry-signin");
+      await act(async () => { retryBtn.props.onClick(); });
+      expect(redirectRetried).toEqual(["google"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+    }
   });
 
   it("scopes absolute positioning on .account-provider-mark to .account-provider buttons only so shared dashboard/Settings consumers flow inline", async () => {

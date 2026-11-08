@@ -76,7 +76,7 @@ export type PcUpdate =
  * or the account's PCs (null while they load). Null on a PC's own page, which has no account part.
  */
 export type AccountView =
-  | { kind: "signed-out"; error: string | null }
+  | { kind: "signed-out"; error: string | null; provider?: AccountProvider }
   | { kind: "signing-in"; provider?: AccountProvider }
   | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
 

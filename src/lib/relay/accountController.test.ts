@@ -98,6 +98,35 @@ describe("the hosted shell's front page", () => {
     expect(Object.values(await accountStore.get("pending") ?? {}).map((pending) => pending.provider)).toEqual(["google"]);
   });
 
+  it("retains the failed provider on the signed-out view when an OAuth callback token exchange fails", async () => {
+    const accountStore = memoryAccountStore();
+    await accountStore.set("pending", {
+      "state-google": {
+        service: SERVICE,
+        provider: "google",
+        state: "state-google",
+        verifier: "verifier-123",
+        redirect_uri: "https://app.ovis.sh/",
+        started_at: Date.now(),
+      },
+    });
+    await mountRelayShell(mountFor({
+      entryUrl: "https://app.ovis.sh/#code=bad-code&state=state-google",
+      accountService: SERVICE,
+      accountProviders: ["github", "google"],
+      accountStore,
+      store: deviceStore([]),
+      accountFetch: async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } }),
+    }));
+    expect(last().state).toMatchObject({
+      account: {
+        kind: "signed-out",
+        provider: "google",
+        error: "The sign-in did not finish. Try again.",
+      },
+    });
+  });
+
   it("reads the directory again when the page comes into view and every 60 s while it stays there, never while hidden, and keeps the rows through a failed read", async () => {
     jest.useFakeTimers();
     const desk = keyFor(), mini = keyFor(), nuc = keyFor();
