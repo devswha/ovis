@@ -93,8 +93,8 @@ Two Ovis servers can serve one herdr session: the PC's own and a connection serv
 moves it at a time. Before a move waits or starts, its server takes a lock the kernel alone arbitrates, in the
 real folder of that session's socket (a symlinked folder, such as a dotfiles `~/.config`, is resolved, never
 refused): `flock(2)` on `runtime-move.lock` there, which every server that sees that folder shares, in any
-container. Only where no C library can be loaded for it (musl) does Linux use a socket in the abstract namespace
-instead, named after the user and that folder (no file); that one is shared only within one network namespace. A second server is refused (409 `already_moving`) while the holder
+container. Every server takes this same lock; where no C library can be loaded for it, or the folder's filesystem
+does not support locks, no move is started there (409 `move_lock_unsafe`, with why). A second server is refused (409 `already_moving`) while the holder
 lives, and the kernel lets go when the holder's process ends, however it ends. Nothing is ever removed to take
 it, so two servers that find a dead holder can never both go on. It then also listens on `runtime-move.sock`
 there, the lock of Ovis before this one, so a server of that version still sees the session as taken, and is

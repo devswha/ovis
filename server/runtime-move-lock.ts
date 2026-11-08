@@ -1,5 +1,5 @@
-import { dlopen, FFIType } from "bun:ffi";
-import { createHash, randomUUID } from "node:crypto";
+import { dlopen, FFIType, read } from "bun:ffi";
+import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, realpathSync, unlinkSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { basename, dirname, join } from "node:path";
@@ -7,15 +7,15 @@ import { basename, dirname, join } from "node:path";
 /**
  * Which Ovis server is moving a herdr session (docs/runtime-move.md, "One move at a time"). The PC's own server and a
  * connection server's bridge can serve the same session, and only one may move it. The lock is the kernel's own:
- * flock(2) on runtime-move.lock in that session's folder (an abstract socket where no C library can be loaded), which
- * nothing removes and the kernel frees when the holder dies; then the previous version's socket at runtime-move.sock as
- * well. No process id or start time is ever read or trusted.
+ * flock(2) on runtime-move.lock in that session's folder, which nothing removes and the kernel frees when the holder
+ * dies; then the previous version's socket at runtime-move.sock as well. No process id or start time is ever read or
+ * trusted.
  */
 export const moveLockPath = (herdrSocket: string): string => join(dirname(herdrSocket), "runtime-move.sock");
 
 /** The lock cannot be taken safely here: its folder is not this user's own, anybody may write in it, or something else sits at its name. */
 export class MoveLockUnsafe extends Error {}
-export const MOVE_LOCK_UNSAFE = "The folder of this herdr session's socket is not yours, anybody may write in it, or a file Ovis did not make sits at runtime-move.sock there, so Ovis cannot lock a move. Fix that on this PC, then try again.";
+export const MOVE_LOCK_UNSAFE = "The folder of this herdr session's socket is not yours, anybody may write in it, or something Ovis did not make sits at runtime-move.sock or runtime-move.lock there, so Ovis cannot lock a move. Fix that on this PC, then try again.";
 
 /**
  * where a take is, for a test that comes in between: "stale" once it found a dead holder's socket, before removing it;
@@ -47,45 +47,49 @@ function realLockPath(path: string): string {
 
 /**
  * The lock a take holds first, one the kernel alone arbitrates, with nothing ever removed: flock(2) on runtime-move.lock
- * in the session's real folder (freed when its holder's descriptor closes, as when it dies), shared by every server that
- * sees that folder, in any container. Only where no C library can be loaded for it (musl) does Linux use a socket in the
- * abstract namespace instead (no file; freed when its holder dies), named after this user and the lock's real path; that
- * one is local to a network namespace. Two takers of a dead holder's socket file can then never both go on.
+ * in the session's real folder, freed when its holder's descriptor closes (as when it dies), and shared by every server
+ * that sees that folder, in any container. Every server takes this same one, so two takers of a dead holder's socket file
+ * can never both go on. Where no C library can be loaded for it, no move is locked, so none is started.
  */
-export type MoveLockKind = "abstract" | "flock";
+type Flock = { flock(fd: number, operation: number): number; errno(): number };
 const LOCK_EX = 2, LOCK_NB = 4;
-type Flock = (fd: number, operation: number) => number;
-let flockCall: Flock | null | undefined;
+/** "would block": another holder has it (Linux EAGAIN, macOS EWOULDBLOCK) */
+const WOULD_BLOCK = process.platform === "darwin" ? 35 : 11;
+let flockCalls: Flock | null | undefined;
 function flockBinding(): Flock | null {
-  if (flockCall !== undefined) return flockCall;
-  flockCall = null;
-  for (const library of process.platform === "darwin" ? ["/usr/lib/libSystem.B.dylib"] : ["libc.so.6"]) {
-    try { flockCall = dlopen(library, { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } }).symbols.flock as Flock; break; } catch { /* the next, or none */ }
+  if (flockCalls !== undefined) return flockCalls;
+  flockCalls = null;
+  const libraries = process.platform === "darwin" ? ["/usr/lib/libSystem.B.dylib"]
+    : ["libc.so.6", `libc.musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`];
+  const errnoAt = process.platform === "darwin" ? "__error" : "__errno_location";
+  for (const library of libraries) {
+    try {
+      const { symbols } = dlopen(library, { flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 }, [errnoAt]: { args: [], returns: FFIType.ptr } });
+      const where = symbols[errnoAt] as () => number;
+      flockCalls = { flock: symbols.flock as (fd: number, operation: number) => number, errno: () => read.i32(where() as never) };
+      break;
+    } catch { /* the next, or none */ }
   }
-  return flockCall;
+  return flockCalls;
 }
-export const MOVE_LOCK_KIND: MoveLockKind = flockBinding() || process.platform !== "linux" ? "flock" : "abstract";
 interface KernelLock { held(): boolean; release(): void }
-async function takeKernelLock(path: string, kind: MoveLockKind): Promise<KernelLock | null> {
-  if (kind === "abstract") {
-    const name = `\0ovis-runtime-move-${process.getuid?.() ?? 0}-${createHash("sha256").update(path).digest("hex").slice(0, 40)}`;
-    const server = await new Promise<Server | null>((resolve, reject) => {
-      const listening = createServer((socket) => socket.destroy());
-      listening.once("error", (error: NodeJS.ErrnoException) => { if (error.code === "EADDRINUSE") resolve(null); else reject(error); });
-      listening.listen(name, () => resolve(listening));
-    });
-    return server && { held: () => server.listening, release: () => { server.close(); } };
-  }
-  // the call first, so a library that cannot be loaded leaves no descriptor open
-  const call = flockBinding();
-  if (!call) throw new MoveLockUnsafe("This PC's C library cannot be loaded to lock a move, so Ovis cannot move this herdr session here.");
+function takeKernelLock(path: string): KernelLock | null {
+  // the calls first, so a library that cannot be loaded leaves no descriptor open
+  const calls = flockBinding();
+  if (!calls) throw new MoveLockUnsafe("This PC's C library cannot be loaded to lock a move, so Ovis cannot move this herdr session here.");
   // only this user's own regular file, never through a link: anything else there is refused, not an internal error
   let fd: number;
   try { fd = openSync(join(dirname(path), "runtime-move.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); }
   catch (error) { if (["ELOOP", "EISDIR", "ENOTDIR", "EACCES", "EPERM", "ENXIO"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); throw error; }
   const info = fstatSync(fd);
   if (!info.isFile() || (process.getuid?.() !== undefined && info.uid !== process.getuid!())) { closeSync(fd); throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); }
-  if (call(fd, LOCK_EX | LOCK_NB) !== 0) { closeSync(fd); return null; }
+  if (calls.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
+    const errno = calls.errno();
+    closeSync(fd);
+    // only another holder is "taken"; anything else (a filesystem without locks, say) is told as such
+    if (errno === WOULD_BLOCK) return null;
+    throw new MoveLockUnsafe(`This PC could not lock a move on the folder of this herdr session's socket (error ${errno}): its filesystem may not support locks. Ovis cannot move this session here.`);
+  }
   let open = true;
   return { held: () => open, release: () => { if (open) { open = false; closeSync(fd); } } };
 }
@@ -113,10 +117,10 @@ const ask = (path: string): Promise<string | "none" | null> => new Promise((reso
  * After binding, the socket is asked who holds it: of two servers that both removed a dead holder's file, the one whose
  * own token answers holds it, and the other gives up its unreachable listener.
  */
-export async function takeMoveLock(asked: string, onStep?: (step: MoveLockStep) => Promise<void> | void, kind: MoveLockKind = MOVE_LOCK_KIND): Promise<MoveLockHandle | null> {
+export async function takeMoveLock(asked: string, onStep?: (step: MoveLockStep) => Promise<void> | void): Promise<MoveLockHandle | null> {
   if (process.platform === "win32") throw new MoveLockUnsafe("Moving herdr's session to herdr-core runs on Linux and macOS only.");
   const path = realLockPath(asked);
-  const kernel = await takeKernelLock(path, kind);
+  const kernel = takeKernelLock(path);
   if (!kernel) return null;
   // the socket at runtime-move.sock as well: a server of the previous version holds only that one. Its dead holder's
   // file is removed only while this server holds the kernel lock, so no other server of this version is removing it too

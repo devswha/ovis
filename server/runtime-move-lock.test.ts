@@ -9,7 +9,7 @@ import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { unitHerdrOnly } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import { moveService, type MoveService } from "./runtime-move-service.ts";
-import { MOVE_LOCK_KIND, type MoveLockKind, MoveLockUnsafe, moveLockPath, takeMoveLock } from "./runtime-move-lock.ts";
+import { MoveLockUnsafe, moveLockPath, takeMoveLock } from "./runtime-move-lock.ts";
 import { createServer as listenOn } from "node:net";
 
 // Two Ovis servers of one herdr session (the PC's own and a connection server's bridge, say) against
@@ -59,8 +59,8 @@ it("lets one server of a herdr session move it at a time, and the other once tha
 });
 
 /** a holder in another process: a server of the same session elsewhere, which can be killed without letting go */
-async function holderProcess(path: string, kind: MoveLockKind = MOVE_LOCK_KIND): Promise<{ kill(): Promise<void> }> {
-  const child = Bun.spawn([process.execPath, "-e", `const { takeMoveLock } = await import(${JSON.stringify(join(import.meta.dir, "runtime-move-lock.ts"))}); const held = await takeMoveLock(${JSON.stringify(path)}, undefined, ${JSON.stringify(kind)}); console.log(held ? "held" : "refused"); setInterval(() => {}, 1000);`], { stdout: "pipe", stderr: "inherit" });
+async function holderProcess(path: string): Promise<{ kill(): Promise<void> }> {
+  const child = Bun.spawn([process.execPath, "-e", `const { takeMoveLock } = await import(${JSON.stringify(join(import.meta.dir, "runtime-move-lock.ts"))}); const held = await takeMoveLock(${JSON.stringify(path)}); console.log(held ? "held" : "refused"); setInterval(() => {}, 1000);`], { stdout: "pipe", stderr: "inherit" });
   const reader = child.stdout.getReader();
   const said = new TextDecoder().decode((await reader.read()).value);
   expect(said.trim()).toBe("held");
@@ -123,25 +123,22 @@ it("lets only one of two takers hold after a dead holder, even one that pauses b
   for (const held of holders) held!.release();
 });
 
-// each kernel lock, whichever this platform uses: Linux's abstract socket, and flock(2) as macOS takes it (here too)
-for (const kind of (process.platform === "linux" ? ["abstract", "flock"] : ["flock"]) as MoveLockKind[]) {
-  it(`holds the session with the kernel's own lock (${kind}): refused while another process holds it, free once that one dies`, async () => {
-    const holder = await holderProcess(lockPath, kind);
-    expect(await takeMoveLock(lockPath, undefined, kind)).toBeNull();
-    await holder.kill();
-    const taken = await takeMoveLock(lockPath, undefined, kind);
-    expect(taken).not.toBeNull();
-    expect(await taken!.holds()).toBe(true);
-    taken!.release();
-  });
-}
+it("holds the session with the kernel's own lock: refused while another process holds it, free once that one dies", async () => {
+  const holder = await holderProcess(lockPath);
+  expect(await takeMoveLock(lockPath)).toBeNull();
+  await holder.kill();
+  const taken = await takeMoveLock(lockPath);
+  expect(taken).not.toBeNull();
+  expect(await taken!.holds()).toBe(true);
+  taken!.release();
+});
 
 it("refuses a link or a folder at runtime-move.lock as unsafe, never following it", async () => {
   const lockFile = join(root, "runtime-move.lock");
   for (const make of [() => symlinkSync(join(root, "elsewhere"), lockFile), () => mkdirSync(lockFile)]) {
     rmSync(lockFile, { recursive: true, force: true });
     make();
-    await expect(takeMoveLock(lockPath, undefined, "flock")).rejects.toThrow(MoveLockUnsafe);
+    await expect(takeMoveLock(lockPath)).rejects.toThrow(MoveLockUnsafe);
     expect(existsSync(join(root, "elsewhere"))).toBe(false);
   }
   rmSync(lockFile, { recursive: true, force: true });
