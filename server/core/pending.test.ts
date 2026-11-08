@@ -174,7 +174,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
-it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "live owner's sibling tab", "held before close"] as const)(
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
     const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -189,10 +189,14 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       };
       const first = client("device", token);
       let failResend = false;
+      const typing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
       const delivery = createPendingDelivery({
         options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
         sight: () => { throw new Error("a receipt replay takes no input lease"); },
-        submitText: async () => { if (failResend) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed"); },
+        submitText: async () => {
+          if (scenario === "attach during resend after closed-owner expiry") { typing.resolve(); await release.promise; }
+          if (failResend) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed");
+        },
         authorizeSocket: (owner) => { if (revoked.has(owner)) throw new Error("revoked"); },
         clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
         omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
@@ -220,14 +224,23 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       if (scenario === "held after reattach") delivery.pending.settle(item, { code: "disconnected", message: "The pending message's connection closed" }, false);
       // its own field: a client that predates it reads any resumed removal as settled
       expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
-      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry"].includes(scenario)
+      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry"].includes(scenario)
         ? [item.message.id] : []);
-      if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry") {
+      if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry" || scenario === "attach during resend after closed-owner expiry") {
         now += 60_001; delivery.pending.expire();
         failResend = scenario === "ambiguous resend after closed-owner expiry";
-        await delivery.pendingFrames.submit(resumed, {
+        const sent = delivery.pendingFrames.submit(resumed, {
           type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id,
         });
+        if (scenario === "attach during resend after closed-owner expiry") {
+          // a tab that attaches while the held copy is being typed is not told it is still held
+          await typing.promise;
+          const during = client("device", token);
+          delivery.attached(during, "p");
+          expect(heldIds(during)).toEqual([]);
+          release.resolve();
+        }
+        await sent;
         const later = client("device", token);
         delivery.attached(later, "p");
         const laterRemoved = frames.get(later)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []);

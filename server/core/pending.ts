@@ -1238,21 +1238,27 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           authorizeSocket(client);
           // typed by this request: a replayed id, or a copy another connection sent, runs no dispatch here
           let typedNow = false;
+          const takeHeld = () => {
+            const at = completed.findIndex((entry) => entry.id === message.resend_id && entry.outcome === "held");
+            return at >= 0 ? completed.splice(at, 1)[0] : undefined;
+          };
+          let typing: (typeof completed)[number] | undefined;
           const answer = await serialize(message.pane_id, () => pending.resend(message.pane_id, message.resend_id!,
             new Bun.CryptoHasher("sha256").update(framed.text).digest("hex"), async () => {
+              // no longer held while it is typed: a tab attaching now is not offered it again
+              typing = takeHeld();
               try { await dispatch(); typedNow = true; return { ok: true }; }
               catch (error) { return { ok: false, ...pendingFault(error) }; }
             }, message.resend_generation));
-          const heldAt = completed.findIndex((entry) => entry.id === message.resend_id && entry.outcome === "held");
-          if (heldAt >= 0) {
+          const held = typing ?? takeHeld();
+          if (held) {
             if (answer.ok) {
-              const [held] = completed.splice(heldAt, 1);
               // its sent receipt only for the pane and browser the held one was kept for
-              if (held!.paneId === message.pane_id && held!.key === resumeKey(client, message.pane_id)) {
-                completed.push({ ...held!, outcome: "sent", at: Date.now() });
-                pushResumed(client, message.pane_id, held!.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
+              if (held.paneId === message.pane_id && held.key === resumeKey(client, message.pane_id)) {
+                completed.push({ ...held, outcome: "sent", at: Date.now() });
+                pushResumed(client, message.pane_id, held.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
               }
-            } else if (!submitNotTyped(answer.code ?? "")) completed.splice(heldAt, 1);
+            } else if (submitNotTyped(answer.code ?? "")) completed.push(held);
             prunePi();
           }
           result(answer.ok, answer.code, answer.message, undefined, undefined, undefined, answer.ok && typedNow, typedNow ? sendingAt : undefined);
