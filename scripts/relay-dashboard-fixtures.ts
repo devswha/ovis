@@ -4,7 +4,7 @@
  * from these specs at request time (times relative to that moment), so "seen a minute ago" and "new in your account"
  * hold however long a run takes; the pairings are written into the page's IndexedDB as lib/relay/device.ts writes
  * them, with a real non-extractable key. The fleet names follow the capture matrix's (F0, F4, FREADY, F20, FLONG,
- * FUNKNOWN, FLEET200, FLEET1000), so a state name means the same fleet in both.
+ * FUNKNOWN, FLEET50, FLEET200, FLEET1000), so a state name means the same fleet in both.
  */
 import type { Page } from "playwright-core";
 import type { FakePc } from "../shared/account-service-fake.ts";
@@ -21,7 +21,7 @@ const DAY = 864e5;
 /** One PC of a fleet. `seenAgo`/`addedAgo` in ms before the directory is read (null: never seen); `paired`: this device holds a key; `listed`: in the account's directory. */
 export interface PcSpec { readonly label: string; readonly relay: string; readonly seenAgo: number | null; readonly addedAgo: number; readonly paired: boolean; readonly listed: boolean }
 
-export type FleetName = "F0" | "F4" | "FREADY" | "F20" | "FLONG" | "FUNKNOWN" | "FLEET200" | "FLEET1000";
+export type FleetName = "F0" | "F4" | "FREADY" | "F20" | "FLONG" | "FUNKNOWN" | "FLEET50" | "FLEET200" | "FLEET1000";
 
 function f20(): PcSpec[] {
   const names = ["Studio desktop", "Work laptop", "Home server", "Build box", "Render node", "Media PC", "Lab NUC", "Office iMac", "Garage Pi", "Test rig A",
@@ -77,6 +77,8 @@ export const FLEETS: Readonly<Record<FleetName, readonly PcSpec[]>> = {
     { label: "Spare desktop", relay: GLOBAL_RELAY, seenAgo: null, addedAgo: 7 * DAY, paired: true, listed: true },
     { label: "Studio desktop", relay: GLOBAL_RELAY, seenAgo: MIN, addedAgo: 7 * DAY, paired: true, listed: true },
   ],
+  // just under the table's large-fleet threshold (200 rows): every row stays fully rendered
+  FLEET50: fleet(50),
   FLEET200: fleet(200),
   FLEET1000: fleet(1000),
 };

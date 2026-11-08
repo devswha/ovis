@@ -539,16 +539,42 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- large fleets (todo 7) ----
 
-  for (const [fleet, total] of [["FLEET200", 200], ["FLEET1000", 1000]] as const) {
-    await check(`fleet-${total}`, async () => {
-      const { page } = await open({ fleet });
-      const cells = await strip(page);
-      await go(page, "#pcs", "pcs");
-      const rows = await listedRows(page).count();
-      expect(rows === total, `${rows} rows, want ${total}`);
-      expect(await page.locator(".relay-pc-list-region.is-large-fleet").count() === 1, "the large-fleet table");
-      return `${rows} rows, strip ${JSON.stringify(cells)}, ${await noOverflow(page)}`;
-    });
+  // from 200 rows each row's box skips rendering off screen (content-visibility: auto); 50 rows stay fully rendered
+  for (const [fleet, total] of [["FLEET50", 50], ["FLEET200", 200], ["FLEET1000", 1000]] as const) {
+    for (const width of [1440, 390] as const) {
+      await check(`fleet-${total}-${width}-content-visibility`, async () => {
+        const large = total >= 200;
+        const { page } = await open({ fleet, width });
+        const cells = await strip(page);
+        await go(page, "#pcs", "pcs");
+        await page.evaluate(() => window.scrollTo(0, 0));
+        const rows = await listedRows(page).count();
+        expect(rows === total, `${rows} rows, want ${total}`);
+        const boxes = await page.evaluate(() => {
+          const all = [...document.querySelectorAll<HTMLElement>("[data-pc-list] [data-pc-id] :is(.relay-pc-row-box, .relay-pc-phone-body)")];
+          const tally = (values: readonly string[]) => Object.fromEntries([...new Set(values)].map((value) => [value, values.filter((v) => v === value).length]));
+          return {
+            count: all.length,
+            visibility: tally(all.map((box) => getComputedStyle(box).contentVisibility)),
+            intrinsic: tally(all.map((box) => getComputedStyle(box).containIntrinsicSize.startsWith("auto ") ? "auto <length>" : getComputedStyle(box).containIntrinsicSize)),
+            // the box itself is never skipped, its contents are: ask about the name button inside it
+            firstRendered: all[0]?.querySelector(".relay-pc-name-btn")?.checkVisibility({ contentVisibilityAuto: true }) ?? false,
+            lastRendered: all.at(-1)?.querySelector(".relay-pc-name-btn")?.checkVisibility({ contentVisibilityAuto: true }) ?? true,
+          };
+        });
+        const want = large ? "auto" : "visible";
+        expect(boxes.count === total, `${boxes.count} row boxes, want ${total}`);
+        expect(JSON.stringify(boxes.visibility) === JSON.stringify({ [want]: total }), `computed content-visibility ${JSON.stringify(boxes.visibility)}, want ${want} on all ${total}`);
+        expect(JSON.stringify(boxes.intrinsic) === JSON.stringify({ [large ? "auto <length>" : "none"]: total }), `computed contain-intrinsic-size ${JSON.stringify(boxes.intrinsic)}`);
+        expect(boxes.firstRendered, "the first row, on screen, is rendered");
+        expect(boxes.lastRendered === !large, large ? "the off-screen last row skips rendering" : "the last of 50 rows is rendered off screen");
+        const last = listedRows(page).last();
+        const id = await last.getAttribute("data-pc-id");
+        await last.locator(".relay-pc-name-btn").click();
+        await page.locator(`[data-pc-details="${id}"]`).waitFor();
+        return `${rows} rows, content-visibility ${JSON.stringify(boxes.visibility)}, last row skipped off screen: ${!boxes.lastRendered}, last row opens Details, strip ${JSON.stringify(cells)}, ${await noOverflow(page)}`;
+      });
+    }
   }
 
   // ---- glyphs, motion, forced colours, focus (todo 1) ----
