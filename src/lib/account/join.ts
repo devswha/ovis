@@ -551,6 +551,7 @@ async function introduce(peer: AccountPeer, keys: readonly string[], pc: Introdu
   let all = true;
   for (const key of keys) {
     try { await post(peer.fetch, "/api/account/introduce", { key, pcs: [pc] }); } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
       if (error instanceof AccountPcError && error.code === "introduction_unknown_key") continue;
       console.warn("Ovis: a PC did not introduce the new PC yet", error instanceof AccountPcError ? error.code : error instanceof Error ? error.name : error);
       all = false;

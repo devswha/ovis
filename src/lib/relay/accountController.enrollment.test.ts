@@ -10,6 +10,8 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord } from "../../../shared/account-records.ts";
+import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { AccountService } from "../account/service.ts";
@@ -29,7 +31,7 @@ describe("account enrollment ownership", () => {
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => { for (const transport of transports.splice(0)) transport.close(); browser.dispose(); });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean } = {}) {
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -40,7 +42,7 @@ describe("account enrollment ownership", () => {
     const devices = new Map([[offer.server_id, original]]);
     const store: RelayDeviceStore = {
       get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); },
-      update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
+      update: async (id, change, source) => { source?.assert(devices.get(source.serverId)); const next = change(devices.get(id)); devices.set(id, next); return next; },
     };
     const records: AddRecord[] = [];
     for (let index = 0; index < 2; index++) {
@@ -74,8 +76,14 @@ describe("account enrollment ownership", () => {
       }
       override async fetch(path: string) { if (path === heldPath) { requested.resolve(); return response.promise; } return answer(path); }
     }
-    const open = async () => { const transport = new Admitted(offer); transports.push(transport); return transport; };
-    const controller = createAccountController({
+    class Peer extends RelayTransport {
+      override async fetch(path: string, init?: RequestInit) {
+        if (options.peerFetch === undefined) throw new TypeError("Unexpected peer request");
+        return options.peerFetch(path, init);
+      }
+    }
+    const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
+    const controller = () => createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.invalid", renderApp: () => { throw new TypeError("No app here"); },
       store, accountStore, accountService: "https://account.invalid", accountProviders: ["github"], open,
       accountFetch: async (input, init) => {
@@ -84,7 +92,7 @@ describe("account enrollment ownership", () => {
         return service.fetch(input, init);
       },
     }, { active: () => false, changed: async () => {}, outdated: () => new Set() });
-    return { controller, store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service };
+    return { controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service };
   }
 
   it("does not list a pairing after Forget releases a held renewal", async () => {
@@ -97,26 +105,51 @@ describe("account enrollment ownership", () => {
     expect(run.putPcs).toEqual([]);
   });
 
-  it("does not save an introduced pairing after Forget releases its held update", async () => {
+  it.each(["same", "other"] as const)("does not save an introduced pairing after the %s controller forgets its source during a held update", async (canceller) => {
     const run = await fixture("/api/account/introduction");
     const identity = generateKeyPair();
     const introduced = { server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: run.original.relay, name: "Introduced" };
     const updating = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const update = run.store.update;
-    run.store.update = async (id, change) => {
+    run.store.update = async (id, change, source) => {
       if (id === introduced.server_id) { updating.resolve(); await release.promise; }
-      return update(id, change);
+      return update(id, change, source);
     };
     const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
     await run.requested.promise;
     run.response.resolve(Response.json({ pcs: [introduced] }));
     await updating.promise;
-    run.controller.cancelEnrollment(run.original.server_id);
+    const controller = canceller === "same" ? run.controller : run.otherController;
+    controller.cancelEnrollment(run.original.server_id);
     await forgetSavedPc(run.original.server_id, run.store);
     release.resolve();
     await pending;
     expect(await run.store.get(introduced.server_id)).toBeUndefined();
+  });
+
+  it.each(["cancel", "forget"] as const)("stops multi-key peer introductions after source %s during the first request", async (action) => {
+    const requested = Promise.withResolvers<void>();
+    const response = Promise.withResolvers<Response>();
+    const delivered: unknown[] = [];
+    const run = await fixture("unused", { peerFetch: async (path, init) => {
+      if (path === "/api/account/status?fresh=1") return Response.json({ account: "account", fresh: true, removals: [], adds: [], blocked: [] });
+      if (path !== "/api/account/introduce") throw new TypeError("Unexpected peer request: " + path);
+      delivered.push(JSON.parse(String(init?.body)));
+      if (delivered.length === 1) { requested.resolve(); return response.promise; }
+      return Response.json({});
+    } });
+    const identity = generateKeyPair();
+    const peer = { ...run.original, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey) };
+    await run.store.update(peer.server_id, () => peer);
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await requested.promise;
+    if (action === "cancel") run.controller.cancelEnrollment(run.original.server_id);
+    else { run.otherController.cancelEnrollment(run.original.server_id); await forgetSavedPc(run.original.server_id, run.store); }
+    response.resolve(Response.json({}));
+    expect(await pending).toBeInstanceOf(DOMException);
+    expect(delivered).toEqual([{ key: run.records[0]?.key, pcs: [{ server_id: run.original.server_id, server_public_key: run.original.server_public_key, relay: run.original.relay, name: "Desk" }] }]);
+    expect((await run.accountStore.get("enrolls"))?.[run.original.server_id]?.introduce?.to).toEqual([peer.server_id]);
   });
 
   it.each(["en", "ja", "ko", "zh"] as const)("keeps all enrollment surfaces truthful after listing succeeds and setup fails in %s", async (language) => {
