@@ -1,21 +1,23 @@
-import { expect, it } from "bun:test";
+/** The production device store's source guard, against Chromium's real IndexedDB transactions. */
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { chromePath } from "../../../scripts/chrome-path.ts";
-import type { RelayDevice } from "./device.ts";
+import type { RelayDevice } from "../src/lib/relay/device.ts";
+import { chromePath } from "./chrome-path.ts";
 
-it("refuses an introduced pairing when source removal wins the IndexedDB transaction", async () => {
-  const build = await Bun.build({ entrypoints: [new URL("./device.ts", import.meta.url).pathname], target: "browser" });
-  const module = build.outputs[0];
-  if (!build.success || module === undefined) throw new AggregateError(build.logs, "Could not build device store");
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => new URL(request.url).pathname === "/device.js"
-    ? new Response(module, { headers: { "content-type": "text/javascript" } }) : new Response("<!doctype html><title>IndexedDB test</title>", { headers: { "content-type": "text/html" } }) });
+const build = await Bun.build({ entrypoints: [fileURLToPath(new URL("../src/lib/relay/device.ts", import.meta.url))], target: "browser" });
+const module = build.outputs[0];
+if (!build.success || module === undefined) throw new AggregateError(build.logs, "Could not build device store");
+const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => new URL(request.url).pathname === "/device.js"
+  ? new Response(module, { headers: { "content-type": "text/javascript" } }) : new Response("<!doctype html><title>IndexedDB test</title>", { headers: { "content-type": "text/html" } }) });
+try {
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   try {
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.port}`);
     const result = await page.evaluate(async () => {
       const modulePath = "/device.js";
-      const { indexedDeviceStore: store }: typeof import("./device.ts") = await import(modulePath);
+      const { indexedDeviceStore: store }: typeof import("../src/lib/relay/device.ts") = await import(modulePath);
       const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
       const source: RelayDevice = { server_id: "source", server_public_key: "server-key", relay: "wss://relay.invalid", device_id: "device", private_key: pair.privateKey, public_spki: "device-key", label: "Phone" };
       const target = { ...source, server_id: "introduced" };
@@ -31,9 +33,11 @@ it("refuses an introduced pairing when source removal wins the IndexedDB transac
       await removal;
       return { outcome: await introduced, devices: (await store.list()).map((device) => device.server_id) };
     });
-    expect(result).toEqual({ outcome: "AbortError", devices: [] });
+    assert.deepEqual(result, { outcome: "AbortError", devices: [] });
+    console.log("PASS IndexedDB source removal: introduced pairing refused with AbortError, no devices saved");
   } finally {
     await browser.close();
-    await server.stop(true);
   }
-}, 30_000);
+} finally {
+  await server.stop(true);
+}
