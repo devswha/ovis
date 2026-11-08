@@ -97,7 +97,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (!pc.join) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, name: pc.name }, window.location.origin));
     keepTypedJoin(options.typed ? pc.server_id : null);
-    if (options.sheet) keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash) });
+    if (options.sheet) {
+      keepSheetContext({ mode: options.sheet, server_id: pc.server_id, returnHash: dashboardHash(window.location.hash) });
+      keepConfirmedPc(pc.server_id);
+    }
     navigate(link.pathname + link.hash);
   };
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
@@ -270,7 +273,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (sheetJoin?.returnHash) window.history.replaceState(null, "", new URL(mount.entryUrl).pathname + sheetJoin.returnHash);
       if (sheetJoin) void account.load(null);
       show({ kind: "confirm", offer: entry.offer });
-      if (confirmedPc === entry.offer.server_id && entry.offer.code !== undefined) pair();
+      if (confirmedPc === entry.offer.server_id && (sheetJoin !== null || entry.offer.code !== undefined)) pair();
       return true;
     }
     return false;
