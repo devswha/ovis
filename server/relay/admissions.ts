@@ -21,9 +21,11 @@ const NEAR: Record<DeviceRoute, number> = { lan: 0, tailscale: 1, relay: 2 };
  * The signed-in sessions one PC serves, whichever way they came: the relay links (global and regional)
  * and the direct carriers count against the same limits, so no way in adds places of its own.
  */
+interface Entry { readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine }
+
 export class SignedInSessions {
   private order = 0;
-  private readonly entries = new Set<{ readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine }>();
+  private readonly entries = new Set<Entry>();
 
   /**
    * at most `max` at once, and `perDevice` chosen for one device key, whose oldest gives way; at most `perDeviceCandidates`
@@ -45,6 +47,23 @@ export class SignedInSessions {
   }
 
   /**
+   * The sessions that may give way to another device's sign-in, the oldest first: unused carriers of devices at or over
+   * their share, counting every session they hold. Never a session in use, never a carrier of a device below its share,
+   * and never a device's newest unused carrier: an app keeps one carrier of each race, its winner, which may open no
+   * stream for a while, so only the older ones are idle losers or extras.
+   */
+  private idleFor(deviceId: string): Entry[] {
+    const byDevice = new Map<string, Entry[]>();
+    for (const other of this.entries) if (other.deviceId !== deviceId) byDevice.set(other.deviceId, [...(byDevice.get(other.deviceId) ?? []), other]);
+    const idle: Entry[] = [];
+    for (const own of byDevice.values()) {
+      if (own.length < this.perDevice) continue;
+      idle.push(...own.filter((other) => !other.chosen).sort((left, right) => left.order - right.order).slice(0, -1));
+    }
+    return idle.sort((left, right) => left.order - right.order);
+  }
+
+  /**
    * Counts a session that just signed in but may be one of an app's racing carriers, which it closes again if
    * another came up first (src/lib/relay/transport.ts): it takes a place, but no other session of its device
    * gives way for it until `chosen` (its first stream). One past every place is closed itself; past its device's
@@ -63,11 +82,20 @@ export class SignedInSessions {
     }
     // with every place taken, a device at its share still gets in (once used, its own oldest gives way) with its own racing
     // carriers, counted per device above: another device's carriers never use up its way in (#3243), and past every place
-    // there are at most `perDeviceCandidates` for each device at its share. A device below its share is turned away past
-    // every place. Nothing here closes another device's session: an unused one may be the carrier its app kept.
+    // there are at most `perDeviceCandidates` for each device at its share. A device below its share gets in when idle
+    // carriers of other devices (idleFor) can give way for it, all or nothing: none closes for one turned away anyway.
     if (this.entries.size > this.max && this.chosenOf(deviceId) < this.perDevice) {
-      release();
-      close();
+      const need = this.entries.size - this.max;
+      const idle = this.idleFor(deviceId);
+      if (idle.length >= need) {
+        for (const oldest of idle.slice(0, need)) {
+          this.entries.delete(oldest);
+          oldest.close();
+        }
+      } else {
+        release();
+        close();
+      }
     }
     return {
       release,
