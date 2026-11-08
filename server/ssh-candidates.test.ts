@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import { sshCandidates, sshConfigHosts } from "./ssh-candidates.ts";
+import { sshCandidates } from "./ssh-candidates.ts";
+import { sshConfigHosts } from "./ssh-config.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
@@ -75,9 +76,48 @@ it("matches a negated pattern in linear time, so a crafted one cannot hold the s
 });
 
 it("starts each file one Include names in the Host block of the Include", async () => {
-  const dir = sshDir({ config: "Host lab\n  Include a b\n", a: "Host other\n", b: "User alice\n" });
+  const dir = sshDir({ config: "Host lab\n  Include a b\n", a: "Host other\n  User bob\n", b: "User alice\n" });
   const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => null });
-  expect(candidates.map((candidate) => [candidate.name, candidate.detail])).toEqual([["lab", "alice@lab"], ["other", null]]);
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail])).toEqual([["lab", "alice@lab"]]);
+});
+
+it("lists a host an included file names only when the block of its Include applies to that host", async () => {
+  const dir = sshDir({ config: "Host a\n  Include inc\nMatch all\n  Include all.conf\nMatch originalhost x\n  Include x.conf\n", inc: "Host b\n", "all.conf": "Host c\n", "x.conf": "Host d\n" });
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => null });
+  expect(candidates.map((candidate) => candidate.name)).toEqual(["a", "c"]);
+});
+
+it("applies a Match block as ssh does, for the conditions it can weigh offline", async () => {
+  expect(await sshConfigHosts("Host alias\nMatch host alias\n  HostName 100.64.0.2\n  AddressFamily inet6\nHost *\n  HostName 100.64.0.1\n  AddressFamily inet\n"))
+    .toEqual([{ alias: "alias", hostname: "100.64.0.2", user: null, addressFamily: "inet6" }]);
+  expect(await sshConfigHosts([
+    "Host b", "  HostName b.lan", "Host c", "  User root", "Host b c d f",
+    "Match host B.LAN", "  AddressFamily inet", "Match user root", "  HostName root.lan",
+    "Match localuser me !originalhost f", "  HostName me.lan", "Match all", "  AddressFamily inet6",
+  ].join("\n"), async () => [], "me")).toEqual([
+    { alias: "b", hostname: "b.lan", user: null, addressFamily: "inet" },
+    { alias: "c", hostname: "root.lan", user: "root", addressFamily: "inet6" },
+    { alias: "d", hostname: "me.lan", user: null, addressFamily: "inet6" },
+    { alias: "f", hostname: null, user: null, addressFamily: "inet6" },
+  ]);
+});
+
+it("claims nothing for a host a Match condition it cannot weigh offline may send elsewhere", async () => {
+  const dir = sshDir({ config: [
+    "Host box far fin", "Match originalhost box exec \"on-vpn\"", "  HostName 100.64.0.2",
+    "Match final originalhost nomatch", "  HostName 100.64.0.2", "Host *", "  HostName 100.64.0.1",
+  ].join("\n") });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: async () => [] });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["box", undefined], ["far", "box.tail.ts.net"], ["fin", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
+  ]);
+});
+
+it("matches a long pattern against a long alias in linear time", async () => {
+  const started = performance.now();
+  const hosts = await sshConfigHosts(`Host ${"a".repeat(50_000)}c !*${"a".repeat(50_000)}b\n`);
+  expect(performance.now() - started).toBeLessThan(250);
+  expect(hosts).toHaveLength(1);
 });
 
 it("stops a line at a word that starts a comment", async () => {
@@ -94,7 +134,7 @@ it("reads an Include inside a Host block as part of that block", async () => {
 
 it("reads the hosts of the files an Include names, in their place", async () => {
   const dir = sshDir({
-    config: "Host first\n  HostName one.example\nInclude conf.d/*\nHost last\n",
+    config: "Host first\n  HostName one.example\nHost *\nInclude conf.d/*\nHost last\n",
     "conf.d/b": "Host from-b\n",
     "conf.d/a": "Host from-a\n  User a\n",
   });
@@ -242,7 +282,7 @@ it("shares one listing between concurrent requests and keeps the lookups in flig
   const dir = sshDir({ config: Array.from({ length: 40 }, (_, index) => `Host n${index}`).join("\n") });
   let statusReads = 0;
   let lookups = 0;
-  const options = { sshDir: dir, readStatus: async () => { statusReads++; return twoPeers; }, resolve: () => { lookups++; return new Promise<string[]>(() => {}); }, resolveTimeoutMs: 0, lookupDeadline: () => new Promise<void>(() => {}) };
+  const options = { sshDir: dir, readStatus: async () => { statusReads++; return twoPeers; }, resolve: () => { lookups++; return new Promise<string[]>(() => {}); }, resolveTimeoutMs: 0 };
   await Promise.all([sshCandidates(options), sshCandidates(options)]);
   expect(statusReads).toBe(1);
   const first = lookups;
@@ -263,18 +303,13 @@ it("looks up every name past the lookups in flight at once, each claiming the PC
   );
 });
 
-it("keeps a name's answer for 30 seconds, so reopening the list does not look it up again", async () => {
-  const dir = sshDir({ config: "Host box\n" });
-  let clock = 0;
-  let lookups = 0;
-  const options = { sshDir: dir, readStatus: async () => twoPeers, now: () => clock, resolve: async () => { lookups++; return ["100.64.0.2"]; } };
+it("looks a name up again on each listing, so a changed DNS or hosts answer counts at once", async () => {
+  const dir = sshDir({ config: "Host alias\n" });
+  const table: Record<string, string[]> = { alias: ["100.64.0.1"] };
+  const options = { sshDir: dir, readStatus: async () => twoPeers, resolve: resolver(table) };
+  expect((await sshCandidates(options))[0]!.tailnet).toBe("box.tail.ts.net");
+  table.alias = ["100.64.0.2"];
   expect((await sshCandidates(options))[0]!.tailnet).toBe("other.tail.ts.net");
-  clock = 29_999;
-  expect((await sshCandidates(options))[0]!.tailnet).toBe("other.tail.ts.net");
-  expect(lookups).toBe(1);
-  clock = 30_000;
-  await sshCandidates(options);
-  expect(lookups).toBe(2);
 });
 
 it("weighs each listed host against the HostName lines once, not every alias of a huge config", async () => {
@@ -298,19 +333,39 @@ it("leaves a host whose lookup is late or fails unclaimed, never matched by its 
   }
 });
 
-it("gives up a hung lookup at its own deadline, so the names waiting behind it are looked up", async () => {
-  const dir = sshDir({ config: Array.from({ length: 17 }, (_, index) => `Host n${index}`).join("\n") });
+/** a resolver whose calls stay unanswered until `answer(name)` (which answers later calls at once), except the names `ready` answers */
+function heldResolver(ready: Record<string, string[]>) {
   const looked: string[] = [];
-  const expire: (() => void)[] = [];
-  const options = { sshDir: dir, readStatus: async () => twoPeers, resolveTimeoutMs: 0, lookupDeadline: () => new Promise<void>((done) => expire.push(done)),
-    resolve: (host: string) => { looked.push(host); return host === "n16" ? Promise.resolve(["100.64.0.2"]) : new Promise<string[]>(() => {}); } };
+  const held = new Map<string, (addresses: string[]) => void>();
+  const resolve = (host: string): Promise<string[]> => {
+    looked.push(host);
+    return ready[host] !== undefined ? Promise.resolve(ready[host]) : new Promise((answer) => held.set(host, answer));
+  };
+  return { looked, resolve, answer: (host: string) => { ready[host] = []; held.get(host)?.([]); } };
+}
+
+it("holds a lookup's slot until its resolver answers, so at most 16 resolver calls are ever outstanding", async () => {
+  const dir = sshDir({ config: Array.from({ length: 17 }, (_, index) => `Host n${index}`).join("\n") });
+  const { looked, resolve, answer } = heldResolver({ n16: ["100.64.0.2"] });
+  const options = { sshDir: dir, readStatus: async () => twoPeers, resolveTimeoutMs: 0, resolve };
+  await sshCandidates(options);
   await sshCandidates(options);
   expect(looked).toHaveLength(16);
   expect(looked).not.toContain("n16");
-  for (const done of expire.splice(0)) done();
-  const candidates = await sshCandidates(options);
-  expect(looked).toContain("n16");
+  for (let index = 0; index < 16; index++) answer(`n${index}`);
+  const candidates = await sshCandidates({ ...options, resolveTimeoutMs: 60_000 });
+  expect(looked.filter((host) => host === "n16")).toHaveLength(1);
   expect(candidates.find((candidate) => candidate.name === "n16")?.tailnet).toBe("other.tail.ts.net");
+});
+
+it("drops the queued lookups of a listing that gave up, so a freed slot never starts one", async () => {
+  const dir = sshDir({ config: Array.from({ length: 17 }, (_, index) => `Host n${index}`).join("\n") });
+  const { looked, resolve, answer } = heldResolver({});
+  await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolveTimeoutMs: 0, resolve });
+  expect(looked).toHaveLength(16);
+  answer("n0");
+  await new Promise<void>((settled) => setImmediate(settled));
+  expect(looked).not.toContain("n16");
 });
 
 it("applies the directives an Include brings into a Host block only to the hosts that block matches", async () => {
@@ -336,7 +391,7 @@ it("keeps only the answers of the AddressFamily ssh would use", async () => {
   ]);
 });
 
-it("never claims a proxied host by the addresses a local lookup gives, only by its name", async () => {
+it("never claims a proxied host, by the addresses a local lookup gives or by its name", async () => {
   const dir = sshDir({ config: [
     "Host jump", "  ProxyJump bastion", "Host cmd", "  HostName cmd.lan", "  ProxyCommand ssh -W %h:%p bastion",
     "Host other", "  ProxyJump bastion", "Host direct", "  HostName direct.lan", "  ProxyJump none",
@@ -345,7 +400,7 @@ it("never claims a proxied host by the addresses a local lookup gives, only by i
   const answers = resolver({ jump: ["100.64.0.2"], "cmd.lan": ["100.64.0.2"], other: ["100.64.0.1"], "direct.lan": ["100.64.0.1"] });
   const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: async (host) => { looked.push(host); return answers(host); } });
   expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
-    ["jump", undefined], ["cmd", undefined], ["other", "other.tail.ts.net"], ["direct", "box.tail.ts.net"],
+    ["jump", undefined], ["cmd", undefined], ["other", undefined], ["direct", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
   ]);
   expect(looked).toEqual(["direct.lan"]);
 });
