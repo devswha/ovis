@@ -40,6 +40,8 @@ const preload = join(app.getAppPath(), "out", "preload.js");
 const iconPath = app.isPackaged ? join(process.resourcesPath, "icon.png") : join(app.getAppPath(), "..", "assets", "icon-only.png");
 
 let window: BrowserWindow | null = null;
+/** cancels a close's hide that waits for the window to leave full screen (windowClose.ts) */
+let cancelHide: (() => void) | null = null;
 let tray: Tray | null = null;
 let server: RunningServer | null = null;
 /** the start or restart in progress; another one asked for meanwhile is dropped */
@@ -88,6 +90,8 @@ function showConnect(): void {
 }
 
 function showWindow(): void {
+  cancelHide?.();
+  cancelHide = null;
   if (!window) createWindow();
   window!.show();
   window!.focus();
@@ -212,9 +216,10 @@ function createWindow(): void {
   window.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
-    if (window) hideWindow(window, process.platform);
+    cancelHide?.();
+    cancelHide = window ? hideWindow(window, process.platform) : null;
   });
-  window.on("closed", () => { window = null; });
+  window.on("closed", () => { window = null; cancelHide = null; });
   guard(window.webContents);
   void window.loadFile(connectPage);
 }

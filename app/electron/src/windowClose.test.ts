@@ -9,6 +9,10 @@ function fakeWindow(fullScreen: boolean) {
     isFullScreen: () => fullScreen,
     setFullScreen: (flag) => { calls.push(`setFullScreen(${flag})`); },
     once: (_event, listener) => { leaveListeners.push(listener); },
+    removeListener: (_event, listener) => {
+      const at = leaveListeners.indexOf(listener);
+      if (at >= 0) leaveListeners.splice(at, 1);
+    },
     hide: () => { calls.push(`hide (full screen: ${fullScreen})`); },
   };
   const left = () => {
@@ -31,6 +35,14 @@ describe("hideWindow", () => {
     expect(calls).toEqual(["setFullScreen(false)"]);
     left();
     expect(calls).toEqual(["setFullScreen(false)", "hide (full screen: false)"]);
+  });
+
+  it("on macOS, a hide cancelled before full screen is left (the window reopened) does not hide it", () => {
+    const { window, calls, left } = fakeWindow(true);
+    const cancel = hideWindow(window, "darwin");
+    cancel?.();
+    left();
+    expect(calls).toEqual(["setFullScreen(false)"]);
   });
 
   it("elsewhere, hides a full-screen window as it is", () => {
