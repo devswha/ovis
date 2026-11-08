@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -469,7 +469,9 @@ describe("backgroundAgentDetail", () => {
       }
     };
     const swap = (folder: string, target: string) => (): void => { renameSync(folder, `${folder}.moved`); symlinkSync(target, folder); };
-    // before the folder's open, or once it is open and checked: before its listing, or before a title's file is opened
+    // before the folder's open (where the kernel names a descriptor's file, Linux; elsewhere the folder is not opened, and
+    // the first call after the look is its listing or a title's open), or once it is open and checked: before its listing,
+    // or before a title's file is opened
     const cases: Array<[string, "open" | "read", () => void]> = [
       ["the subagents folder, before its open", "open", swap(subagents, join(outsideSession, "subagents"))],
       ["the session folder, before its open", "open", swap(sessionDir, outsideSession)],
@@ -484,10 +486,10 @@ describe("backgroundAgentDetail", () => {
         let swapped = false;
         const once = (): void => { if (!swapped) { swapped = true; act(); } };
         detailIo.openSync = ((path: string, flags: number) => {
-          if (at === "open" ? path === subagents : read === "titles" && path.endsWith("agent-a1.meta.json")) once();
+          if (at === "open" || (read === "titles" && path.endsWith("agent-a1.meta.json"))) once();
           return openSync(path, flags);
         }) as typeof openSync;
-        const listing = spyOn(fs, "opendirSync").mockImplementation((path, options) => { if (at === "read") once(); return opendir(path, options); });
+        const listing = spyOn(fs, "opendirSync").mockImplementation((path, options) => { once(); return opendir(path, options); });
         let answer: string;
         try {
           answer = read === "list"
@@ -501,6 +503,44 @@ describe("backgroundAgentDetail", () => {
     }
     forgetSubagents();
     expect(claudeSubagentState(s.path, true, NOW).tasks.map((task) => task.title)).toEqual(["inside"]);
+  });
+
+  it.skipIf(process.platform === "win32")("counts nothing of a session folder moved and replaced with a link to it once its listing is kept (#3348)", () => {
+    const s = session();
+    const sessionDir = join(s.path, "..", SESSION);
+    s.agent("a1");
+    // read a while after the folder was written: its listing is kept
+    setSystemTime(new Date(Date.now() + 5000));
+    try {
+      expect(claudeSubagentState(s.path, true, NOW).running).toBe(1);
+      renameSync(sessionDir, `${sessionDir}.moved`);
+      symlinkSync(`${sessionDir}.moved`, sessionDir);
+      expect(claudeSubagentState(s.path, true, NOW)).toMatchObject({ tasks: [], running: 0 });
+    } finally { setSystemTime(); }
+  });
+
+  it.skipIf(process.platform === "win32")("reads no meta file swapped for a FIFO before its open, and does not wait on it", () => {
+    const s = session();
+    const meta = join(s.path, "..", SESSION, "subagents", "agent-a1.meta.json");
+    const { openSync } = detailIo;
+    for (const read of ["titles", "list"] as const) {
+      forgetSubagents();
+      s.agent("a1");
+      let swapped = false;
+      detailIo.openSync = ((path: string, flags: number) => {
+        if (!swapped && path.endsWith("agent-a1.meta.json")) {
+          swapped = true;
+          rmSync(meta);
+          expect(Bun.spawnSync(["mkfifo", meta]).exitCode).toBe(0);
+        }
+        return openSync(path, flags);
+      }) as typeof openSync;
+      let answer: unknown[];
+      try {
+        answer = read === "list" ? claudeSubagentState(s.path, true, NOW).tasks.map((task) => task.id) : [...subagentDetails(s.path, ["a1"])];
+      } finally { detailIo.openSync = openSync; rmSync(meta, { force: true }); }
+      expect([read, swapped, answer]).toEqual([read, true, []]);
+    }
   });
 
   it("an unreadable dispatch is no prompt, and no later instruction is taken for it", () => {

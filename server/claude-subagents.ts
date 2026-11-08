@@ -1,4 +1,4 @@
-import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, openSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, openSync, readlinkSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
@@ -528,10 +528,15 @@ function readMeta(path: string): Meta | null {
   const known = metas.get(path);
   if (known?.key === key) return known.meta;
   let meta: Meta | null = null;
+  let fd: number;
+  // not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs the read nor leads elsewhere
+  try { fd = detailIo.openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
   try {
-    const record = row(JSON.parse(readFileSync(path, "utf8")));
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.size > MAX_META_BYTES) return null;
+    const record = row(JSON.parse(readAt(fd, 0, opened.size).toString("utf8")));
     if (record !== null) meta = { title: text(record["description"]) ?? text(record["name"]), name: text(record["name"]), agent: text(record["agentType"]), toolUseId: text(record["toolUseId"]) };
-  } catch { return null; } // being written
+  } catch { return null; } finally { closeSync(fd); } // being written
   remember(metas, path, { key, meta }, 4096);
   return meta;
 }
@@ -709,13 +714,15 @@ function folderVersion(dir: string): { sig: string; latestMs: number } {
  * that changed within a second of the read may have changed again with the same time, so only a
  * listing read after the folder had been quiet for a second is kept.
  */
-const listings = new Map<string, { sig: string; readAt: number; ids: string[] }>();
+const listings = new Map<string, { sig: string; readAt: number; ids: string[]; chain: Folder["chain"] }>();
 function agentIds(parentPath: string): string[] {
   const dir = subagentsDir(parentPath);
   const { sig, latestMs } = folderVersion(dir);
   if (sig === "-") { listings.delete(dir); return []; }
   const known = listings.get(dir);
-  if (known?.sig === sig && known.readAt - latestMs >= 1000) return known.ids;
+  // and only while each folder on the way is still the one listed: a session folder moved and replaced with a link to it
+  // leaves the subagents folder as it was, and lists nothing as the detail read opens nothing
+  if (known?.sig === sig && known.readAt - latestMs >= 1000 && known.chain.every((step) => folderId(step.path) === step.id)) return known.ids;
   // the session's own folder only, as the detail read opens it: a link on the way, or one swapped in, lists nothing
   const folder = sessionFolder(parentPath);
   if (typeof folder === "string") return [];
@@ -736,7 +743,7 @@ function agentIds(parentPath: string): string[] {
     listing?.closeSync();
     if (folder.fd !== null) closeSync(folder.fd);
   }
-  remember(listings, dir, { sig, readAt: Date.now(), ids }, 256);
+  remember(listings, dir, { sig, readAt: Date.now(), ids, chain: folder.chain }, 256);
   return ids;
 }
 
@@ -930,8 +937,9 @@ function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRe
   if (looked === "error") return "unavailable";
   if (looked === "other" || looked.kind !== "file" || looked.size > max) return "not_found";
   let fd: number;
-  // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it
-  try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); } catch { return "unavailable"; }
+  // O_NOFOLLOW: a link put in the file's place after the look is refused by the open itself where the platform has it;
+  // O_NONBLOCK: a FIFO put there is opened without waiting for a writer, and refused as no plain file
+  try { fd = detailIo.openSync(where, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)); } catch { return "unavailable"; }
   try {
     const opened = fstatSync(fd, { bigint: true });
     const size = Number(opened.size);
@@ -1597,6 +1605,8 @@ export class ClaudeSubagentStatus {
     if (this.lookups.get(pane.pane_id) !== claim) return;
     const current = this.panes.get(pane.pane_id);
     const same = current?.key === key;
+    // the same transcript of the same process under another key (its cwd changed, or its session id became known): the same lifetime
+    const sameLife = current !== undefined && (same || (!!found && current.path === found.path));
     const reset = !!(found && current && ((current.path !== null && current.path !== found.path)
       || (current.pid !== null && found.pid != null && current.pid !== found.pid)
       || (current.startedAt !== null && found.startedAt !== null && current.startedAt !== found.startedAt)));
@@ -1604,7 +1614,7 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, restedOnWork: same && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1690,7 +1700,8 @@ export class ClaudeSubagentStatus {
       tracked.holding = holding;
       // the last of its work ending keeps the rest: herdr's working may be the busy title it had, said before
       // that work ended, until a turn begins (a busy signal, or one written) and the rest is gone
-      tracked.restedOnWork = resting && (running > 0 || (!tracked.reset && tracked.resting && (tracked.running > 0 || tracked.restedOnWork === true)));
+      // read together with its rest, the last of that work ending keeps it too: the rest and the end came before this read
+      tracked.restedOnWork = resting && (running > 0 || (!tracked.reset && (tracked.running > 0 || (tracked.resting && tracked.restedOnWork === true))));
       tracked.reset = false;
       tracked.running = running;
       tracked.turnRunning = turnRunning;
