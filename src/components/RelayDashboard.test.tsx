@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -82,7 +81,11 @@ describe("RelayDashboard frame and routes", () => {
   let focusedNodes: string[] = [];
   let store: Map<string, string>;
   let phoneMatches = false;
+  let narrowMatches = false;
   let events: EventTarget;
+  /** the open details panel and its heading, as the dashboard finds them under the PCs split (the renderer draws no DOM) */
+  let detailsHeading: { tabIndex: number; focus: () => void };
+  let detailsPanel: { scrolledTo: unknown[]; scrollIntoView: (options?: unknown) => void; querySelector: (selector: string) => unknown };
 
   const createMockNode = (element: { type: unknown; props?: unknown }) => ({
     isConnected: true,
@@ -98,6 +101,11 @@ describe("RelayDashboard frame and routes", () => {
     },
     contains: () => false,
     querySelectorAll: () => [],
+    querySelector: (selector: string) => {
+      if (selector === "[data-pc-details]") return detailsPanel;
+      const row = /^\[data-pc-id="([^"]+)"\] \.relay-pc-name-btn$/.exec(selector);
+      return row === null ? null : { focus() { focusedNodes.push(`row:${row[1]}`); } };
+    },
     getClientRects: () => [],
     closest: () => null,
     addEventListener() {},
@@ -109,6 +117,9 @@ describe("RelayDashboard frame and routes", () => {
   beforeEach(() => {
     focusedNodes = [];
     phoneMatches = false;
+    narrowMatches = false;
+    detailsHeading = { tabIndex: 0, focus() { focusedNodes.push("details-heading"); } };
+    detailsPanel = { scrolledTo: [], scrollIntoView(options) { detailsPanel.scrolledTo.push(options); }, querySelector: (selector) => selector === "h2" ? detailsHeading : null };
     events = new EventTarget();
     store = new Map<string, string>();
     for (const key of [
@@ -134,7 +145,7 @@ describe("RelayDashboard frame and routes", () => {
       clear: () => store.clear(),
     };
     const matchMedia = (query: string) => ({
-      matches: query === "(max-width: 768px)" ? phoneMatches : false,
+      matches: query === "(max-width: 768px)" ? phoneMatches : query === "(max-width: 1099px)" ? narrowMatches : false,
       addEventListener() {},
       removeEventListener() {},
     });
@@ -314,6 +325,79 @@ describe("RelayDashboard frame and routes", () => {
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
   });
 
+  it("on a phone the details replace the list as a full view whose Back shows the list and focuses its row; between the phone and 1100px the list stays and the details scroll into view and take the focus; from 1100px the side panel leaves the focus alone", async () => {
+    const nameButton = (id: string) => renderer!.root.find((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-name-btn");
+    const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
+    const lists = () => renderer!.root.findAll((n) => n.props["data-pc-list"] !== undefined);
+    const select = async () => { await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); }); };
+    const back = async () => { await act(async () => { renderer!.root.find((n) => n.type === "button" && textOf(n).trim() === "Back").props.onClick(); }); };
+    const scrolls: unknown[][] = [];
+    (window as unknown as { scrollTo: (...args: unknown[]) => void }).scrollTo = (...args) => { scrolls.push(args); };
+
+    // a phone (the tab-bar layout): the details are the whole view, started at the top; Back brings the list back under the focus
+    phoneMatches = true;
+    narrowMatches = true;
+    window.location.hash = "#pcs";
+    await mount();
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual([]);
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(lists()).toHaveLength(0);
+    expect(focusedNodes).toEqual(["details-heading"]);
+    expect(detailsHeading.tabIndex).toBe(-1);
+    expect(scrolls).toEqual([[0, 0]]);
+    expect(detailsPanel.scrolledTo).toEqual([]);
+    await back();
+    expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+
+    // between the phone and 1100px: the list stays, the details panel is scrolled to its start and its heading takes the focus
+    await act(async () => { renderer!.unmount(); });
+    phoneMatches = false;
+    focusedNodes = [];
+    scrolls.length = 0;
+    detailsHeading.tabIndex = 0;
+    window.location.hash = "#pcs";
+    await mount();
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading"]);
+    expect(detailsHeading.tabIndex).toBe(-1);
+    expect(detailsPanel.scrolledTo).toEqual([{ block: "start" }]);
+    expect(scrolls).toEqual([]);
+    await back();
+    expect(details()).toHaveLength(0);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+
+    // a deep link opens with the details and moves no focus
+    await act(async () => { renderer!.unmount(); });
+    focusedNodes = [];
+    window.location.hash = `#pcs?pc=${IDS.home}`;
+    await mount();
+    expect(details()).toHaveLength(1);
+    expect(focusedNodes).toEqual([]);
+
+    // the side panel from 1100px: the click keeps its focus, nothing scrolls, Close moves nothing
+    await act(async () => { renderer!.unmount(); });
+    narrowMatches = false;
+    detailsPanel.scrolledTo = [];
+    detailsHeading.tabIndex = 0;
+    window.location.hash = "#pcs";
+    await mount();
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(lists()).toHaveLength(1);
+    await act(async () => { renderer!.root.find((n) => n.type === "button" && n.props["aria-label"] === "Close").props.onClick(); });
+    expect(details()).toHaveLength(0);
+    expect(focusedNodes).toEqual([]);
+    expect(detailsHeading.tabIndex).toBe(0);
+    expect(detailsPanel.scrolledTo).toEqual([]);
+    expect(scrolls).toEqual([]);
+  });
+
   it("keeps Sign out in the desktop sidebar foot while placing Remove this device only in Devices with same-element confirmation", async () => {
     let signedOut = 0;
     let left = 0;
@@ -455,12 +539,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(localHtml).not.toContain(">Ready<");
   });
 
-  it("suppresses the focus ring on the non-interactive page heading and draws a continuous phone connector rail in RelayMap.css", () => {
-    const dashCss = readFileSync(new URL("./RelayDashboard.css", import.meta.url), "utf8");
-    expect(dashCss).toMatch(/\.relay-dash-title:focus\s*,\s*\.relay-dash-title:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
-
-    const mapCss = readFileSync(new URL("./RelayMap.css", import.meta.url), "utf8");
-    expect(mapCss).toMatch(/\.relay-map-link\s*\{[^}]*position:\s*absolute;[^}]*top:\s*calc\(-1\s*\*\s*var\(--space-2\)\);[^}]*bottom:\s*0;/);
-    expect(mapCss).toMatch(/\.relay-map-route:last-child\s*>\s*\.relay-map-link\s*\{[^}]*bottom:\s*calc\(100%\s*-\s*var\(--avatar-size\)\s*\/\s*2\);/);
-  });
+  // the page heading's ring and the phone map's rail are what the browser draws: scripts/relay-dashboard-browser-qa.ts
+  // (view-heading-focus, details-390-focus, map-rail-390) reads their computed styles and rectangles
 });

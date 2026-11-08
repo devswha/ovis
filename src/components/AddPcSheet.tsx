@@ -50,7 +50,15 @@ export interface AddPcSheetProps {
   onRetry?: () => void; onOpenPc?: () => void; onCancel: () => void; onClose: () => void; onPairByQr: () => void;
 }
 
-function resolveApprover(pc: MyPc | null, state: RelayShellState): string | null {
+/** The approver a previous page kept for `serverId` (`<server id>:<name>`); none when the tab's storage is blocked or holds another PC's. */
+function storedApprover(serverId: string | null): string | null {
+  if (serverId === null) return null;
+  let entry: string | null = null;
+  try { entry = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(APPROVER_STORAGE_KEY) : null; } catch { /* storage denied: this page's own sources name the approver */ }
+  return entry?.startsWith(`${serverId}:`) ? entry.slice(serverId.length + 1) : null;
+}
+
+function resolveApprover(pc: MyPc | null, state: RelayShellState, stored: string | null): string | null {
   if (pc === null) return null;
   if ((state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in" && state.account.pcs) {
     const paired = state.account.pcs.find((row) => row.paired && row.server_id !== pc.server_id);
@@ -60,16 +68,14 @@ function resolveApprover(pc: MyPc | null, state: RelayShellState): string | null
     const saved = state.devices.find((device) => device.server_id !== pc.server_id && device.name);
     if (saved?.name) return saved.name;
   }
-  const cached = lastApprovers.get(pc.server_id);
-  if (cached) return cached;
-  const entry = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(APPROVER_STORAGE_KEY) : null;
-  return entry?.startsWith(`${pc.server_id}:`) ? entry.slice(pc.server_id.length + 1) : null;
+  return lastApprovers.get(pc.server_id) ?? stored;
 }
 
+/** Keeps the approver for the PC's own page, where the join goes on without the account's list; a blocked storage keeps it for this page alone. */
 function rememberApprover(serverId: string, approver: string | null): void {
   if (!approver) return;
   lastApprovers.set(serverId, approver);
-  if (typeof sessionStorage !== "undefined") sessionStorage.setItem(APPROVER_STORAGE_KEY, `${serverId}:${approver}`);
+  try { if (typeof sessionStorage !== "undefined") sessionStorage.setItem(APPROVER_STORAGE_KEY, `${serverId}:${approver}`); } catch { /* storage denied or full: the in-memory copy serves this page */ }
 }
 
 export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
@@ -84,8 +90,11 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   const [retriedChallenge, setRetriedChallenge] = useState<number | null>(null);
   const prevChallenge = useRef<number | null>(null);
 
-  const approver = resolveApprover(pc, state);
-  if (pc !== null && approver !== null) rememberApprover(pc.server_id, approver);
+  // read once when the sheet opens: the sheet is mounted per PC, and the storage is never touched while rendering
+  const [stored] = useState(() => storedApprover(pc?.server_id ?? null));
+  const approver = resolveApprover(pc, state, stored);
+  const serverId = pc?.server_id ?? null;
+  useEffect(() => { if (serverId !== null) rememberApprover(serverId, approver); }, [serverId, approver]);
   if (state.kind === "compare" && state.wrong && challenge > 0 && retriedChallenge !== challenge) setRetriedChallenge(challenge);
 
   useLayoutEffect(() => {
@@ -140,7 +149,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
       case "start":
         actions = mode === "new"
           ? <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button></>
-          : <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => { rememberApprover(pc.server_id, approver); onJoin(pc); }}>{t("Ask to join")}</button></>;
+          : <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc)}>{t("Ask to join")}</button></>;
         break;
       case "confirm":
         body = <p className="relay-shell-copy">{t("Pair with {name}?", { name })}</p>;

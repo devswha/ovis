@@ -26,7 +26,7 @@ describe("the Add-a-PC sheet", () => {
 
   beforeEach(() => {
     calls = { joins: [], matches: [], cancels: 0, closes: 0, pairs: 0, qr: 0, retries: 0, opens: 0 };
-    for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     events = new EventTarget();
     const store = new Map<string, string>();
     const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
@@ -196,6 +196,29 @@ describe("the Add-a-PC sheet", () => {
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close"]);
     await click("Close");
     expect(calls).toMatchObject({ closes: 1, cancels: 0, retries: 0 });
+  });
+
+  it("stays up when sessionStorage is denied, and still names the approver a previous page kept when it is not", async () => {
+    const denied = { getItem(): never { throw new DOMException("blocked", "SecurityError"); }, setItem(): never { throw new DOMException("blocked", "SecurityError"); }, removeItem() {} };
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: denied });
+    const closedWindow = new Date(Date.now() - 15 * 60_000).toISOString();
+    // ids no other test joins with: the sheet remembers approvers per PC for the whole test process
+    const approver = pcOf({ server_id: "a0".repeat(16), name: "Work MacBook", state: "paired", paired: true });
+    const pc = pcOf({ server_id: "c0".repeat(16), added_at: closedWindow });
+    // the account's PCs name the approver; keeping it for the PC's own page must not take the sheet down
+    await mount(props("join", pc, { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [approver, pc] } }));
+    expect(all()).toContain("Add window closed · an account member must approve on Work MacBook.");
+    await act(async () => { renderer!.unmount(); });
+    // nothing names one and the storage cannot be read: the generic wording
+    await mount(props("join", pcOf({ server_id: "d0".repeat(16), added_at: closedWindow }), LIST));
+    expect(all()).toContain("Add window closed · an account member must approve.");
+    expect(all()).not.toContain("Work MacBook");
+    await act(async () => { renderer!.unmount(); });
+    // the entry a previous page kept is read when the sheet opens
+    const kept = new Map<string, string>([["ovis-add-pc-approver", `${"e0".repeat(16)}:Studio desktop`]]);
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); } } });
+    await mount(props("join", pcOf({ server_id: "e0".repeat(16), added_at: closedWindow }), LIST));
+    expect(all()).toContain("Add window closed · an account member must approve on Studio desktop.");
   });
 
   it("offers Try again on a wrong typed number to start a fresh handshake, and clears the field when the new challenge arrives", async () => {

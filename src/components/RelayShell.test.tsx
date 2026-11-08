@@ -452,6 +452,30 @@ describe("the dashboard", () => {
       expect(rows()).toHaveLength(4);
     });
 
+    it("names the QR and code dialog by the heading of its current screen", async () => {
+      await mount(signedIn(four()));
+      await act(async () => { button("Add a PC").props.onClick(); });
+      await act(async () => { button("Pair with a QR or code").props.onClick(); });
+      /** the dialog's accessible name: the text of the element its aria-labelledby names */
+      const nameOf = (): string => {
+        const shown = dialog();
+        const labelledBy: unknown = shown.props["aria-labelledby"];
+        if (typeof labelledBy !== "string") throw new Error(`the ${shown.props["data-pair-dialog"]} dialog has no aria-labelledby`);
+        return textOf(shown.find((node) => node.props.id === labelledBy)).trim();
+      };
+      const shownAs = (state: RelayShellProps["state"]) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...signedIn(four()), state }) })); });
+      expect(dialog().props["data-pair-dialog"]).toBe("qr");
+      expect(nameOf()).toBe("Scan the QR code on your PC");
+      await shownAs({ kind: "code-entry", failure: null });
+      expect(dialog().props["data-pair-dialog"]).toBe("code");
+      expect(nameOf()).toBe("Pair with a code");
+      await shownAs({ kind: "code-looking" });
+      expect(nameOf()).toBe("Pair with a code");
+      await shownAs({ kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" } });
+      expect(dialog().props["data-pair-dialog"]).toBe("compare");
+      expect(nameOf()).toBe("Does Mac mini's screen show this ID?");
+    });
+
     it("keeps the dashboard mounted under the sheet, so its filter and the control that opened the sheet are still there to take the focus back", async () => {
       await mount(signedIn(four()));
       const segBtn = (label: string) => renderer!.root.findByProps({ className: "segmented" }).find((n) => n.type === "button" && textOf(n).trim() === label);
