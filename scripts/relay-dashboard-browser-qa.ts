@@ -37,7 +37,7 @@ export interface DashboardQaOptions {
   readonly evidence: string | null;
 }
 
-type Width = 390 | 1024 | 1440 | 1920;
+type Width = 390 | 1024 | 1100 | 1440 | 1920;
 interface OpenOptions {
   readonly fleet: FleetName;
   readonly width?: Width;
@@ -55,7 +55,7 @@ interface OpenOptions {
 }
 interface Opened { readonly context: BrowserContext; readonly page: Page; readonly fleet: Fleet; readonly sockets: string[]; readonly errors: string[]; readonly account: string[] }
 
-const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1440: 900, 1920: 1080 };
+const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1100: 900, 1440: 900, 1920: 1080 };
 
 export async function relayDashboardQa({ browser, origin, evidence }: DashboardQaOptions): Promise<string[]> {
   if (evidence) mkdirSync(evidence, { recursive: true });
@@ -566,7 +566,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const { page } = await open({ fleet: "FREADY", reducedMotion: true });
     const running = await page.evaluate(() => document.getAnimations().filter((animation) => animation.playState === "running").length);
     expect(running === 0, `${running} animations run under reduced motion`);
-    return "0 running";
+    const { page: phonePage } = await open({ fleet: "FREADY", width: 390, reducedMotion: true });
+    const tabTransitions = await phonePage.evaluate(() => [...document.querySelectorAll<HTMLElement>(".relay-dash-tab")].map((tab) => getComputedStyle(tab).transitionDuration));
+    expect(tabTransitions.length > 0 && tabTransitions.every((dur) => /^0s(, 0s)*$/.test(dur)), `phone tab transitions disabled under reduced motion (${JSON.stringify(tabTransitions)})`);
+    return `0 running; phone tab transitions ${tabTransitions[0] ?? "none"}`;
   });
 
   await check("forced-colors", async () => {
@@ -696,6 +699,14 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await shot(page, `${shotName.replace("-dark", "")}-back-dark`);
       expect(after.listVisible && after.rowsVisible >= 6, `Back shows the list again (${JSON.stringify(after)})`);
       expect(at?.row === id && at.className.includes("relay-pc-name-btn") && at.inView, `Back gives the focus to the row that opened the details, on screen (${JSON.stringify(at)})`);
+      await row.locator(".relay-pc-name-btn").click();
+      await page.locator("[data-pc-details]").waitFor();
+      await page.goBack();
+      await page.locator("[data-pc-details]").waitFor({ state: "detached" });
+      const afterPop = await detailsLayout(page);
+      const atPop = await focused(page);
+      expect(afterPop.listVisible && afterPop.rowsVisible >= 6, `browser Back shows the list again (${JSON.stringify(afterPop)})`);
+      expect(atPop?.row === id && atPop.className.includes("relay-pc-name-btn") && atPop.inView, `browser Back (popstate) gives the focus to the row that opened the details, on screen (${JSON.stringify(atPop)})`);
     };
     return { layout, back };
   };
@@ -712,6 +723,31 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     expect(!layout.listRendered, `the list is replaced by the full details view below 1100px (${JSON.stringify(layout)})`);
     await back();
     return `details replace the list below 1100px (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
+  });
+
+  await check("details-1100-side-panel", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 1100 });
+    await go(page, "#pcs", "pcs");
+    const before = await page.evaluate(() => window.scrollY);
+    await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+    await page.locator("[data-pc-details]").waitFor();
+    const state = await page.evaluate(() => {
+      const split = document.querySelector<HTMLElement>(".relay-dash-pcs-split");
+      const list = document.querySelector<HTMLElement>("[data-pc-list]");
+      return {
+        columns: split ? getComputedStyle(split).gridTemplateColumns.split(" ").length : 0,
+        listKind: list?.getAttribute("data-pc-list") ?? null,
+        listWidth: list ? Math.round(list.getBoundingClientRect().width) : 0,
+        routesShown: document.querySelectorAll('[data-pc-list="phone"] .relay-pc-phone-meta .relay-pc-route, [data-pc-list="phone"] .relay-pc-phone-meta .relay-pc-relay-chip').length,
+      };
+    });
+    const focus = await focused(page);
+    const scrollY = await page.evaluate(() => window.scrollY);
+    await shot(page, "details-1100-side-dark");
+    expect(state.columns === 2 && state.listKind === "phone" && state.routesShown >= 6, `at 1100px the narrowed list beside Details uses the two-line list keeping route/relay (${JSON.stringify(state)})`);
+    expect(focus?.className.includes("relay-pc-name-btn") === true, `the click's focus stays on the row (${JSON.stringify(focus)})`);
+    expect(scrollY === before, `the page does not scroll (${before} -> ${scrollY})`);
+    return `two columns at 1100px, narrow two-line list (${state.listWidth}px), focus on the row`;
   });
 
   await check("details-1440-side-panel", async () => {

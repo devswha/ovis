@@ -138,9 +138,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
 
 /** A completed pairing owns its transport until Open PC or Cancel, including in continued scope. */
 export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open: () => void; readonly cancel: () => void; readonly state?: Extract<RelayShellState, { kind: "ready" }>; readonly retry?: () => void }) {
-  const t = useT();
-  const title = useId();
-  const surface = useFocusTrap<HTMLDivElement>(true);
+  const t = useT(), title = useId(), surface = useFocusTrap<HTMLDivElement>(true);
   useEffect(() => {
     const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") { event.preventDefault(); cancel(); } };
     window.addEventListener("keydown", escape);
@@ -151,10 +149,7 @@ export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open:
       <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={title} tabIndex={-1} data-add-pc-phase="ready">
         <header className="modal-header"><h2 id={title} className="modal-title" role="status">{t("Ready")}</h2></header>
         {state && <div className="modal-body"><p className="relay-shell-copy">{t("{name} is ready to open on this device.", { name: state.name ?? t("this PC") })}</p><EnrollmentStatus state={state.enrollment} {...(retry ? { retry } : {})} /></div>}
-        <footer className="modal-footer">
-          <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
-          <button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button>
-        </footer>
+        <footer className="modal-footer"><button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button><button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button></footer>
       </div>
     </div>
   );
@@ -218,7 +213,10 @@ export function RelayShell(props: RelayShellProps) {
           <AddPcSheet mode={sheet.mode} pc={sheet.pc} state={state} onJoin={(target, options) => onJoin?.(target, { ...options, sheet: sheet.mode === "new" ? "new" : "join" })} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={() => setSheet(null)} onPairByQr={() => { setSheet(null); setAddingPc(true); }} />
         )}
         {addingPc && (
-          <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => setAddingPc(false)} />
+          <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
+            setAddingPc(false);
+            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
+          }} />
         )}
       </main>
     );

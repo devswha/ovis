@@ -18,9 +18,7 @@ import { RelayPcDetails } from "./RelayPcDetails.tsx";
 import { RelayPcTable } from "./RelayPcTable.tsx";
 import { Segmented, SettingsBare, SettingsGroup, SettingsRow, SettingsSelect, Stepper } from "./SettingsControls.tsx";
 
-const PHONE_QUERY = "(max-width: 768px)";
-/** below this the details replace the list as a full view (IS-TABLE-08, RelayPcDetails.css), not a side panel */
-const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
+const PHONE_QUERY = "(max-width: 768px)", NARROW_DETAILS_QUERY = "(max-width: 1099px)", NARROW_SPLIT_TABLE_QUERY = "(max-width: 1391px)";
 
 export interface RelayDashboardProps {
   pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
@@ -101,7 +99,7 @@ export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
   onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
 }: RelayDashboardProps) {
-  const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY);
+  const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY), narrowSplitTable = useMediaQuery(NARROW_SPLIT_TABLE_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
   const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(window.location.hash));
   const [localFilter, setLocalFilter] = useState<DashboardFilter>("all");
@@ -129,15 +127,18 @@ export function RelayDashboard({
     const closed = closedPcRef.current ?? prevPc;
     closedPcRef.current = null;
     const split = splitRef.current;
-    if (!narrow || split === null) return;
+    if (split === null) return;
+    const focusRow = (id: string | null) => id === null ? null : split.querySelector<HTMLElement>(`[data-pc-id="${id}"] .relay-pc-name-btn`);
+    if (!narrow) {
+      if (document.activeElement === null || document.activeElement === document.body) focusRow(route.pc ?? closed)?.focus({ preventScroll: true });
+      return;
+    }
     if (route.pc !== null) {
-      const details = split.querySelector<HTMLElement>("[data-pc-details]"), heading = details?.querySelector<HTMLElement>("h2");
-      if (!details || !heading) return;
-      heading.tabIndex = -1;
-      heading.focus({ preventScroll: true });
-      window.scrollTo(0, 0);
+      const heading = split.querySelector<HTMLElement>("[data-pc-details]")?.querySelector<HTMLElement>("h2");
+      if (!heading) return;
+      heading.tabIndex = -1; heading.focus({ preventScroll: true }); window.scrollTo(0, 0);
     } else if (closed !== null) {
-      (split.querySelector<HTMLElement>(`[data-pc-id="${closed}"] .relay-pc-name-btn`) ?? titleRef.current)?.focus();
+      (focusRow(closed) ?? titleRef.current)?.focus();
     }
   }, [route.pc, narrow]);
 
@@ -172,7 +173,7 @@ export function RelayDashboard({
           <div className="relay-dash-pcs-list">
             <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
               relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
-              selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null}
+              selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null} narrow={selectedRow !== null && narrowSplitTable}
               {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
           </div>
         )}
