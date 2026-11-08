@@ -136,7 +136,8 @@ export interface RemoteHost {
   start(ssh: SshConnection, options: StartOptions): Promise<void>;
   /** A cold start needing desktop sign-in or consent after an interactive-launch failure. */
   startupNotice?(ssh: SshConnection, session?: string): Promise<string | null>;
-  foundSessions?(ssh: SshConnection, inspection: HostInspection): Promise<FoundHerdrSession[] | null>;
+  /** what the bridge asked the owner to choose: herdr sessions running there, or (`gone`) that the chosen one stopped */
+  foundSessions?(ssh: SshConnection, inspection: HostInspection): Promise<{ gone: boolean; sessions: FoundHerdrSession[] } | null>;
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
 }
 
@@ -199,8 +200,10 @@ export const posixHost: RemoteHost = {
     const text = await ssh.run(`if test -f ${path}; then head -c 1048576 ${path}; rm -f ${path}; fi`);
     if (!text) return null;
     const result: unknown = JSON.parse(text);
-    if (typeof result !== "object" || result === null || !("code" in result) || result.code !== "herdr_sessions_found" || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
-    return parseFoundHerdrSessions(result.sessions);
+    if (typeof result !== "object" || result === null || !("code" in result) || (result.code !== "herdr_sessions_found" && result.code !== "herdr_session_gone") || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
+    const gone = result.code === "herdr_session_gone";
+    // a stopped chosen session may leave no other one running
+    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
   },
   async descriptors(ssh) {
     return parseDescriptors((await ssh.run(`for f in "$HOME/.config/herdr-web-ui/bridges/"*.json; do test ! -f "$f" || cat "$f"; printf '\\n'; done`)).split("\n"));

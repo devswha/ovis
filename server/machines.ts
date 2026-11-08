@@ -1633,7 +1633,8 @@ export class MachineManager {
           descriptor = (await host.descriptors(ssh)).find((d) => d.socket_path === expectedSocket && d.pid !== stalePid);
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
-          if (found?.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found);
+          if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);
+          if (found?.sessions.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
           if (!headless) notice = await host.startupNotice?.(ssh, session) ?? null;
           if (notice) break;
           await Bun.sleep(250);

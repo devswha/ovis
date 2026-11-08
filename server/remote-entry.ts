@@ -59,18 +59,20 @@ try {
     // leaves the socket file, and a refused connection says nobody listens on it
     const socket = process.env["HERDR_SOCKET"]!;
     if (existsSync(socket) && !(windows ? staleWindowsMarker(socket) : await refusedSocket(socket))) throw error;
-    // A selected socket is an existing daemon's identity, never permission to create its replacement.
-    if (chosenSocket) throw new Error("The chosen herdr session is no longer running. Start it on that PC, then reconnect.");
+    // what setup reads back to ask the owner (a choice on the card), instead of starting a herdr nobody chose
+    const report = (code: "herdr_sessions_found" | "herdr_session_gone", sessions: Awaited<ReturnType<typeof discoverHerdrSessions>>) => {
+      const result = JSON.stringify({ code, sessions });
+      const resultPath = process.env["HERDR_REMOTE_RESULT"];
+      if (resultPath) { writeFileSync(resultPath + ".tmp", result, { mode: 0o600 }); renameSync(resultPath + ".tmp", resultPath); }
+      console.error(code === "herdr_session_gone" ? `The chosen herdr session is no longer running. Start it on that PC, then reconnect. ${result}` : result);
+      process.exitCode = 2;
+    };
+    // A selected socket is an existing daemon's identity, never permission to create its replacement: the owner
+    // chooses again, among the sessions running now
+    if (chosenSocket) return report("herdr_session_gone", await discoverHerdrSessions());
     if (!windows && process.env["HERDR_REMOTE_START_NEW"] !== "1") {
       const sessions = await discoverHerdrSessions();
-      if (sessions.length) {
-        const result = JSON.stringify({ code: "herdr_sessions_found", sessions });
-        const resultPath = process.env["HERDR_REMOTE_RESULT"];
-        if (resultPath) { writeFileSync(resultPath + ".tmp", result, { mode: 0o600 }); renameSync(resultPath + ".tmp", resultPath); }
-        console.error(result);
-        process.exitCode = 2;
-        return;
-      }
+      if (sessions.length) return report("herdr_sessions_found", sessions);
     }
     // a Windows bundle carries no herdr: its installer is herdr's own, and setup ran it
     const herdr = process.env["OVIS_HERDR_BIN"] || join(bundle, "bin/herdr");

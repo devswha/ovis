@@ -134,9 +134,12 @@ describe("remote entry startup lock", () => {
   }, 60_000);
 
   it.skipIf(process.platform === "win32")("never creates a daemon for a selected socket that has disappeared", async () => {
-    const result = await start(undefined, { HERDR_REMOTE_SOCKET: join(home, "desktop/herdr/herdr.sock") });
-    expect(result.code).not.toBe(0);
+    const resultFile = join(home, "gone.result");
+    const result = await start(undefined, { HERDR_REMOTE_SOCKET: join(home, "desktop/herdr/herdr.sock"), HERDR_REMOTE_RESULT: resultFile });
+    expect(result.code).toBe(2);
     expect(result.output).toContain("chosen herdr session is no longer running");
+    // setup reads it back and asks the owner again, among the sessions running now (none here)
+    expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [] });
     expect(result.output).not.toContain(join(home, "missing-herdr"));
   }, 60_000);
 
