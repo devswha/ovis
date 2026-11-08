@@ -494,11 +494,21 @@ export function PaneTerminal({
   const [draftState, setDraftState] = useState<{ owner: string | null; value: InputDraft }>({ owner: null, value: EMPTY_DRAFT });
   const draft = draftState.value;
   // a drop the connection is back from within the grace is not said (lib/reconnectGrace.ts); held input,
-  // a key or a press here meanwhile, or stopped output say it at once
+  // a key or a press anywhere in the window meanwhile (the active pane's), or stopped output say it at once
   const [actedWhileDropped, setActedWhileDropped] = useState(false);
   if (connected && actedWhileDropped) setActedWhileDropped(false);
-  const connectionShown = useReconnectGrace(connected, connectedBefore, !draftIsEmpty(draft) || outputError !== null || actedWhileDropped);
-  const noteAction = () => { if (!connected) setActedWhileDropped(true); };
+  const connectionShown = useReconnectGrace(connected, connectedBefore, !draftIsEmpty(draft) || outputError !== null || actedWhileDropped, socketRef.current?.lostSince ?? null);
+  const waitingOnGrace = active && connectionShown && !connected;
+  useEffect(() => {
+    if (!waitingOnGrace) return;
+    const acted = () => setActedWhileDropped(true);
+    window.addEventListener("keydown", acted, true);
+    window.addEventListener("pointerdown", acted, true);
+    return () => {
+      window.removeEventListener("keydown", acted, true);
+      window.removeEventListener("pointerdown", acted, true);
+    };
+  }, [waitingOnGrace]);
   const onPeekRef = useRef(onPeek); onPeekRef.current = onPeek;
   const onEndPeekRef = useRef(onEndPeek); onEndPeekRef.current = onEndPeek;
   // The outcome ids this pane's chat last read (its prompt poll). A send notes them as it leaves, so
@@ -1143,7 +1153,6 @@ export function PaneTerminal({
         event.preventDefault();
         termRef.current?.focus();
       } : undefined}
-      onKeyDownCapture={noteAction} onPointerDownCapture={noteAction}
       data-pane-content={!chatView && paneId !== null && active && presented && shown && connected && outputReady && parsedTarget === outputTarget && !held && !ended && !released && !unsupported && !outputError ? presentationKey : undefined}>
       {paneId === null && restoreError !== null && (
         <div className="terminal-placeholder is-restore-error" role="status">

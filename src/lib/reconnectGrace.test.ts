@@ -3,14 +3,14 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { RECONNECT_GRACE_MS, useReconnectGrace } from "./reconnectGrace.ts";
 
-interface Facts { connected: boolean; connectedBefore: boolean; urgent: boolean }
+interface Facts { connected: boolean; connectedBefore: boolean; urgent: boolean; lostAt?: number | null }
 
 let shown: boolean[] = [];
 let renderer: ReactTestRenderer | undefined;
 const acting = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 
 function Probe(facts: Facts) {
-  shown.push(useReconnectGrace(facts.connected, facts.connectedBefore, facts.urgent));
+  shown.push(useReconnectGrace(facts.connected, facts.connectedBefore, facts.urgent, facts.lostAt ?? null));
   return null;
 }
 
@@ -74,6 +74,19 @@ describe("useReconnectGrace", () => {
     await wait(RECONNECT_GRACE_MS);
     await render(live);
     expect(await render(dropped)).toBe(true);
+    await wait(RECONNECT_GRACE_MS);
+    expect(shown.at(-1)).toBe(false);
+  });
+
+  it("counts from when the socket lost the connection: a terminal mounted during a longer drop says it at once", async () => {
+    expect(await render({ ...dropped, lostAt: Date.now() - RECONNECT_GRACE_MS - 1 })).toBe(false);
+    expect(shown).not.toContain(true);
+  });
+
+  it("gives a terminal mounted during a drop only what is left of its grace", async () => {
+    expect(await render({ ...dropped, lostAt: Date.now() - RECONNECT_GRACE_MS + 1000 })).toBe(true);
+    await wait(1000);
+    expect(shown.at(-1)).toBe(false);
   });
 
   it("leaves a first connection as it was: not connected yet is said at once", async () => {
