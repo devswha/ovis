@@ -5,7 +5,7 @@ import type { PcInstallFailure, PcInstallJob, SshTarget } from "../shared/machin
 import type { BridgeDescriptor } from "./bridge.ts";
 import { posixHost, REMOTE_PATH } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
-import { sameSshSession } from "./herdr-profiles.ts";
+import { sshAddress } from "./ssh-address.ts";
 
 /**
  * Ovis installed or put right on another PC over SSH, from the PC in use (docs/remote-pcs.md): the official
@@ -25,8 +25,8 @@ const MIN_FREE_KB = 1024 * 1024;
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const STOP_WAIT_MS = 15_000;
 
-/** the same PC over SSH, whatever herdr session each names */
-export const samePc = (a: SshTarget, b: SshTarget): boolean => sameSshSession({ ...a, session: undefined }, { ...b, session: undefined });
+/** the same PC over SSH as ssh resolves it (an alias, or the default port given, is the same one), whatever herdr session each names */
+export const samePc = (a: SshTarget, b: SshTarget): boolean => sshAddress(a) === sshAddress(b);
 /**
  * The official installer's run on that PC, for one SSH command. Downloaded first, so a failed download is told as one
  * (piped, sh would run an empty script and exit 0), then run with nothing on stdin, on herdr (a herdr plugin that updates

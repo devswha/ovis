@@ -242,9 +242,10 @@ and herdr's default session only.
   `no_launcher`, `not_started`, `connect_failed`. A failure or cancel after the server started by hand was stopped
   says so, and whether another was installed in its place. These routes are this PC's owner's only, with the
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
-  it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
-  connects to that PC from here, for any herdr session there or another PC saved at the same address,
-  and its final connect uses keys only too. A cancelled install keeps the PC busy until its own run
+  it is checked to be that PC's own Ovis server. While an install or setup runs, no other setup or
+  install connects to that PC from here: the same PC as ssh resolves it (`ssh -G`: an alias, or its
+  default port given, is the same one), for any herdr session there or another PC saved at that
+  address. The install's final connect uses keys only too. A cancelled install keeps the PC busy until its own run
   has ended. Stopping an installer already running there is best effort: beside it, a watcher writes
   an empty line to the SSH connection every two seconds, and once nobody reads there (the connection
   was closed) it stops the installer's whole process group, and the command writes once more right

@@ -1161,7 +1161,7 @@ export class MachineManager {
     if (this.stopped) throw new Error("Server stopping");
     let target = validateTarget(request);
     // an install over SSH stops and starts that PC's Ovis: nothing else connects there until it hands over
-    if (!options.fromInstall && (this.installer.runningAt(target) || request.machine_id && this.installer.runningFor(request.machine_id))) throw new Error("Ovis is being installed on this PC; wait for it to finish, or cancel it.");
+    if (!options.fromInstall && (this.installer.runningAt(target) || request.machine_id && this.installer.runningFor(request.machine_id))) throw new Error("Ovis is being installed on this PC; wait for it to finish, or cancel it.")
     const existing = request.machine_id ? this.machines.get(request.machine_id) : undefined;
     // a PC saved in herdr is named by its catalog (any length); a name sent with it is not read
     const name = existing?.machine.herdr_profile_id ? undefined : request.name;
@@ -1174,6 +1174,8 @@ export class MachineManager {
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
     if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (existing && [...this.jobs.values()].some((j) => j.public.machine_id === existing.machine.id && !["connected", "failed", "cancelled"].includes(j.public.phase))) throw new Error("A connection job for this PC is already running");
+    // and one per PC as ssh resolves it, for another saved PC or a new one too, whatever herdr session each names
+    if ([...this.jobs.values()].some((job) => !TERMINAL.has(job.public.phase) && samePc(job.public.target, target))) throw new Error("This app is already connecting to this PC; wait for that to finish, or cancel it.");
     const id = randomUUID();
     const machineId = existing?.machine.id ?? randomUUID();
     if (existing?.machine.herdr_profile_id && (!existing.machine.enabled || !existing.machine.target || !sameSshSession(target, existing.machine.target))) throw new Error("This PC is managed by herdr; refresh its saved machine before setup");

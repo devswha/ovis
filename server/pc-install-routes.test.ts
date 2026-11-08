@@ -8,6 +8,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
 import { SshConnection } from "./ssh.ts";
+import { forgetSshAddresses, sshAddresses } from "./ssh-address.ts";
 
 // The install routes and the one-job-per-PC rule on a manager with one saved SSH PC. SSH never connects: each
 // connection waits until the test lets it in, refuses it, or it is closed. No PC, herdr or real state is touched.
@@ -273,4 +274,40 @@ it("ends a restart's install with the PC's own update it started: its error, or 
   runtime.machine.update_error = "That PC offers another release now than the one shown.";
   done.resolve();
   expect(await install).toBe("That PC offers another release now than the one shown.");
+});
+
+/** the SSH config these tests resolve addresses with (ssh -G -F): an alias of one host, and that host itself */
+function sshConfig(): void {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-ssh-config-"));
+  const config = join(dir, "config");
+  writeFileSync(config, "Host new-alias\n  HostName new.invalid\n  User me\n\nHost *\n  User me\n");
+  const real = sshAddresses.resolve;
+  const resolve = spyOn(sshAddresses, "resolve").mockImplementation((target) => real.call(sshAddresses, target, config));
+  forgetSshAddresses();
+  cleanups.push(() => { resolve.mockRestore(); forgetSshAddresses(); rmSync(dir, { recursive: true, force: true }); });
+}
+
+it("keeps one install or setup per PC as ssh resolves it: an alias, or the default port given, is the same PC", async () => {
+  const { manager, reached } = fixture();
+  sshConfig();
+  const job = manager.install({ destination: "me@new.invalid" });
+  await reached("me@new.invalid");
+  // the same PC by its alias, and by its address with the default port given
+  expect(() => manager.setup({ destination: "new-alias" })).toThrow("Ovis is being installed on this PC");
+  expect(() => manager.setup({ destination: "me@new.invalid", port: 22 })).toThrow("Ovis is being installed on this PC");
+  expect(() => manager.install({ destination: "new-alias" })).toThrow("being installed or connected already");
+  manager.cancelInstall(job.id);
+});
+
+it("keeps one setup at a time per PC as ssh resolves it, whatever herdr session each names", async () => {
+  const { manager, reached } = fixture();
+  sshConfig();
+  const first = manager.setup({ destination: "new-alias" });
+  await reached("new-alias");
+  for (const second of [{ destination: "me@new.invalid" }, { destination: "me@new.invalid", port: 22, session: "work" }, { destination: "new-alias", session: "work" }]) {
+    expect(() => manager.setup(second)).toThrow("already connecting to this PC");
+  }
+  // another PC is not held up by it
+  expect(() => manager.setup({ destination: "me@other.invalid" })).not.toThrow();
+  manager.action(first.id, { action: "cancel" });
 });
