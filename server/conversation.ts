@@ -254,14 +254,24 @@ interface RevisionTarget { path: string; checkWindow: boolean; live?: () => bool
 
 /**
  * The file `path` names as its caller authorized it, taken in the same turn of the event loop, before
- * anything awaits. Where an open cannot refuse a link (no O_NOFOLLOW: Windows), the transcript readers
- * follow one, and so does this.
+ * anything awaits. The page readers follow a link, and so does this; `link` says the settle refuses it,
+ * as its open does wherever an open can (O_NOFOLLOW; not Windows).
  */
-function authorizedFile(path: string): { dev: number; ino: number } | null {
+function authorizedFile(path: string): { dev: number; ino: number; link: boolean } | null {
   try {
-    const stat = constants.O_NOFOLLOW === undefined ? statSync(path) : lstatSync(path);
-    return stat.isFile() ? { dev: stat.dev, ino: stat.ino } : null;
+    const own = lstatSync(path);
+    const stat = own.isSymbolicLink() ? statSync(path) : own;
+    return stat.isFile() ? { dev: stat.dev, ino: stat.ino, link: own.isSymbolicLink() && constants.O_NOFOLLOW !== undefined } : null;
   } catch { return null; }
+}
+
+/** Whether `path` still names the file `authorized` (authorizedFile). */
+function stillAuthorized(path: string, authorized: ReturnType<typeof authorizedFile>): boolean {
+  if (authorized === null) return false;
+  try {
+    const now = statSync(path);
+    return now.dev === authorized.dev && now.ino === authorized.ino;
+  } catch { return false; }
 }
 
 /**
@@ -275,7 +285,7 @@ async function settleTranscriptRevision({ path, checkWindow, live }: RevisionTar
   // what this settle builds on: a read that recorded the transcript while its stat was awaited saw it
   // later, and an older stat checked against that newer revision would take an append for a shrink
   const start = transcriptRevisions.get(path);
-  if (authorized === null) return;
+  if (authorized === null || authorized.link) return;
   let handle: FileHandle;
   try { handle = await openHandle(path, REVISION_FLAGS); } catch { return; }
   try {
@@ -300,7 +310,9 @@ const REVISION_SETTLES = 3;
  * `read`, a synchronous read of `target.path`, with the digests its revision check needs read through
  * the thread pool first (settleTranscriptRevision), from the file authorized as this is called. A change
  * the read meets after that is settled again, REVISION_SETTLES times at most, and the last read reads
- * nothing for its revision. Null when, after a settle, the reader no longer wants it (`live`).
+ * nothing for its revision. Null when, after a settle, the reader no longer wants it (`live`). The read
+ * answers only while the path names the authorized file before and after it: a folder on the way swapped
+ * since puts another agent's file there, and that is transcript_missing.
  */
 async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ value: T } | null> {
   const authorized = authorizedFile(target.path);
@@ -310,7 +322,9 @@ async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ 
     const reads = settles < REVISION_SETTLES ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
     revisionReads = reads;
     try {
+      if (!stillAuthorized(target.path, authorized)) throw new ConversationUnavailable("transcript_missing");
       const value = read();
+      if (!stillAuthorized(target.path, authorized)) throw new ConversationUnavailable("transcript_missing");
       if (reads.mode === "none" || !reads.unsettled) return { value };
     } catch (error) {
       // a read that met an unsettled revision answered from a stale one: its failure says nothing
@@ -2442,14 +2456,19 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     throw new ConversationReadPending();
   }
   // settling awaited after the transcript was resolved: a pane bound to another one since (a new session,
-  // another agent) has not this answer. Only a pane seen bound elsewhere meanwhile is resolved again, and
-  // that resolution's own failure is the answer. Copilot's binding is checked after its read below.
+  // another agent) has not this answer. A pane seen bound elsewhere meanwhile is refused at once; any
+  // other is resolved again (one more resolution per read), since nothing in Ovis may have looked at it,
+  // and that resolution's own failure or not-begun session is the answer. Copilot's binding is checked
+  // after its read below.
   if (transcript.source !== "copilot-transcript") {
-    if (!live()) throw new ConversationUnavailable("no_session_id");
-    if (rebound(paneId, transcript)) {
-      const fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
-      if (fresh.source !== transcript.source || fresh.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
+    if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
+    let fresh: NativeTranscript;
+    try { fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData); }
+    catch (error) {
+      if (error instanceof ConversationNotStarted) return await onNotStarted(error);
+      throw error;
     }
+    if (fresh.source !== transcript.source || fresh.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
   }
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
@@ -3507,8 +3526,15 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   // the sources whose lookup digests the transcript (transcriptGeneration) read that off the event loop first
   if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") {
     const settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup);
-    // a pane seen bound to another transcript while this settled (another OmO session) has not this output
+    // a pane bound to another transcript while this settled (another OmO session) has not this output:
+    // one seen bound elsewhere is refused at once, any other resolved again. Copilot's is checked below.
     if (settled === null || rebound(paneId, transcript)) return null;
+    if (transcript.source === "omo-transcript") {
+      let fresh: NativeTranscript;
+      try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData); }
+      catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path) return null;
+    }
     output = settled.value;
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;

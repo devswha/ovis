@@ -2969,12 +2969,24 @@ describe("a page read that settles its transcript's revision off the event loop"
     await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
   });
 
-  it("asks herdr for the pane once per read when nothing rebound it while its transcript settled", async () => {
+  it("answers nothing from a pane rebound while its transcript settled, though nothing in Ovis looked at the pane meanwhile", async () => {
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, JSON.stringify({ type: "session", id: "cmd-other", version: 3 }) + "\n" + message("o1", null, "elsewhere"));
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    // a new session in the pane, which no read resolves before this one settles
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path: other }));
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("asks herdr for the pane twice per read: to resolve it, and again once its transcript settled", async () => {
     await paneConversation(pane.pane_id);
     appendFileSync(path, message("u2", "u1", "again"));
     const before = snapshots.mock.calls.length;
     await paneConversation(pane.pane_id);
-    expect(snapshots.mock.calls.length - before).toBe(1);
+    expect(snapshots.mock.calls.length - before).toBe(2);
   });
 
   it("parses an actively written transcript only once its revision settled", async () => {
@@ -3059,6 +3071,35 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(JSON.stringify(answer.turns)).not.toContain("secret");
   });
 
+  it("answers nothing from another agent's transcript that a folder swap puts at the path between the settle and the page read", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another agent's secret"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    // the settle closes its handle on the pane's transcript, then the folder is swapped for another agent's
+    let swaps = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (swaps++ > 0) return;
+        renameSync(project, join(root, "away"));
+        renameSync(elsewhere, project);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    expect(swaps).toBe(1);
+  });
+
   it("settles again off the event loop a transcript touched between its settle and its page read", async () => {
     const base = await paneConversation(pane.pane_id);
     const { open } = fsp;
@@ -3125,6 +3166,26 @@ describe("a page read that settles its transcript's revision off the event loop"
     // OmO started another session in the pane, and another look at the pane saw it
     restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
     expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane rebound while its transcript settled, though nothing in Ovis looked at the pane meanwhile", async () => {
+    const omoPane = { pane_id: "omo-unseen", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    // OmO started another session in the pane, which no read resolves before this one settles
+    restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
     stat.release();
     expect(await output).toBeNull();
   });
