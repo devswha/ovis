@@ -230,11 +230,11 @@ const RESUMING_OPTIONS = new Set(["-m", "--model", "--backend", "--toolset", "-s
  * Whether Letta's record may speak for a pane with no report at all. Plain `letta` resumes the
  * project's last conversation, the one the record names; any other option may pick another
  * (`--new`, `--resume`, `--agent`, `--name`, a flag this does not know). With session saving off
- * (LETTA_DISABLE_SESSION_PERSIST) the record is not this process's. Another Letta pane with no
+ * (LETTA_DISABLE_SESSION_PERSIST set at all, or a subagent's LETTA_CODE_AGENT_ROLE) the record is not this process's. Another Letta pane with no
  * report may have moved here from a folder with the same record, so it leaves both unbound.
  */
 function lettaRecordSpeaksAlone(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess): boolean {
-  if (owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== undefined && owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== "" && owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== "0") return false;
+  if (owner.env["LETTA_DISABLE_SESSION_PERSIST"] !== undefined || owner.env["LETTA_CODE_AGENT_ROLE"] === "subagent") return false;
   const program = owner.argv.findIndex((word) => /(^|[\\/])letta(\.(?:js|cmd|exe))?$/i.test(word));
   if (program === -1) return false;
   for (let at = program + 1; at < owner.argv.length; at += 2) {
@@ -243,11 +243,11 @@ function lettaRecordSpeaksAlone(pane: HerdrPane, panes: readonly HerdrPane[], ow
   return !panes.some((other) => other.pane_id !== pane.pane_id && other.agent === "letta" && lettaSessionOf(other) === null);
 }
 
-/** Whether `path` is a regular file last written at or after `startedAt` (less the clock's coarseness). */
+/** Whether `path` is a regular file last written after `startedAt`: a write in the same instant may be the process before. */
 function writtenSince(path: string, startedAt: number): boolean {
   try {
     const stat = lstatSync(path);
-    return stat.isFile() && stat.mtimeMs >= startedAt - MTIME_SLACK_MS;
+    return stat.isFile() && stat.mtimeMs > startedAt;
   } catch { return false; }
 }
 
@@ -260,9 +260,6 @@ function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: L
   const own = canonical(owner.cwd);
   return panes.some((other) => {
     if (other.pane_id === pane.pane_id || (other.agent !== "letta" && other.agent_session?.agent !== "letta")) return false;
-    // a peer whose own report names another conversation makes no claim on this one
-    const report = lettaSessionOf(other);
-    if (report !== null && report.conversation !== bound.conversation) return false;
     const folder = [other.foreground_cwd, other.cwd].find((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd));
     if (folder === undefined || canonical(folder) === own) return false;
     const text = readBounded(join(folder, ".letta", "settings.local.json"), SETTINGS_BYTES);

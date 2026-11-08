@@ -204,6 +204,9 @@ describe("Letta conversation binding", () => {
     // an older transcript is the previous process's
     utimesSync(path, (now - 60_000) / 1000, (now - 60_000) / 1000);
     expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
+    // just before the start is still the previous process's
+    utimesSync(path, (now - 1_000) / 1000, (now - 1_000) / 1000);
+    expect(lettaTranscriptFor(target, [target], owner)).toBeNull();
     utimesSync(path, (now + 5_000) / 1000, (now + 5_000) / 1000);
     expect(lettaTranscriptFor(target, [target], owner)?.path).toBe(path);
   });
@@ -218,8 +221,9 @@ describe("Letta conversation binding", () => {
     for (const argv of [["letta", "--new"], ["letta", "-r"], ["letta", "--resume"], ["letta", "--agent", "agent-x"], ["letta", "-n", "bob"], ["letta", "--conversation", "conv-b"], ["letta", "--new-agent"], ["letta", "--some-future-flag"]]) {
       expect(at(argv)).toBeNull();
     }
-    // Letta then writes no record of what it opened
-    expect(at(["letta"], { LETTA_DISABLE_SESSION_PERSIST: "1" })).toBeNull();
+    // Letta then writes no record of what it opened: whatever value it is given, and as a subagent
+    for (const value of ["1", "0", ""]) expect(at(["letta"], { LETTA_DISABLE_SESSION_PERSIST: value })).toBeNull();
+    expect(at(["letta"], { LETTA_CODE_AGENT_ROLE: "subagent" })).toBeNull();
   });
 
   test("without a report, another Letta pane that reports nothing binds nothing either: it may have moved from a folder with the same record", () => {
@@ -238,8 +242,8 @@ describe("Letta conversation binding", () => {
     writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
     for (const value of [null, "local-conv-1"]) {
       const target = pane("w1:p1", value, owner.cwd);
-      // a peer whose own report names another conversation makes no claim on this one
-      if (value !== null) expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-9", other)], owner)).not.toBeNull();
+      // a peer's report may be the first it made, before a /resume: its folder record still counts
+      expect(lettaTranscriptFor(target, [target, pane("w2:p1", "local-conv-9", other)], owner)).toBeNull();
       expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
       // a Letta in another folder resumed the same conversation: which pane shows it cannot be told
       expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).toBeNull();
