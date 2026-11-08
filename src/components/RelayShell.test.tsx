@@ -444,6 +444,9 @@ describe("the dashboard", () => {
       await act(async () => { button("Pair with a QR or code").props.onClick(); });
       expect(dialogs()).toHaveLength(1);
       expect(dialog().props["data-pair-dialog"]).toBe("qr");
+      expect(dialog().parent?.props.className).toBe("modal-scrim");
+      expect(String(dialog().props.className)).not.toContain("relay-shell");
+      expect(dialog().findByType("footer").findAll((n) => n.type === "button").map(textOf)).toEqual(["Back", "Pair with a code"]);
       expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
       expect(textOf(dialog())).toContain("Scan the QR code on your PC");
       expect(renderer!.root.findAll((instance) => instance.type === "table")).toHaveLength(1);

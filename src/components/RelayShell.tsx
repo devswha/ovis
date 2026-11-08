@@ -19,12 +19,7 @@ import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { RelayDashboard } from "./RelayDashboard.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
-import {
-  INSTALLER_COMMAND,
-  PLUGIN_COMMANDS,
-  RelayShellCardContent,
-  TypedDigits,
-} from "./RelayShellScreens.tsx";
+import { INSTALLER_COMMAND, PLUGIN_COMMANDS, RelayShellCardContent, TypedDigits } from "./RelayShellScreens.tsx";
 
 export { INSTALLER_COMMAND, PLUGIN_COMMANDS, TypedDigits };
 
@@ -32,10 +27,8 @@ export interface RelayShellProps {
   state: RelayShellState;
   /** how each saved PC answered the front page's latest check (pcStatus.ts), by server id */
   pcStatus?: ReadonlyMap<string, PcStatus>;
-  /** Check now: probe the saved PCs again */
-  onCheckPcs?: () => void;
-  /** Details' Check now: one PC, not the fleet sweep */
-  onCheckPc?: (serverId: string) => void;
+  /** Check now: probe the saved PCs again; Details' Check now: one PC, not the fleet sweep */
+  onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void;
   /** Explicit directory retry; independent of the liveness probe sweep. */
   onRefreshAccount?: () => void;
   /** Admission succeeded; only this action hands the scoped page to the PC app. */
@@ -44,88 +37,58 @@ export interface RelayShellProps {
   continuedAccount?: AccountView | null;
   /** Versions from admitted sessions only; a liveness probe never supplies one. */
   observedVersions?: ReadonlyMap<string, ObservedVersion>;
-  /** on a PC's own page (`/s/<id>/`), where Back leads to the front page; the front page has no Back */
-  scoped: boolean;
-  /** an iPhone or iPad browser tab, where the pairing may not survive a week unvisited */
-  iosTab: boolean;
-  onPair: () => void;
-  onRetry: () => void;
-  onCancel: () => void;
-  onBack: () => void;
-  onForget: () => void;
+  /** on a PC's own page (`/s/<id>/`), where Back leads to the front page; iosTab: an iPhone or iPad browser tab */
+  scoped: boolean; iosTab: boolean;
+  onPair: () => void; onRetry: () => void; onCancel: () => void; onBack: () => void; onForget: () => void;
   onForgetPc?: (serverId: string) => Promise<void> | void;
   /** a PC below the shell's minimum version with a managed install: install its latest release */
   onUpdate: () => void;
-  /** pairing without a code: the digits on this screen are the ones the PC shows */
-  /** `typed`: the digits typed from the PC's screen, when this phone may not show its own (state.typed) */
+  /** pairing without a code: the digits on this screen are the ones the PC shows (`typed`: typed from the PC's screen) */
   onMatch: (typed?: string) => void;
   /** the front page's sign-in: off to the provider's pages */
   onSignIn?: (provider: AccountProvider) => void;
   /** a PC of the account this device is not paired with: compare digits with it */
-  /** `typed`: added as a PC new in the account, so this device types the number that PC shows; `sheet`: the Add-a-PC sheet asked, in that mode, and goes on over the PC's own page */
   onJoin?: (pc: MyPc, options?: { typed?: boolean; sheet?: "new" | "join" }) => void;
   /** on a PC's own page: the join the dashboard's sheet started for this PC, which the sheet takes up again over the pairing screens */
   sheetJoin?: { mode: "new" | "join"; server_id: string; returnHash?: string } | null;
-  onSignOut?: () => void;
-  onLeave?: () => void;
+  onSignOut?: () => void; onLeave?: () => void;
   /** the sign-ins the account service offers (accountProvidersOf); GitHub alone by default */
   accountProviders?: readonly AccountProvider[];
   /** the relay each PC of the account's directory named (DirectoryPc.relay), for the dashboard's rows */
   directoryRelays?: readonly { server_id: string; relay: string | null }[];
-  /** the shell's default relay origin, where the dashboard puts a PC with no known relay */
-  defaultRelay?: string;
-  /** this device, as the dashboard's map names it (deviceLabel) */
-  meLabel?: string;
-  /** Pair with a code: the field to type it in */
-  onCodeStart: () => void;
-  /** the code as typed; it is not kept anywhere else */
-  onCodeSubmit: (code: string) => void;
-  /** the ID a typed code found is the one the PC's screen shows */
-  onCodeMatch: () => void;
+  /** the shell's default relay origin, where the dashboard puts a PC with no known relay; meLabel: this device on the map */
+  defaultRelay?: string; meLabel?: string;
+  /** Pair with a code: the field to type it in; onCodeSubmit: the code as typed; onCodeMatch: the ID matches */
+  onCodeStart: () => void; onCodeSubmit: (code: string) => void; onCodeMatch: () => void;
 }
 
-/**
- * The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the
- * DOM), as GitHub's device sign-in asks for the code its other screen shows.
- */
-export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: Title = "h1", titleId }: { readonly failure: TypedCodeFailure | null; readonly looking?: boolean | undefined; readonly onSubmit: (code: string) => void; readonly back: ReactNode; readonly titleTag?: "h1" | "h2" | undefined; /** the id a dialog around this screen is labelled by */ readonly titleId?: string | undefined }) {
-  const t = useT();
-  const id = useId();
+/** The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the DOM). */
+export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: Title = "h1", titleId, formId, omitHeading = false }: { readonly failure: TypedCodeFailure | null; readonly looking?: boolean | undefined; readonly onSubmit: (code: string) => void; readonly back?: ReactNode; readonly titleTag?: "h1" | "h2" | undefined; /** the id a dialog around this screen is labelled by */ readonly titleId?: string | undefined; /** when inside a modal sheet whose footer owns the submit button */ readonly formId?: string | undefined; readonly omitHeading?: boolean | undefined }) {
+  const t = useT(), id = useId(), label = t("Code from the PC");
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     if (!looking) onSubmit((event.currentTarget.elements.namedItem("code") as HTMLInputElement).value);
   };
-  const label = t("Code from the PC");
   return (
     <>
-      <Title className="relay-shell-title" id={titleId}>{t("Pair with a code")}</Title>
+      {!omitHeading && <Title className="relay-shell-title" id={titleId}>{t("Pair with a code")}</Title>}
       <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.")}</p>
-      <form className="relay-shell-code-form" onSubmit={submit}>
+      <form id={formId} className="relay-shell-code-form" onSubmit={submit}>
         <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{label}</label>
         <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
         {failure !== null && <p className="account-error" role="alert">{codeFailureText(t, failure)}</p>}
-        <div className="relay-shell-actions">
-          <button type="submit" className="btn btn-primary" aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button>
-          {back}
-        </div>
+        {back !== undefined && <div className="relay-shell-actions"><button type="submit" className="btn btn-primary" aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button>{back}</div>}
       </form>
     </>
   );
 }
 
 function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel, onClose }: {
-  readonly state: RelayShellState;
-  readonly onCodeStart: () => void;
-  readonly onCodeSubmit: (code: string) => void;
-  readonly onCodeMatch: () => void;
-  readonly onCancel: () => void;
-  readonly onClose: () => void;
+  readonly state: RelayShellState; readonly onCodeStart: () => void; readonly onCodeSubmit: (code: string) => void;
+  readonly onCodeMatch: () => void; readonly onCancel: () => void; readonly onClose: () => void;
 }) {
-  const t = useT();
-  /** the one heading of the current screen names the dialog (each screen renders exactly one h2 with it) */
-  const titleId = useId();
-  const surface = useFocusTrap<HTMLDivElement>(true);
-  const inCode = state.kind === "code-entry" || state.kind === "code-looking" || state.kind === "code-compare";
+  const t = useT(), titleId = useId(), codeFormId = `${titleId}-code-form`, surface = useFocusTrap<HTMLDivElement>(true);
+  const inCode = state.kind === "code-entry" || state.kind === "code-looking" || state.kind === "code-compare", looking = state.kind === "code-looking";
   const close = (): void => { if (inCode) onCancel(); onClose(); };
   const latestClose = useRef(close);
   latestClose.current = close;
@@ -134,36 +97,39 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || nativeModalOver(surface.current)) return;
-      event.stopPropagation();
-      event.preventDefault();
-      latestClose.current();
+      event.stopPropagation(); event.preventDefault(); latestClose.current();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
   const pc = state.kind === "code-compare" ? (state.offer.name ?? t("this PC")) : t("this PC");
+  const mode = state.kind === "code-entry" || state.kind === "code-looking" ? "code" : state.kind === "code-compare" ? "compare" : "qr";
+  const title = mode === "code" ? t("Pair with a code") : mode === "compare" ? t("Does {name}'s screen show this ID?", { name: pc }) : t("Scan the QR code on your PC");
   return createPortal(
-    <div className="modal-scrim relay-shell-screen" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <div ref={surface} className="modal add-pc-sheet relay-shell" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-pair-dialog={state.kind === "code-entry" || state.kind === "code-looking" ? "code" : state.kind === "code-compare" ? "compare" : "qr"}>
-        {state.kind === "code-entry" || state.kind === "code-looking" ? (
-          <CodeEntry titleTag="h2" titleId={titleId} failure={state.kind === "code-entry" ? state.failure : null} looking={state.kind === "code-looking"} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={close}>{t("Cancel")}</button>} />
-        ) : state.kind === "code-compare" ? (
-          <>
-            <h2 className="relay-shell-title" id={titleId}>{t("Does {name}'s screen show this ID?", { name: pc })}</h2>
-            <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Pair only if every group matches.")}</p>
-            <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
-            <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={close}>{t("Cancel")}</button></div>
-          </>
-        ) : (
-          <>
-            <h2 className="relay-shell-title" id={titleId}>{t("Scan the QR code on your PC")}</h2>
+    <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+      <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-pair-dialog={mode}>
+        <header className="modal-header add-pc-head"><h2 className="modal-title" id={titleId}>{title}</h2></header>
+        <div className="modal-body add-pc-body">
+          {mode === "code" ? (
+            <CodeEntry omitHeading formId={codeFormId} failure={state.kind === "code-entry" ? state.failure : null} looking={looking} onSubmit={onCodeSubmit} />
+          ) : mode === "compare" && state.kind === "code-compare" ? (
+            <>
+              <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Pair only if every group matches.")}</p>
+              <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
+            </>
+          ) : (
             <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
-            <div className="relay-shell-actions">
-              <button type="button" className="btn btn-primary" onClick={onCodeStart}>{t("Pair with a code")}</button>
-              <button type="button" className="btn btn-ghost" onClick={close}>{t("Back")}</button>
-            </div>
-          </>
-        )}
+          )}
+        </div>
+        <footer className="modal-footer add-pc-footer">
+          {mode === "code" ? (
+            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="pair" type="submit" form={codeFormId} className="btn btn-primary" data-sheet-primary aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button></>
+          ) : mode === "compare" ? (
+            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="match" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeMatch}>{t("It matches")}</button></>
+          ) : (
+            <><button key="back" type="button" className="btn" onClick={close}>{t("Back")}</button><button key="code" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeStart}>{t("Pair with a code")}</button></>
+          )}
+        </footer>
       </div>
     </div>,
     document.body,
@@ -172,9 +138,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
 
 /** A completed pairing owns its transport until Open PC or Cancel, including in continued scope. */
 export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open: () => void; readonly cancel: () => void; readonly state?: Extract<RelayShellState, { kind: "ready" }>; readonly retry?: () => void }) {
-  const t = useT();
-  const title = useId();
-  const surface = useFocusTrap<HTMLDivElement>(true);
+  const t = useT(), title = useId(), surface = useFocusTrap<HTMLDivElement>(true);
   useEffect(() => {
     const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") { event.preventDefault(); cancel(); } };
     window.addEventListener("keydown", escape);
@@ -185,10 +149,7 @@ export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open:
       <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={title} tabIndex={-1} data-add-pc-phase="ready">
         <header className="modal-header"><h2 id={title} className="modal-title" role="status">{t("Ready")}</h2></header>
         {state && <div className="modal-body"><p className="relay-shell-copy">{t("{name} is ready to open on this device.", { name: state.name ?? t("this PC") })}</p><EnrollmentStatus state={state.enrollment} {...(retry ? { retry } : {})} /></div>}
-        <footer className="modal-footer">
-          <button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button>
-          <button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button>
-        </footer>
+        <footer className="modal-footer"><button type="button" className="btn" onClick={cancel}>{t("Cancel")}</button><button type="button" className="btn btn-primary" onClick={open}>{t("Open PC")}</button></footer>
       </div>
     </div>
   );
@@ -252,7 +213,10 @@ export function RelayShell(props: RelayShellProps) {
           <AddPcSheet mode={sheet.mode} pc={sheet.pc} state={state} onJoin={(target, options) => onJoin?.(target, { ...options, sheet: sheet.mode === "new" ? "new" : "join" })} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={() => setSheet(null)} onPairByQr={() => { setSheet(null); setAddingPc(true); }} />
         )}
         {addingPc && (
-          <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => setAddingPc(false)} />
+          <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {
+            setAddingPc(false);
+            queueMicrotask(() => { if (document.activeElement === null || document.activeElement === document.body) [...document.querySelectorAll<HTMLElement>('[data-action="add-pc"]')].find((el) => el.getClientRects().length > 0)?.focus({ preventScroll: true }); });
+          }} />
         )}
       </main>
     );

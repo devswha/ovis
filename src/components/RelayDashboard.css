@@ -81,10 +81,6 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .relay-dash-nav-item, .relay-dash-tab { transition: none; }
-}
-
 .relay-dash-foot {
   display: flex; flex-direction: column; gap: var(--space-2); margin-top: auto;
   padding: var(--space-3) var(--space-2) 0; border-top: var(--hairline) solid var(--border);
@@ -181,9 +177,8 @@
   .relay-dash-pcs-split.is-selected { grid-template-columns: minmax(0, 1fr) var(--relay-detail-w); }
 }
 
-/* Below 1100px the details are a full view: on a phone they stand in for the list, above it they open under the list
-   and scroll into view (RelayDashboard.tsx). Their heading takes the focus and shows no ring, as the page title does
-   not: it is not interactive. */
+/* Below 1100px the details replace the list as a full view (RelayDashboard.tsx, IS-TABLE-08). Their heading takes the
+   focus and shows no ring, as the page title does not: it is not interactive. */
 .relay-dash-pcs-split > .relay-pc-details { scroll-margin-top: var(--space-4); }
 
 .relay-dash-pcs-split .relay-pc-details-title:focus, .relay-dash-pcs-split .relay-pc-details-title:focus-visible { outline: none; }
@@ -267,4 +262,8 @@
   .relay-dash-tab:active { background: var(--bg-hover); }
   .relay-dash-tab[aria-current="page"] { background: var(--bg-elevated); color: var(--text); }
   .relay-dash-tab:focus-visible { outline: var(--ring); outline-offset: calc(-1 * var(--ring-offset)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-dash-nav-item, .relay-dash-tab { transition: none; }
 }

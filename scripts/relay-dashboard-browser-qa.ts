@@ -37,7 +37,7 @@ export interface DashboardQaOptions {
   readonly evidence: string | null;
 }
 
-type Width = 390 | 1024 | 1440 | 1920;
+type Width = 390 | 1024 | 1100 | 1440 | 1920;
 interface OpenOptions {
   readonly fleet: FleetName;
   readonly width?: Width;
@@ -55,7 +55,7 @@ interface OpenOptions {
 }
 interface Opened { readonly context: BrowserContext; readonly page: Page; readonly fleet: Fleet; readonly sockets: string[]; readonly errors: string[]; readonly account: string[] }
 
-const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1440: 900, 1920: 1080 };
+const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1100: 900, 1440: 900, 1920: 1080 };
 
 export async function relayDashboardQa({ browser, origin, evidence }: DashboardQaOptions): Promise<string[]> {
   if (evidence) mkdirSync(evidence, { recursive: true });
@@ -597,7 +597,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const { page } = await open({ fleet: "FREADY", reducedMotion: true });
     const running = await page.evaluate(() => document.getAnimations().filter((animation) => animation.playState === "running").length);
     expect(running === 0, `${running} animations run under reduced motion`);
-    return "0 running";
+    const { page: phonePage } = await open({ fleet: "FREADY", width: 390, reducedMotion: true });
+    const tabTransitions = await phonePage.evaluate(() => [...document.querySelectorAll<HTMLElement>(".relay-dash-tab")].map((tab) => getComputedStyle(tab).transitionDuration));
+    expect(tabTransitions.length > 0 && tabTransitions.every((dur) => /^0s(, 0s)*$/.test(dur)), `phone tab transitions disabled under reduced motion (${JSON.stringify(tabTransitions)})`);
+    return `0 running; phone tab transitions ${tabTransitions[0] ?? "none"}`;
   });
 
   await check("forced-colors", async () => {
@@ -694,9 +697,9 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `h1 "Devices" focused, outline-style none`;
   });
 
-  // IS-TABLE-08: on a phone (the tab-bar layout) a selected PC's details replace the list, as a full view with Back; between
-  // the phone and 1100px they open under the list and come into view; either way the details heading takes the focus,
-  // ringless and on screen, and Back gives the focus to the row that opened it. From 1100px the side panel keeps the click's focus.
+  // IS-TABLE-08: below 1100px a selected PC's details replace the list as a full view with Back;
+  // the details heading takes the focus, ringless and on screen, and Back gives the focus to the row that opened it.
+  // From 1100px the side panel keeps the click's focus.
   /** The list's visible rows, the details' placement and the scroll position, as the page lays them out. */
   const detailsLayout = (page: Page) => page.evaluate(() => {
     const visible = (element: Element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden";
@@ -727,6 +730,14 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       await shot(page, `${shotName.replace("-dark", "")}-back-dark`);
       expect(after.listVisible && after.rowsVisible >= 6, `Back shows the list again (${JSON.stringify(after)})`);
       expect(at?.row === id && at.className.includes("relay-pc-name-btn") && at.inView, `Back gives the focus to the row that opened the details, on screen (${JSON.stringify(at)})`);
+      await row.locator(".relay-pc-name-btn").click();
+      await page.locator("[data-pc-details]").waitFor();
+      await page.goBack();
+      await page.locator("[data-pc-details]").waitFor({ state: "detached" });
+      const afterPop = await detailsLayout(page);
+      const atPop = await focused(page);
+      expect(afterPop.listVisible && afterPop.rowsVisible >= 6, `browser Back shows the list again (${JSON.stringify(afterPop)})`);
+      expect(atPop?.row === id && atPop.className.includes("relay-pc-name-btn") && atPop.inView, `browser Back (popstate) gives the focus to the row that opened the details, on screen (${JSON.stringify(atPop)})`);
     };
     return { layout, back };
   };
@@ -738,11 +749,36 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `details replace the list (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
   });
 
-  await check("details-1024-in-flow", async () => {
+  await check("details-1024-full-view", async () => {
     const { layout, back } = await detailsOpened(1024, "details-1024-dark");
-    expect(layout.listVisible && layout.rowsVisible >= 1, `the list stays above the details between the phone and 1100px (${JSON.stringify(layout)})`);
+    expect(!layout.listRendered, `the list is replaced by the full details view below 1100px (${JSON.stringify(layout)})`);
     await back();
-    return `details under the list, in view at top ${layout.top}px after scrolling ${layout.scrollY}px, heading focused, Back focuses the row`;
+    return `details replace the list below 1100px (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
+  });
+
+  await check("details-1100-side-panel", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 1100 });
+    await go(page, "#pcs", "pcs");
+    const before = await page.evaluate(() => window.scrollY);
+    await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+    await page.locator("[data-pc-details]").waitFor();
+    const state = await page.evaluate(() => {
+      const split = document.querySelector<HTMLElement>(".relay-dash-pcs-split");
+      const list = document.querySelector<HTMLElement>("[data-pc-list]");
+      return {
+        columns: split ? getComputedStyle(split).gridTemplateColumns.split(" ").length : 0,
+        listKind: list?.getAttribute("data-pc-list") ?? null,
+        listWidth: list ? Math.round(list.getBoundingClientRect().width) : 0,
+        routesShown: document.querySelectorAll('[data-pc-list="phone"] .relay-pc-phone-meta .relay-pc-route, [data-pc-list="phone"] .relay-pc-phone-meta .relay-pc-relay-chip').length,
+      };
+    });
+    const focus = await focused(page);
+    const scrollY = await page.evaluate(() => window.scrollY);
+    await shot(page, "details-1100-side-dark");
+    expect(state.columns === 2 && state.listKind === "phone" && state.routesShown >= 6, `at 1100px the narrowed list beside Details uses the two-line list keeping route/relay (${JSON.stringify(state)})`);
+    expect(focus?.className.includes("relay-pc-name-btn") === true, `the click's focus stays on the row (${JSON.stringify(focus)})`);
+    expect(scrollY === before, `the page does not scroll (${before} -> ${scrollY})`);
+    return `two columns at 1100px, narrow two-line list (${state.listWidth}px), focus on the row`;
   });
 
   await check("details-1440-side-panel", async () => {
@@ -761,29 +797,81 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `two columns, focus on the row, no scroll`;
   });
 
-  // the QR and code dialog is named by the heading of its current screen
+  // the QR and code dialog is named by the heading of its current screen, sits over the visible scrimmed dashboard, and docks as a bottom sheet on phones
   for (const width of [1440, 390] as const) {
     await check(`pair-dialog-name-${width}`, async () => {
       const { page } = await open({ fleet: "FREADY", width });
-      await page.locator('[data-action="add-pc"]').filter({ visible: true }).first().click();
+      const addTrigger = page.locator('[data-action="add-pc"]').filter({ visible: true }).first();
+      await addTrigger.focus();
+      await page.keyboard.press("Enter");
       await page.locator('[role=dialog][data-add-pc-mode="add"] [data-sheet-primary]').click();
       const dialog = page.locator("[role=dialog][data-pair-dialog]");
       await dialog.waitFor();
-      const named = () => dialog.evaluate((element) => {
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
+      const inspectDialog = () => dialog.evaluate((element) => {
         const labelled = element.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").filter((text) => text !== "").join(" ") ?? null;
-        return { screen: element.getAttribute("data-pair-dialog"), name: element.getAttribute("aria-label") ?? (labelled === "" ? null : labelled), heading: element.querySelector("h2")?.textContent?.trim() ?? null };
+        const scrim = element.parentElement;
+        const scrimBg = scrim ? getComputedStyle(scrim).backgroundColor : "";
+        const alphaMatch = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/.exec(scrimBg);
+        const scrimAlpha = alphaMatch ? Number(alphaMatch[1]) : (scrimBg === "transparent" ? 0 : 1);
+        const rect = element.getBoundingClientRect();
+        const footerBtns = [...element.querySelectorAll<HTMLElement>(".modal-footer .btn")].map((b) => ({ text: b.textContent?.trim() ?? "", rect: b.getBoundingClientRect() }));
+        const dashInert = document.querySelector(".relay-dash-screen > [inert]") !== null;
+        return {
+          screen: element.getAttribute("data-pair-dialog"),
+          name: element.getAttribute("aria-label") ?? (labelled === "" ? null : labelled),
+          heading: element.querySelector("h2")?.textContent?.trim() ?? null,
+          scrimClass: scrim?.className ?? "",
+          scrimBg,
+          scrimAlpha,
+          dashInert,
+          width: Math.round(rect.width),
+          bottom: Math.round(rect.bottom),
+          innerHeight: window.innerHeight,
+          innerWidth: window.innerWidth,
+          footerCount: footerBtns.length,
+          footerTexts: footerBtns.map((b) => b.text),
+          primaryFirstOnPhone: footerBtns.length >= 2 ? footerBtns[1]!.rect.top < footerBtns[0]!.rect.top : false,
+        };
       });
-      const qr = await named();
+      const qr = await inspectDialog();
       const qrTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
       await shot(page, `pair-dialog-qr-${width}-dark`);
+      // an unkeyed footer reused the clicked button as the code form's submit button, so its activation submitted the empty form
+      await page.evaluate(() => {
+        const seen = document.documentElement.dataset;
+        seen["qaInvalid"] = "0"; seen["qaSubmit"] = "0";
+        document.addEventListener("invalid", () => { seen["qaInvalid"] = String(Number(seen["qaInvalid"]) + 1); }, true);
+        document.addEventListener("submit", () => { seen["qaSubmit"] = String(Number(seen["qaSubmit"]) + 1); }, true);
+      });
       await dialog.getByRole("button", { name: "Pair with a code" }).click();
       await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
-      const code = await named();
+      const codeField = await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>("[data-pair-dialog=code] .relay-shell-code-input");
+        return { events: { invalid: Number(document.documentElement.dataset["qaInvalid"]), submit: Number(document.documentElement.dataset["qaSubmit"]) }, focused: input !== null && document.activeElement === input, placeholderShown: input?.matches(":placeholder-shown") ?? false, alerts: document.querySelectorAll("[data-pair-dialog=code] [role=alert]").length };
+      });
+      expect(codeField.events.invalid === 0 && codeField.events.submit === 0, `opening the code screen neither submits nor validates the empty code form (${JSON.stringify(codeField)})`);
+      expect(codeField.focused && codeField.placeholderShown && codeField.alerts === 0, `the empty code input has focus, shows its placeholder and no error (${JSON.stringify(codeField)})`);
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
+      const code = await inspectDialog();
       const codeTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
       await shot(page, `pair-dialog-code-${width}-dark`);
       expect(qr.name !== null && qr.name === qr.heading, `the QR screen names its dialog by its heading (${JSON.stringify(qr)}, tree ${qrTree})`);
       expect(code.name !== null && code.name === code.heading, `the code screen names its dialog by its heading (${JSON.stringify(code)}, tree ${codeTree})`);
-      return `${qrTree}; ${codeTree}`;
+      expect(qr.dashInert && qr.scrimAlpha > 0 && qr.scrimAlpha < 1 && !qr.scrimClass.includes("relay-shell-screen"), `the QR dialog sits on a translucent scrim over the inert dashboard (${JSON.stringify(qr)})`);
+      expect(code.dashInert && code.scrimAlpha > 0 && code.scrimAlpha < 1 && !code.scrimClass.includes("relay-shell-screen"), `the code dialog sits on a translucent scrim over the inert dashboard (${JSON.stringify(code)})`);
+      expect(qr.footerCount === 2 && code.footerCount === 2, `both screens place their actions in .modal-footer (${JSON.stringify({ qr: qr.footerTexts, code: code.footerTexts })})`);
+      if (width === 1440) {
+        expect(qr.width === 520 && code.width === 520, `desktop dialog is 520px wide (${JSON.stringify({ qr: qr.width, code: code.width })})`);
+      } else {
+        expect(qr.width === qr.innerWidth && Math.abs(qr.bottom - qr.innerHeight) <= 1 && qr.primaryFirstOnPhone, `phone QR dialog is a bottom sheet with docked primary-first footer (${JSON.stringify(qr)})`);
+        expect(code.width === code.innerWidth && Math.abs(code.bottom - code.innerHeight) <= 1 && code.primaryFirstOnPhone, `phone code dialog is a bottom sheet with docked primary-first footer (${JSON.stringify(code)})`);
+      }
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      const returned = await page.waitForFunction(() => document.activeElement?.getAttribute("data-action") === "add-pc", null, { timeout: 5_000 }).then(() => true, () => false);
+      expect(returned, "closing the pair dialog returns focus to the Add a PC trigger");
+      return `${qrTree}; ${codeTree}; width ${qr.width}px; scrimAlpha ${qr.scrimAlpha}`;
     });
   }
 

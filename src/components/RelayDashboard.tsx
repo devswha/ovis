@@ -18,9 +18,7 @@ import { RelayPcDetails } from "./RelayPcDetails.tsx";
 import { RelayPcTable } from "./RelayPcTable.tsx";
 import { Segmented, SettingsBare, SettingsGroup, SettingsRow, SettingsSelect, Stepper } from "./SettingsControls.tsx";
 
-const PHONE_QUERY = "(max-width: 768px)";
-/** below this the details are a full view under the list (RelayPcDetails.css), not a side panel */
-const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
+const PHONE_QUERY = "(max-width: 768px)", NARROW_DETAILS_QUERY = "(max-width: 1099px)", NARROW_SPLIT_TABLE_QUERY = "(max-width: 1391px)";
 
 export interface RelayDashboardProps {
   pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
@@ -101,7 +99,7 @@ export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
   onCheckPcs, onCheckPc, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
 }: RelayDashboardProps) {
-  const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY);
+  const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY), narrowSplitTable = useMediaQuery(NARROW_SPLIT_TABLE_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
   const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(window.location.hash));
   const [localFilter, setLocalFilter] = useState<DashboardFilter>("all");
@@ -119,27 +117,30 @@ export function RelayDashboard({
 
   useEffect(() => { if (prevViewRef.current !== route.view) { prevViewRef.current = route.view; titleRef.current?.focus(); } }, [route.view]);
 
-  // On a phone the details replace the list (IS-TABLE-08), so the view starts at the top; between the phone and 1100px
-  // they open under the whole list, so the panel scrolls into view. Either way the details heading takes the focus
-  // (ringless, RelayDashboard.css) and leaving them focuses the row again. From 1100px the side panel opens beside the
-  // list and the focus stays where the click put it.
+  // Below 1100px the details replace the list as a full view (IS-TABLE-08), so the view starts at the top,
+  // the details heading takes the focus (ringless, RelayDashboard.css), and leaving them (Back, Escape, or browser Back)
+  // focuses the row again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
   useEffect(() => {
-    if (route.pc === prevPcRef.current) return;
+    const prevPc = prevPcRef.current;
+    if (route.pc === prevPc) return;
     prevPcRef.current = route.pc;
-    const closed = closedPcRef.current;
+    const closed = closedPcRef.current ?? prevPc;
     closedPcRef.current = null;
     const split = splitRef.current;
-    if (!narrow || split === null) return;
-    if (route.pc !== null) {
-      const details = split.querySelector<HTMLElement>("[data-pc-details]"), heading = details?.querySelector<HTMLElement>("h2");
-      if (!details || !heading) return;
-      heading.tabIndex = -1;
-      heading.focus({ preventScroll: true });
-      if (phone) window.scrollTo(0, 0); else details.scrollIntoView({ block: "start" });
-    } else if (closed !== null) {
-      (split.querySelector<HTMLElement>(`[data-pc-id="${closed}"] .relay-pc-name-btn`) ?? titleRef.current)?.focus();
+    if (split === null) return;
+    const focusRow = (id: string | null) => id === null ? null : split.querySelector<HTMLElement>(`[data-pc-id="${id}"] .relay-pc-name-btn`);
+    if (!narrow) {
+      if (document.activeElement === null || document.activeElement === document.body) focusRow(route.pc ?? closed)?.focus({ preventScroll: true });
+      return;
     }
-  }, [route.pc, narrow, phone]);
+    if (route.pc !== null) {
+      const heading = split.querySelector<HTMLElement>("[data-pc-details]")?.querySelector<HTMLElement>("h2");
+      if (!heading) return;
+      heading.tabIndex = -1; heading.focus({ preventScroll: true }); window.scrollTo(0, 0);
+    } else if (closed !== null) {
+      (focusRow(closed) ?? titleRef.current)?.focus();
+    }
+  }, [route.pc, narrow]);
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
@@ -167,12 +168,12 @@ export function RelayDashboard({
   const renderTableSection = (relayFilter: string | null) => model && (
     <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
       <div ref={splitRef} className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
-        {/* a phone shows one screen at a time: with a PC selected, its details stand in for the list until Back */}
-        {!(phone && selectedRow) && (
+        {/* below 1100px (IS-TABLE-08) the details replace the list as a full view until Back */}
+        {!(narrow && selectedRow) && (
           <div className="relay-dash-pcs-list">
             <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
               relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
-              selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null}
+              selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null} narrow={selectedRow !== null && narrowSplitTable}
               {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
           </div>
         )}

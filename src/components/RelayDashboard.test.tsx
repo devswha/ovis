@@ -82,6 +82,7 @@ describe("RelayDashboard frame and routes", () => {
   let store: Map<string, string>;
   let phoneMatches = false;
   let narrowMatches = false;
+  let narrowSplitMatches = false;
   let events: EventTarget;
   /** the open details panel and its heading, as the dashboard finds them under the PCs split (the renderer draws no DOM) */
   let detailsHeading: { tabIndex: number; focus: () => void };
@@ -118,6 +119,7 @@ describe("RelayDashboard frame and routes", () => {
     focusedNodes = [];
     phoneMatches = false;
     narrowMatches = false;
+    narrowSplitMatches = false;
     detailsHeading = { tabIndex: 0, focus() { focusedNodes.push("details-heading"); } };
     detailsPanel = { scrolledTo: [], scrollIntoView(options) { detailsPanel.scrolledTo.push(options); }, querySelector: (selector) => selector === "h2" ? detailsHeading : null };
     events = new EventTarget();
@@ -145,7 +147,7 @@ describe("RelayDashboard frame and routes", () => {
       clear: () => store.clear(),
     };
     const matchMedia = (query: string) => ({
-      matches: query === "(max-width: 768px)" ? phoneMatches : query === "(max-width: 1099px)" ? narrowMatches : false,
+      matches: query === "(max-width: 768px)" ? phoneMatches : query === "(max-width: 1099px)" ? narrowMatches : query === "(max-width: 1391px)" ? narrowSplitMatches : false,
       addEventListener() {},
       removeEventListener() {},
     });
@@ -325,7 +327,7 @@ describe("RelayDashboard frame and routes", () => {
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
   });
 
-  it("on a phone the details replace the list as a full view whose Back shows the list and focuses its row; between the phone and 1100px the list stays and the details scroll into view and take the focus; from 1100px the side panel leaves the focus alone", async () => {
+  it("below 1100px the details replace the list as a full view whose Back shows the list and focuses its row; from 1100px the side panel leaves the focus alone", async () => {
     const nameButton = (id: string) => renderer!.root.find((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-name-btn");
     const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
     const lists = () => renderer!.root.findAll((n) => n.props["data-pc-list"] !== undefined);
@@ -352,8 +354,17 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(0);
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+    // browser Back (popstate) from phone Details also restores focus to the row
+    focusedNodes = [];
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading"]);
+    await navigateHash("#pcs", "popstate");
+    expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
-    // between the phone and 1100px: the list stays, the details panel is scrolled to its start and its heading takes the focus
+    // between the phone and 1100px: the details also replace the list as a full view, started at the top, and Back restores focus to the row
     await act(async () => { renderer!.unmount(); });
     phoneMatches = false;
     focusedNodes = [];
@@ -363,13 +374,23 @@ describe("RelayDashboard frame and routes", () => {
     await mount();
     await select();
     expect(details()).toHaveLength(1);
-    expect(lists()).toHaveLength(1);
+    expect(lists()).toHaveLength(0);
     expect(focusedNodes).toEqual(["details-heading"]);
     expect(detailsHeading.tabIndex).toBe(-1);
-    expect(detailsPanel.scrolledTo).toEqual([{ block: "start" }]);
-    expect(scrolls).toEqual([]);
+    expect(detailsPanel.scrolledTo).toEqual([]);
+    expect(scrolls).toEqual([[0, 0]]);
     await back();
     expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+    // browser Back (popstate) from narrow Details also restores focus to the row
+    focusedNodes = [];
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading"]);
+    await navigateHash("#pcs", "popstate");
+    expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
     // a deep link opens with the details and moves no focus
@@ -380,16 +401,35 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(1);
     expect(focusedNodes).toEqual([]);
 
-    // the side panel from 1100px: the click keeps its focus, nothing scrolls, Close moves nothing
+    // between 1100px and 1391px (remaining table < 720px): Details sits beside the two-line narrow list
     await act(async () => { renderer!.unmount(); });
     narrowMatches = false;
+    narrowSplitMatches = true;
+    scrolls.length = 0;
+    detailsPanel.scrolledTo = [];
+    detailsHeading.tabIndex = 0;
+    window.location.hash = "#pcs";
+    await mount();
+    expect(lists().map((n) => n.props["data-pc-list"])).toEqual(["table"]);
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(lists().map((n) => n.props["data-pc-list"])).toEqual(["phone"]);
+    await act(async () => { renderer!.root.find((n) => n.type === "button" && n.props["aria-label"] === "Close").props.onClick(); });
+    expect(details()).toHaveLength(0);
+    expect(lists().map((n) => n.props["data-pc-list"])).toEqual(["table"]);
+
+    // the side panel from 1392px+: the click keeps its focus, nothing scrolls, Close moves nothing
+    await act(async () => { renderer!.unmount(); });
+    narrowSplitMatches = false;
+    focusedNodes = [];
+    scrolls.length = 0;
     detailsPanel.scrolledTo = [];
     detailsHeading.tabIndex = 0;
     window.location.hash = "#pcs";
     await mount();
     await select();
     expect(details()).toHaveLength(1);
-    expect(lists()).toHaveLength(1);
+    expect(lists().map((n) => n.props["data-pc-list"])).toEqual(["table"]);
     await act(async () => { renderer!.root.find((n) => n.type === "button" && n.props["aria-label"] === "Close").props.onClick(); });
     expect(details()).toHaveLength(0);
     expect(focusedNodes).toEqual([]);
