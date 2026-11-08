@@ -19,6 +19,8 @@ import { RelayPcTable } from "./RelayPcTable.tsx";
 import { Segmented, SettingsBare, SettingsGroup, SettingsRow, SettingsSelect, Stepper } from "./SettingsControls.tsx";
 
 const PHONE_QUERY = "(max-width: 768px)";
+/** below this the details are a full view under the list (RelayPcDetails.css), not a side panel */
+const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
 
 export interface RelayDashboardProps {
   pcs: readonly DashboardPc[] | null; account: { provider: AccountProvider } | null; defaultRelay: string; meLabel: string;
@@ -99,12 +101,15 @@ export function RelayDashboard({
   pcs, account, defaultRelay, meLabel, error = null, pcStatus, observedVersions,
   onCheckPcs, onRefreshAccount, onAddPc, onPairByQr, onOpenSheet, onForgetPc, onSignIn, onSignOut, onLeave,
 }: RelayDashboardProps) {
-  const t = useT(), phone = useMediaQuery(PHONE_QUERY);
+  const t = useT(), phone = useMediaQuery(PHONE_QUERY), narrow = useMediaQuery(NARROW_DETAILS_QUERY);
   const mode: "account" | "local" = account ? "account" : "local";
   const [route, setRoute] = useState<DashboardRoute>(() => typeof window === "undefined" ? { view: "overview", filter: "all", relay: null, pc: null } : parseDashboardHash(window.location.hash));
   const [localFilter, setLocalFilter] = useState<DashboardFilter>("all");
   const [checkedByUser, setCheckedByUser] = useState(false);
   const titleRef = useRef<HTMLHeadingElement>(null), prevViewRef = useRef<DashboardView>(route.view);
+  const splitRef = useRef<HTMLDivElement>(null), prevPcRef = useRef<string | null>(route.pc);
+  /** the PC whose details Back, Close or Escape just left: below 1100px its row takes the focus back */
+  const closedPcRef = useRef<string | null>(null);
 
   useEffect(() => {
     const sync = () => { if (!window.location.hash || window.location.hash === "#" || isDashboardHash(window.location.hash)) setRoute(parseDashboardHash(window.location.hash)); };
@@ -113,6 +118,27 @@ export function RelayDashboard({
   }, []);
 
   useEffect(() => { if (prevViewRef.current !== route.view) { prevViewRef.current = route.view; titleRef.current?.focus(); } }, [route.view]);
+
+  // Below 1100px the details open under the whole list, so a selection would leave the user at the row: the details
+  // heading takes the focus (ringless, RelayDashboard.css) and the panel scrolls into view; leaving them focuses the row
+  // again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
+  useEffect(() => {
+    if (route.pc === prevPcRef.current) return;
+    prevPcRef.current = route.pc;
+    const closed = closedPcRef.current;
+    closedPcRef.current = null;
+    const split = splitRef.current;
+    if (!narrow || split === null) return;
+    if (route.pc !== null) {
+      const details = split.querySelector<HTMLElement>("[data-pc-details]"), heading = details?.querySelector<HTMLElement>("h2");
+      if (!details || !heading) return;
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+      details.scrollIntoView({ block: "start" });
+    } else if (closed !== null) {
+      (split.querySelector<HTMLElement>(`[data-pc-id="${closed}"] .relay-pc-name-btn`) ?? titleRef.current)?.focus();
+    }
+  }, [route.pc, narrow]);
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
@@ -126,7 +152,7 @@ export function RelayDashboard({
   const rowById = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
   const selectedRow = route.view === "pcs" && route.pc !== null ? rowById.get(route.pc) ?? null : null;
   const selectPc = (serverId: string) => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: serverId }));
-  const closeDetails = () => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null }));
+  const closeDetails = () => { closedPcRef.current = route.pc; navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: route.relay, pc: null })); };
 
   const viewTitles: Record<DashboardView, string> = { overview: t("Overview"), pcs: t("PCs"), devices: t("Devices"), relay: t("Relay"), settings: t("Settings") };
   const places: Place[] = [
@@ -139,7 +165,7 @@ export function RelayDashboard({
 
   const renderTableSection = (relayFilter: string | null) => model && (
     <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
-      <div className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
+      <div ref={splitRef} className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
         <div className="relay-dash-pcs-list">
           <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
             relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}

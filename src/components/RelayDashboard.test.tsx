@@ -82,7 +82,11 @@ describe("RelayDashboard frame and routes", () => {
   let focusedNodes: string[] = [];
   let store: Map<string, string>;
   let phoneMatches = false;
+  let narrowMatches = false;
   let events: EventTarget;
+  /** the open details panel and its heading, as the dashboard finds them under the PCs split (the renderer draws no DOM) */
+  let detailsHeading: { tabIndex: number; focus: () => void };
+  let detailsPanel: { scrolledTo: unknown[]; scrollIntoView: (options?: unknown) => void; querySelector: (selector: string) => unknown };
 
   const createMockNode = (element: { type: unknown; props?: unknown }) => ({
     isConnected: true,
@@ -98,6 +102,11 @@ describe("RelayDashboard frame and routes", () => {
     },
     contains: () => false,
     querySelectorAll: () => [],
+    querySelector: (selector: string) => {
+      if (selector === "[data-pc-details]") return detailsPanel;
+      const row = /^\[data-pc-id="([^"]+)"\] \.relay-pc-name-btn$/.exec(selector);
+      return row === null ? null : { focus() { focusedNodes.push(`row:${row[1]}`); } };
+    },
     getClientRects: () => [],
     closest: () => null,
     addEventListener() {},
@@ -109,6 +118,9 @@ describe("RelayDashboard frame and routes", () => {
   beforeEach(() => {
     focusedNodes = [];
     phoneMatches = false;
+    narrowMatches = false;
+    detailsHeading = { tabIndex: 0, focus() { focusedNodes.push("details-heading"); } };
+    detailsPanel = { scrolledTo: [], scrollIntoView(options) { detailsPanel.scrolledTo.push(options); }, querySelector: (selector) => selector === "h2" ? detailsHeading : null };
     events = new EventTarget();
     store = new Map<string, string>();
     for (const key of [
@@ -134,7 +146,7 @@ describe("RelayDashboard frame and routes", () => {
       clear: () => store.clear(),
     };
     const matchMedia = (query: string) => ({
-      matches: query === "(max-width: 768px)" ? phoneMatches : false,
+      matches: query === "(max-width: 768px)" ? phoneMatches : query === "(max-width: 1099px)" ? narrowMatches : false,
       addEventListener() {},
       removeEventListener() {},
     });
@@ -312,6 +324,48 @@ describe("RelayDashboard frame and routes", () => {
     // Missing PC id in route renders no details panel
     await navigateHash("#pcs?pc=missing_pc_id", "popstate");
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
+  });
+
+  it("below 1100px, selecting a row focuses the details heading without a ring and scrolls the details into view, and Back focuses the row again; from 1100px the side panel leaves the focus alone", async () => {
+    const nameButton = (id: string) => renderer!.root.find((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-name-btn");
+    const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
+    narrowMatches = true;
+    window.location.hash = "#pcs";
+    await mount();
+    expect(focusedNodes).toEqual([]);
+    await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); });
+    expect(details()).toHaveLength(1);
+    // the heading, made focusable, takes the focus; the details panel is scrolled to its start
+    expect(focusedNodes).toEqual(["details-heading"]);
+    expect(detailsHeading.tabIndex).toBe(-1);
+    expect(detailsPanel.scrolledTo).toEqual([{ block: "start" }]);
+    // Back leaves the details and gives the focus to the row that opened them
+    await act(async () => { renderer!.root.find((n) => n.type === "button" && textOf(n).trim() === "Back").props.onClick(); });
+    expect(details()).toHaveLength(0);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+
+    // a deep link opens with the details and moves no focus
+    await act(async () => { renderer!.unmount(); });
+    focusedNodes = [];
+    window.location.hash = `#pcs?pc=${IDS.home}`;
+    await mount();
+    expect(details()).toHaveLength(1);
+    expect(focusedNodes).toEqual([]);
+
+    // the side panel from 1100px: the click keeps its focus, nothing scrolls, Close moves nothing
+    await act(async () => { renderer!.unmount(); });
+    narrowMatches = false;
+    detailsPanel.scrolledTo = [];
+    detailsHeading.tabIndex = 0;
+    window.location.hash = "#pcs";
+    await mount();
+    await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); });
+    expect(details()).toHaveLength(1);
+    await act(async () => { renderer!.root.find((n) => n.type === "button" && n.props["aria-label"] === "Close").props.onClick(); });
+    expect(details()).toHaveLength(0);
+    expect(focusedNodes).toEqual([]);
+    expect(detailsHeading.tabIndex).toBe(0);
+    expect(detailsPanel.scrolledTo).toEqual([]);
   });
 
   it("keeps Sign out in the desktop sidebar foot while placing Remove this device only in Devices with same-element confirmation", async () => {
