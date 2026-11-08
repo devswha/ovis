@@ -98,7 +98,11 @@ export class CLIProxyService {
     this.invalidate();
   }
 
-  invalidate(): void { this.generation++; this.nextAt = 0; this.readAt = 0; this.entries = []; this.pending = null; }
+  /** The next report reads the Hub anew, except the rows of the hidden or removed accounts: their credentials stay unused (#3333). */
+  invalidate(): void {
+    this.generation++; this.nextAt = 0; this.readAt = 0; this.pending = null;
+    this.entries = this.entries.filter((entry) => this.skipped.has(entry.key));
+  }
 
   call(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
     // A revoked key must cause one refusal, not one per account (the proxy bans after five).

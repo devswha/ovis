@@ -1126,9 +1126,12 @@ export class UsageService {
     const now = this.ctx.now();
     const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
     const skipped = this.skipped();
-    // an account shown again is looked up and read anew now, its provider's last search no longer standing for it
+    // an account shown again is looked up and read anew now, its provider's last search no longer standing for it;
+    // the provider's other accounts keep their readings, so one still hidden is not read for it
     const shownAgain = new Set([...this.lastSkipped].filter((key) => !skipped.has(key)));
-    for (const id of new Set([...this.entries.values()].flatMap((entry) => entry.usage && shownAgain.has(entry.usage.key) ? [entry.usage.id] : []))) this.invalidate(id);
+    for (const [source, entry] of this.entries) {
+      if (entry.usage && shownAgain.has(entry.usage.key)) { this.searches.delete(entry.usage.id); this.entries.delete(source); }
+    }
     this.lastSkipped = skipped;
     const usages = await Promise.all(this.providers.map((provider) => {
       const listed = (this.searches.get(provider.id)?.sources ?? []).flatMap((source) => this.entries.get(source)?.usage ?? []);
@@ -1168,7 +1171,10 @@ export class UsageService {
     const read = await Promise.all(found.map(async (signIn): Promise<[string, Entry]> => {
       const source = `${provider.id}|${signIn.source}`;
       const entry = this.entries.get(source);
-      const current = entry !== undefined && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited");
+      // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
+      const key = entry?.usage?.key;
+      const hidden = key !== undefined && this.lastSkipped.has(key);
+      const current = entry !== undefined && (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
       return [source, current ? entry : await this.read(provider, signIn, entry?.usage ?? null, now)];
     }));
     for (const source of search?.sources ?? []) if (!read.some(([found]) => found === source)) this.entries.delete(source);

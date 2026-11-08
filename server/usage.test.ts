@@ -1221,6 +1221,23 @@ describe("the service", () => {
     expect(shown!.checked_at).toBe(new Date(now).toISOString());
   });
 
+  it("reads only the account shown again, not its provider's accounts still hidden", async () => {
+    const reads: string[] = [];
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { return ["a", "b"].map((id) => ({ source: id, token: `token-${id}`, expiresAt: null, account: { id, label: id } })); },
+      async read(_ctx, signIn) { reads.push(signIn.token); return { plan: "pro", windows: [] }; },
+    };
+    let skipped = new Set(["copilot:a", "copilot:b"]);
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => skipped);
+    await service.report();
+    skipped = new Set(["copilot:b"]);
+    now += FRESH_MS;
+    await service.report();
+    expect(reads).toEqual(["token-a", "token-b", "token-a"]);
+  });
+
   it("marks a failed request and asks again after RETRY_MS", async () => {
     signInCodex(NOW / 1000 + 24 * 3600);
     replies.set(CODEX_USAGE, { status: 500 });

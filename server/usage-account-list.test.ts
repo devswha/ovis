@@ -236,17 +236,23 @@ it("stops looking up a provider's sign-ins once its accounts are hidden in Setti
   expect([report.providers.map((usage) => usage.key), report.removed?.map((usage) => usage.key)]).toEqual([["copilot:kept"], ["copilot:gone"]]);
 });
 
-it("looks a provider up again as soon as its account is shown again in Settings", async () => {
+it("reads usage after a Settings change only with Plan limits on, and only once an account is shown again", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-account-list-"));
   roots.push(root);
+  let now = 1_000;
+  let searches = 0;
   let searched = Promise.withResolvers<void>();
   const copilot: UsageProvider = {
     id: "copilot",
-    async signIns() { searched.resolve(); return [{ source: "a", token: "token-a", expiresAt: null, account: { id: "a", label: "a" } }]; },
+    async signIns() {
+      searches += 1;
+      searched.resolve();
+      return ["a", "b"].map((id) => ({ source: id, token: `token-${id}`, expiresAt: null, account: { id, label: id } }));
+    },
     async read() { return { plan: "pro", windows: [] }; },
   };
   const ctx: UsageContext = {
-    home: root, env: {}, platform: "linux", now: () => 1_000,
+    home: root, env: {}, platform: "linux", now: () => now,
     fetch: async () => { throw new Error("no request expected"); },
     keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
   };
@@ -257,11 +263,21 @@ it("looks a provider up again as soon as its account is shown again in Settings"
   });
   servers.push(server);
   const origin = `http://127.0.0.1:${server.port}`;
-  const hide = (keys: string[]) => fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ settings: { usageHidden: keys } }) });
-  expect((await hide(["copilot:a"])).status).toBe(200);
+  const share = (settings: Record<string, unknown>) => fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ settings }) });
+  // Plan limits off: no change of the hidden accounts reads anything
+  expect((await share({ showUsage: false })).status).toBe(200);
+  expect((await share({ usageHidden: ["copilot:a"] })).status).toBe(200);
+  expect((await share({ usageHidden: [] })).status).toBe(200);
+  expect(searches).toBe(0);
+  // Plan limits on: hiding one reads nothing, showing it again reads at once
+  expect((await share({ showUsage: true })).status).toBe(200);
   expect((await fetch(`${origin}/api/usage`)).status).toBe(200);
-  await searched.promise;
+  expect(searches).toBe(1);
+  now += FRESH_MS;
+  expect((await share({ usageHidden: ["copilot:a"] })).status).toBe(200);
+  expect(searches).toBe(1);
   searched = Promise.withResolvers<void>();
-  expect((await hide([])).status).toBe(200);
+  expect((await share({ usageHidden: [] })).status).toBe(200);
   await searched.promise;
+  expect(searches).toBe(2);
 });

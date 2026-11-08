@@ -118,6 +118,20 @@ describe("CLIProxyAPI v8", () => {
     } finally { setSystemTime(); }
   });
 
+  it("keeps hidden accounts unread across an invalidate, as after a Hub sign-in or a saved configuration", async () => {
+    // Given
+    await configure();
+    const first = await service.report();
+    const hidden = new Set(first.map((entry) => entry.key));
+    await service.report(false, hidden);
+    // When
+    service.invalidate();
+    const after = await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").length).toBe(2);
+    expect(after).toEqual(first);
+  });
+
   it("persists the key privately without returning it when saved or reloaded", async () => {
     // Given
     const saved = await configure();
