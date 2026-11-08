@@ -15,6 +15,7 @@ import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWo
 import { checkForUpdates, debInstallCommand, updateChannel, updatePlan } from "./updates.ts";
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
+import { hideWindow } from "./windowClose.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -211,7 +212,7 @@ function createWindow(): void {
   window.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
-    window?.hide();
+    if (window) hideWindow(window, process.platform);
   });
   window.on("closed", () => { window = null; });
   guard(window.webContents);
