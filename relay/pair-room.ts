@@ -174,10 +174,16 @@ export class PairRoom<S extends object> {
     if (!policy || info.pair !== "host" || passMode(policy, now) !== "enforce") return null;
     if (info.pass_exp === undefined) return RELAY_PASS_REQUIRED;
     // a pass under a key the relay no longer trusts, or for a PC it revoked since, holds no longer.
-    // A host the previous relay version admitted kept no key id or server_id (hibernated sockets
-    // outlive a deploy): only its expiry is checked, and hold() gave it a deadline of PAIR_HOST_MS
-    // (11 minutes), past which sweep() and message() close it whatever its pass.
-    if (info.pass_kid !== undefined && (!policy.keys.has(info.pass_kid) || info.server_id === undefined || policy.revoked.has(info.server_id))) return RELAY_PASS_INVALID;
+    // A host the version before this check admitted kept no key id or server_id (hibernated sockets
+    // outlive a deploy), so neither check can name it. Any revocation in the current settings may be
+    // its PC, so it closes rather than guess and re-admits through the check that follows; a key
+    // removed from them it cannot be matched against at all, so its pass's expiry and hold()'s
+    // deadline of PAIR_HOST_MS (11 minutes) are what hold it otherwise.
+    if (info.pass_kid === undefined) {
+      if (policy.revoked.size > 0) return RELAY_PASS_INVALID;
+      return now < info.pass_exp + PASS_SKEW_MS ? null : RELAY_PASS_EXPIRED;
+    }
+    if (!policy.keys.has(info.pass_kid) || info.server_id === undefined || policy.revoked.has(info.server_id)) return RELAY_PASS_INVALID;
     return now < info.pass_exp + PASS_SKEW_MS ? null : RELAY_PASS_EXPIRED;
   }
 
