@@ -302,20 +302,59 @@ const LSOF_MAX_BYTES = 1 << 20;
 /** How long lsof may run before it is killed and nothing is proved. */
 const LSOF_DEADLINE_MS = 3000;
 
+/** How long one lsof listing of a process stands for it while its start stays the same: about one poll. */
+const LSOF_FRESH_MS = 2000;
+/** Each process's last listing, by pid, with the start it was listed under and when (performance.now). */
+const listed = new Map<number, { identity: number; files: string[]; at: number }>();
+
+/** The bytes lsof's `-F n` field writes as a backslash and one letter. */
+const LSOF_ESCAPES = new Map([["b", 8], ["f", 12], ["n", 10], ["r", 13], ["t", 9], ["\\", 92]]);
+
 /**
- * The files each process holds open on macOS, from one lsof run (`-Fpn`: a `p` line per process,
- * then an `n` line per file). omp keeps its session file open from its first write, which is the
- * only proof of the session an `omp -c` continues: omp leaves an unchanged breadcrumb as it was
- * (#3365). Empty when lsof fails, runs past its deadline (then it is SIGKILLed) or lists more than
- * LSOF_MAX_BYTES, or when a pid's start differs after the listing from before it: herdr named the
- * process a moment ago, and a pid reused meanwhile lists another omp's session (as #3324 checks).
+ * A name as lsof's `-F n` field prints it, decoded: lsof writes \b \f \n \r \t and \\ for those
+ * bytes and \xNN for a byte it cannot print, so every backslash it prints starts an escape. Its ^X for
+ * another control byte is left as printed: a name's own `^` is printed as it is, so ^X cannot be told
+ * from it.
+ */
+function lsofName(field: string): string {
+  const bytes: number[] = [];
+  const chars = Array.from(field);
+  for (let at = 0; at < chars.length; at += 1) {
+    const char = chars[at]!, next = chars[at + 1] ?? "";
+    const hex = chars.slice(at + 2, at + 4).join("");
+    if (char === "\\" && LSOF_ESCAPES.has(next)) { bytes.push(LSOF_ESCAPES.get(next)!); at += 1; }
+    else if (char === "\\" && next === "x" && /^[0-9a-f]{2}$/i.test(hex)) { bytes.push(Number.parseInt(hex, 16)); at += 3; }
+    else bytes.push(...Buffer.from(char));
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * The files each process holds open on macOS (`-Fpn`: a `p` line per process, then an `n` line per
+ * file). omp keeps its session file open from its first write, which is the only proof of the session
+ * an `omp -c` continues: omp leaves an unchanged breadcrumb as it was (#3365). A process listed in the
+ * last LSOF_FRESH_MS under the start it has now is not listed again; the others are, in one lsof run.
+ * That run proves nothing when it fails, runs past its deadline (then it is SIGKILLed) or prints more
+ * than LSOF_MAX_BYTES; an exit of 1 with the whole listing printed means only that some pid was gone,
+ * and the others' listings stand. A process counts only when its start is the same before and after
+ * the run: herdr named it a moment ago, and a pid reused meanwhile lists another omp's session (as
+ * #3324 checks).
  */
 async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[]>> {
   const open = new Map<number, string[]>();
-  const starts = pids.map((pid) => processStartIdentity(pid));
-  if (starts.includes(null)) return open;
+  const now = performance.now();
+  for (const [pid, entry] of listed) if (now - entry.at >= LSOF_FRESH_MS) listed.delete(pid);
+  const unlisted: { pid: number; identity: number }[] = [];
+  for (const pid of pids) {
+    const identity = processStartIdentity(pid);
+    if (identity === null) continue;
+    const entry = listed.get(pid);
+    if (entry?.identity === identity) open.set(pid, entry.files);
+    else unlisted.push({ pid, identity });
+  }
+  if (unlisted.length === 0) return open;
   let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
-  try { child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", pids.join(","), "-Fpn"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
+  try { child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", unlisted.map(({ pid }) => pid).join(","), "-Fpn"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
   catch { return open; }
   let whole = true;
   const deadline = setTimeout(() => { whole = false; child.kill("SIGKILL"); }, LSOF_DEADLINE_MS);
@@ -329,13 +368,19 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
     }
     // a listing cut off by its size or its deadline proves nothing, whatever lsof exits with
     const code = whole ? await child.exited : null;
-    if (code !== 0 || !whole) return open;
+    if (code !== 0 && code !== 1 || !whole) return open;
   } catch { return open; } finally { clearTimeout(deadline); }
-  if (pids.some((pid, at) => processStartIdentity(pid) !== starts[at])) return open;
+  const fresh = new Map<number, string[]>();
   let files: string[] | undefined;
   for (const line of Buffer.concat(chunks).toString("utf8").split("\n")) {
-    if (line.startsWith("p")) open.set(Number(line.slice(1)), files = []);
-    else if (line.startsWith("n")) files?.push(line.slice(1));
+    if (line.startsWith("p")) fresh.set(Number(line.slice(1)), files = []);
+    else if (line.startsWith("n")) files?.push(lsofName(line.slice(1)));
+  }
+  for (const { pid, identity } of unlisted) {
+    const held = fresh.get(pid);
+    if (held === undefined || processStartIdentity(pid) !== identity) continue;
+    open.set(pid, held);
+    listed.set(pid, { identity, files: held, at: now });
   }
   return open;
 }

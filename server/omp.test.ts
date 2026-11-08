@@ -582,8 +582,10 @@ describe("an omp pane's chat", () => {
     let kills: unknown[] = [];
     /** The lsof child the fake spawn hands out; by default it lists `listing` and exits (1 for none). */
     let lsof: () => unknown;
-    /** The kernel's start of `pid` in microseconds on its nth read (1-based). */
-    let startOf: (read: number) => bigint | null;
+    /** The kernel's start of `asked` in microseconds on its nth read (1-based); none for a pid no test names. */
+    let startOf: (asked: number, read: number) => bigint | null;
+    /** performance.now as the lsof listings' freshness reads it: each test starts long after the last one's. */
+    let clock = 0;
     let core = true;
     const listed = (files: string[]) => `p${pid}\nfcwd\nn${pane.cwd}\n${files.map((file, at) => `f${23 + at}\nn${file}\n`).join("")}`;
     /** The breadcrumb an earlier omp in this terminal left, naming `session`, written `at`. */
@@ -593,22 +595,28 @@ describe("an omp pane's chat", () => {
       writeFileSync(marker, `${pane.cwd}\n${session}\n`);
       fs.utimesSync(marker, at / 1000, at / 1000);
     };
-    const held = () => ompHeldTranscript(pane.pane_id, pane.cwd!, true);
+    /** The held transcript read past any earlier listing's freshness, so lsof lists again. */
+    const held = () => { clock += 10_000; return ompHeldTranscript(pane.pane_id, pane.cwd!, true); };
     beforeEach(() => {
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { value: "darwin" });
       listing = ""; lsofCalls = []; kills = []; core = true;
       lsof = () => ({ stdout: new Response(listing ?? "").body, exited: Promise.resolve(listing === null ? 1 : 0), kill: (signal: unknown) => kills.push(signal) });
-      startOf = () => 1_000_000n;
-      let reads = 0;
+      startOf = (asked) => asked === pid ? 1_000_000n : null;
+      clock += 1_000_000;
+      const reads = new Map<number, number>();
+      const now = spyOn(performance, "now").mockImplementation(() => clock);
       const terminal = spyOn(darwinKernel, "darwinTerminal").mockImplementation((asked) => asked === pid ? { tty: "ttys000", startedAt } : null);
-      const start = spyOn(darwinKernel, "darwinStartTime").mockImplementation((asked) => asked === pid ? startOf(++reads) : null);
+      const start = spyOn(darwinKernel, "darwinStartTime").mockImplementation((asked) => {
+        reads.set(asked, (reads.get(asked) ?? 0) + 1);
+        return startOf(asked, reads.get(asked)!);
+      });
       const environment = spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`);
       const serving = spyOn(runtime, "servingCore").mockImplementation(() => core);
       const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => { lsofCalls.push(argv); return lsof(); }) as unknown as typeof Bun.spawn);
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
       restores.push(() => {
-        spawned.mockRestore(); serving.mockRestore(); environment.mockRestore(); start.mockRestore(); terminal.mockRestore();
+        now.mockRestore(); spawned.mockRestore(); serving.mockRestore(); environment.mockRestore(); start.mockRestore(); terminal.mockRestore();
         Object.defineProperty(process, "platform", platform);
       });
     });
@@ -636,9 +644,9 @@ describe("an omp pane's chat", () => {
       const continued = storeTranscript(pane.cwd!);
       listing = listed([continued]);
       // another omp took the pid while lsof listed it
-      startOf = (read) => read === 1 ? 1_000_000n : 2_000_000n;
+      startOf = (asked, read) => asked === pid ? (read === 1 ? 1_000_000n : 2_000_000n) : null;
       expect(await held()).toBeNull();
-      startOf = () => 1_000_000n;
+      startOf = (asked) => asked === pid ? 1_000_000n : null;
       expect(await held()).toBe(continued);
     });
 
@@ -650,6 +658,42 @@ describe("an omp pane's chat", () => {
       listing = null;
       await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
       expect(lsofCalls).toHaveLength(2);
+    });
+
+    it("reads a held name lsof printed escaped", async () => {
+      // a session file whose name holds a newline, a tab and a DEL, which lsof's -F n writes as \n, \t and \x7f
+      const session = storeTranscript(pane.cwd!, "2026-10-01_s\n1\t\x7f.jsonl");
+      listing = listed([session.replaceAll("\n", "\\n").replaceAll("\t", "\\t").replaceAll("\x7f", "\\x7f")]);
+      expect(await held()).toBe(session);
+    });
+
+    it("keeps the live process's listing when another pid is gone and lsof exits 1", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      const gone = pid + 1;
+      processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: gone, name: "omp", argv: ["omp"] }];
+      // the other omp exits while lsof lists: its start is read before, and gone after
+      startOf = (asked, read) => asked === pid ? 1_000_000n : asked === gone && read === 1 ? 5_000_000n : null;
+      lsof = () => ({ stdout: new Response(listed([continued])).body, exited: Promise.resolve(1), kill: (signal: unknown) => kills.push(signal) });
+      expect(await held()).toBe(continued);
+      expect(lsofCalls).toEqual([["/usr/sbin/lsof", "-nPbw", "-a", "-p", `${pid},${gone}`, "-Fpn"]]);
+    });
+
+    it("lists a process again only once its listing is stale or its start differs", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+      // read again within the freshness window under the same start: the listing stands, lsof does not run
+      listing = listed([]);
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBe(continued);
+      expect(lsofCalls).toHaveLength(1);
+      // the pid now names a process started later: it is listed again
+      startOf = (asked) => asked === pid ? 3_000_000n : null;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
+      expect(lsofCalls).toHaveLength(2);
+      // and once the window has passed
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+      expect(lsofCalls).toHaveLength(3);
     });
 
     it("kills lsof and binds nothing when its listing passes the byte cap", async () => {
