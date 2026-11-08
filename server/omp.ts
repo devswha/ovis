@@ -298,6 +298,11 @@ export interface OmpRoute {
    * process whose listing held a name that could not be read, so nothing is proved for it. Elsewhere /proc is read.
    */
   openFilesOf?: (pid: number) => readonly string[] | null;
+  /**
+   * On macOS with ompHeldFiles on, each process's start identity, read as herdr's sample that names it is
+   * taken: lsof lists a process only while its start stays this one, so a pid reused since is never read.
+   */
+  startsOf?: ReadonlyMap<number, number>;
 }
 
 /** An lsof listing longer than this is not read: nothing is proved from a part of one. */
@@ -341,11 +346,11 @@ function lsofName(field: string): string | null {
  * That run proves nothing when it fails, runs past its deadline (then it is SIGKILLed) or prints more
  * than LSOF_MAX_BYTES; an exit of 1 with the whole listing printed means only that some pid was gone,
  * and the others' listings stand. A process counts only when its start is the same before and after
- * the run: herdr named it a moment ago, and a pid reused meanwhile lists another omp's session (as
- * #3324 checks); every one, a listing reused too, is checked again after the last wait, just before
- * the listing is returned. A name holding a control character once decoded is no held path.
+ * the run as the one read with herdr's sample (`sampled`): a pid reused meanwhile lists another omp's
+ * session (as #3324 checks); every one, a listing reused too, is checked again after the last wait, just
+ * before the listing is returned. A name holding a control character once decoded is no held path.
  */
-async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[] | null>> {
+async function darwinOpenFiles(pids: readonly number[], sampled: ReadonlyMap<number, number>): Promise<Map<number, string[] | null>> {
   const open = new Map<number, string[] | null>();
   const now = performance.now();
   for (const [pid, entry] of listed) if (now - entry.at >= LSOF_FRESH_MS) listed.delete(pid);
@@ -353,7 +358,7 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
   const identities = new Map<number, number>();
   for (const pid of pids) {
     const identity = processStartIdentity(pid);
-    if (identity === null) continue;
+    if (identity === null || identity !== sampled.get(pid)) continue;
     identities.set(pid, identity);
     const entry = listed.get(pid);
     if (entry?.identity === identity) open.set(pid, entry.files);
@@ -429,7 +434,7 @@ export function readOmpHeldFilesSetting(read: () => boolean): void {
  */
 export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRoute> {
   if (process.platform !== "darwin" || !core || !heldFilesOn()) return route;
-  const open = await darwinOpenFiles(route.pids);
+  const open = await darwinOpenFiles(route.pids, route.startsOf ?? new Map());
   return { ...route, openFilesOf: (pid) => open.has(pid) ? open.get(pid)! : [] };
 }
 
@@ -448,11 +453,16 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
   const pids: number[] = [];
   const launchDirs = new Set<string | null>();
   const environs = new Map<number, readonly string[]>();
+  const starts = new Map<number, number>();
+  // lsof may list these processes later (ompHeldOpen): each one's start is read with the sample that names it
+  const sampleStarts = process.platform === "darwin" && heldFilesOn();
   let unread = false;
   for (const foreground of info?.foreground_processes ?? []) {
     if (typeof foreground.pid !== "number") continue;
     let argv = Array.isArray(foreground.argv) ? foreground.argv.map(String) : [];
     if (argv.length > 0 && (!isOmpProcess(argv) || isOmpHelper(argv))) continue;
+    const start = sampleStarts ? processStartIdentity(foreground.pid) : null;
+    if (start !== null) starts.set(foreground.pid, start);
     // Herdr omits a recognized agent's argv (on Linux, WSL included). A procfs memory read blocks
     // while the process holds its memory map locked (omp does while it pages in, and on WSL while
     // it exits), so on Linux every read goes through the bounded helper, never the bridge itself.
@@ -478,7 +488,7 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
   if (unread) return "unproved";
   if (layout === null) return null;
   const [launchDir] = launchDirs;
-  return { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
+  return { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null, startsOf: starts };
 }
 
 /**

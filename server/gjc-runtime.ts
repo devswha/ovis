@@ -247,7 +247,9 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
  * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS
  * herdr-core); there they are the only proof, and with none held no breadcrumb stands in (#3365).
  * There a process whose listing held a name that could not be read (null), or that holds a `.jsonl` in
- * the store that does not resolve, may hold the very session: nothing is bound for the pane then.
+ * the store that does not resolve, may hold the very session: nothing is bound for the pane then. So may a
+ * held `.jsonl` lsof names under neither the store's configured root nor its canonical one (lsof lists
+ * resolved paths, so a store reached through a link is placed by the canonical root).
  */
 export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], probe: HeldProbe = {}): { path: string | null; found: number } {
   const { environOf, openFilesOf } = probe;
@@ -271,13 +273,15 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
     }
     else try { held = readdirSync(`/proc/${pid}/fd`).map((fd) => `/proc/${pid}/fd/${fd}`); } catch { /* no /proc: the native breadcrumb */ }
     for (const entry of held) {
+      const listedSession = openFilesOf !== undefined && entry.endsWith(".jsonl");
+      if (listedSession && storeRelative(roots.sessions, entry) === null && storeRelative(root, entry) === null) { unreadable = true; continue; }
       try {
         const file = realpathSync(openFilesOf ? entry : readlinkSync(entry));
         const target = statSync(file).isFile() ? gjcSessionFile(root, file, nodePath, roots.depth) : null;
         if (target && transcriptCwd(target) === cwd) open.add(target);
       } catch {
         // closed, deleted or unreadable descriptor; a listed session of the store that does not resolve proves nothing either way
-        if (openFilesOf && entry.endsWith(".jsonl") && storeRelative(root, entry) !== null) unreadable = true;
+        if (listedSession) unreadable = true;
       }
     }
   }

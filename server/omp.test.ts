@@ -589,6 +589,10 @@ describe("an omp pane's chat", () => {
     let core = true;
     /** the experimental setting ompHeldFiles, as the server's shared preferences hold it */
     let heldFiles = true;
+    /** The HOME the omp's own environment names (the test's home unless a test reaches it through a link). */
+    let ompHome = "";
+    /** Called as each omp's environment is read, the step right after herdr names the pane's processes. */
+    let onEnviron = () => {};
     const listed = (files: string[]) => `p${pid}\nfcwd\nn${pane.cwd}\n${files.map((file, at) => `f${23 + at}\nn${file}\n`).join("")}`;
     /** The breadcrumb an earlier omp in this terminal left, naming `session`, written `at`. */
     const breadcrumb = (session: string, at: number) => {
@@ -602,7 +606,7 @@ describe("an omp pane's chat", () => {
     beforeEach(() => {
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { value: "darwin" });
-      listing = ""; lsofCalls = []; kills = []; core = true;
+      listing = ""; lsofCalls = []; kills = []; core = true; ompHome = home; onEnviron = () => {};
       lsof = () => ({ stdout: new Response(listing ?? "").body, exited: Promise.resolve(listing === null ? 1 : 0), kill: (signal: unknown) => kills.push(signal) });
       startOf = (asked) => asked === pid ? 1_000_000n : null;
       clock += 1_000_000;
@@ -613,7 +617,7 @@ describe("an omp pane's chat", () => {
         reads.set(asked, (reads.get(asked) ?? 0) + 1);
         return startOf(asked, reads.get(asked)!);
       });
-      const environment = spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`);
+      const environment = spyOn(darwinProcess, "environment").mockImplementation(() => { onEnviron(); return `HOME=${ompHome}\0`; });
       const serving = spyOn(runtime, "servingCore").mockImplementation(() => core);
       const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => { lsofCalls.push(argv); return lsof(); }) as unknown as typeof Bun.spawn);
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
@@ -646,11 +650,48 @@ describe("an omp pane's chat", () => {
       expect(lsofCalls).toEqual(Array(4).fill(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-Fpn"]));
     });
 
+    it("places a held session under the configured or the canonical store root, and binds nothing for a .jsonl under neither", async () => {
+      // the omp's HOME is a link to the real one, so its configured store is reached through it, while lsof lists resolved paths
+      const linked = join(home, "linked-home");
+      symlinkSync(home, linked);
+      ompHome = linked;
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+      // a name under the configured root reads as the session it resolves to
+      listing = listed([continued.replace(home, linked)]);
+      expect(await held()).toBe(continued);
+      // a .jsonl under neither root may be the session itself, placed where nothing proves it
+      const elsewhere = join(home, "elsewhere", "2026-10-02_s2.jsonl");
+      mkdirSync(join(home, "elsewhere"));
+      writeFileSync(elsewhere, transcript(pane.cwd!));
+      listing = listed([elsewhere, continued]);
+      expect(await held()).toBeNull();
+      // and a session under the configured root that does not resolve proves nothing either way
+      const gone = join(linked, ".omp/agent/sessions", pane.cwd!.replaceAll("/", "-"), "2026-10-02_gone.jsonl");
+      listing = listed([gone, continued]);
+      expect(await held()).toBeNull();
+    });
+
+    it("binds nothing when the pid is reused between herdr's sample and the first start read", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      // herdr named the omp a moment ago; it exits, and another process takes its pid before its start is read for lsof
+      let reused = false;
+      onEnviron = () => { reused = true; };
+      startOf = (asked) => asked === pid ? (reused ? 2_000_000n : 1_000_000n) : null;
+      expect(await held()).toBeNull();
+      // an omp whose start stays the one sampled is read
+      onEnviron = () => {};
+      startOf = (asked) => asked === pid ? 1_000_000n : null;
+      expect(await held()).toBe(continued);
+    });
+
     it("drops a listing when the pid's start differs after lsof from before it", async () => {
       const continued = storeTranscript(pane.cwd!);
       listing = listed([continued]);
-      // another omp took the pid while lsof listed it
-      startOf = (asked, read) => asked === pid ? (read === 1 ? 1_000_000n : 2_000_000n) : null;
+      // another omp took the pid while lsof listed it (its start is read with herdr's sample and before lsof)
+      startOf = (asked, read) => asked === pid ? (read <= 2 ? 1_000_000n : 2_000_000n) : null;
       expect(await held()).toBeNull();
       startOf = (asked) => asked === pid ? 1_000_000n : null;
       expect(await held()).toBe(continued);
@@ -680,8 +721,8 @@ describe("an omp pane's chat", () => {
       const continued = storeTranscript(pane.cwd!);
       const gone = pid + 1;
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: gone, name: "omp", argv: ["omp"] }];
-      // the other omp exits while lsof lists: its start is read before, and gone after
-      startOf = (asked, read) => asked === pid ? 1_000_000n : asked === gone && read === 1 ? 5_000_000n : null;
+      // the other omp exits while lsof lists: its start is read with herdr's sample and before lsof, and gone after
+      startOf = (asked, read) => asked === pid ? 1_000_000n : asked === gone && read <= 2 ? 5_000_000n : null;
       lsof = () => ({ stdout: new Response(listed([continued])).body, exited: Promise.resolve(1), kill: (signal: unknown) => kills.push(signal) });
       expect(await held()).toBe(continued);
       expect(lsofCalls).toEqual([["/usr/sbin/lsof", "-nPbw", "-a", "-p", `${pid},${gone}`, "-Fpn"]]);
@@ -710,10 +751,10 @@ describe("an omp pane's chat", () => {
       listing = listed([continued]);
       expect(await held()).toBe(continued);
       // within the freshness window an omp the pane started since is listed: the first pid's listing is reused,
-      // and that pid is taken by another process while lsof runs
+      // and that pid is taken by another process while lsof runs (each read is sampled, before and after lsof)
       const added = pid + 1;
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: added, name: "omp", argv: ["omp"] }];
-      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 3 ? 1_000_000n : 2_000_000n) : null;
+      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 5 ? 1_000_000n : 2_000_000n) : null;
       listing = `p${added}\nfcwd\nn${pane.cwd}\n`;
       expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
       expect(lsofCalls.at(-1)).toEqual(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(added), "-Fpn"]);
@@ -739,7 +780,7 @@ describe("an omp pane's chat", () => {
       // the first pid is taken by another process
       const added = pid + 1;
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: added, name: "omp", argv: ["omp"] }];
-      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 3 ? 1_000_000n : 2_000_000n) : null;
+      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 5 ? 1_000_000n : 2_000_000n) : null;
       lsof = () => { throw new Error("spawn failed"); };
       expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
       expect(lsofCalls).toHaveLength(2);
