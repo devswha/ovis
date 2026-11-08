@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, pcDotState, type DashboardRow } from "./RelayPcTable.tsx";
+import { formatAbsoluteTime, formatProbeLine, pcDotState, routeNode, type DashboardRow } from "./RelayPcTable.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -80,7 +80,7 @@ export function RelayPcDetails({
         ? pc.linked ? t("Ready") : t("Ready · not in the account yet")
         : pc.state === "offline"
           ? t("Offline")
-          : t("Needs you");
+          : pc.state === "needs-approval" ? t("Needs approval") : t("Needs update");
 
   const stateReason = updating
     ? null
@@ -132,6 +132,13 @@ export function RelayPcDetails({
             <dd>
               <span className="relay-pc-details-value">{stateLabel}</span>
               {stateReason !== null && <small className="relay-pc-details-sub">{stateReason}</small>}
+            </dd>
+          </div>
+
+          <div className="relay-pc-details-row">
+            <dt>{t("Route")}</dt>
+            <dd className="relay-pc-details-tabular" data-pc-route="">
+              {pc.paired ? routeNode(pc.check, t) : "—"}
             </dd>
           </div>
 

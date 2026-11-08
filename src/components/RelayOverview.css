@@ -6,11 +6,12 @@
  * and the 44px connection map disclosure. Tokens only; no cards or resting shadows.
  */
 
+/* the summary, the attention list, the table and the Connection map disclosure sit a group apart: --space-6 */
 .relay-overview,
 .relay-overview-loading {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -78,9 +79,10 @@
 .relay-overview-strip-btn[aria-pressed="true"] { background: var(--bg-elevated); color: var(--text-strong); }
 .relay-overview-strip-btn:focus-visible { outline: var(--ring); outline-offset: calc(-1 * var(--ring-offset)); }
 
+/* the label wraps rather than losing its end (a cell is the control's only name); the glyph sits on its first line */
 .relay-overview-strip-label {
   display: inline-flex;
-  align-items: center;
+  align-items: start;
   gap: var(--space-2);
   min-width: 0;
   max-width: 100%;
@@ -90,7 +92,8 @@
   line-height: var(--lh-tight);
 }
 
-.relay-overview-strip-label > span,
+.relay-overview-strip-label > span { min-width: 0; overflow-wrap: anywhere; }
+
 .relay-overview-attention-name {
   min-width: 0;
   overflow: hidden;
@@ -115,6 +118,15 @@
   line-height: var(--lh-tight);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+/* the relays and how many PCs this device reaches share one row under the strip */
+.relay-overview-connectivity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+  min-width: 0;
 }
 
 .relay-overview-relays {
@@ -152,11 +164,14 @@
 }
 
 .relay-overview-relay-rtt { color: var(--text); font-variant-numeric: tabular-nums; }
+/* one dim line under the relays: how many PCs this device reaches right now and by which way */
+.relay-overview-reach { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-xs)); line-height: var(--lh-base); font-variant-numeric: tabular-nums; }
 .relay-overview-attention-section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+/* one head row: the reason the shown rows share at the start, View all at the end */
+.relay-overview-attention-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); min-width: 0; }
 .relay-overview-attention-caption { margin: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); line-height: var(--lh-base); overflow-wrap: anywhere; }
 
 .relay-overview-attention,
-.relay-overview-local-checks,
 .relay-overview-skeleton-table {
   display: flex;
   flex-direction: column;
@@ -167,7 +182,6 @@
 }
 
 .relay-overview-attention-row,
-.relay-overview-local-row,
 .relay-overview-skeleton-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) auto;
@@ -179,11 +193,10 @@
   font-size: max(var(--relay-fs-body-min), var(--fs-md));
 }
 
-.relay-overview-local-row { grid-template-columns: auto minmax(0, 1fr) auto; }
 .relay-overview-attention-name, .relay-overview-map-title { color: var(--text-strong); font-weight: var(--fw-medium); }
 .relay-overview-attention-why { min-width: 0; color: var(--text-dim); font-size: max(var(--relay-fs-body-min), var(--fs-sm)); font-variant-numeric: tabular-nums; }
 .relay-overview-attention-act { display: flex; align-items: center; justify-content: flex-end; }
-.relay-overview-view-all { align-self: flex-start; font-variant-numeric: tabular-nums; }
+.relay-overview-view-all { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
 
 .relay-overview-loading .skeleton { animation: none; }
 .relay-overview-skeleton-numeral { width: var(--space-8); height: var(--fs-xl); border-radius: var(--radius-sm); }
@@ -235,7 +248,7 @@
 }
 
 @media (pointer: coarse) {
-  .relay-overview-attention-row, .relay-overview-local-row, .relay-overview-skeleton-row { min-height: var(--touch-target); }
+  .relay-overview-attention-row, .relay-overview-skeleton-row { min-height: var(--touch-target); }
 }
 
 /* narrower: Ready and Needs you side by side (they partition the PCs), Relays in use on a full-width row under them */
@@ -246,6 +259,8 @@
 
 @media (max-width: 768px) {
   .relay-overview-strip-btn { padding: var(--space-3) var(--space-4); }
+  /* the local strip's "Paired with this device" takes two lines on a phone; its neighbour's label keeps the same box, so both numerals stay on one baseline */
+  .relay-overview-strip[data-local] .relay-overview-strip-label { min-height: calc(2 * var(--lh-tight) * max(var(--relay-fs-body-min), var(--fs-sm))); }
   .relay-overview-attention-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .relay-overview-attention-why { grid-column: 2; }
   .relay-overview-attention-act { grid-row: 1 / span 2; grid-column: 3; }

@@ -86,16 +86,6 @@ export function attentionReasonText(
   }
 }
 
-/** Local-mode row status: never claims account Ready/Offline; reports only this device's check. */
-export function localCheckText(check: PcStatus | null | undefined, t: ReturnType<typeof useT>): { readonly glyph: StatusDotState; readonly text: string } {
-  if (!check) return { glyph: "offline", text: t("Paired · not checked") };
-  switch (check.kind) {
-    case "checking": return { glyph: "checking", text: t("Checking…") };
-    case "answered": return { glyph: "ready", text: t("This device: answered · {n} ms", { n: check.rttMs }) };
-    case "offline": return { glyph: "offline", text: t("This device: no answer") };
-  }
-}
-
 function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, props: Pick<RelayOverviewProps, "onOpenSheet" | "onSelectPc" | "onSelect" | "onOpenPc">): ReactNode {
   const openPc = (): void => { if (props.onOpenPc) props.onOpenPc(pc); else window.location.assign(serverScopePath(pc.server_id)); };
   const selectPc = (): void => { (props.onSelectPc ?? props.onSelect)?.(pc.server_id); };
@@ -146,6 +136,9 @@ export function RelayOverview(props: RelayOverviewProps) {
     ];
   // the attention rows on show, with the reason each one carries; a reason they all share is said once, above them
   const attentionRows = (model?.attention ?? []).slice(0, ATTENTION_LIMIT).flatMap(({ server_id, reason, expiresAt }) => { const pc = byId.get(server_id); return pc === undefined ? [] : [{ pc, reason, expiresAt, why: attentionReasonText(pc, expiresAt, t, { now, targetVersion }) }]; });
+  // how many PCs this device reaches right now and by which way; a check still running or never run counts nowhere
+  const reachable = { direct: 0, relay: 0, none: 0 };
+  for (const { check } of model?.rows ?? []) if (check !== null && check.kind !== "checking") reachable[check.kind === "offline" ? "none" : check.route === "relay" ? "relay" : "direct"] += 1;
   const firstAttention = attentionRows[0];
   const sharedReason = firstAttention !== undefined && attentionRows.length > 1 && attentionRows.every((row) => row.why === firstAttention.why) ? firstAttention.why : null;
 
@@ -200,35 +193,36 @@ export function RelayOverview(props: RelayOverviewProps) {
               </button>
             ))}
           </section>
-          <ul className="relay-overview-relays" aria-label={t("Relays")}>
-            {model.relays.map((relay) => {
-              const rtt = relayLatencyMs(relay, pcStatus);
-              return (
-                <li key={relay.origin} className="relay-overview-relay-item">
-                  <button type="button" className="pill relay-overview-relay-chip" onClick={() => onOpenRelay?.(relay.origin)}>{relayHost(relay.origin)}</button>
-                  <span className="relay-overview-relay-count">{relay.pcs.length === 1 ? t("1 PC") : t("{count} PCs", { count: relay.pcs.length })}</span>
-                  <span className="relay-overview-relay-scope">{relay.regional ? t("regional") : t("global")}</span>
-                  {rtt !== null && <span className="relay-overview-relay-rtt">{t("{n} ms", { n: rtt })}</span>}
-                </li>
-              );
-            })}
-          </ul>
-          {mode === "local" ? (
-            <ul className="relay-overview-local-checks" aria-label={t("Paired with this device")}>
-              {model.rows.map((row) => {
-                const status = localCheckText(row.check, t);
+          <div className="relay-overview-connectivity">
+            <ul className="relay-overview-relays" aria-label={t("Relays")}>
+              {model.relays.map((relay) => {
+                const rtt = relayLatencyMs(relay, pcStatus);
                 return (
-                  <li key={row.server_id} className="relay-overview-local-row" data-pc-state={row.state}>
-                    <StatusDot state={status.glyph} />
-                    <span className="relay-overview-attention-name" title={row.name}>{row.name}</span>
-                    <span className="relay-overview-attention-why">{status.text}</span>
+                  <li key={relay.origin} className="relay-overview-relay-item">
+                    <button type="button" className="pill relay-overview-relay-chip" onClick={() => onOpenRelay?.(relay.origin)}>{relayHost(relay.origin)}</button>
+                    <span className="relay-overview-relay-count">{relay.pcs.length === 1 ? t("1 PC") : t("{count} PCs", { count: relay.pcs.length })}</span>
+                    <span className="relay-overview-relay-scope">{relay.regional ? t("regional") : t("global")}</span>
+                    {rtt !== null && <span className="relay-overview-relay-rtt">{t("{n} ms", { n: rtt })}</span>}
                   </li>
                 );
               })}
             </ul>
-          ) : attentionRows.length > 0 && (
+            {reachable.direct + reachable.relay + reachable.none > 0 && (
+              <p className="relay-overview-reach" data-reachable-direct={reachable.direct} data-reachable-relay={reachable.relay} data-reachable-none={reachable.none}>{t("Reachable now: {direct} direct · {relay} via relay · {none} no answer", reachable)}</p>
+            )}
+          </div>
+          {mode === "account" && attentionRows.length > 0 && (
             <section className="relay-overview-attention-section" aria-label={t("Needs you")}>
-              {sharedReason !== null && <p className="relay-overview-attention-caption">{sharedReason}</p>}
+              {(sharedReason !== null || model.attention.length > ATTENTION_LIMIT) && (
+                <div className="relay-overview-attention-head">
+                  {sharedReason !== null && <p className="relay-overview-attention-caption">{sharedReason}</p>}
+                  {model.attention.length > ATTENTION_LIMIT && (
+                    <button type="button" className="btn btn-ghost relay-overview-view-all" data-action="view-all-attention" data-attention-total={model.counts.needsYou} onClick={() => selectFilter?.("needs")}>
+                      {t("View all {count}", { count: model.counts.needsYou })}
+                    </button>
+                  )}
+                </div>
+              )}
               <ol className="relay-overview-attention">
                 {attentionRows.map(({ pc, reason, expiresAt, why }) => (
                   <li key={pc.server_id} className="relay-overview-attention-row" data-pc-state={pc.state}>
@@ -239,12 +233,6 @@ export function RelayOverview(props: RelayOverviewProps) {
                   </li>
                 ))}
               </ol>
-              {model.attention.length > ATTENTION_LIMIT && (
-                <button type="button" className="btn btn-ghost relay-overview-view-all" data-action="view-all-attention"
-                  data-attention-total={model.counts.needsYou} onClick={() => selectFilter?.("needs")}>
-                  {t("View all {count}", { count: model.counts.needsYou })}
-                </button>
-              )}
             </section>
           )}
           {children}

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -176,6 +177,48 @@ describe("the connection map", () => {
     expect(strays).toEqual([]);
   });
 
+  it("draws a PC this device reached directly from this device itself, names its route, and lists it as a route of its own before the relays", () => {
+    const html = render(mockup(new Map<string, PcStatus>([
+      ["Desk PC", { kind: "answered", route: "lan", rttMs: 4 }],
+      ["MacBook", { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 62 }],
+    ])));
+    const layout = layoutRelayMap(mockup(new Map<string, PcStatus>([["Desk PC", { kind: "answered", route: "lan", rttMs: 4 }], ["MacBook", { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 62 }]])));
+    if (!layout) throw new Error("expected layout");
+    const edges = Object.fromEntries([...html.matchAll(/class="relay-map-edge" data-wire="\w+" data-pc="([^"]+)" d="M(-?\d+) (-?\d+)[^"]*" data-via="(\w+)"/g)].map(([, id, x, y, via]) => [id ?? "", { x: Number(x), y: Number(y), via }]));
+    expect(edges["Desk PC"]?.via).toBe("direct");
+    expect(edges["Desk PC"]?.x).toBe(layout.me.x + layout.me.r);
+    expect(edges["Desk PC"]?.y).toBe(layout.me.y);
+    expect(edges["MacBook"]?.via).toBe("hub");
+    // the regional hub still carries MacBook, so its wire is live; the words say the way
+    expect(html).toMatch(/class="relay-map-edge" data-wire="live" data-hub="wss:\/\/relay-ap\.ovis\.sh"/);
+    expect(html).toContain("Same network · 4 ms");
+    expect(html).toContain("relay-ap.ovis.sh · 62 ms");
+    expect(html).not.toContain("Answers");
+    const routes = html.slice(html.indexOf('<ol class="relay-map-routes"'));
+    expect(count(routes, /class="relay-map-route" data-route="direct"/g)).toBe(1);
+    expect(routes.indexOf("Desk PC")).toBeLessThan(routes.indexOf("relay-ap.ovis.sh"));
+    // once as its own route, not again in its relay's fan
+    expect(count(routes, /data-pc-id="Desk PC"/g)).toBe(1);
+    expect(count(routes, /data-pc-state=/g)).toBe(4);
+  });
+
+  it("names a PC's specific state on its node, in its tooltip and in the route list, keeping Needs you for the legend alone", () => {
+    const html = render(dashboardModel([
+      pc("Mac mini", "needs-approval", REGIONAL, "2026-11-07T00:00:00Z"),
+      { ...pc("Build box", "paired", GLOBAL, "2026-11-07T00:00:00Z"), state: "needs-update" },
+    ], { label: "This iPhone" }, GLOBAL).map);
+    expect(count(html, /<span class="relay-map-word">Needs approval<\/span>/g)).toBe(1);
+    expect(count(html, /<span class="relay-map-word">Needs update<\/span>/g)).toBe(1);
+    expect(count(html, /<small class="relay-map-hop-note">Needs approval<\/small>/g)).toBe(1);
+    expect(count(html, /<small class="relay-map-hop-note">Needs update<\/small>/g)).toBe(1);
+    expect(html).toContain("Mac mini · Needs approval · ");
+    expect(html).toContain("Build box · Needs update · Update Ovis on it · ");
+    // the group word stays where it names the group: the legend and the figure's summary
+    const legend = /<ul class="relay-map-legend"[^>]*>([\s\S]*?)<\/ul>/.exec(html)?.[1] ?? "";
+    expect(legend).toContain("Needs you");
+    expect(html.replace(legend, "").replace(/aria-label="[^"]*"/g, "")).not.toContain("Needs you");
+  });
+
   it("preserves full PC names via title attributes on truncated labels", () => {
     const longName = "Workstation on the third floor lab bench with a very long name";
     const map = dashboardModel([pc(longName, "paired", GLOBAL, "2026-11-07T00:00:00Z")], { label: "Me" }, GLOBAL).map;
@@ -183,6 +226,11 @@ describe("the connection map", () => {
     expect(html).toContain(`title="${longName}"`);
     expect(clip(longName)).toBe("Workstation on the…");
     expect(placeLabel({ x: 100, y: 100, r: 18, side: "right" }, 2).anchor).toBe("start");
+    // PF-7: hub host pills keep their intrinsic width without overflow:hidden, so they do not measure as clipped inside the visually-hidden route list
+    const css = readFileSync(new URL("./RelayMap.css", import.meta.url), "utf8");
+    const hostRule = /\.relay-map-host\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(hostRule).toContain("width: max-content;");
+    expect(hostRule).not.toContain("overflow: hidden");
   });
 });
 

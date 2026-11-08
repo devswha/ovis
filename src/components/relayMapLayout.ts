@@ -19,6 +19,8 @@ export interface PlacedPc extends Placed {
   readonly kind: "pc";
   readonly node: RelayMapNode;
   readonly hub: number;
+  /** direct: this device's check reached the PC on the same network or over Tailscale, so its wire comes from this device and passes no relay hub */
+  readonly via: "direct" | "hub";
 }
 
 export interface RelayHandshake {
@@ -81,6 +83,16 @@ export function relayHandshakeMs(hub: RelayMapHub): number | null {
   return relayHandshake(hub)?.rttMs ?? null;
 }
 
+/** This device's latest check reached the PC without a relay (the same network, or Tailscale). */
+export function isDirectRoute(node: RelayMapNode): boolean {
+  return node.check?.kind === "answered" && node.check.route !== "relay";
+}
+
+/** The PCs a hub carries right now: its members this device did not reach directly. */
+export function hubRoutedNodes(hub: RelayMapHub): RelayMapNode[] {
+  return hub.nodes.filter((node) => !isDirectRoute(node));
+}
+
 export function nodeWireState(node: RelayMapNode): WireState {
   if (node.check?.kind === "checking") return "checking";
   if (node.state === "offline" || node.check?.kind === "offline") return "off";
@@ -109,38 +121,53 @@ export function nodeStatusDotState(node: RelayMapNode): StatusDotState {
   }
 }
 
+/**
+ * Three columns, one per hop: this device, then the relay hubs and the PCs it reaches directly, then
+ * the PCs behind each hub. A PC answered on the same network or over Tailscale sits in the hub column
+ * with its wire from this device, so no relay is drawn on its way; the hubs centre on the PCs still
+ * behind them.
+ */
 export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
   const totalPcs = map.hubs.reduce((sum, hub) => sum + hub.nodes.length, 0);
   if (totalPcs === 0 || totalPcs > DIAGRAM_MAX_PCS || map.hubs.length === 0) return null;
 
-  const pcSpan = (totalPcs - 1) * PC_STEP_Y;
-  const hubSpan = (map.hubs.length - 1) * HUB_MIN_STEP_Y;
+  const direct = map.hubs.flatMap((hub, hubIndex) => hub.nodes.filter(isDirectRoute).map((node) => ({ node, hubIndex })));
+  const routed = map.hubs.map(hubRoutedNodes);
+  const pcSpan = Math.max(0, routed.reduce((sum, nodes) => sum + nodes.length, 0) - 1) * PC_STEP_Y;
+  // the hub column: the direct PCs in the PC rhythm, then the hubs in theirs
+  const hubSpan = (direct.length > 0 ? direct.length * PC_STEP_Y + HUB_MIN_STEP_Y - PC_STEP_Y : 0) + (map.hubs.length - 1) * HUB_MIN_STEP_Y;
   const height = Math.max(152, Math.max(pcSpan, hubSpan) + PAD_Y * 2);
   const centerY = Math.round(height / 2);
   const pcTop = Math.round(centerY - pcSpan / 2);
   const pcs: PlacedPc[] = [];
   const hubCenters: number[] = [];
 
+  const directTop = Math.round(centerY - hubSpan / 2);
+  direct.forEach(({ node, hubIndex }, i) => {
+    pcs.push({ kind: "pc", node, hub: hubIndex, via: "direct", x: HUB_X, y: Math.round(directTop + i * PC_STEP_Y), r: NODE_R, side: "right" });
+  });
+  const directBottom = direct.length > 0 ? directTop + (direct.length - 1) * PC_STEP_Y : null;
+
   let cursor = 0;
-  map.hubs.forEach((hub, hubIndex) => {
+  routed.forEach((nodes, hubIndex) => {
     const startIdx = cursor;
-    for (const node of hub.nodes) {
-      pcs.push({ kind: "pc", node, hub: hubIndex, x: PC_X, y: Math.round(pcTop + cursor * PC_STEP_Y), r: NODE_R, side: "right" });
+    for (const node of nodes) {
+      pcs.push({ kind: "pc", node, hub: hubIndex, via: "hub", x: PC_X, y: Math.round(pcTop + cursor * PC_STEP_Y), r: NODE_R, side: "right" });
       cursor += 1;
     }
     const endIdx = cursor - 1;
     hubCenters.push(startIdx <= endIdx ? Math.round((pcTop + startIdx * PC_STEP_Y + pcTop + endIdx * PC_STEP_Y) / 2) : centerY);
   });
 
-  for (let i = 1; i < hubCenters.length; i++) {
-    const prev = hubCenters[i - 1] ?? centerY;
+  for (let i = 0; i < hubCenters.length; i++) {
+    // below the direct PCs and the hub before it; a hub with nobody behind it right now takes the next slot
+    const floor = i === 0 ? (directBottom === null ? -Infinity : directBottom + HUB_MIN_STEP_Y) : (hubCenters[i - 1] ?? centerY) + HUB_MIN_STEP_Y;
     const curr = hubCenters[i] ?? centerY;
-    if (curr - prev < HUB_MIN_STEP_Y) hubCenters[i] = prev + HUB_MIN_STEP_Y;
+    if (curr < floor || (routed[i]?.length === 0 && Number.isFinite(floor))) hubCenters[i] = floor;
   }
+  // the hubs centred on this device when they have the column to themselves; under direct PCs they keep their slots
+  const shift = hubCenters.length > 1 && direct.length === 0 ? Math.round(centerY - ((hubCenters[0] ?? centerY) + (hubCenters[hubCenters.length - 1] ?? centerY)) / 2) : 0;
   if (hubCenters.length > 1) {
-    const firstCenter = hubCenters[0] ?? centerY;
-    const lastCenter = hubCenters[hubCenters.length - 1] ?? centerY;
-    const shift = Math.round(centerY - (firstCenter + lastCenter) / 2);
     for (let i = 0; i < hubCenters.length; i++) {
       hubCenters[i] = Math.max(PAD_Y, Math.min(height - PAD_Y, (hubCenters[i] ?? centerY) + shift));
     }
@@ -164,7 +191,7 @@ export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
 export function checkingWirePaths(map: RelayMapModel, layout: RelayMapLayout | null): string[] {
   if (layout === null) return [];
   return [
-    ...layout.hubs.filter((hub) => hubWireState(map.hubs[hub.hub]?.nodes ?? []) === "checking").map((hub) => wire(layout.me, hub)),
+    ...layout.hubs.filter((hub) => { const model = map.hubs[hub.hub]; return model !== undefined && hubWireState(hubRoutedNodes(model)) === "checking"; }).map((hub) => wire(layout.me, hub)),
     ...layout.pcs.flatMap((pc) => {
       const hub = layout.hubs[pc.hub];
       return hub && nodeWireState(pc.node) === "checking" ? [wire(hub, pc)] : [];

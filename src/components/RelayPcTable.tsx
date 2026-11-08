@@ -1,7 +1,7 @@
 import "./RelayPcTable.css";
 import type { MouseEvent, ReactNode } from "react";
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { currentLocale, useT } from "../lib/i18n.ts";
+import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { relayHost, type DashboardFilter, type dashboardModel } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -63,6 +63,24 @@ export function formatProbeLine(check: PcStatus | null, t: ReturnType<typeof use
   return t("This device: no answer");
 }
 
+/** One short label for how this device reaches a PC right now, as GOAT lists each environment's routes: the way (the same network, Tailscale, or the host of the relay that answered) with its round trip, or why there is none. */
+export function routeText(check: PcStatus | null, t: Translate): string {
+  if (check === null) return t("Not checked");
+  if (check.kind === "checking") return t("Checking…");
+  if (check.kind === "offline") return t("No answer");
+  const way = check.route === "lan" ? t("Same network") : check.route === "tailscale" ? "Tailscale" : check.relay === undefined ? t("Relay") : relayHost(check.relay);
+  return `${way} · ${t("{n} ms", { n: check.rttMs })}`;
+}
+
+/** routeText as a one-line cell: the answering relay's host as its chip, the round trip in tabular figures, the state colour left to the dot. */
+export function routeNode(check: PcStatus | null, t: Translate): ReactNode {
+  const text = routeText(check, t);
+  const relayed = check?.kind === "answered" && check.route === "relay" && check.relay !== undefined ? { host: relayHost(check.relay), ms: check.rttMs } : null;
+  return <span className="relay-pc-route" data-route={check === null ? "unchecked" : check.kind === "answered" ? check.route : check.kind} title={text}>
+    {relayed === null ? <span>{text}</span> : <><code className="relay-pc-relay-chip">{relayed.host}</code><span>{` · ${t("{n} ms", { n: relayed.ms })}`}</span></>}
+  </span>;
+}
+
 function matchesFilter(row: DashboardRow, filter: DashboardFilter, filters?: Readonly<Record<DashboardFilter, readonly string[]>>): boolean {
   if (filters) return filters[filter].includes(row.server_id);
   switch (filter) {
@@ -89,7 +107,7 @@ export function RelayPcTable({
     if (updating) return t("Updating");
     if (mode === "local" || !row.listed) {
       const check = row.check ?? statusMap.get(row.server_id) ?? null;
-      return (check && formatProbeLine(check, t)) ?? t("Paired · not checked");
+      return check === null ? t("Paired · not checked") : check.kind === "checking" ? t("Checking…") : check.kind === "answered" ? t("Answers") : t("No answer");
     }
     switch (row.state) {
       case "paired": return row.linked ? t("Ready") : t("Ready · not in the account yet");
@@ -98,13 +116,7 @@ export function RelayPcTable({
       case "offline": return row.last_seen_at === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(row.last_seen_at, now) });
     }
   };
-  /** The state word beside the dot, its full text in a title since the cell keeps one line. */
-  const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
-    const word = stateHeadline(row, updating);
-    return <span className="relay-pc-state-word" title={word}>{word}</span>;
-  };
-
-  const stateSubline = (row: DashboardRow, updating: boolean): string | null => {
+  const stateSubline = (row: DashboardRow, updating: boolean, phone = false): string | null => {
     const check = row.check ?? statusMap.get(row.server_id) ?? null;
     if (mode === "local" || !row.listed) return null;
     if (checkedByUser && row.paired) return formatProbeLine(check, t) ?? t("Not checked");
@@ -112,9 +124,16 @@ export function RelayPcTable({
     if (row.state === "needs-update") return t("Update Ovis on it");
     if (row.state === "needs-approval") {
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
-      if (row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
+      if (phone && row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
     }
     return null;
+  };
+  /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */
+  const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
+    const word = stateHeadline(row, updating);
+    const title = !updating && row.state === "needs-approval" && !freshIds.has(row.server_id) && row.added_at !== null && row.join !== undefined
+      ? `${word} · ${t("Add window closed · an account member must approve")}` : word;
+    return <span className="relay-pc-state-word" title={title}>{word}</span>;
   };
 
   const renderAction = (row: DashboardRow): ReactNode => {
@@ -141,6 +160,11 @@ export function RelayPcTable({
 
   const renderSeen = (row: DashboardRow): ReactNode =>
     !row.listed || row.last_seen_at === null ? "—" : <time dateTime={row.last_seen_at} title={formatAbsoluteTime(row.last_seen_at)}>{lastSeen(row.last_seen_at, now)}</time>;
+  /** The Relay cell: how this device reaches the PC once a check ran (its route and round trip, or no answer), else the relay the PC is assigned. */
+  const renderRelay = (row: DashboardRow): ReactNode => {
+    const check = row.check ?? statusMap.get(row.server_id) ?? null;
+    return check !== null ? routeNode(check, t) : row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : "—";
+  };
 
   return (
     <div className={filtered.length >= LARGE_FLEET_FROM ? "relay-pc-list-region is-large-fleet" : "relay-pc-list-region"}>
@@ -174,7 +198,7 @@ export function RelayPcTable({
             const updating = updatingIds?.has(row.server_id) === true;
             const dot = pcDotState(row, updating, mode);
             const selected = selectedPcId === row.server_id;
-            const sub = stateSubline(row, updating);
+            const sub = stateSubline(row, updating, true);
             return (
               <li key={row.server_id} className={selected ? "relay-pc-phone-row is-selected" : "relay-pc-phone-row"}
                 data-pc-state={updating ? "updating" : row.state} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
@@ -191,7 +215,7 @@ export function RelayPcTable({
                   </div>
                   <div className="relay-pc-phone-meta">
                     {stateWord(row, updating)}<span aria-hidden="true">·</span>
-                    {row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : <span>—</span>}<span aria-hidden="true">·</span>
+                    {renderRelay(row)}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
                   </div>
                   {sub !== null && <p className="relay-pc-probe-line">{sub}</p>}
@@ -205,7 +229,7 @@ export function RelayPcTable({
           <caption className="visually-hidden">{t("PCs")}</caption>
           <colgroup><col className="relay-pc-col-name" /><col className="relay-pc-col-state" /><col className="relay-pc-col-relay" />{showLastSeen && <col className="relay-pc-col-seen" />}<col className="relay-pc-col-act" /></colgroup>
           <thead>
-            <tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col">{t("Relay")}</th>{showLastSeen && <th scope="col">{t("Last seen")}</th>}<th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr>
+            <tr><th scope="col">{t("Name")}</th><th scope="col">{t("State")}</th><th scope="col" className="relay-pc-head-relay">{t("Relay")}</th>{showLastSeen && <th scope="col">{t("Last seen")}</th>}<th scope="col"><span className="visually-hidden">{t("Action")}</span></th></tr>
           </thead>
           <tbody>
             {filtered.map((row) => {
@@ -231,7 +255,7 @@ export function RelayPcTable({
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>
                   </td>
-                  <td className="relay-dash-relay relay-pc-cell-relay">{row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : "—"}</td>
+                  <td className="relay-dash-relay relay-pc-cell-relay">{renderRelay(row)}</td>
                   {showLastSeen && <td className="relay-dash-seen relay-pc-cell-seen">{renderSeen(row)}</td>}
                   <td className="relay-dash-act relay-pc-cell-act" onClick={(event) => event.stopPropagation()}>{renderAction(row)}</td>
                 </tr>
