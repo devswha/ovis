@@ -201,7 +201,7 @@ describe("RelayOverview", () => {
     });
     const stripButtons = root.findAll((node) => node.type === "button" && typeof node.props["data-strip-cell"] === "string");
     expect(stripButtons.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], b.props["aria-pressed"] ?? false])).toEqual([
-      ["ready", 3, false],
+      ["ready", 2, false],
       ["needs", 3, true],
       ["relays", 2, false],
     ]);
@@ -217,16 +217,16 @@ describe("RelayOverview", () => {
     expect(openedRelays).toEqual([undefined, AP]);
   });
 
-  it("sums Ready, Needs you and Relays in use into three cells, Ready + Needs you equal to the PC count, with the offline count as its own line under Needs you and no Offline cell", () => {
+  it("counts confirmed Ready PCs and Needs you separately from unchecked pairings, with Offline under Needs you", () => {
     for (const [pcs, expected, offline, note] of [
       [f4Pcs(), { ready: 0, needs: 4, relays: 2 }, 1, "incl. 1 offline"],
-      [freadyPcs(), { ready: 3, needs: 3, relays: 2 }, 1, "incl. 1 offline"],
+      [freadyPcs(), { ready: 2, needs: 3, relays: 2 }, 1, "incl. 1 offline"],
       [f20Pcs(), { ready: 8, needs: 12, relays: 2 }, 4, "incl. 4 offline"],
     ] as const) {
       const html = renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, now: NOW });
       const cells = Object.fromEntries([...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, count]) => [cell, Number(count)]));
       expect(cells).toEqual(expected);
-      expect(cells.ready + cells.needs).toBe(pcs.length);
+      expect(cells.ready + cells.needs).toBe(pcs.filter((pc) => pc.listed).length);
       expect(Number(/data-strip-cell="needs"[^>]*data-strip-offline="(\d+)"/.exec(html)?.[1])).toBe(offline);
       expect(html).toContain(`<small class="relay-overview-strip-note">${note}</small>`);
       expect(html).not.toContain('data-strip-cell="offline"');

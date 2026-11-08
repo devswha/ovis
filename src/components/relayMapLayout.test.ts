@@ -210,7 +210,7 @@ describe("wire, status, and relay RTT helpers", () => {
     expect(nodeStatusDotState(requireNode(nodes, "a-lately"))).toBe("ready");
 
     expect(nodeWireState(requireNode(nodes, "b-unseen"))).toBe("still");
-    expect(nodeStatusDotState(requireNode(nodes, "b-unseen"))).toBe("offline");
+    expect(nodeStatusDotState(requireNode(nodes, "b-unseen"))).toBe("ready");
 
     expect(nodeWireState(requireNode(nodes, "c-checking"))).toBe("checking");
     expect(nodeStatusDotState(requireNode(nodes, "c-checking"))).toBe("checking");

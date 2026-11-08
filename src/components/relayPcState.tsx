@@ -6,24 +6,14 @@ import type { StatusDotState } from "./StatusDot.tsx";
 
 export type DashboardRow = ReturnType<typeof dashboardModel>["rows"][number];
 
-/**
- * The state a PC's surfaces follow (the table, Details and the map alike): the directory's, except
- * that a live answer from this device beats the directory's stale Offline, since the PC is reachable
- * now. Needs approval and Needs update stay even when it answered: both are true, and the route
- * cell carries the answer.
- */
-export function liveState(pc: Pick<DashboardRow, "state" | "check">): DashboardRow["state"] {
-  return pc.state === "offline" && pc.check?.kind === "answered" ? "paired" : pc.state;
-}
-
-/** The glyph follows the live state; only a paired PC the account does not list falls back to this device's own check, the one fact there is about it. */
-export function pcDotState(row: DashboardRow, updating = false, mode: "account" | "local" = "account"): StatusDotState {
+/** The glyph uses the model's state, with transient work shown while it runs. */
+export function pcDotState(row: DashboardRow, updating = false): StatusDotState {
   if (updating) return "updating";
   if (row.check?.kind === "checking") return "checking";
-  switch (liveState(row)) {
+  switch (row.displayState) {
     case "needs-approval": case "needs-update": return "needs-you";
-    case "offline": return "offline";
-    case "paired": return mode === "local" || !row.listed ? (row.check?.kind === "answered" ? "ready" : "offline") : "ready";
+    case "offline": case "unchecked": return "offline";
+    case "paired": return "ready";
   }
 }
 

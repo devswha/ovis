@@ -214,13 +214,13 @@ describe("RelayPcTable", () => {
     ]);
   });
 
-  it.each([false, true])("keeps failed enrollment visible with a retry route on phone=%s", async (phone) => {
+  it.each([false, true])("keeps failed enrollment visible beside the PC's own state and Open route on phone=%s", async (phone) => {
     phoneMatches = phone;
     const pc = makePc(IDS.local, "Paired desk", "paired", { listed: false, linked: false, enrollment: "failed" });
     await mount(buildProps([pc]));
     const root = rootOf(renderer);
-    expect(textOf(root)).toContain("Ready · not in the account yet");
-    const retry = root.find((node) => node.type === "a" && textOf(node) === "Try again");
+    expect(textOf(root)).toContain("This PC could not be listed in your account. Try again.");
+    const retry = root.find((node) => node.type === "a" && textOf(node) === "Open");
     expect(retry.props.href).toBe(`/s/${IDS.local}/`);
   });
 

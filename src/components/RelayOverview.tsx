@@ -20,7 +20,7 @@ export const ATTENTION_LIMIT = 3;
 export const SKELETON_ROWS = 4;
 export const LOADING_SPINNER_MS = 1_000;
 
-/** One cell of the summary strip: Ready and Needs you partition the PCs, so Needs you carries the offline count as a note, not a peer cell. */
+/** Ready and Needs you omit unchecked pairings. Needs you includes Offline as a note. */
 type StripCell = { readonly key: string; readonly glyph: StatusDotState; readonly label: string; readonly count: number; readonly onClick: () => void; readonly pressed: boolean; readonly offline?: number };
 
 export interface RelayOverviewProps {

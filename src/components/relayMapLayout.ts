@@ -1,6 +1,5 @@
 import { REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import { relayHost, type dashboardModel } from "../lib/relay/dashboard.ts";
-import { liveState } from "./relayPcState.tsx";
 import type { StatusDotState } from "./StatusDot.tsx";
 
 export type RelayMapModel = ReturnType<typeof dashboardModel>["map"];
@@ -111,15 +110,14 @@ export function hubWireState(nodes: readonly RelayMapNode[]): WireState {
 
 export function nodeStatusDotState(node: RelayMapNode): StatusDotState {
   if (node.check?.kind === "checking") return "checking";
-  switch (liveState(node)) {
+  switch (node.state) {
     case "needs-approval":
     case "needs-update":
       return "needs-you";
-    case "offline":
+    case "offline": case "unchecked":
       return "offline";
     case "paired":
-      if (node.check?.kind === "offline") return "offline";
-      return node.seen === "lately" || node.check?.kind === "answered" ? "ready" : "offline";
+      return "ready";
   }
 }
 

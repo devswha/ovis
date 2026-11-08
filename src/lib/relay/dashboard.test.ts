@@ -65,16 +65,19 @@ describe("dashboardModel provenance", () => {
     const local = { ...pc("qr", "paired"), listed: false };
     const [row] = model([local]).rows;
     expect(row).toMatchObject({ source: "this-device", check: null });
+    expect(model([local]).counts.ready).toBe(0);
+    expect(model([local]).filters.ready).toEqual([]);
+    expect(model([local]).attention).toEqual([]);
     expect(model([local], new Map([["qr", { kind: "checking" }]])).rows[0]?.check).toEqual({ kind: "checking" });
   });
 
-  it("keeps the directory's word for a stale PC that answered this device's check, the answer beside it", () => {
+  it("preserves raw directory provenance while a live answer determines readiness everywhere", () => {
     const answered: PcStatus = { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 };
     const stale = { ...pc("home", "offline", null, "2026-11-01T00:00:00Z"), paired: true };
     const m = model([stale], new Map([["home", answered]]));
     expect(m.rows[0]).toMatchObject({ state: "offline", source: "directory", check: answered });
-    expect([m.counts.offline, m.counts.needsYou, m.counts.ready]).toEqual([1, 1, 0]);
-    expect(m.map.hubs[0]?.nodes[0]).toMatchObject({ seen: "stale", check: answered });
+    expect([m.counts.offline, m.counts.needsYou, m.counts.ready]).toEqual([0, 0, 1]);
+    expect(m.map.hubs[0]?.nodes[0]).toMatchObject({ state: "paired", seen: "stale", check: answered });
   });
 
   it("puts no probe on a PC this device is not paired with", () => {
