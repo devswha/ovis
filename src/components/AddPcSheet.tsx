@@ -1,112 +1,109 @@
-/**
- * Adding a PC, step by step: a sheet with four segmented bars and the steps of the join it drives,
- * in the mode the dashboard's row picked (Add or Join, RelayDashboard.tsx). A PC new in the
- * account (newPcs) has this device type the number that PC shows, then approve on the PC; any other
- * PC that waits for this device asks through the account, this device shows its own number, and an
- * account member approves on another device, never on the PC's own screen (docs/account.md,
- * "Joining through the account"). Both call the shell's existing join, Pair, match and Cancel, and
- * the steps advance from the shell's state: nothing here talks to the network, forces the typed
- * mode or skips a comparison; the comparison on screen follows the state's `typed`, as the shell's
- * own screen does. Without a PC the sheet says how one is added. The step list follows GOAT's
- * connection phases (its onboarding bars and SSH runtime steps); no code is borrowed.
- */
-// the digit field and the comparison's digits are the relay shell's own rules, so both screens draw them alike
+/** Add-a-PC modal sheet: four steps, labeled digit input, 90-second wait bound, and docked mobile footer. */
 import "./RelayShell.css";
 import "./AddPcSheet.css";
 
-import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, X } from "lucide-react";
 
-import type { MyPc } from "../lib/account/myPcs.ts";
+import { NEW_PC_MS, type MyPc } from "../lib/account/myPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import type { RelayFailure, RelayShellState } from "../lib/relay/shellState.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { relayFailureText } from "./relayFailureText.ts";
-import { TypedDigits } from "./RelayShell.tsx";
 
-/** `new`: the PC's card (typed number); `join`: the row of a PC waiting for approval (account join); `add`: no PC, how one is added. */
 export type AddPcSheetMode = "new" | "join" | "add";
-
-/** Where the join is, read off the shell's state: the step list and the sheet's controls follow it. */
-export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "failed";
+export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "ready" | "failed";
+export type AddPcStepStatus = "done" | "current" | "running" | "todo" | "failed";
+const APPROVER_STORAGE_KEY = "ovis-add-pc-approver";
+const lastApprovers = new Map<string, string>();
 
 export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
   switch (state.kind) {
     case "confirm": return state.offer.server_id === pc.server_id ? "confirm" : "start";
     case "connecting": return "connecting";
     case "compare": return state.wrong ? "wrong" : state.confirmed ? "approving" : "compare";
+    case "ready": return state.server_id === pc.server_id ? "ready" : "start";
     case "failed": return "failed";
     default: return "start";
   }
 }
 
-export type AddPcStepStatus = "done" | "running" | "todo" | "failed";
+function activeStepIndex(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): number {
+  if (phase === "ready") return 3;
+  if (phase === "approving" || (phase === "failed" && failure === "pair-declined")) return 2;
+  if (mode === "new" || phase === "compare" || phase === "wrong") return 1;
+  return 0;
+}
 
-/**
- * The four steps' marks for a phase: the join's steps are done up to the one the phase is at, which
- * runs, or failed there. A new PC has signed in before its card shows; an account join's ask is
- * done once the relay produced digits; a refusal after digits is the approval's, any other failure
- * the step that was connecting.
- */
 export function addPcSteps(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): AddPcStepStatus[] {
-  const at = phase === "approving" || (phase === "failed" && failure === "pair-declined") ? 2
-    : mode === "new" ? 1
-    : phase === "compare" || phase === "wrong" ? 1
-    : 0;
-  return [0, 1, 2, 3].map((step) => step < at ? "done" : step > at ? "todo" : phase === "failed" ? "failed" : "running");
+  if (phase === "ready") return ["done", "done", "done", "done"];
+  const at = activeStepIndex(mode, phase, failure);
+  return [0, 1, 2, 3].map((step) => step < at ? "done" : step > at ? "todo" : phase === "failed" ? "failed" : mode === "join" && phase === "start" ? "current" : "running");
 }
 
 export interface AddPcSheetProps {
-  /** which flow the sheet walks: the dashboard row's Add (`new`) or Join (`join`), or Add a PC (`add`) */
-  mode: AddPcSheetMode;
-  /** the PC joined; null in the `add` mode, which only says how a PC is added */
-  pc: MyPc | null;
-  /** the shell's state of this PC's join (RelayShellProps.state): the steps advance from it */
-  state: RelayShellState;
-  /** the shell's join (RelayShellProps.onJoin): typed from a PC's card, plain for an account join */
-  onJoin: (pc: MyPc, options?: { typed?: boolean }) => void;
-  /** the shell's Pair, answering the question an offer link asks (RelayShellProps.onPair) */
-  onPair: () => void;
-  /** the shell's match (RelayShellProps.onMatch): the digits typed from the PC's screen, or nothing when this device shows them */
-  onMatch: (typed?: string) => void;
-  /** the shell's Try again (RelayShellProps.onRetry), offered on a failure it can help with */
-  onRetry?: () => void;
-  /** the shell's Cancel (RelayShellProps.onCancel): ends a connection or comparison in progress */
-  onCancel: () => void;
-  /** takes the sheet down; the focus goes back to what opened it */
-  onClose: () => void;
-  /** the `add` mode's way to the existing QR and code pairing screen */
-  onPairByQr: () => void;
+  mode: AddPcSheetMode; pc: MyPc | null; state: RelayShellState;
+  onJoin: (pc: MyPc, options?: { typed?: boolean }) => void; onPair: () => void; onMatch: (typed?: string) => void;
+  onRetry?: () => void; onOpenPc?: () => void; onCancel: () => void; onClose: () => void; onPairByQr: () => void;
 }
 
-export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
+function resolveApprover(pc: MyPc | null, state: RelayShellState): string | null {
+  if (pc === null) return null;
+  if ((state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in" && state.account.pcs) {
+    const paired = state.account.pcs.find((row) => row.paired && row.server_id !== pc.server_id);
+    if (paired) return paired.name;
+  }
+  if (state.kind === "list") {
+    const saved = state.devices.find((device) => device.server_id !== pc.server_id && device.name);
+    if (saved?.name) return saved.name;
+  }
+  const cached = lastApprovers.get(pc.server_id);
+  if (cached) return cached;
+  const entry = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(APPROVER_STORAGE_KEY) : null;
+  return entry?.startsWith(`${pc.server_id}:`) ? entry.slice(pc.server_id.length + 1) : null;
+}
+
+function rememberApprover(serverId: string, approver: string | null): void {
+  if (!approver) return;
+  lastApprovers.set(serverId, approver);
+  if (typeof sessionStorage !== "undefined") sessionStorage.setItem(APPROVER_STORAGE_KEY, `${serverId}:${approver}`);
+}
+
+export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
   const t = useT();
   const id = useId();
   const name = pc?.name ?? "";
   const phase = pc === null || mode === "add" ? null : addPcPhase(pc, state);
-  // the phase's own control: the one the focus starts on, and lands on again when a phase change took the last one away
-  const primary = useRef<HTMLButtonElement>(null);
-  const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: primary });
+  const surface = useFocusTrap<HTMLDivElement>(true);
+  const digitsInputRef = useRef<HTMLInputElement>(null);
+  const challenge = state.kind === "compare" ? state.challenge ?? 0 : 0;
+  const [submittedFor, setSubmittedFor] = useState<number | null>(null);
+  const [retriedChallenge, setRetriedChallenge] = useState<number | null>(null);
+  const prevChallenge = useRef<number | null>(null);
+
+  const approver = resolveApprover(pc, state);
+  if (pc !== null && approver !== null) rememberApprover(pc.server_id, approver);
+  if (state.kind === "compare" && state.wrong && challenge > 0 && retriedChallenge !== challenge) setRetriedChallenge(challenge);
+
   useLayoutEffect(() => {
-    const node = surface.current;
-    if (node === null || node.contains(document.activeElement)) return;
-    (primary.current ?? node).focus({ preventScroll: true });
-  }, [phase]);
-  // while the join runs, Cancel, Escape and the scrim end it in the shell too, as today's Cancel and Not now do; a failed join has nothing left to end
-  const close = (): void => {
-    if (phase !== null && phase !== "start" && phase !== "failed") onCancel();
-    onClose();
-  };
+    if (phase === "compare" && state.kind === "compare" && state.typed) {
+      if (prevChallenge.current !== null && prevChallenge.current !== challenge && digitsInputRef.current) digitsInputRef.current.value = "";
+      prevChallenge.current = challenge;
+    }
+  }, [phase, challenge, state.kind]);
+
+  useLayoutEffect(() => { const node = surface.current; if (node !== null && !node.contains(document.activeElement)) node.focus({ preventScroll: true }); }, [phase]);
+
+  const close = (): void => { if (phase !== null && phase !== "start" && phase !== "failed") onCancel(); onClose(); };
   const latestClose = useRef(close);
   latestClose.current = close;
   useSheetSwipe(surface, close);
   usePhoneSheetBack(() => { latestClose.current(); });
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      // a native modal over it takes its own Escape
       if (event.key !== "Escape" || nativeModalOver(surface.current)) return;
       event.stopPropagation();
       event.preventDefault();
@@ -116,59 +113,66 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
-  const cancel = <button type="button" className="btn" onClick={close}>{t("Cancel")}</button>;
-  const done = <button ref={primary} type="button" className="btn" onClick={close}>{t("Close")}</button>;
-  let title: string;
-  let sub: string;
-  let body: ReactNode = null;
-  let actions: ReactNode;
+  const windowExpired = mode === "join" || (pc?.added_at != null && Date.now() - Date.parse(pc.added_at) >= NEW_PC_MS);
+  const pendingTyped = phase === "compare" && state.kind === "compare" && state.typed === true && submittedFor === challenge;
+
+  const submitDigits = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (pendingTyped) return;
+    const field = event.currentTarget.elements.namedItem("digits") as HTMLInputElement | null;
+    setSubmittedFor(challenge);
+    onMatch((field?.value ?? "").replace(/\s/g, ""));
+  };
+
+  const cancel = <button type="button" className="btn" onClick={close}>{t("Cancel")}</button>, done = <button type="button" className="btn" onClick={close}>{t("Close")}</button>;
+  let title: string, sub: string, body: ReactNode = null, actions: ReactNode;
   if (phase === null || pc === null) {
     title = t("Add a PC");
     sub = t("A PC joins through your account, or pairs with this device alone.");
-    body = (
-      <>
-        <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs, sign in and choose Add this PC to my account. It then appears here to add.")}</p>
-        <p className="relay-shell-copy">{t("Without an account on the PC, pair this device with the QR code or pairing code it shows.")}</p>
-      </>
-    );
-    actions = (
-      <>
-        <button type="button" className="btn" onClick={onClose}>{t("Close")}</button>
-        <button ref={primary} type="button" className="btn btn-primary" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>
-      </>
-    );
+    body = <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs to add it to your account, or pair with the QR code or pairing code it shows.")}</p>;
+    actions = <><button type="button" className="btn" onClick={onClose}>{t("Close")}</button><button type="button" className="btn btn-primary" data-sheet-primary onClick={onPairByQr}>{t("Pair with a QR or code")}</button></>;
   } else {
     title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
-    sub = mode === "new" ? t("Type the number {name} shows on its own screen, then approve there.", { name }) : t("The number to check appears on another of your devices, not on {name}.", { name });
+    sub = mode === "new"
+      ? (windowExpired ? t("Add window closed · an account member must approve.") : t("Type the number {name} shows on its own screen, then approve there.", { name }))
+      : approver ? t("Add window closed · an account member must approve on {approver}.", { approver }) : t("Add window closed · an account member must approve.");
     switch (phase) {
       case "start":
         actions = mode === "new"
-          ? <>{cancel}<button ref={primary} type="button" className="btn btn-primary" onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button></>
-          : <>{cancel}<button ref={primary} type="button" className="btn btn-primary" onClick={() => onJoin(pc)}>{t("Ask to join")}</button></>;
+          ? <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button></>
+          : <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => { rememberApprover(pc.server_id, approver); onJoin(pc); }}>{t("Ask to join")}</button></>;
         break;
       case "confirm":
         body = <p className="relay-shell-copy">{t("Pair with {name}?", { name })}</p>;
-        actions = <>{cancel}<button ref={primary} type="button" className="btn btn-primary" onClick={onPair}>{t("Pair")}</button></>;
+        actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Pair")}</button></>;
         break;
       case "connecting":
-        body = <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Connecting to {name}…", { name })}</span></div>;
+        body = <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Connecting to {name}…", { name })}</p></div>;
         actions = cancel;
         break;
       case "compare": {
-        // the digits are typed only when the shell asks for them, whatever the mode: a comparison is never made stricter or looser here
         const typed = state.kind === "compare" && state.typed === true;
         const digits = state.kind === "compare" ? state.digits : "";
+        const freshAfterWrong = retriedChallenge !== null && challenge > retriedChallenge;
         if (typed) {
-          body = <div className="add-pc-typed"><TypedDigits pc={name} onSubmit={onMatch} cancel={cancel} /></div>;
-          actions = null;
+          body = (
+            <form id={`${id}-digits-form`} className="relay-shell-code-form add-pc-typed" onSubmit={submitDigits}>
+              <div className="field">
+                <label className="field-label" htmlFor={`${id}-digits`}>{t("Number on {name}", { name })}</label>
+                <input ref={digitsInputRef} id={`${id}-digits`} name="digits" className="input relay-shell-code-input" aria-label={t("Number on {name}", { name })} inputMode="numeric" pattern="[0-9 ]{6,7}" maxLength={7} autoComplete="one-time-code" disabled={pendingTyped} required autoFocus />
+              </div>
+              <p className="relay-shell-detail">{freshAfterWrong ? t("A new number is shown on {name} because the previous number changed.", { name }) : t("{name} shows six digits on its own screen now. Type them here, then approve on {name}.", { name })}</p>
+            </form>
+          );
+          actions = <>{cancel}<button type="submit" form={`${id}-digits-form`} className="btn btn-primary" data-sheet-primary disabled={pendingTyped} aria-busy={pendingTyped ? true : undefined}>{t("Add this PC")}</button></>;
         } else {
           body = (
             <>
               <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{t("Another of your devices shows three numbers: pick this one there.")}</p>
+              <p className="relay-shell-copy">{approver ? t("{approver} shows three numbers: pick this one there.", { approver }) : t("Another of your devices shows three numbers: pick this one there.")}</p>
             </>
           );
-          actions = <>{cancel}<button ref={primary} type="button" className="btn btn-primary" onClick={() => onMatch()}>{t("The numbers match")}</button></>;
+          actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button></>;
         }
         break;
       }
@@ -176,38 +180,46 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         body = (
           <div role="alert">
             <p className="add-pc-problem">{t("That is not the number {name} shows", { name })}</p>
-            <p className="relay-shell-copy">{t("Nothing was added. Tap the PC again to compare a new number, and type the one its own screen shows.")}</p>
+            <p className="relay-shell-copy">{t("Nothing was added. Try again to compare a new number, and type the one {name} shows.", { name })}</p>
           </div>
         );
-        actions = done;
+        actions = onRetry ? <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button></> : done;
         break;
       case "approving":
         body = (
           <div className="relay-shell-wait" role="status">
             <div className="boot-spinner" aria-hidden="true" />
-            <p className="relay-shell-detail">{mode === "new" ? t("Approve this phone on {name} to finish.", { name }) : t("Waiting for an account member to approve this device…")}</p>
+            <p className="relay-shell-detail">{mode === "new" ? t("Approve this device on {name} within 90 seconds to finish.", { name }) : approver ? t("Waiting for {approver} to approve this device within 90 seconds…", { approver }) : t("Waiting for an account member to approve this device within 90 seconds…")}</p>
           </div>
         );
         actions = cancel;
         break;
+      case "ready":
+        body = <p className="relay-shell-copy" role="status">{t("{name} is ready to open on this device.", { name })}</p>;
+        actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => (onOpenPc ?? onClose)()}>{t("Open PC")}</button></>;
+        break;
       case "failed": {
-        // the shell's own words for the failure (relayFailureText), and its Try again where that can help
-        const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name) : null;
+        const failureKind = state.kind === "failed" ? state.failure : null;
+        const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || windowExpired);
+        const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail) : null;
         body = failure && (
           <div role="alert">
-            <p className="add-pc-problem">{failure.title}</p>
-            <p className="relay-shell-copy">{failure.copy}</p>
-            {state.kind === "failed" && state.detail !== null && <p className="relay-shell-detail"><code>{state.detail}</code></p>}
+            <p className="add-pc-problem">{expiredWindowFailure ? t("Add window closed · an account member must approve") : failure.title}</p>
+            <p className="relay-shell-copy">{expiredWindowFailure ? t("The 10-minute window on {name} has closed. Ask an account member to approve this device, or open {name} again.", { name }) : failure.copy}</p>
+            {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
           </div>
         );
         actions = failure?.retry && onRetry
-          ? <><button type="button" className="btn" onClick={close}>{t("Close")}</button><button ref={primary} type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button></>
+          ? <><button type="button" className="btn" onClick={close}>{t("Close")}</button><button type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button></>
           : done;
         break;
       }
     }
   }
 
+  const failureKind = state.kind === "failed" ? state.failure : null;
+  const stepNumber = phase === null || pc === null ? null : activeStepIndex(mode === "new" ? "new" : "join", phase, failureKind) + 1;
+  const statuses = phase === null || pc === null ? [] : addPcSteps(mode === "new" ? "new" : "join", phase, failureKind);
   const steps = phase === null || pc === null ? null : (mode === "new" ? [
     [t("{name} signed in", { name }), t("It asked to join your account")],
     [t("Type the number {name} shows", { name }), t("Proves you are looking at that PC")],
@@ -215,16 +227,17 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     [t("Ready"), t("Every device of your account can open it")],
   ] : [
     [t("Ask to join"), t("Through your account, with this device's key")],
-    [t("Check the number on another of your devices"), t("It shows three; pick the one this device shows")],
+    [approver ? t("Check the number on {approver}", { approver }) : t("Check the number on another of your devices"), t("It shows three; pick the one this device shows")],
     [t("Approved by an account member"), t("On that device, never on {name} itself", { name })],
     [t("Ready"), t("This device can open {name}", { name })],
-  ]).map(([label, detail], step) => ({ label, detail, status: addPcSteps(mode === "new" ? "new" : "join", phase, state.kind === "failed" ? state.failure : null)[step]! }));
+  ]).map(([label, detail], step) => ({ label, detail, status: statuses[step] ?? "todo" }));
 
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
       <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-sub`} tabIndex={-1} data-add-pc-mode={mode} {...(phase === null ? {} : { "data-add-pc-phase": phase })}>
         <header className="modal-header add-pc-head">
           {steps && <div className="add-pc-bars" aria-hidden="true">{steps.map(({ status }, step) => <span key={step} data-bar={status} />)}</div>}
+          {stepNumber !== null && <p className="add-pc-step-count">{t("Step {n} of {total}", { n: stepNumber, total: 4 })}</p>}
           <h2 className="modal-title" id={`${id}-title`}>{title}</h2>
           <p className="add-pc-sub" id={`${id}-sub`}>{sub}</p>
         </header>
@@ -233,7 +246,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           {steps && (
             <ol className="add-pc-steps">
               {steps.map(({ label, detail, status }, step) => (
-                <li key={step} data-step={status} {...(status === "running" ? { "aria-current": "step" } : {})}>
+                <li key={step} data-step={status} {...(status === "running" || status === "current" ? { "aria-current": "step" } : {})}>
                   <span className="add-pc-mark" aria-hidden="true">{status === "done" ? <Check /> : status === "failed" ? <X /> : null}</span>
                   <span className="add-pc-step-text">
                     <span className="add-pc-step-label">{label}</span>
@@ -246,7 +259,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
             </ol>
           )}
         </div>
-        {actions !== null && <footer className="modal-footer">{actions}</footer>}
+        {actions !== null && <footer className="modal-footer add-pc-footer">{actions}</footer>}
       </div>
     </div>,
     document.body,

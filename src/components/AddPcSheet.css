@@ -1,19 +1,17 @@
 /*
  * Add a PC (AddPcSheet.tsx): the system's modal (styles.css .modal*) with four segmented bars at its
- * head and the join's steps below the screen the shell shows for that step. Tokens only. The digit
- * field, the digits to compare and the waits are the relay shell's own rules (RelayShell.css), so the
- * sheet and the shell's page draw them alike; the rules at the end only fit them into the sheet.
+ * head and the join's steps below the screen the shell shows for that step. Tokens only.
  */
 
 .add-pc-sheet {
-  width: min(100%, 520px);
+  width: min(100%, var(--relay-sheet-w));
 }
 
 .add-pc-sheet:focus {
   outline: none;
 }
 
-/* the head holds the bars, the title and its line; the body's own top padding parts them from what follows */
+/* the head holds the bars, the step count, the title and its line */
 .add-pc-head {
   display: block;
   padding-bottom: 0;
@@ -24,7 +22,7 @@
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .add-pc-bars span {
@@ -34,11 +32,10 @@
 }
 
 .add-pc-bars span[data-bar="done"] {
-  background: var(--primary);
-  opacity: 0.45;
+  background: var(--status-done);
 }
 
-.add-pc-bars span[data-bar="running"] {
+.add-pc-bars span:is([data-bar="running"], [data-bar="current"]) {
   background: var(--primary);
 }
 
@@ -46,11 +43,21 @@
   background: var(--status-blocked);
 }
 
+.add-pc-step-count {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-regular);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
 .add-pc-sub {
   margin: var(--space-1) 0 0;
+  max-width: 65ch;
   font-size: var(--fs-md);
   line-height: var(--lh-base);
   color: var(--text-dim);
+  text-wrap: pretty;
 }
 
 .add-pc-body {
@@ -100,6 +107,10 @@
   overflow-wrap: anywhere;
 }
 
+.add-pc-steps li[data-step="done"] .add-pc-step-label {
+  color: var(--text-dim);
+}
+
 .add-pc-steps li[data-step="todo"] .add-pc-step-label {
   color: var(--text-dim);
   font-weight: var(--fw-regular);
@@ -120,13 +131,17 @@
 .add-pc-mark svg {
   width: var(--space-3);
   height: var(--space-3);
-  stroke-width: 2.5;
 }
 
 .add-pc-steps li[data-step="done"] .add-pc-mark {
   background: var(--status-done-tint);
   box-shadow: none;
   color: var(--status-done);
+}
+
+.add-pc-steps li[data-step="current"] .add-pc-mark {
+  box-shadow: inset 0 0 0 calc(2 * var(--hairline)) var(--text-dim);
+  color: var(--text-strong);
 }
 
 .add-pc-steps li[data-step="running"] .add-pc-mark {
@@ -150,37 +165,40 @@
 
 /* what went wrong, in one line above the steps: the wrong number, or why the join ended */
 .add-pc-problem {
-  margin: 0;
+  margin: 0 0 var(--space-1);
   color: var(--status-blocked);
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
   overflow-wrap: anywhere;
 }
 
-/* the shell's screens inside the sheet: the typed number's heading repeats the running step and its copy
-   the sheet's own line, so only those say it; their buttons sit in a row at the foot's side, the first in
-   the DOM (the primary) on the right */
-.add-pc-sheet .relay-shell-title,
-.add-pc-typed > .relay-shell-copy {
-  display: none;
+.add-pc-typed {
+  margin-top: 0;
+}
+
+.add-pc-typed .field {
+  margin-bottom: 0;
+}
+
+.add-pc-typed .relay-shell-code-input {
+  min-height: var(--touch-target);
+  font-size: var(--fs-input);
+  letter-spacing: var(--tracking-code);
+}
+
+.add-pc-typed .relay-shell-code-input:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
 }
 
 .add-pc-typed > .relay-shell-detail {
   margin-top: 0;
 }
 
-.add-pc-sheet .relay-shell-actions {
-  flex-direction: row-reverse;
-  justify-content: flex-start;
-  margin-top: var(--space-3);
-}
-
-.add-pc-sheet .relay-shell-actions .btn {
-  width: auto;
-}
-
 .add-pc-sheet .relay-shell-digits {
   margin: var(--space-2) 0;
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-code);
 }
 
 .add-pc-sheet .relay-shell-wait {
@@ -192,10 +210,38 @@
   text-align: center;
 }
 
-/* fingers: the number's field is a control a finger reaches, so it takes the touch target's height */
-@media (pointer: coarse) {
-  .add-pc-sheet .relay-shell-code-input {
+@media (max-width: 640px) {
+  .add-pc-sheet {
+    width: 100%;
+  }
+
+  .add-pc-footer {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .add-pc-footer .btn {
+    width: 100%;
     min-height: var(--touch-target);
+  }
+}
+
+@media (forced-colors: active) {
+  .add-pc-bars span {
+    border: var(--hairline) solid CanvasText;
+  }
+
+  .add-pc-bars span:is([data-bar="done"], [data-bar="running"], [data-bar="current"]) {
+    background: Highlight;
+  }
+
+  .add-pc-mark {
+    border: var(--hairline) solid CanvasText;
+  }
+
+  .add-pc-steps li:is([data-step="running"], [data-step="current"]) .add-pc-mark {
+    border-color: Highlight;
   }
 }
 
