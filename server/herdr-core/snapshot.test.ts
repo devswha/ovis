@@ -177,15 +177,20 @@ describe("buildSnapshot", () => {
     expect(agentOf({ cwd: "C:\\Users\\u", ...front(["cmd"]) }, "linux")).toBe("cmd");
   });
 
-  it("names a terminal started directly as an agent from its start when hc tells no process in front, and none a shell started", () => {
-    const started = (argv: string[], cwd: string) => ({ status: null, foreground: null, argv, cwd });
-    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "windows")).toBe("letta");
-    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "elsewhere")).toBe("letta");
+  // hc tells a terminal's own pid and the pid in front of it, never a process start (#3319 review)
+  it("names a terminal started directly as an agent while the process it started is still in front, and none a shell started", () => {
+    const started = (argv: string[], cwd: string, front = "bash") => ({ status: null, pid: 7, foreground: { pid: 7, name: front, argv: [front] }, argv, cwd });
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u", "cmd.exe"), "windows")).toBe("letta");
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u", "cmd.exe"), "elsewhere")).toBe("letta");
     expect(agentOf(started(["node", "/home/u/.bin/letta"], "/home/u"), "linux")).toBe("letta");
-    for (const argv of [["cmd.exe", "/c", "letta.cmd"], ["pwsh", "-c", "letta"]]) expect(agentOf(started(argv, "C:\\Users\\u"), "windows")).toBeNull();
+    for (const argv of [["cmd.exe", "/c", "letta.cmd"], ["pwsh", "-c", "letta"]]) expect(agentOf(started(argv, "C:\\Users\\u", "cmd.exe"), "windows")).toBeNull();
     expect(agentOf(started(["bash", "-lc", "letta"], "/home/u"), "linux")).toBeNull();
-    // a process in front goes first: the shell left in front is no agent
-    expect(agentOf({ ...started(["letta"], "/home/u"), foreground: { pid: 3, name: "bash", argv: ["bash"] } }, "linux")).toBeNull();
+    // the process in front is no longer the one the terminal started, so the start names nobody
+    expect(agentOf({ status: null, pid: 7, argv: ["claude"], cwd: "/home/u", foreground: { pid: 9, name: "codex", argv: ["codex"] } }, "linux")).toBe("codex");
+    expect(agentOf({ status: null, pid: 7, argv: ["claude"], cwd: "/home/u", foreground: { pid: 9, name: "bash", argv: ["bash"] } }, "linux")).toBeNull();
+    // no process in front told, or no pid for the start: nothing proves the start still runs
+    expect(agentOf({ status: null, pid: 7, argv: ["letta"], cwd: "/home/u", foreground: null }, "linux")).toBeNull();
+    expect(agentOf({ status: null, argv: ["letta"], cwd: "/home/u", foreground: { pid: 9, name: "bash", argv: ["bash"] } }, "linux")).toBeNull();
   });
 
   it("cuts the tab top down by the app's tree and weights, whatever size the terminals are, with a divider per split", () => {

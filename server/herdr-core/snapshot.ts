@@ -126,13 +126,13 @@ export function terminalPlatform(cwd: string | undefined, host: CoreHost): Progr
 
 /**
  * The agent a terminal runs (agent-identity.ts): its program's report, else the process in front of
- * it, else the command it started with, as its own platform names programs: by the process in front's
- * folder, else the terminal's.
+ * it, else the command it started with while the process that ran it is still in front, as its own
+ * platform names programs: by the process in front's folder, else the terminal's.
  */
-export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground"> & { cwd?: string | undefined; argv?: readonly string[] | undefined }, host: CoreHost): string | null {
+export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground"> & { cwd?: string | undefined; argv?: readonly string[] | undefined; pid?: number | null }, host: CoreHost): string | null {
   const front = terminal.foreground;
   const platform = terminalPlatform(front?.cwd || terminal.cwd, host);
-  return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null, launcher: terminal.argv ?? null }, platform);
+  return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null, foregroundPid: front?.pid ?? null, launcher: terminal.argv?.length ? { argv: terminal.argv, pid: terminal.pid ?? null } : null }, platform);
 }
 
 /** hc's record of the process in front of a terminal (a record's `foreground`, a `foreground` event's data); null for none or another shape. */

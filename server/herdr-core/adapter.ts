@@ -1300,10 +1300,10 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
    * `shownStatusOf`): its program's word, its turn and its labels, from hc's snapshot and then its
    * events, with the status last told. Until hc's snapshot is in, events wait in `early`.
    */
-  type Known = { status: HcStatus | null; front: HcForeground | null; cwd: string | undefined; argv: string[] | undefined; title: string | null; turn: number; first: number; labels: Record<string, string>; shown: AgentStatus };
+  type Known = { status: HcStatus | null; front: HcForeground | null; cwd: string | undefined; argv: string[] | undefined; pid: number | null; title: string | null; turn: number; first: number; labels: Record<string, string>; shown: AgentStatus };
   const known = new Map<string, Known>();
   /** the agent a terminal runs, read as the snapshot reads it (snapshot.ts `agentOf`) */
-  const agentNow = (status: HcStatus | null, entry: Known | undefined) => agentOf({ status, foreground: entry?.front ?? null, cwd: entry?.cwd, argv: entry?.argv }, host);
+  const agentNow = (status: HcStatus | null, entry: Known | undefined) => agentOf({ status, foreground: entry?.front ?? null, cwd: entry?.cwd, argv: entry?.argv, pid: entry?.pid }, host);
   let early: HcEvent[] | null = [];
   const remember = (record: unknown) => {
     if (!isRecord(record) || typeof record["address"] !== "string") return;
@@ -1312,7 +1312,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     const labels = labelsOf(record["labels"]);
     const first = firstTurn({ address: record["address"], turn });
     noteSession?.(record["address"], status, record["records"]);
-    known.set(record["address"], { status, front: foregroundOf(record["foreground"]), cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined, argv: Array.isArray(record["argv"]) && record["argv"].every((word) => typeof word === "string") ? record["argv"] : undefined, title: typeof record["title"] === "string" ? record["title"] : null, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
+    known.set(record["address"], { status, front: foregroundOf(record["foreground"]), cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined, argv: Array.isArray(record["argv"]) && record["argv"].every((word) => typeof word === "string") ? record["argv"] : undefined, pid: typeof record["pid"] === "number" ? record["pid"] : null, title: typeof record["title"] === "string" ? record["title"] : null, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
     observeSeen?.(record["address"], turn, labels);
   };
   const tell = (paneId: string, status: HcStatus | null, shown: AgentStatus) => {

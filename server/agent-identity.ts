@@ -12,8 +12,10 @@ export interface PaneFacts {
   reported?: string | null;
   /** the argv of the process in front of the pane; its name alone when the runtime gives no argv */
   foreground?: readonly string[] | null;
-  /** the argv the pane's terminal was started with, read only when the runtime tells no process in front */
-  launcher?: readonly string[] | null;
+  /** the pid of the process in front, when the runtime tells it (hc's `Foreground.pid`) */
+  foregroundPid?: number | null;
+  /** how the pane's terminal was started: the argv it was given, and the pid of the process that ran them (hc's `Terminal.pid`) */
+  launcher?: { readonly argv: readonly string[]; readonly pid?: number | null } | null;
 }
 
 /**
@@ -44,11 +46,12 @@ export function reportedAgent(app: string | null | undefined): string | null {
   return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
 }
 
-/** A path's last part as `platform` names files: on Windows in any case, a program without its `.exe` or `.cmd`. */
+/** A path's last part as `platform` names files: on Windows at either slash and in any case, a program without its `.exe` or `.cmd`. */
 function fileName(word: string, platform: CatalogPlatform, program: boolean): string {
-  const name = nodePath.posix.basename(word.replace(/\\/g, "/"));
-  if (platform !== "windows") return name;
-  return program ? name.toLowerCase().replace(/\.(?:exe|cmd)$/, "") : name.toLowerCase();
+  // a backslash separates a path on Windows alone: elsewhere it is part of the file's name
+  if (platform !== "windows") return nodePath.posix.basename(word);
+  const name = nodePath.posix.basename(word.replace(/\\/g, "/")).toLowerCase();
+  return program ? name.replace(/\.(?:exe|cmd)$/, "") : name;
 }
 
 /** Interpreter options after which the next word is code or a module, not a script file. */
@@ -140,11 +143,24 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
 
 /**
  * The agent a pane runs: the program's own report first, else the process in front of it on
- * `platform`, its terminal's. With no process in front told, the command the terminal started with,
+ * `platform`, its terminal's. With that naming none, the command the terminal was started with,
  * which names an agent only when it runs one directly (a shell's `-c letta` or `cmd /c letta.cmd`
- * names none). Null for none.
+ * names none) and only while the process it started is still the one in front: a terminal started
+ * as `claude` whose pane now runs `codex` names Codex, never Claude. No runtime tells a process's
+ * start time (hc names a terminal's own pid and the pid in front, herdr's process rows pids), so
+ * the same pid is what proves it. Null for none.
  */
 export function paneAgent(facts: PaneFacts, platform: ProgramPlatform): string | null {
-  const running = facts.foreground?.length ? facts.foreground : facts.launcher;
-  return reportedAgent(facts.reported) ?? (running?.length ? processAgent(running, platform) : null);
+  const reported = reportedAgent(facts.reported);
+  if (reported) return reported;
+  const front = facts.foreground?.length ? processAgent(facts.foreground, platform) : null;
+  if (front) return front;
+  const launcher = facts.launcher;
+  if (!launcher?.argv.length || !startedInFront(facts.foregroundPid, launcher.pid)) return null;
+  return processAgent(launcher.argv, platform);
+}
+
+/** Whether the process a terminal started with is the one in front now: one live pid, the only proof a runtime gives. */
+function startedInFront(front: number | null | undefined, started: number | null | undefined): boolean {
+  return typeof front === "number" && front > 0 && front === started;
 }
