@@ -111,7 +111,7 @@
   --font-mono: "Symbols Nerd Font Mono", "JetBrains Mono Web", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "D2Coding", monospace;
   /* Settings → Appearance → Interface font size: the chosen body size over the density's (lib/settings.ts
      writes it on <html>). Every size below is the scale at 1, except --fs-input: the floor under which
-     iOS Safari zooms a focused field stays a floor */
+     iOS Safari zooms a focused field stays a floor (.input and .select take it only while pressed on iOS) */
   --ui-scale: 1;
   --fs-2xs: calc(11px * var(--ui-scale));
   --fs-xs: calc(12px * var(--ui-scale));
@@ -3624,6 +3624,13 @@ button {
   border-radius: var(--radius-md);
   color: var(--text-strong);
   font: inherit;
+  /* a field follows the interface size like the label beside it; on iOS, lib/viewport.ts arms it to
+     --fs-input on the press before the focus, which is when Safari decides whether to zoom the page */
+  font-size: var(--fs-md);
+}
+
+.input[data-armed],
+.select[data-armed] {
   font-size: var(--fs-input);
 }
 

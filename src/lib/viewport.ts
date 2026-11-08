@@ -117,6 +117,17 @@ const applyKeyboard = (): void => {
     else root.style.removeProperty("--app-height");
   }
 };
+// iOS Safari zooms the page into a field whose text is under 16px when it gets the focus. Fields draw at
+// the interface size (styles.css .input/.select), like the labels beside them; on iOS the press that
+// precedes the focus arms the field to --fs-input, and the blur disarms it. Keyboard focus without a press
+// (Tab on a hardware keyboard) is left to iOS, which does not zoom for it.
+const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+if (ios) {
+  const field = (target: EventTarget | null): HTMLElement | null =>
+    target instanceof Element ? target.closest<HTMLElement>(".input, .select") : null;
+  document.addEventListener("pointerdown", (event) => field(event.target)?.setAttribute("data-armed", ""), true);
+  document.addEventListener("focusout", (event) => field(event.target)?.removeAttribute("data-armed"), true);
+}
 viewport?.addEventListener("resize", syncKeyboard);
 viewport?.addEventListener("scroll", syncKeyboard);
 window.addEventListener("resize", syncKeyboard);

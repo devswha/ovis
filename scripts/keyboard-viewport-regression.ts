@@ -264,5 +264,31 @@ try {
       assert.deepEqual(shell, fits ? { published: `${visual}px`, height: visual } : { published: "", height: size.height }, `${name}: the shell ${fits ? "fits the visual viewport" : "keeps 100dvh"}`);
     } finally { await context.close(); }
   }
-  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell");
+  // a field draws at the interface size like the label beside it (--fs-md on a phone, --fs-sm from 641px); on iOS the
+  // press before its focus arms it to 16px, the size Safari does not zoom the page for, and the blur disarms it. A
+  // desktop browser never arms it
+  for (const [ios, width] of [[true, 393], [true, 1180], [false, 1180]] as const) {
+    const context = await browser.newContext({ viewport: { width, height: 820 }, hasTouch: ios });
+    try {
+      if (ios) await context.addInitScript(() => {
+        Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => 5 });
+      });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.port}/`);
+      await page.evaluate((token) => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", `<input class="input" aria-label="Field"><select class="select" aria-label="Choice"><option>a</option></select><span class="fixture-label" style="font-size: var(${token})">Label</span>`), width < 641 ? "--fs-md" : "--fs-sm");
+      const size = (selector: string) => page.locator(selector).evaluate((el) => getComputedStyle(el).fontSize);
+      const body = await size(".fixture-label");
+      const where = `${ios ? "iOS" : "desktop"} ${width}px`;
+      for (const selector of [".input", ".select"]) {
+        assert.equal(await size(selector), body, `${where} ${selector}: the interface size at rest`);
+        await page.locator(selector).dispatchEvent("pointerdown");
+        await page.locator(selector).focus();
+        assert.equal(await size(selector), ios ? "16px" : body, `${where} ${selector}: ${ios ? "16px from the press" : "the interface size when focused"}`);
+        await page.locator(selector).blur();
+        assert.equal(await size(selector), body, `${where} ${selector}: the interface size again after the blur`);
+      }
+    } finally { await context.close(); }
+  }
+  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS");
 } finally { await browser?.close(); server.stop(); }
