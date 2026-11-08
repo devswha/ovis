@@ -26,7 +26,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Seen lately": "最近確認済み",
   "Paired · not checked": "ペアリング済み · 未確認",
   "Last seen: unknown": "最終確認: 不明",
-  "Latest PC handshake": "最新の PC ハンドシェイク",
+  "Fastest PC handshake": "最速の PC ハンドシェイク",
   "No relays in use yet.": "まだ使用中のリレーはありません。",
   "sees sizes, not content": "サイズは見えるが内容は見えない",
   "Connection map": "接続マップ",

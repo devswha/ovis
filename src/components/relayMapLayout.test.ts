@@ -163,7 +163,7 @@ describe("wire, status, and relay RTT helpers", () => {
     expect(nodeStatusDotState(requireNode(nodes, "h-offline"))).toBe("offline");
   });
 
-  it("aggregates hub wire state and latest measured relay handshake RTT per hub across multiple measured PCs", () => {
+  it("aggregates hub wire state and shows the fastest answer through this relay across multiple measured PCs", () => {
     const map = modelOf(
       [
         pc("Studio desktop", "paired", REGIONAL, "2026-11-07T00:00:00Z"),

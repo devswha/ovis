@@ -174,7 +174,7 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
               const host = relayHost(hub.origin);
               const countText = hub.pcCount === 1 ? t("1 PC") : t("{count} PCs", { count: hub.pcCount });
               const scopeText = hub.regional ? t("regional") : t("global");
-              const hsText = hub.handshake !== null ? `${t("Latest PC handshake")} · ${t("{n} ms", { n: hub.handshake.rttMs })}` : null;
+              const hsText = hub.handshake !== null ? `${t("Fastest PC handshake")} · ${t("{n} ms", { n: hub.handshake.rttMs })}` : null;
               return (
                 <button key={hub.origin} type="button" className="relay-map-hub-btn" style={pos(hub.x, hub.y, layout.width, layout.height)} tabIndex={-1} data-hub={hub.origin} title={`${host} · ${countText} · ${scopeText}${hsText !== null && hub.handshake !== null ? ` · ${hsText} (${hub.handshake.pcName})` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
                   <span className="relay-map-hub-mark"><RadioTower aria-hidden="true" /></span>
@@ -218,7 +218,7 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
           const scopeText = isRegionalRelay(hub.origin) ? t("regional") : t("global");
           const countText = hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length });
           const hs = relayHandshake(hub);
-          const hsText = hs !== null ? `${t("Latest PC handshake")} · ${t("{n} ms", { n: hs.rttMs })}` : null;
+          const hsText = hs !== null ? `${t("Fastest PC handshake")} · ${t("{n} ms", { n: hs.rttMs })}` : null;
           const linkWire = hubWireState(hub.nodes);
           return (
             <li key={hub.origin} className="relay-map-route">
