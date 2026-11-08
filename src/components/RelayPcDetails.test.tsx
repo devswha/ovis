@@ -231,4 +231,11 @@ describe("RelayPcDetails", () => {
     await act(async () => { window.dispatchEvent(escapeEvent); });
     expect(closed).toBe(2);
   });
+
+  it("renders an explicit Not checked observation time when observedVersion has no observedAt", () => {
+    const html = renderHtml({ pc: makeRow(), observedVersion: { version: "0.5.0", outdated: false }, onClose: none });
+    const versionField = /<dt>Version<\/dt>([\s\S]*?)<\/dd>/.exec(html)?.[1] ?? "";
+    expect(versionField).toContain("0.5.0");
+    expect(versionField).toContain("Not checked");
+  });
 });

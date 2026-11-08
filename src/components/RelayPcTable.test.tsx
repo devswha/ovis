@@ -386,10 +386,36 @@ describe("RelayPcTable", () => {
     const html200 = renderHtml(buildProps(fleet200));
     expect(html200).toContain("is-large-fleet");
 
+    const fleet199 = Array.from({ length: 199 }, (_, i) =>
+      makePc(`${String(i).padStart(32, "0")}`, `Node ${i}`, "paired"),
+    );
+    expect(renderHtml(buildProps(fleet199))).not.toContain("is-large-fleet");
+
     const fleet1000 = Array.from({ length: 1000 }, (_, i) =>
       makePc(`${String(i).padStart(32, "0")}`, `Node ${i}`, i % 2 === 0 ? "paired" : "offline"),
     );
     const html1000 = renderHtml(buildProps(fleet1000));
     expect(html1000.match(/<tr[^>]*data-pc-id="/g)).toHaveLength(1000);
+  });
+
+  it("gates offline answered probe lines and unchecked paired-row hints on explicit Check now (checkedByUser)", () => {
+    const offline = makePc(IDS.offlinePaired, "Home server", "offline", { paired: true, linked: true });
+    const uncheckedPaired = makePc(IDS.ready, "Render node", "paired", { paired: true, linked: true });
+    const status = new Map<string, PcStatus>([[IDS.offlinePaired, { kind: "answered", route: "lan", rttMs: 9 }]]);
+
+    // Automatic probe (checkedByUser = false): offline row keeps directory Offline without a second probe line
+    const autoHtml = renderHtml(buildProps([offline, uncheckedPaired], { checkedByUser: false }, status));
+    expect(autoHtml).toContain("Offline");
+    expect(autoHtml).not.toContain("This device: answered");
+    expect(autoHtml).not.toContain("Not checked");
+
+    // Explicit Check now (checkedByUser = true): offline answered row shows the probe line, and unchecked paired row shows Not checked (V-096)
+    const manualHtml = renderHtml(buildProps([offline, uncheckedPaired], { checkedByUser: true }, status));
+    const offlineRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.offlinePaired}"[\\s\\S]*?<\\/tr>`).exec(manualHtml)?.[0] ?? "";
+    const uncheckedRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.ready}"[\\s\\S]*?<\\/tr>`).exec(manualHtml)?.[0] ?? "";
+    expect(offlineRow).toContain("Offline");
+    expect(offlineRow).toContain("This device: answered · 9 ms");
+    expect(uncheckedRow).toContain("Ready");
+    expect(uncheckedRow).toContain("Not checked");
   });
 });

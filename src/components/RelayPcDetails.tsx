@@ -176,13 +176,13 @@ export function RelayPcDetails({
               {observedVersion !== null && observedVersion.version !== "" ? (
                 <>
                   <span className="relay-pc-details-value">{observedVersion.version}</span>
-                  {observedVersion.observedAt && (
-                    <small className="relay-pc-details-sub">
+                  <small className="relay-pc-details-sub">
+                    {observedVersion.observedAt ? (
                       <time dateTime={observedVersion.observedAt} title={formatAbsoluteTime(observedVersion.observedAt)}>
                         {formatAbsoluteTime(observedVersion.observedAt)}
                       </time>
-                    </small>
-                  )}
+                    ) : t("Not checked")}
+                  </small>
                 </>
               ) : (
                 <span className="relay-pc-details-dim">{t("Not checked")}</span>

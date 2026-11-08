@@ -99,14 +99,13 @@ export function RelayPcTable({
   const stateSubline = (row: DashboardRow, updating: boolean): string | null => {
     const check = row.check ?? statusMap.get(row.server_id) ?? null;
     if (mode === "local" || !row.listed) return null;
-    if (checkedByUser && check !== null) return formatProbeLine(check, t);
+    if (checkedByUser && row.paired) return formatProbeLine(check, t) ?? t("Not checked");
     if (updating) return null;
     if (row.state === "needs-update") return t("Update Ovis on it");
     if (row.state === "needs-approval") {
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
       if (row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
     }
-    if (row.state === "offline" && check?.kind === "answered") return t("This device: answered · {n} ms", { n: check.rttMs });
     return null;
   };
 
