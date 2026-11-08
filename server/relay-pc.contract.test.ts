@@ -119,7 +119,7 @@ function addRelayPc(base: string, link: string, name?: string): Promise<Response
 
 function postRelay(base: string, body: Record<string, string>, path = ""): Promise<Response> {
   return fetch(`${base}/api/machines/relay${path}`, {
-    method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" },
+    method: "POST", headers: { origin: base, "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -203,7 +203,7 @@ it("adds a PC through the relay, shows its panes, signs in again after a restart
   expect(revoked.error).toContain("removed this PC's access");
 
   // Remove PC forgets the key with the registration
-  const removed = await fetch(`${a.base}/api/machines/${machine.id}`, { method: "DELETE", headers: { origin: a.base, "x-herdr-machine": "1" } });
+  const removed = await fetch(`${a.base}/api/machines/${machine.id}`, { method: "DELETE", headers: { origin: a.base, "x-herdr-machine": "1", "x-herdr-update": "1" } });
   expect(removed.status).toBe(200);
   const keys = join(aState, "relay-pcs");
   expect(existsSync(keys) ? readdirSync(keys) : []).toEqual([]);

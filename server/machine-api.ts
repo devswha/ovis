@@ -19,7 +19,7 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
  * Updating this PC's PCs, as switching its own runtime (dispatch.ts): only its owner, from this app's own page (the
  * update header, same origin, no query).
  */
-const OWNER_ONLY = "Only the owner's own signed-in or paired devices can update these PCs, from this app's own page.";
+const OWNER_ONLY = "Only the owner's own signed-in or paired devices can change this PC's PCs, from this app's own page.";
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */
 const CODE_FAILURES: Record<TypedCodeFailure, [string, number]> = {
@@ -143,8 +143,6 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
   owner = false): Promise<Response> {
   const url = new URL(request.url);
-  /** this PC's owner, from this app's own page (the update header, same origin, no query) */
-  const ownerAsks = (asked: Request) => owner && updateRequestAllowed(asked);
   // A PC's file opens as this PC's /api/fs/file does, from any navigation: reading it changes
   // nothing, and Chrome on Android shows a PDF in the viewer's frame as an "Open" button whose
   // navigation is cross-site. Every other PC route still answers only this app.
@@ -156,6 +154,11 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   // an empty segment is never a route: dropping it would forward `<id>//fs/file` as `fs/file`
   if (nonCanonicalPath(url.pathname)) return fail("not_found", "not found", 404);
   const parts = url.pathname.slice("/api/machines".length).split("/").filter(Boolean);
+  // one rule for every change to this PC's PCs (adding, setting up, approving, updating, turning on or off, removing,
+  // its settings): the owner from any device he signed in or paired himself, from this app's own page. A PC's own
+  // routes (its panes, workspaces and files, MACHINE_PROXY_PATH) are driven as this PC's are, and keep their rules
+  const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !(parts.length >= 2 && MACHINE_PROXY_PATH.test(parts.slice(1).join("/")));
+  if (managing && !(owner && updateRequestAllowed(request))) return fail("forbidden", OWNER_ONLY, 403);
   try {
     if (!parts.length && request.method === "GET") {
       setRequestRoute("/api/machines");
@@ -323,14 +326,11 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         setRequestRoute("/api/machines/setup");
         const body = await request.json() as SetupRequest;
         // a setup that updates what runs there is an update of that PC: the owner's only, as above
-        if (isJsonObject(body) && body.update_remote === true && !ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
         return jsonResponse(manager.setup(body), 202);
       }
       if (parts.length === 2) {
         setRequestRoute("/api/machines/setup/:job_id");
         const action = request.method === "POST" ? await request.json().catch(() => null) as SetupAction | null : null;
-        // approving installs this app's bridge (or herdr) on that PC: the owner's only, from this app's own page
-        if (isJsonObject(action) && action.action === "approve" && !ownerAsks(request)) return fail("forbidden", "Only the owner's own signed-in or paired devices can approve installing on another PC, from this app's own page.", 403);
         const job = manager.job(parts[1]!);
         if (!job) return fail("job_not_found", "Setup job not found", 404);
         if (request.method === "POST") {
@@ -348,20 +348,16 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (request.method !== "PATCH") return fail("method_not_allowed", "Use GET or PATCH", 405);
       const patch = await request.json();
       if (!isJsonObject(patch)) return fail("invalid_body", "Expected PC settings", 400);
-      // automatic bridge updates on: the next reconnect updates bridges with nobody asked, so the owner's only
-      if (patch.auto_update_bridges === true && !ownerAsks(request)) return fail("forbidden", "Only the owner's own signed-in or paired devices can turn automatic PC updates on, from this app's own page.", 403);
       return jsonResponse(manager.updateSettings(patch));
     }
     if (parts[0] === "update-all" && parts.length === 1) {
       setRequestRoute("/api/machines/update-all");
-      if (!ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
       return jsonResponse(manager.updateAll() satisfies PcUpdateAll, 202);
     }
     const id = parts[0]!;
     if (parts.length === 2 && parts[1] === "update") {
       setRequestRoute("/api/machines/:machine_id/update");
-      if (!ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method === "DELETE") return jsonResponse({ cancelled: manager.cancelUpdate(id) });
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST or DELETE", 405);
       const text = await request.text();
@@ -376,8 +372,6 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         throw error;
       }
     }
-    // the older way in to the same updates: the owner's too, from this app's own page
-    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST" && !ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
     if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST") {
       setRequestRoute("/api/machines/:machine_id/update-bridge");
       // the release the card showed, when the client names it; otherwise the PC's last read offer (MachineManager.updateBridge)
@@ -391,8 +385,6 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       setRequestRoute("/api/machines/:machine_id");
       const patch = await request.json();
       if (!isJsonObject(patch)) return fail("invalid_body", "Expected a PC update", 400);
-      // turning a PC on connects it, and with automatic bridge updates on that may update it: the owner's only
-      if (patch.enabled === true && !ownerAsks(request)) return fail("forbidden", "Only the owner's own signed-in or paired devices can turn PCs on, from this app's own page.", 403);
       manager.patch(id, patch); return jsonResponse({ ok: true });
     }
     if (parts.length === 1 && request.method === "DELETE") { setRequestRoute("/api/machines/:machine_id"); manager.remove(id); return jsonResponse({ ok: true }); }

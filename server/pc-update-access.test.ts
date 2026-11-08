@@ -59,49 +59,7 @@ describe("the update routes", () => {
     expect((await ask(pcs, path, true)).status).not.toBe(403);
   });
 
-  it("refuses the older ways in to an update to anyone but the owner: update-bridge, and a setup that updates", async () => {
-    const pcs = manager();
-    const id = "00000000-0000-4000-8000-000000000001";
-    const send = (path: string, owner: boolean, body?: unknown) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method: "POST",
-      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, owner);
-    expect((await send(`${id}/update-bridge`, false)).status).toBe(403);
-    expect((await send("setup", false, { destination: "me@pc.invalid", machine_id: id, update_remote: true })).status).toBe(403);
-    // a first setup that installs nothing over what runs there stays a driving device's, as before
-    expect((await send("setup", false, { destination: "me@other.invalid" })).status).not.toBe(403);
-    // the owner, but not from this app's own page (no update header): refused too
-    expect((await send(`${id}/update-bridge`, true)).status).toBe(403);
-    expect((await send("setup", true, { destination: "me@pc.invalid", machine_id: id, update_remote: true })).status).toBe(403);
-    // the owner from this app's own page passes the guard (the PC itself is not known here)
-    expect((await ask(pcs, `${id}/update-bridge`, true)).status).not.toBe(403);
-  });
-
-  // turning a PC on reconnects it, and with automatic bridge updates on that starts its update; approving a setup installs on it
-  for (const [what, path, method, body] of [
-    ["turning a PC on", "00000000-0000-4000-8000-000000000001", "PATCH", { enabled: true }],
-    ["approving a setup's changes", "setup/no-such-job", "POST", { action: "approve" }],
-    // automatic bridge updates on: the next reconnect updates bridges with nobody asked
-    ["turning automatic bridge updates on", "settings", "PATCH", { auto_update_bridges: true }],
-  ] as const) it(`refuses ${what} to anyone but the owner, and without the update header`, async () => {
-    const pcs = manager();
-    const call = (owner: boolean, headers: Record<string, string>) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method,
-      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, owner);
-    const refused = await call(false, { "x-herdr-update": "1" });
-    expect(refused.status).toBe(403);
-    expect((await refused.json() as { error: { code: string } }).error.code).toBe("forbidden");
-    expect((await call(true, {})).status).toBe(403);
-    // the owner from this app's own page gets past the guard (the PC or job is not known here)
-    expect((await call(true, { "x-herdr-update": "1" })).status).not.toBe(403);
-  });
-
-  it("still lets a driving device rename or turn off a PC, and answer or cancel a setup", async () => {
-    const pcs = manager();
-    const call = (path: string, method: string, body: unknown) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method,
-      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify(body) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, false);
-    for (const [path, method, body] of [["00000000-0000-4000-8000-000000000001", "PATCH", { name: "Lab" }], ["00000000-0000-4000-8000-000000000001", "PATCH", { enabled: false }], ["setup/no-such-job", "POST", { action: "cancel" }]] as const) {
-      expect((await call(path, method, body)).status).not.toBe(403);
-    }
-  });
-
+  // every other management route takes the same rule: server/machine-owner-guard.test.ts holds the whole table
   it("refuses an open-LAN visitor through the server, and lets this PC's owner in", async () => {
     const state = mkdtempSync(join(tmpdir(), "ovis-update-open-"));
     // on loopback only: a visitor of an open install is told by the forwarded address it comes from (access.ts)

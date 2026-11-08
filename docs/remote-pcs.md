@@ -174,18 +174,27 @@ and show `updating.queued` until their turn; a PC with an update it cannot take 
 why. Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
 `updating.queued` and start as one ends.
 
-Only the owner may start or cancel these updates, from any device he signed in or paired himself:
-a driving sign-in on this PC, its token, its Tailscale login, or a driving device paired with this
-install, directly or over the relay (his phone, his other PCs). It comes from this app's own page
-(the `X-Herdr-Update: 1` header, same origin, no query). A visitor of an open install (nothing
-paired), a Portal visitor, and any device that only watches are refused (403 `forbidden`); a watching device is refused as on every change (403
-`read_only`). The other ways a PC's software is changed from here are the owner's only in the same
-way, with the update header: `POST /api/machines/:id/update-bridge` (optionally `{ "revision" }`; without
-one, the release its card shows), a setup with `update_remote`, approving a setup's changes
-(`POST /api/machines/setup/:id` with `{ "action": "approve" }`), and turning a PC on
-(`PATCH /api/machines/:id` with `{ "enabled": true }`), which reconnects it and, with automatic
-bridge updates on, may update it. Renaming or turning a PC off, and answering or cancelling a setup,
-stay a driving device's. This app's page sends the header on every PC request.
+### Who may change PCs from here
+
+One rule covers every change to this PC's PCs: every `POST`, `PATCH` and `DELETE` under
+`/api/machines/` except a PC's own routes (its panes, workspaces and files, which are driven as this
+PC's are). That covers adding a PC (SSH setup, relay, Tailscale), answering, approving or cancelling a
+setup, its settings, renaming, turning on or off and removing a PC, and every update
+(`/:id/update`, `update-all`, `/:id/update-bridge`, which takes `{ "revision" }` and otherwise uses
+the release its card shows). The same rule covers installing an update on this PC itself:
+`POST /api/updates/install` and `POST /api/herdr/update`. The one exception is the connection
+server's bridge token, which asks for its own install by revision.
+
+| May | Who |
+|---|---|
+| Yes | a driving sign-in on this PC, its token, its Tailscale login |
+| Yes | a driving device paired with this install, directly or over the relay (the owner's phone, his other PCs) |
+| No | a visitor of an open install, with nothing paired |
+| No | a Portal visitor, whatever role Portal gives |
+| No | any device that only watches |
+
+The request must also come from this app's own page: the `X-Herdr-Update: 1` header, same origin,
+no query. Anything else gets 403 `forbidden`. The app sends the header on every PC request.
 
 ## Runtime and endpoints
 
