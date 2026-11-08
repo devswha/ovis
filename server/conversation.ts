@@ -2670,10 +2670,14 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   // Every byte is read over (a short read gives up), so it need not be zeroed first.
   const start = windowStart(stat.size);
   const bytes = Buffer.allocUnsafe(stat.size - start);
-  const fd = openSync(path, "r");
+  // read through the file the stat above named: another one swapped in for this open is no outcome (#3398)
   try {
-    if (readSync(fd, bytes, 0, bytes.length, start) !== bytes.length) return null;
-  } finally { closeSync(fd); }
+    const read = readBound([[path, stat]], () => {
+      const fd = openBound(path);
+      try { return readSync(fd, bytes, 0, bytes.length, start); } finally { closeSync(fd); }
+    });
+    if (read !== bytes.length) return null;
+  } catch (error) { if (error instanceof ConversationReadPending) return null; throw error; }
   let from = start;
   if (start > 0) {
     const newline = bytes.indexOf(0x0a);

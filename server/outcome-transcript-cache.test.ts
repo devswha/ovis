@@ -159,6 +159,59 @@ it.each(["plain", "unchanged-row", "reserved-echo"] as const)("does not complete
   }
 });
 
+it("does not observe /context from a foreign transcript swapped in for the outcome read's open (#3398)", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "command-route-swap-"));
+  const path = join(root, "session.jsonl");
+  const foreign = join(root, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const echo = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 10).toISOString(),
+    content: "<command-name>/context</command-name>\n<command-message>command</command-message>" }) + "\n";
+  const stdout = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 20).toISOString(),
+    content: "<local-command-stdout>foreign-context-output</local-command-stdout>" }) + "\n";
+  // the verified transcript, as long as the foreign one, holds no /context of its own
+  const filler = (row: string) => JSON.stringify({ type: "progress", uuid: "x".repeat(Buffer.byteLength(row) - 30) }) + "\n";
+  fs.writeFileSync(path, filler(echo) + filler(stdout));
+  expect(fs.statSync(path).size).toBe(Buffer.byteLength(echo + stdout));
+  fs.writeFileSync(foreign, echo + stdout);
+  const pane = { pane_id: root, terminal_id: "term", workspace_id: "w", tab_id: "t", focused: false, revision: 0,
+    agent: "claude", agent_status: "idle", cwd: root };
+  const clock = spyOn(Date, "now").mockReturnValue(at + 30);
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "claude-transcript", path });
+  const snapshot = spyOn(client, "sessionSnapshot").mockResolvedValue({
+    panes: [pane], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture",
+  });
+  const screen = spyOn(client, "paneRead").mockResolvedValue({ ...pane, text: "", source: "detection", format: "text", truncated: false });
+  const open = fs.openSync;
+  let swaps = 0;
+  const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (args[0] !== path || swaps === 0) return open(...args);
+    swaps -= 1;
+    return open(foreign, ...args.slice(1) as [fs.OpenMode]);
+  }) as typeof fs.openSync);
+  const sent = { id: "route-swap", text: "/context", at, agent: "claude",
+    identity: JSON.stringify([pane.terminal_id, undefined]), screen: "", store: null, form: null,
+    invocations: commandInvocations("claude", "/context", []) };
+  try {
+    noteSubmitted(pane.pane_id, sent.text, sent);
+    const url = new URL(`http://localhost/api/pane/prompt?pane_id=${encodeURIComponent(pane.pane_id)}`);
+    expect((await conversation.readCommandTranscript(pane.pane_id))?.records).toHaveLength(2);
+    const stat = fs.statSync(path);
+    fs.utimesSync(path, stat.atime, new Date(stat.mtimeMs + 1000));
+    swaps = 1;
+    const swapped = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
+    expect(swaps).toBe(0);
+    expect(swapped.outcomes?.at(-1)?.state).not.toBe("result-observed");
+  } finally {
+    opens.mockRestore();
+    screen.mockRestore();
+    snapshot.mockRestore();
+    binding.mockRestore();
+    clock.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("discards the old echo when a transcript is rewritten after a torn append", async () => {
   const root = fs.mkdtempSync(join(tmpdir(), "command-partial-boundary-"));
   const path = join(root, "session.jsonl");
