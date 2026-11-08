@@ -21,7 +21,9 @@ it("names the desktop app's own build, from a clean tree, where no supervisor se
 });
 
 it("takes the release the supervisor runs first, and names no build it cannot vouch for", () => {
-  expect(buildRevision(app({ revision: B, dirty: false }), { ...desktop, OVIS_REVISION: A })).toBe(A);
+  // the desktop app names its own staged build, never an OVIS_REVISION it inherited from where it was launched
+  expect(buildRevision(app({ revision: B, dirty: false }), { ...desktop, OVIS_REVISION: A })).toBe(B);
+  expect(buildRevision(app({ revision: B, dirty: false }), { OVIS_REVISION: A })).toBe(A);
   // a build from a dirty tree, or one that does not say (an older build), is not that revision
   for (const build of [{ revision: B, dirty: true }, { revision: B }]) expect(buildRevision(app(build), desktop)).toBeUndefined();
   // outside the desktop app a dist/ may have been rebuilt apart from the server that runs

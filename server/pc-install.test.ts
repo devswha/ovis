@@ -55,6 +55,10 @@ interface Pc {
   births?: Record<number, string>;
   /** pids whose process started after its birth-less registration was written (a pid reused later) */
   startedLate?: number[];
+  /** run when the launcher starts the copied server (a test gives its pid life there) */
+  onLaunch?: () => void;
+  /** pids whose birth cannot be read now (its /proc unreadable) */
+  unreadable?: number[];
   /** pids whose process has ended but is not yet reaped (a zombie) */
   zombies?: number[];
   /** run on each probe of who serves the socket (a test stops the installer there) */
@@ -123,9 +127,18 @@ function fixture(pc: Pc) {
     if (script.includes('[ -L "$d/exe" ]') && pc.addressTaken) return "taken\n";
     // the launcher tells the pid it started (4243), whether or not that server then registers
     if (script.includes('[ -L "$d/exe" ]') && pc.otherRegistersOnRestore) { const other = descriptor(4500, true, "f".repeat(64)); listed.push(other); alive.add(other.pid); }
-    if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = { ...descriptor(4243, false, "d".repeat(64)), birth: { platform: "linux", value: pc.births?.[4243] ?? "1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243" } }; listed.push(back); alive.add(back.pid); } return "4243 1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243\n"; }
+    if (script.includes('[ -L "$d/exe" ]')) { pc.onLaunch?.(); if (!pc.restoreFails) { const back = { ...descriptor(4243, false, "d".repeat(64)), birth: { platform: "linux", value: pc.births?.[4243] ?? "1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243" } }; listed.push(back); alive.add(back.pid); } return "4243 1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243\n"; }
     // whether a registration is still the very process it names (registeredAs), and alive
     // who serves the socket: a process that runs (not a zombie) whose recorded birth, if any, still holds
+    // who serves the socket: dead, or its birth now (as the registration records it; nothing where it cannot be read)
+    if (script.endsWith("|| echo dead")) {
+      pc.onProbe?.();
+      const pid = Number(/ps -o stat= -p (\d+)/.exec(script)?.[1]);
+      if (!alive.has(pid) || pc.zombies?.includes(pid)) return "dead\n";
+      if (pc.unreadable?.includes(pid)) return "\n";
+      const recorded = listed.find((d) => d.pid === pid)?.birth?.value;
+      return (pc.births?.[pid] ?? recorded ?? `1b4e28ba-2fa1-41d2-883f-0016d3cca427:${pid}`) + "\n";
+    }
     if (script.endsWith("&& echo live || true")) {
       pc.onProbe?.();
       if (script.includes(" && false && ")) return "";
@@ -482,6 +495,23 @@ describe("installing Ovis on a PC over SSH", () => {
     const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" }, onProbe: () => pc.installer.stop() });
     await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+  });
+
+  it("takes a live registration whose birth cannot be read now for a server there, never as gone", async () => {
+    const other = { ...descriptor(4300, true, "e".repeat(64)), birth: { platform: "linux", value: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:100" } };
+    const pc = fixture({ descriptors: [descriptor(4242), other], unreadable: [4300], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.error).toContain("another already runs in its place");
+  });
+
+  it("never takes a registration left before the launch for the server it started, even at the pid it got", async () => {
+    // a dead server's registration, with no birth, at the pid the launcher then gets (4243); the started one never registers
+    const stale = descriptor(4243, false, "c".repeat(64));
+    // the launcher's process takes pid 4243
+    const pc: ReturnType<typeof fixture> = fixture({ descriptors: [descriptor(4242), stale], restoreFails: true, onLaunch: () => { pc.alive.add(4243); }, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    pc.alive.delete(4243);
+    const ended = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(ended.error).toContain("starting it again as it was failed: it did not start within");
   });
 
   it("only removes the copy when this app stops during an install, starting nothing there", async () => {

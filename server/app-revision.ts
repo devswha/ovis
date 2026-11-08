@@ -9,9 +9,11 @@ import { REVISION } from "../shared/update.ts";
  * else (a checkout run by hand may have rebuilt dist/ apart from the server it runs).
  */
 export function buildRevision(root = join(import.meta.dir, ".."), env: Record<string, string | undefined> = process.env): string | undefined {
-  const named = env["OVIS_REVISION"];
-  if (named && REVISION.test(named)) return named;
-  if (env["OVIS_DESKTOP_APP"] !== "1") return undefined;
+  // the desktop app is its own staged build: an OVIS_REVISION it inherited from where it was launched is not its own
+  if (env["OVIS_DESKTOP_APP"] !== "1") {
+    const named = env["OVIS_REVISION"];
+    return named && REVISION.test(named) ? named : undefined;
+  }
   try {
     const build = JSON.parse(readFileSync(join(root, "dist", "build.json"), "utf8")) as { revision?: unknown; dirty?: unknown };
     return typeof build.revision === "string" && REVISION.test(build.revision) && build.dirty === false ? build.revision : undefined;
