@@ -9,6 +9,7 @@ import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
 import { darwinProcess } from "./claude-store.ts";
 import * as darwinKernel from "./darwin-process.ts";
+import * as runtime from "./herdr-core/runtime.ts";
 import { terminalBreadcrumb } from "./gjc-runtime.ts";
 import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompStoreLayout } from "./omp.ts";
 import layouts from "./fixtures/omp-18.8.7-store-layouts.json";
@@ -571,45 +572,133 @@ describe("an omp pane's chat", () => {
     } finally { child.kill(); await child.exited; }
   });
 
-  // #3365: omp leaves a breadcrumb whose content is unchanged alone, so `omp -c` keeps the earlier run's
-  it("on macOS an omp -c is proved by the session it holds open, never by the breadcrumb's session being written", async () => {
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { value: "darwin" });
+  // #3365: omp leaves a breadcrumb whose content is unchanged alone, so `omp -c` keeps the earlier run's.
+  // On macOS herdr-core only the files an omp holds open (lsof) prove its session
+  describe("on macOS herdr-core", () => {
     const pid = 99_999_999; // above any pid_max: nothing of this host is read for it
     const startedAt = Date.now() - 60_000;
-    const terminal = spyOn(darwinKernel, "darwinTerminal").mockImplementation((asked) => asked === pid ? { tty: "ttys000", startedAt } : null);
-    const environment = spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`);
     let listing: string | null = "";
-    const lsofCalls: string[][] = [];
-    const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => {
-      lsofCalls.push(argv);
-      return { stdout: new Response(listing ?? "").body, exited: Promise.resolve(listing === null ? 1 : 0), kill: () => {} };
-    }) as unknown as typeof Bun.spawn);
-    try {
-      const continued = storeTranscript(pane.cwd!), own = storeTranscript(pane.cwd!, "2026-10-02_own.jsonl");
-      // the breadcrumb an earlier omp in this terminal left; the session it names is written after this start
+    let lsofCalls: string[][] = [];
+    let kills: unknown[] = [];
+    /** The lsof child the fake spawn hands out; by default it lists `listing` and exits (1 for none). */
+    let lsof: () => unknown;
+    /** The kernel's start of `pid` in microseconds on its nth read (1-based). */
+    let startOf: (read: number) => bigint | null;
+    let core = true;
+    const listed = (files: string[]) => `p${pid}\nfcwd\nn${pane.cwd}\n${files.map((file, at) => `f${23 + at}\nn${file}\n`).join("")}`;
+    /** The breadcrumb an earlier omp in this terminal left, naming `session`, written `at`. */
+    const breadcrumb = (session: string, at: number) => {
       const marker = join(home, ".omp/agent/terminal-sessions/ttys000");
-      mkdirSync(join(home, ".omp/agent/terminal-sessions"));
-      writeFileSync(marker, `${pane.cwd}\n${continued}\n`);
-      fs.utimesSync(marker, (startedAt - 3_600_000) / 1000, (startedAt - 3_600_000) / 1000);
+      mkdirSync(join(home, ".omp/agent/terminal-sessions"), { recursive: true });
+      writeFileSync(marker, `${pane.cwd}\n${session}\n`);
+      fs.utimesSync(marker, at / 1000, at / 1000);
+    };
+    const held = () => ompHeldTranscript(pane.pane_id, pane.cwd!, { core: true, reported: null });
+    beforeEach(() => {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      listing = ""; lsofCalls = []; kills = []; core = true;
+      lsof = () => ({ stdout: new Response(listing ?? "").body, exited: Promise.resolve(listing === null ? 1 : 0), kill: (signal: unknown) => kills.push(signal) });
+      startOf = () => 1_000_000n;
+      let reads = 0;
+      const terminal = spyOn(darwinKernel, "darwinTerminal").mockImplementation((asked) => asked === pid ? { tty: "ttys000", startedAt } : null);
+      const start = spyOn(darwinKernel, "darwinStartTime").mockImplementation((asked) => asked === pid ? startOf(++reads) : null);
+      const environment = spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`);
+      const serving = spyOn(runtime, "servingCore").mockImplementation(() => core);
+      const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => { lsofCalls.push(argv); return lsof(); }) as unknown as typeof Bun.spawn);
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
+      restores.push(() => {
+        spawned.mockRestore(); serving.mockRestore(); environment.mockRestore(); start.mockRestore(); terminal.mockRestore();
+        Object.defineProperty(process, "platform", platform);
+      });
+    });
+
+    it("proves an omp -c by the session it holds open, never by the breadcrumb's session being written", async () => {
+      const continued = storeTranscript(pane.cwd!), own = storeTranscript(pane.cwd!, "2026-10-02_own.jsonl");
+      // the session the breadcrumb names is written after this start
+      breadcrumb(continued, startedAt - 3_600_000);
       // `omp -c` holds the session it continues open from its first write
-      listing = `p${pid}\nfcwd\nn${pane.cwd}\nf23\nn${continued}\n`;
-      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBe(continued);
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
       // another omp appending to the breadcrumb's session proves nothing for this process
-      listing = `p${pid}\nfcwd\nn${pane.cwd}\n`;
-      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
+      listing = listed([]);
+      expect(await held()).toBeNull();
       // nor does it once this process writes a session of its own
-      listing = `p${pid}\nf23\nn${own}\n`;
-      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBe(own);
+      listing = listed([own]);
+      expect(await held()).toBe(own);
       // no listing proves nothing
       listing = null;
-      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
+      expect(await held()).toBeNull();
       expect(lsofCalls).toEqual(Array(4).fill(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-Fpn"]));
-    } finally {
-      spawned.mockRestore(); environment.mockRestore(); terminal.mockRestore();
-      Object.defineProperty(process, "platform", platform);
-    }
+    });
+
+    it("drops a listing when the pid's start differs after lsof from before it", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      // another omp took the pid while lsof listed it
+      startOf = (read) => read === 1 ? 1_000_000n : 2_000_000n;
+      expect(await held()).toBeNull();
+      startOf = () => 1_000_000n;
+      expect(await held()).toBe(continued);
+    });
+
+    it("binds nothing when lsof fails or lists nothing, even with a fresh, valid breadcrumb", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      breadcrumb(continued, Date.now());
+      listing = "";
+      await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
+      listing = null;
+      await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
+      expect(lsofCalls).toHaveLength(2);
+    });
+
+    it("kills lsof and binds nothing when its listing passes the byte cap", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]) + "n/dev/null\n".repeat(110_000);
+      expect(await held()).toBeNull();
+      expect(kills).toEqual(["SIGKILL"]);
+    });
+
+    it("SIGKILLs lsof at its deadline and binds nothing", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      let close = () => {};
+      let exit = (_code: number) => {};
+      lsof = () => ({
+        stdout: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(listed([continued]))); close = () => controller.close(); } }),
+        exited: new Promise<number>((resolve) => { exit = resolve; }),
+        kill: (signal: unknown) => { kills.push(signal); close(); exit(137); },
+      });
+      // the deadline set once lsof is spawned is held here, and fired by the test instead of the clock
+      const realSetTimeout = globalThis.setTimeout;
+      let fire: (() => void) | null = null;
+      let armed: () => void = () => {};
+      const deadlineSet = new Promise<void>((resolve) => { armed = resolve; });
+      const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms?: number) => {
+        if (lsofCalls.length === 1 && fire === null) { fire = callback; armed(); return 0; }
+        return realSetTimeout(callback, ms);
+      }) as unknown as typeof setTimeout);
+      try {
+        const pending = held();
+        await deadlineSet;
+        fire!();
+        expect(await pending).toBeNull();
+        expect(kills).toEqual(["SIGKILL"]);
+      } finally { timer.mockRestore(); }
+    });
+
+    it("runs lsof only on herdr-core, and only when herdr reports no session path", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      breadcrumb(continued, Date.now());
+      listing = listed([continued]);
+      // herdr names a session outside the omp's store: no lsof, and no breadcrumb either
+      agentSession = { agent: "omp", kind: "path", value: join(home, "elsewhere.jsonl") };
+      await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
+      // herdr's own TUI keeps its breadcrumb, without lsof
+      agentSession = undefined;
+      core = false;
+      expect(await chat()).toEqual(synthetic);
+      expect(lsofCalls).toEqual([]);
+    });
   });
 
   for (const [profile, includeArgv] of [["personal", true], [null, false], ["personal", false]] as const) it.skipIf(process.platform !== "linux")(`reads the open ${profile ?? "default"} omp transcript when herdr ${includeArgv ? "supplies" : "omits"} argv`, async () => {

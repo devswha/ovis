@@ -244,7 +244,8 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
  * active session; never infer ownership from cwd or session recency. `path` is null unless
  * exactly one transcript qualifies; `found` says how many did. `environOf` supplies a process's
  * environment already read elsewhere, so none is read here; undefined for a pid reads it.
- * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS).
+ * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS
+ * herdr-core); there they are the only proof, and with none held no breadcrumb stands in (#3365).
  */
 export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], probe: HeldProbe = {}): { path: string | null; found: number } {
   const { environOf, openFilesOf } = probe;
@@ -270,7 +271,7 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
       } catch { /* closed, deleted or unreadable descriptor */ }
     }
   }
-  const candidates = open.size > 0 ? open : breadcrumbs;
+  const candidates = open.size > 0 || openFilesOf ? open : breadcrumbs;
   return { path: candidates.size === 1 ? [...candidates][0]! : null, found: candidates.size };
 }
 

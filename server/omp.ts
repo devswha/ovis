@@ -11,6 +11,7 @@ import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo, type ProcessInfo } from "./herdr/client.ts";
 import { heldTranscript, runsAgent, storeRelative, type StoreRoots, transcriptHeader } from "./gjc-runtime.ts";
 import { ompProcessMemory, ompRoutingEnviron, processStartTicks } from "./omp-process.ts";
+import { processStartIdentity } from "./process-start.ts";
 
 const OMP_EXECUTABLE = /(^|[\\/])omp(?:\.exe|\.[cm]?js)?$/i;
 
@@ -292,29 +293,63 @@ export interface OmpRoute {
   environOf: (pid: number) => readonly string[] | undefined;
   /** The absolute `--cwd` every omp process in the pane started with, or null (ompLaunchDir). */
   launchDir: string | null;
-  /** On macOS, the files each process holds open (darwinOpenFiles); elsewhere /proc is read. */
+  /** On macOS herdr-core, the files each process holds open (ompHeldOpen), the only proof there; elsewhere /proc is read. */
   openFilesOf?: (pid: number) => readonly string[];
 }
+
+/** An lsof listing longer than this is not read: nothing is proved from a part of one. */
+const LSOF_MAX_BYTES = 1 << 20;
+/** How long lsof may run before it is killed and nothing is proved. */
+const LSOF_DEADLINE_MS = 3000;
 
 /**
  * The files each process holds open on macOS, from one lsof run (`-Fpn`: a `p` line per process,
  * then an `n` line per file). omp keeps its session file open from its first write, which is the
  * only proof of the session an `omp -c` continues: omp leaves an unchanged breadcrumb as it was
- * (#3365). Empty when lsof fails or is cut off, so nothing is proved from a partial listing.
+ * (#3365). Empty when lsof fails, runs past its deadline (then it is SIGKILLed) or lists more than
+ * LSOF_MAX_BYTES, or when a pid's start differs after the listing from before it: herdr named the
+ * process a moment ago, and a pid reused meanwhile lists another omp's session (as #3324 checks).
  */
 async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[]>> {
   const open = new Map<number, string[]>();
+  const starts = pids.map((pid) => processStartIdentity(pid));
+  if (starts.includes(null)) return open;
+  let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
+  try { child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", pids.join(","), "-Fpn"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
+  catch { return open; }
+  let whole = true;
+  const deadline = setTimeout(() => { whole = false; child.kill("SIGKILL"); }, LSOF_DEADLINE_MS);
+  const chunks: Uint8Array[] = [];
   try {
-    const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", pids.join(","), "-Fpn"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
-    const text = await new Response(child.stdout).text();
-    if (await child.exited !== 0) return open;
-    let files: string[] | undefined;
-    for (const line of text.split("\n")) {
-      if (line.startsWith("p")) open.set(Number(line.slice(1)), files = []);
-      else if (line.startsWith("n")) files?.push(line.slice(1));
+    let size = 0;
+    for await (const chunk of child.stdout) {
+      size += chunk.byteLength;
+      if (size > LSOF_MAX_BYTES) { whole = false; child.kill("SIGKILL"); break; }
+      chunks.push(chunk);
     }
-  } catch { open.clear(); }
+    // a listing cut off by its size or its deadline proves nothing, whatever lsof exits with
+    const code = whole ? await child.exited : null;
+    if (code !== 0 || !whole) return open;
+  } catch { return open; } finally { clearTimeout(deadline); }
+  if (pids.some((pid, at) => processStartIdentity(pid) !== starts[at])) return open;
+  let files: string[] | undefined;
+  for (const line of Buffer.concat(chunks).toString("utf8").split("\n")) {
+    if (line.startsWith("p")) open.set(Number(line.slice(1)), files = []);
+    else if (line.startsWith("n")) files?.push(line.slice(1));
+  }
   return open;
+}
+
+/**
+ * The route as the held transcript is read from it. On macOS herdr-core (`core`) there is no /proc
+ * and no herdr report, and omp's breadcrumb proves nothing (#3365): only the files a process holds
+ * open do. lsof is run for them only when herdr `reported` no session path for the pane; with one,
+ * and when lsof proves nothing, no file is held, and heldTranscript then binds nothing.
+ */
+export async function ompHeldOpen(route: OmpRoute, { core, reported }: { core: boolean; reported: string | null }): Promise<OmpRoute> {
+  if (process.platform !== "darwin" || !core) return route;
+  const open = reported === null ? await darwinOpenFiles(route.pids) : new Map<number, string[]>();
+  return { ...route, openFilesOf: (pid) => open.get(pid) ?? [] };
 }
 
 /**
@@ -362,12 +397,7 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
   if (unread) return "unproved";
   if (layout === null) return null;
   const [launchDir] = launchDirs;
-  const route: OmpRoute = { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
-  if (process.platform === "darwin") {
-    const open = await darwinOpenFiles(pids);
-    route.openFilesOf = (pid) => open.get(pid) ?? [];
-  }
-  return route;
+  return { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
 }
 
 /**
@@ -444,8 +474,8 @@ export function ompBlobStore(transcript: string): string | null {
   return null;
 }
 
-/** The transcript the pane's omp process holds open or last pointed its terminal breadcrumb at, or null (ompRouteTranscript). */
-export async function ompHeldTranscript(paneId: string, cwd: string): Promise<string | null> {
+/** The transcript the pane's omp process holds open or last pointed its terminal breadcrumb at, or null (ompRouteTranscript, read as ompHeldOpen says). */
+export async function ompHeldTranscript(paneId: string, cwd: string, held: { core: boolean; reported: string | null } = { core: false, reported: null }): Promise<string | null> {
   const route = await ompPaneRoute(paneId);
-  return route === null || route === "unproved" ? null : ompRouteTranscript(route, cwd);
+  return route === null || route === "unproved" ? null : ompRouteTranscript(await ompHeldOpen(route, held), cwd);
 }
