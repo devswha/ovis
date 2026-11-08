@@ -217,12 +217,15 @@ and herdr's default session only.
   not running, which starts the plugin), and the PC connected again. As when it is run by hand, the
   installer adds what is missing for that account (herdr, Bun, which may add itself to the shell's
   startup file) and serves Ovis to the tailnet when Tailscale runs there; the steps say so first. An
-  Ovis already installed there (a herdr plugin or its user service) is started that way and updated
-  instead, since the installer would keep its release. Its settings and data stay; herdr and its sessions
+  Ovis already installed there (a herdr plugin or its user service) is started that way instead, since
+  the installer would keep its release. When its bridge is older than this app's, the install updates
+  it before it ends; otherwise it connects as it is, and its own update is offered on its card, never
+  installed unseen. Its settings and data stay; herdr and its sessions
   keep running. The desktop app's own server is never replaced: it updates with the app.
 - One whose supervisor is too old to install an update by revision is restarted through its own
   launcher (the herdr plugin's stop and start actions, or the `ovis` user service of Ovis on
-  herdr-core), then asked for its update. Without a launcher nothing is stopped (`no_launcher`). A release before 0.4.13 cannot be updated from here this way.
+  herdr-core), then asked to install the release its card showed. The install ends once that update has
+  installed, or fails with its words. Without a launcher nothing is stopped (`no_launcher`). A release before 0.4.13 cannot be updated from here this way.
   When the launcher stopped it but failed to start it again, Update asks the launcher once more.
 - The installer sets Ovis up for herdr's default session only: a PC added with a named session is
   offered no install (`updatable: false`, with why).

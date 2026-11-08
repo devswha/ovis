@@ -252,3 +252,25 @@ it("has a restarted PC install the release its card showed even when it connects
   expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true, revision: "c".repeat(40) }).finished).toBeNull();
   expect(own).not.toHaveBeenCalled();
 });
+
+it("ends a restart's install with the PC's own update it started: its error, or connected once it installed", async () => {
+  const { manager, internals } = fixture();
+  const { outcomes, connect } = connects(manager);
+  const runtime = internals.machines.get(SAVED)! as Runtime & { ownJob?: { id: string; abort: AbortController; finished?: Promise<void> } };
+  const asked = Promise.withResolvers<void>(), done = Promise.withResolvers<void>();
+  spyOn(manager as unknown as { updateOwn(runtime: unknown, shown?: string): string }, "updateOwn").mockImplementation(() => {
+    runtime.ownJob = { id: "own-1", abort: new AbortController(), finished: done.promise };
+    asked.resolve();
+    return "own-1";
+  });
+  outcomes.push({ phase: "connected" });
+  runtime.machine.state = "connected";
+  let settled = false;
+  const install = connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true, revision: "c".repeat(40) }).finished.then((words) => { settled = true; return words; });
+  await asked.promise;
+  // its update still runs: the install has not ended
+  expect(settled).toBe(false);
+  runtime.machine.update_error = "That PC offers another release now than the one shown.";
+  done.resolve();
+  expect(await install).toBe("That PC offers another release now than the one shown.");
+});

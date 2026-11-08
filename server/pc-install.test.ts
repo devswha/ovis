@@ -33,6 +33,8 @@ interface Pc {
   installer?: { exit: number; output: string };
   /** the installed Ovis never registers */
   neverStarts?: boolean;
+  /** the installer's command holds until this settles, and tells when it starts */
+  installerHeld?: { started(): void; gate: Promise<void> };
   descriptors?: Descriptor[];
 }
 
@@ -60,6 +62,7 @@ function fixture(pc: Pc) {
     }
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
+      if (pc.installerHeld) { pc.installerHeld.started(); await pc.installerHeld.gate; }
       const answer = pc.installer ?? { exit: 0, output: "Ovis: installing the herdr plugin" };
       if (answer.exit === 0 && pc.herdrRunning !== false) register();
       return `${answer.output}\novis-install-exit=${answer.exit}\n`;
@@ -274,6 +277,28 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(failed).toMatchObject({ phase: "failed", error_code: "connect_failed" });
     expect(failed.error).not.toContain("none runs there now");
     expect(failed.error).toContain("installed in its place");
+  });
+
+  it("stops nothing when the shown server's pid now belongs to another Ovis server, by its token", async () => {
+    // the planned pid runs an Ovis server, but not the one shown: another took that pid since
+    const pc = fixture({ descriptors: [descriptor(4242, false, "c".repeat(64))] });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, token: "a".repeat(64) } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
+    expect(pc.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
+  });
+
+  it("says another may have been installed when it is cancelled while the installer still runs there", async () => {
+    const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await started.promise;
+    pc.installer.cancel(job.id);
+    // the cancel closed the SSH connection: the installer's command ends without telling how the installer did
+    gate.reject(new Error("Connection cancelled"));
+    const ended = await pc.settled(job);
+    expect(ended.phase).toBe("cancelled");
+    expect(ended.error).not.toContain("none runs there now");
+    expect(ended.error).toContain("being installed in its place");
   });
 
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {

@@ -99,7 +99,7 @@ interface Runtime {
   /** the connection generation whose read of that offer is under way */
   offerReading?: number;
   /** its own Ovis updating itself, asked from here through its connection (updateOwn) */
-  ownJob?: { id: string; abort: AbortController };
+  ownJob?: { id: string; abort: AbortController; finished?: Promise<void> };
   /**
    * What an install over SSH can put right where its own Ovis refused to update (PcInstaller): replace a server
    * started by hand, or restart one whose supervisor is too old; the process and the address it was seen at.
@@ -932,7 +932,7 @@ export class MachineManager {
       // a restart's update installs the release its card showed, or none
       const revision = fix.mode === "restart" ? shown ?? offer.revision ?? undefined : undefined;
       if (fix.mode === "restart" && !revision) throw new PcUpdateRefused(UNREAD_RELEASE);
-      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid }, ...(revision ? { revision } : {}) });
+      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid, ...(fix.token ? { token: fix.token } : {}) }, ...(revision ? { revision } : {}) });
     }
     const target = validateTarget(request);
     if ([...this.machines.values()].some((runtime) => runtime.machine.target && sameSshSession(runtime.machine.target, target))) throw new PcUpdateRefused("That PC is already added here; update it from its card.");
@@ -951,6 +951,8 @@ export class MachineManager {
     let cancelled = false;
     // the update ran in a follow-up connect
     let followed = false;
+    // the PC's own update this install started after a restart, ended by its cancel too
+    let own: Runtime["ownJob"];
     const finished = (async () => {
       let result = await ended(current);
       // still older than this app (a restarted supervisor, or an install kept as it was, on a PC added here or not yet): its
@@ -971,10 +973,18 @@ export class MachineManager {
       // a restarted PC whose bridge was already this app's connects with no update asked: its own update of the release
       // its card showed follows, as its steps said, shown on its card as any update is
       const runtime = request.machine_id ? this.machines.get(request.machine_id) : undefined;
-      if (result.phase === "connected" && request.update && request.revision && !followed && !cancelled && runtime?.machine.state === "connected" && !runtime.ownJob) this.updateOwn(runtime, request.revision);
+      if (result.phase === "connected" && request.update && request.revision && !followed && !cancelled && runtime?.machine.state === "connected" && !runtime.ownJob) {
+        // the install ends with it: connected once that update has installed, or failed with its words
+        this.updateOwn(runtime, request.revision);
+        // updateOwn set it: read again past the check above
+        own = (runtime as Pick<Runtime, "ownJob">).ownJob;
+        await own?.finished;
+        if (cancelled) return "Cancelled";
+        if (runtime.machine.update_error) return runtime.machine.update_error;
+      }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
-    return { job_id: current.id, cancel: () => { cancelled = true; this.cancelJob(current.id); }, finished };
+    return { job_id: current.id, cancel: () => { cancelled = true; this.cancelJob(current.id); own?.abort.abort(); }, finished };
   };
   /** an install for a PC added here shows on its card as its update does */
   private showInstall(job: PcInstallJob): void {
@@ -1125,7 +1135,7 @@ export class MachineManager {
       this.emit();
     };
     show("Asking this PC's own Ovis to update itself…");
-    void followOwnUpdate({
+    const finished = followOwnUpdate({
       endpoint: () => same() && runtime.machine.enabled && runtime.machine.state === "connected" ? runtime.endpoint : undefined,
       revision,
       // it came back on a version this app refuses, or was turned away: it no longer reconnects by itself
@@ -1144,6 +1154,7 @@ export class MachineManager {
       this.emit();
       this.nextOwn();
     });
+    runtime.ownJob.finished = finished;
     return id;
   }
   setup(request: SetupRequest, options: { auto?: boolean; expectedRevision?: string; keysOnly?: boolean; fromInstall?: boolean } = {}): SetupJob {
@@ -1459,7 +1470,7 @@ export class MachineManager {
         if (newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
         const { revision: offeredRevision, fix, ...offer } = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
         if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
-        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target); }
+        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target, descriptor.token); }
         if (job) { job.public.remote_ovis = offer; job.offeredRevision = offeredRevision; }
         // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
