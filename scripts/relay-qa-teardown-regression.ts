@@ -8,6 +8,7 @@
  * Loopback only.
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chromium } from "playwright-core";
 import type { APIResponse, BrowserContext, Route } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
@@ -71,7 +72,26 @@ try {
   report(failed instanceof Error, `open page: a failed proxy ${failed instanceof Error ? `still throws (${failed.message.split("\n")[0]})` : "ended quietly"}`);
   await within(closeMarked(open.context), "context close");
 } finally {
-  await browser.close();
-  await shell.stop(true);
+  const cleanupErrors: unknown[] = [];
+  await within(browser.close(), "browser close").catch((error: unknown) => {
+    cleanupErrors.push(error);
+    const children = (pid: string): string[] => {
+      try { return execFileSync("pgrep", ["-P", pid], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean); }
+      catch { return []; }
+    };
+    const killTree = (pid: string): void => {
+      for (const child of children(pid)) killTree(child);
+      try { process.kill(Number(pid), "SIGKILL"); }
+      catch (err: unknown) { if (!(err instanceof Error && "code" in err && err.code === "ESRCH")) throw err; }
+    };
+    for (const child of children(String(process.pid))) killTree(child);
+  });
+  await within(shell.stop(true), "shell stop").catch((error: unknown) => {
+    cleanupErrors.push(error);
+  });
+  if (cleanupErrors.length > 0) {
+    for (const error of cleanupErrors) console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 assert.deepEqual(failures, [], failures.join("\n"));
