@@ -483,6 +483,34 @@ blocks of `src/styles.css`.
   overlay2 and Latte subtext0 darkened to stay AA on `--bg`, as set in its blocks of
   `src/styles.css`.
 
+### Notice tint
+
+The one surface for a row or banner that needs the user (the hosted relay app's Needs you): `--notice`
+mixed over `--bg-panel`, 12% in dark and 6% in light, rounded once to an opaque colour, so it is
+never made transparent again on hover. Text on it is `--notice` or `--text`, at least 4.5:1 in every
+theme (`src/lib/themes.contrast.test.ts`); a stronger light mix failed that floor in several palettes.
+It is a CSS-only role of the relay app, not one of the runtime roles in `src/lib/themeRoles.ts`.
+
+| Role | Token | Dark | Light |
+|------|-------|------|-------|
+| Notice tint (Amber, the base blocks) | `--notice-tint` | `#312b1c` | `#f2efe4` |
+
+| Theme | Dark | Light |
+|-------|------|-------|
+| Charcoal | `#2e2a21` | `#f3f0ea` |
+| Codex | `#353128` | `#f2efea` |
+| Catppuccin / Catppuccin Latte | `#333036` | `#e0e0e2` |
+| Tokyo Night / Tokyo Night Day | `#322d2e` | `#dad9dc` |
+| Black | `#1b150c` | none |
+| Gruvbox / Gruvbox Light | `#413a29` | `#f4e8bc` |
+| One Dark / One Light | `#3f3e3d` | `#f4f1eb` |
+| Solarized / Solarized Light | `#173730` | `#f6edd5` |
+| Kanagawa / Kanagawa Lotus | `#322f30` | `#e9e3b4` |
+| Rose Pine / Rose Pine Dawn | `#342b2e` | `#f4ebe0` |
+| Dracula | `#404340` | none |
+| Nord | `#454649` | none |
+| Vesper | `#352f29` | none |
+
 ### Rules
 - Amber is the one chrome color. Accent (selected, focused, informational) and primary (the user's
   action: Send, primary buttons) are both amber; in light, accent is the darker text-safe ochre and
@@ -542,6 +570,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
 | `--tracking-tight` | `-0.01em` | Brand and primary titles |
 | `--tracking-display` | `-0.02em` | The display line |
 | `--tracking-caps` | `0.06em` | Uppercase operational labels |
+| `--tracking-code` | `0.12em` | A pairing code or key id spelled out in the mono face (the relay shell's code fields) |
 
 ### Faces
 - The app ships its typefaces (`src/fonts/`, licenses in `THIRD_PARTY_NOTICES.md`) and loads
@@ -827,7 +856,7 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--icon-size` | `18px` | — | Standard icon |
 | `--mark-size` | `22px` | — | Brand mark |
 | `--avatar-size` | `32px` | `26px` | Command-palette mark box |
-| `--dot-size` | `7px` | — | Connection dot |
+| `--dot-size` | `7px` | — | Connection dot; the inline status glyph (StatusDot `inline`); twice it is the 14px data glyph |
 | `--rail-w` | `3px` | — | Quoted-content rails |
 | `--hairline` | `1px` | — | Borders |
 | `--content-w` | `820px` | — | Settings and dialog content |
@@ -836,6 +865,17 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--chat-fold-lines` | `12` | — | Lines of prose a long user message shows before it folds behind Show full message (Chat turn); `lib/userMessageFold.ts` folds a message past the same count |
 | `--palette-w` | `640px` | — | Command palette |
 | `--palette-top` | `12vh` | — | Palette top offset |
+| `--table-row-h` | `44px` | `40px` | The hosted relay app's rows that carry an action (PC table, attention list); a coarse pointer gets `--touch-target` in either density. `--row-h` stays for the lists above |
+| `--tabbar-h` | `56px` | — | The relay app's phone tab bar, before the bottom safe area; a minimum, larger text grows it |
+| `--relay-sidebar-w` | `240px` | — | The relay dashboard's sidebar: its own width, never the terminal sidebar's density step |
+| `--relay-content-w` | `1280px` | — | The relay dashboard's main column cap, gutters included |
+| `--relay-signin-w` | `368px` | — | The relay sign-in column |
+| `--relay-sheet-w` | `520px` | — | The Add-a-PC sheet |
+| `--relay-detail-w` | `360px` | — | The PC details column from `1100px` |
+| `--relay-table-head-h` | `36px` | — | The PC table's sticky header |
+| `--relay-control-icon-size` | `16px` | — | One glyph size for the relay app's controls and navigation, and every segmented control's glyph (the old `15px` is retired) |
+| `--relay-fs-min` | `11px` | — | Floor under a compact or scaled tab label: `max(var(--relay-fs-min), var(--fs-2xs))` |
+| `--relay-fs-body-min` | `12px` | — | Floor under scaled relay body text |
 | `--context-line` | `calc(var(--fs-lg) * var(--lh-base))` = `24px` | `21.75px`, through the scale | The selected pane's crumb row, min and max height. Scoped to `.context`, not `:root`, so it follows `--fs-lg`/`--lh-base` in either density |
 
 ### Focus and layers
@@ -996,6 +1036,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - One `aria-pressed="true"` option receives hover fill and strong text; the group itself is an
   elevated, bordered `--radius-md` track.
 - Used for Chat/Terminal, theme and density. It is not a generic tab list.
+- An option's glyph is `--relay-control-icon-size` (`16px`), the size of a `.btn`'s glyph.
 - An option is `--control-h` less `--segmented-inset` tall, so the track is `--control-h`. On a coarse
   pointer the track keeps its height; each option is at least `--touch-target` wide, so neighbours
   never share a tap, and reaches `--touch-target` tall through an invisible `::before` expander sized
@@ -4425,6 +4466,37 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   name the paired PC's reader, which opens its own channel; active file content is never a
   navigated blob. Rendered HTML uses the opaque sandbox's own render host and policy, so its
   inline scripts work without access to the shell's origin or device keys.
+
+- Foundation for the console (tokens above; the views adopt them in their own changes): one state
+  glyph, `StatusDot` (components/StatusDot.tsx), for the strip, the attention list, the map, the PC
+  table, the saved-PC list and `ConnectionLine`. A state is a shape, a colour and its word, never
+  the colour alone, and the glyph is `aria-hidden` beside the word:
+
+  | Meaning | Shape | Colour |
+  |---------|-------|--------|
+  | Ready | Filled disc | `--status-done` |
+  | Needs you (an approval, or an update to install) | Ring, its left half filled | `--notice` (a row may sit on `--notice-tint`) |
+  | Offline | Hollow ring | `--text-dim` |
+  | Updating (an installation actually running) | Ring with an arrow up | `--notice` |
+  | Checking / Connecting | Open arc | `--status-working` |
+  | Failed | Ring crossed out | `--status-blocked` |
+
+  `14px` (`2 * --dot-size`) beside data, `--dot-size` inside a line of text (`ConnectionLine`, where
+  Connected and Answers share the ready disc and their words tell them apart); the line is `1.5px`
+  at either size. Every part is drawn in `currentColor`, so forced colours keep each shape, drawn
+  in `CanvasText`. It never moves and casts no shadow: a check in progress is said by its arc and
+  word, the only motion in the console is the `--dur-fast` / `--dur-base` colour change and the
+  phone sheet's `--dur-sheet` / `--dur-sheet-out`, with no count roll, row entrance or decorative
+  loop, and reduced motion removes the transitions. Glyph targets: `3:1` for a state glyph and the
+  focus ring on the surfaces they sit on, `4.5:1` for text, in every theme
+  (`src/lib/themes.contrast.test.ts`). Action icons stay lucide: `16px` in controls and
+  navigation (`--relay-control-icon-size`), `--icon-size` in rows, `--mark-size` in phone tabs.
+- Console precedent: Linear for the navigation, the summary strip and dense rows; Vercel's Geist
+  for the table, the empty state, the sign-in column and its status dot; Cloudflare's Kumo for the
+  banner and the step wizard; Ramp's Ryu for state pairs (glyph and word) and docked phone actions;
+  Paseo's hosted app and Signal's linked devices stay the precedent for the pairing flow. They are
+  followed in structure only: no code or pixels are copied, so nothing is added to
+  THIRD_PARTY_NOTICES.md.
 
 ### Role (no control surface)
 - `interact` types and resizes; `observe` does neither. The server enforces both and the WS protocol
