@@ -42,6 +42,7 @@ export const RELAY_JA: Record<string, string> = {
   "Continue with Google": "Googleで続ける",
   "Continue with Apple": "Appleで続ける",
   "The sign-in was cancelled.": "サインインはキャンセルされました。",
+  "The PCs this device is paired with still work.": "このデバイスとペアリング済みの PC はそのまま使えます。",
   "Checking {name}…": "{name}を確認しています…",
   "Approve this device on {name} within 90 seconds to finish.": "完了するには、90秒以内に{name}でこのデバイスを承認してください。",
   "The account only lists your PCs. Sessions stay end-to-end encrypted.": "アカウントが知るのは PC の一覧だけです。セッションはエンドツーエンドで暗号化されます。",

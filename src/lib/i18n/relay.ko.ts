@@ -42,6 +42,7 @@ export const RELAY_KO: Record<string, string> = {
   "Continue with Google": "Google로 계속하기",
   "Continue with Apple": "Apple로 계속하기",
   "The sign-in was cancelled.": "로그인이 취소되었습니다.",
+  "The PCs this device is paired with still work.": "이 기기와 페어링된 PC는 그대로 쓸 수 있습니다.",
   "Checking {name}…": "{name} 확인 중…",
   "Approve this device on {name} within 90 seconds to finish.": "끝내려면 90초 안에 {name}에서 이 기기를 승인하세요.",
   "The account only lists your PCs. Sessions stay end-to-end encrypted.": "계정은 PC 목록만 압니다. 세션은 종단 간 암호화됩니다.",

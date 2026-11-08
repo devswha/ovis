@@ -42,6 +42,7 @@ export const RELAY_ZH: Record<string, string> = {
   "Continue with Google": "使用 Google 继续",
   "Continue with Apple": "使用 Apple 继续",
   "The sign-in was cancelled.": "登录已取消。",
+  "The PCs this device is paired with still work.": "已与此设备配对的 PC 仍可正常使用。",
   "Checking {name}…": "正在检查 {name}…",
   "Approve this device on {name} within 90 seconds to finish.": "请在 90 秒内在 {name} 上批准此设备以完成。",
   "The account only lists your PCs. Sessions stay end-to-end encrypted.": "账户只知道你的 PC 列表。会话保持端到端加密。",

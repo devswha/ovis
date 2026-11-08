@@ -113,6 +113,55 @@ describe("AccountSignIn", () => {
       await act(async () => { renderer?.unmount(); });
     }
   });
+
+  it("renders an explicit Try again action and saved-pairings reassurance when sign-in fails", async () => {
+    const html = render(
+      createElement(AccountSignIn, {
+        onSignIn: () => {},
+        error: "The sign-in did not finish.",
+        providers: ["github", "google"],
+      }),
+    );
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("The PCs this device is paired with still work.");
+    expect(html).toContain(">Try again</button>");
+
+    const retried: string[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          createElement(SettingsProvider, {
+            children: createElement(AccountSignIn, {
+              onSignIn: (p) => retried.push(p),
+              error: "The sign-in did not finish.",
+              providers: ["github", "google"],
+            }),
+          }),
+        );
+      });
+      // Tap Google first so it becomes the remembered provider, then click Try again
+      const googleBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-provider"] === "google");
+      await act(async () => { googleBtn.props.onClick(); });
+      const retryBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "retry-signin");
+      await act(async () => { retryBtn.props.onClick(); });
+      expect(retried).toEqual(["google", "google"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+    }
+  });
+
+  it("scopes absolute positioning on .account-provider-mark to .account-provider buttons only so shared dashboard/Settings consumers flow inline", async () => {
+    const css = await Bun.file(new URL("./AccountPcs.css", import.meta.url)).text();
+    const unyokedAbsolute = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^}]*position\s*:\s*absolute[^}]*)\}/g)]
+      .map(([, selector]) => selector!.trim());
+    expect(unyokedAbsolute.length).toBeGreaterThan(0);
+    for (const selector of unyokedAbsolute) {
+      for (const part of selector.split(",").map((s) => s.trim())) {
+        expect(part).toMatch(/\.account-provider(?![-\w])/);
+      }
+    }
+  });
 });
 
 describe("CheckPcsButton", () => {

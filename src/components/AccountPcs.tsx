@@ -2,6 +2,7 @@
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
+import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 
 import type { MyPc, MyPcState } from "../lib/account/myPcs.ts";
@@ -70,7 +71,9 @@ export function AccountSignIn({
   readonly busyProvider?: AccountProvider | null;
 }) {
   const t = useT();
+  const [lastProvider, setLastProvider] = useState<AccountProvider | null>(null);
   const groupBusy = busy && (busyProvider === null || !providers.includes(busyProvider));
+  const retryProvider = busyProvider ?? (lastProvider && providers.includes(lastProvider) ? lastProvider : providers[0] ?? "github");
   return (
     <div className="account-sign-in" {...(groupBusy ? { "aria-busy": "true" } : {})}>
       <div className="account-providers">
@@ -84,7 +87,12 @@ export function AccountSignIn({
               data-provider={provider}
               aria-busy={isBusy ? "true" : undefined}
               disabled={busy}
-              onClick={() => { if (!busy) onSignIn(provider); }}
+              onClick={() => {
+                if (!busy) {
+                  setLastProvider(provider);
+                  onSignIn(provider);
+                }
+              }}
             >
               {isBusy
                 ? <span className="boot-spinner account-provider-mark account-provider-spinner" aria-hidden="true" />
@@ -94,7 +102,20 @@ export function AccountSignIn({
           );
         })}
       </div>
-      {error !== null && <p className="account-error" role="alert">{error}</p>}
+      {error !== null && (
+        <div className="account-error-block" role="alert">
+          <p className="account-error">{error} {t("The PCs this device is paired with still work.")}</p>
+          <button
+            type="button"
+            className="btn account-error-retry"
+            data-action="retry-signin"
+            disabled={busy}
+            onClick={() => { if (!busy) onSignIn(retryProvider); }}
+          >
+            {t("Try again")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
