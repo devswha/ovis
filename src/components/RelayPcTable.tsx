@@ -68,7 +68,7 @@ export function RelayPcTable({
       case "offline": return row.last_seen_at === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(row.last_seen_at, now) });
       case "paired":
         if (!listedRow(row)) return localStateWord(row.check ?? statusMap.get(row.server_id) ?? null, t);
-        return row.linked ? t("Ready") : t("Ready · not in the account yet");
+        return row.linked || row.enrollment === "failed" ? t("Ready") : t("Ready · not in the account yet");
     }
   };
   const stateSubline = (row: DashboardRow, updating: boolean, phone = false): string | null => {
@@ -86,9 +86,9 @@ export function RelayPcTable({
   const enrollmentLine = (row: DashboardRow): string | null => {
     if (mode !== "account") return null;
     if (row.enrollment === "pending") return t("Adding it to your account…");
-    // Open loads the PC's own page, which retries the enrollment; Update and Details do not, so those rows only say what happened
+    // Open retries account setup; listing may already have succeeded before a later step failed.
     if (row.enrollment === "failed") return row.displayState === "paired" || row.displayState === "unchecked"
-      ? t("This PC could not be listed in your account. Open it to try again.") : t("This PC could not be listed in your account.");
+      ? t("Account setup is incomplete. Open it to try again.") : t("Account setup is incomplete.");
     return null;
   };
   /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */

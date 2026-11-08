@@ -526,6 +526,7 @@ const BASE: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "PCの電源が切れているか、Ovisが動いていません。",
   "The relay did not answer. Check this device's network.": "リレーが応答しません。このデバイスのネットワークを確認してください。",
   "Ready · not in the account yet": "準備完了 · まだアカウント外",
+  "Account setup is incomplete.": "アカウントの設定が完了していません。",
   "Adding it to your account…": "アカウントに追加中…",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
   "In your account": "アカウントに追加済み",

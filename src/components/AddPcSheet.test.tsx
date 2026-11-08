@@ -166,7 +166,7 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).toContain("desk2 is ready to open on this device.");
     expect(all().includes("In your account")).toBe(enrollment === "complete");
     expect(all().includes("Adding it to your account…")).toBe(enrollment === "pending");
-    expect(all().includes("Ready · not in the account yet")).toBe(enrollment === "failed");
+    expect(all().includes("Account setup is incomplete.")).toBe(enrollment === "failed");
     if (enrollment === "failed") { await click("Try again"); expect(calls.retries).toBe(1); }
     await click("Open PC");
     expect(calls.opens).toBe(1);

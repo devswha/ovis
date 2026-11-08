@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { FakeAccountService } from "../../../shared/account-service-fake.ts";
+import { EnrollmentStatus } from "../../components/EnrollmentStatus.tsx";
+import { RelayPcDetails } from "../../components/RelayPcDetails.tsx";
+import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -6,8 +12,13 @@ import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared
 import type { AddRecord } from "../../../shared/account-records.ts";
 import { planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore } from "../account/store.ts";
+import { AccountService } from "../account/service.ts";
+import { myPcs } from "../account/myPcs.ts";
+import { SettingsProvider } from "../settings.ts";
+import { translate } from "../i18n.ts";
 import { createAccountController } from "./accountController.ts";
-import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import { enrollmentOf, type RelayDevice, type RelayDeviceStore } from "./device.ts";
+import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
 import { forgetSavedPc } from "./updateFlow.ts";
@@ -108,6 +119,32 @@ describe("account enrollment ownership", () => {
     expect(await run.store.get(introduced.server_id)).toBeUndefined();
   });
 
+  it.each(["en", "ja", "ko", "zh"] as const)("keeps all enrollment surfaces truthful after listing succeeds and setup fails in %s", async (language) => {
+    const run = await fixture("/api/account/enroll");
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await run.requested.promise;
+    run.response.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
+    await pending;
+    const directory = await new AccountService({ store: run.accountStore, fetch: run.service.fetch }).listPcs();
+    expect(directory.map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+    const devices = await run.store.list();
+    const pc = devices[0];
+    if (pc === undefined) throw new TypeError("Missing paired PC");
+    const rows = dashboardModel(dashboardPcs(myPcs(directory, devices, { now: Date.now(), account: "account", accountKey: run.key.public_spki }), devices, directory), { label: "Phone" }, pc.relay).rows;
+    const row = rows[0];
+    if (row === undefined) throw new TypeError("Missing dashboard row");
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: [language] } });
+    const surfaces = [
+      { element: createElement(RelayPcTable, { rows, onSelect() {}, onOpenSheet() {} }), text: "Account setup is incomplete. Open it to try again." },
+      { element: createElement(RelayPcDetails, { pc: row, onClose() {} }), text: "Account setup is incomplete." },
+      { element: createElement(EnrollmentStatus, { state: enrollmentOf(pc) }), text: "Account setup is incomplete." },
+    ];
+    for (const surface of surfaces) {
+      const markup = renderToStaticMarkup(createElement(SettingsProvider, { children: surface.element }));
+      expect(markup).toContain(translate(language, surface.text));
+      expect(markup).not.toContain(translate(language, "Ready · not in the account yet"));
+    }
+  });
 
   it.each([
     ["/api/account/status", false], ["/api/account/link", true], ["/api/account/enroll", false], ["/api/account/introduction", false],

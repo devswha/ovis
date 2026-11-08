@@ -87,6 +87,5 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "No PCs yet": "还没有电脑",
   "1 relay": "1 个中继",
   "{count} relays": "{count} 个中继",
-  "This PC could not be listed in your account. Open it to try again.": "无法将此电脑列入你的账号。打开它即可重试。",
-  "This PC could not be listed in your account.": "无法将此电脑列入你的账号。",
+  "Account setup is incomplete. Open it to try again.": "账户设置尚未完成。打开它即可重试。",
 };
